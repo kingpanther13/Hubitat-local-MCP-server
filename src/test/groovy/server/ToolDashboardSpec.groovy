@@ -6,8 +6,8 @@ import support.ToolSpecBase
 
 /**
  * Spec for the dashboard CRUD surface (implemented in the McpDashboardsLib library):
- * hub_list_dashboards / hub_get_dashboard / hub_create_dashboard / hub_update_dashboard /
- * hub_delete_dashboard / hub_clone_dashboard. Covers BOTH the Easy Dashboards added in issue
+ * hub_list_dashboards (list, or one dashboard in full by id) / hub_create_dashboard (create, or
+ * copy via sourceId) / hub_update_dashboard / hub_delete_dashboard. Covers BOTH the Easy Dashboards added in issue
  * #259 item #9 AND the legacy "Hubitat® Dashboard" support (this issue). The GET /dashboard/*
  * and /apps/api/* endpoints are stubbed via hubGet.register (the mock keys on path; the query
  * Map is recorded in hubGet.calls, not matched); the write helpers hubInternalGetRaw /
@@ -16,8 +16,8 @@ import support.ToolSpecBase
  * gateway tools are also routed THROUGH hub_manage_dashboards / hub_read_dashboards.
  *
  * enableWrite() sets the Write master + a recent backup so the destructive-confirm gate on
- * hub_delete_dashboard passes; the read/create/update/clone tools only need the Write master
- * (create/update/clone) or nothing (reads).
+ * hub_delete_dashboard passes; the other tools only need the Write master (create/update) or
+ * nothing (reads).
  *
  * NOTE on the legacy probe: update AND delete now call _legacyDashboardProbe(id) first
  * (GET /installedapp/statusJson/<id>). For update a null probe (unreadable status) fails safe
@@ -67,6 +67,9 @@ class ToolDashboardSpec extends ToolSpecBase {
     // Register /installedapp/statusJson/<id> so _legacyDashboardProbe classifies <id> as a legacy
     // dashboard. opts: accessToken (String, or key present + null to OMIT the token), deviceIds
     // (a JSON-array string like "[16, 4]"), label, localAccess (bool).
+    // Set by stubForceDelete once the force-delete fires; registerLegacyStatus(afterDelete: ...) reads it.
+    private boolean forceDeleted = false
+
     private void registerLegacyStatus(String id, Map opts = [:]) {
         String token = opts.containsKey('accessToken') ? opts.accessToken : ('tok-' + id)
         def appState = token ? [[name: 'accessToken', value: token]] : []
@@ -75,7 +78,13 @@ class ToolDashboardSpec extends ToolSpecBase {
                            [name: 'localAccess', value: (opts.containsKey('localAccess') ? opts.localAccess : true).toString()]]
         def json = JsonOutput.toJson([installedApp: [name: 'Dashboard', systemAppType: true, label: (opts.label ?: 'Kitchen')],
                                       appState: appState, appSettings: appSettings])
-        hubGet.register("/installedapp/statusJson/${id}".toString()) { params -> json }
+        // afterDelete: 'gone' answers {} (the hub's shape for a removed app) and 'fail' throws, once
+        // the force-delete has fired; omitted, the dashboard stays present.
+        hubGet.register("/installedapp/statusJson/${id}".toString()) { params ->
+            if (forceDeleted && opts.afterDelete == 'gone') return '{}'
+            if (forceDeleted && opts.afterDelete == 'fail') throw new RuntimeException('status read down')
+            json
+        }
     }
 
     // The dashboard-page render that mints the per-load requestToken the layout endpoint demands.
@@ -117,6 +126,7 @@ class ToolDashboardSpec extends ToolSpecBase {
     private void stubForceDelete(boolean throwOnDelete = false) {
         script.metaClass.hubInternalGetRaw = { String p, Map q = null, int t = 30, boolean r = false ->
             if (p.contains('/installedapp/forcedelete/')) {
+                forceDeleted = true
                 if (throwOnDelete) throw new RuntimeException('forcedelete answered 500')
                 return [status: 302, location: '/installedapps', data: '']
             }
@@ -298,20 +308,20 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.note != null
     }
 
-    // ---------- hub_get_dashboard ----------
+    // ---------- hub_list_dashboards with id: one dashboard in full ----------
 
     def "get filters the list by id"() {
         when:
-        def r = script.toolGetDashboard([dashboardId: '500'])
+        def r = script.toolListDashboards([id: '500'])
 
         then:
         r.id == '500'
         r.name == 'Garage'
     }
 
-    def "get without an id throws"() {
+    def "an empty id throws instead of listing"() {
         when:
-        script.toolGetDashboard([:])
+        script.toolListDashboards([id: ''])
 
         then:
         thrown(IllegalArgumentException)
@@ -319,7 +329,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     def "get with an unknown id returns a structured not-found (no throw) listing available ids"() {
         when:
-        def r = script.toolGetDashboard([dashboardId: '9999'])
+        def r = script.toolListDashboards([id: '9999'])
 
         then:
         r.success == false
@@ -328,7 +338,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     def "get rejects a non-numeric id (the URL-splice guard) with a validation error"() {
         when:
-        script.toolGetDashboard([dashboardId: 'abc; rm'])
+        script.toolListDashboards([id: 'abc; rm'])
 
         then:
         thrown(IllegalArgumentException)
@@ -347,7 +357,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolGetDashboard([dashboardId: '38'])
+        def r = script.toolListDashboards([id: '38'])
 
         then: 'string tile toggles coerce to booleans, devicesPicked keys become deviceIds, unset pins are omitted'
         r.id == '38'
@@ -367,7 +377,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolGetDashboard([dashboardId: '38'])
+        def r = script.toolListDashboards([id: '38'])
 
         then: 'returns id+name but FLAGS partial -- a caller must not read it as a complete (all-default) config'
         r.id == '38'
@@ -385,7 +395,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when: 'read the dashboard, then feed the read shape straight back into update'
-        def got = script.toolGetDashboard([dashboardId: '412'])
+        def got = script.toolListDashboards([id: '412'])
 
         then: 'pins are surfaced and nav is normalized to a CSV the update endpoint accepts'
         got.dashboardPin == '1111'
@@ -393,7 +403,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         got.navigationSelection == '5,6'
 
         when: 'round-trip: pass the get output (flattened) back through update'
-        script.toolUpdateDashboard([dashboardId: got.id, name: got.name, deviceIds: '12,34',
+        script.toolUpdateDashboard([id: got.id, name: got.name, deviceIds: '12,34',
                                     dashboardPin: got.dashboardPin, hsmPin: got.hsmPin,
                                     navigationSelection: got.navigationSelection])
 
@@ -418,13 +428,13 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when: 'read the dashboard'
-        def got = script.toolGetDashboard([dashboardId: '38'])
+        def got = script.toolListDashboards([id: '38'])
 
         then: 'the bracketed hub string is normalized to CSV -- NOT returned verbatim as "[1,2]" (which the hub misparses to index 0)'
         got.navigationSelection == '1,2'
 
         when: 'round-trip: feed the get output back through update'
-        script.toolUpdateDashboard([dashboardId: got.id, name: got.name, deviceIds: ['14'], navigationSelection: got.navigationSelection])
+        script.toolUpdateDashboard([id: got.id, name: got.name, deviceIds: ['14'], navigationSelection: got.navigationSelection])
 
         then: 'update sends a CSV the hub parses correctly, so nav survives the get->update round-trip'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
@@ -608,7 +618,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
+        def r = script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
 
         then:
         r.success == true
@@ -635,7 +645,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolUpdateDashboard([dashboardId: '412', deviceIds: ['12']])
+        script.toolUpdateDashboard([id: '412', deviceIds: ['12']])
 
         then:
         thrown(IllegalArgumentException)
@@ -646,7 +656,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: []])
+        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: []])
 
         then:
         thrown(IllegalArgumentException)
@@ -662,7 +672,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         when:
         def listed = script.executeTool('hub_list_dashboards', [:])
-        def got = script.executeTool('hub_get_dashboard', [dashboardId: '412'])
+        def got = script.executeTool('hub_list_dashboards', [id: '412'])
 
         then:
         listed.dashboards[0].dashboardPin == shown
@@ -683,7 +693,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when: 'the masked PINs from a read are passed back'
-        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'],
+        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'],
                                     dashboardPin: '***redacted (password)***', options: [hsmPin: '***redacted (password)***']])
 
         then: 'the stored PINs are re-sent, not the marker'
@@ -708,7 +718,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when: 'an unrelated edit (no pin in args)'
-        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
+        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
 
         then: 'the current PIN is read back and re-sent, so it is not blanked'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
@@ -720,7 +730,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
+        def r = script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
 
         then: 'the update applies but FLAGS that an omitted PIN may have been cleared -- the clear is not silent'
         r.success == true
@@ -736,7 +746,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when: 'an unrelated edit (no hsmPin in args)'
-        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
+        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
 
         then: 'the current hsmPin is read back and re-sent, not blanked'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
@@ -751,7 +761,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], dashboardPin: '9999'])
+        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], dashboardPin: '9999'])
 
         then: 'the new dashboardPin is sent and the omitted hsmPin is preserved (not cleared)'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
@@ -766,7 +776,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def r = script.toolDeleteDashboard([dashboardId: '412', confirm: true])
+        def r = script.toolDeleteDashboard([id: '412', confirm: true])
 
         then:
         r.success == true
@@ -780,7 +790,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         settingsMap.enableWrite = true   // Write master on, but NO recent backup -> confirm gate fails
 
         when:
-        script.toolDeleteDashboard([dashboardId: '412'])
+        script.toolDeleteDashboard([id: '412'])
 
         then:
         thrown(IllegalArgumentException)
@@ -803,7 +813,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         hubGet.register('/dashboard/delete') { params -> '{"success":false,"message":"not found"}' }
 
         when:
-        def r = script.toolDeleteDashboard([dashboardId: '412', confirm: true])
+        def r = script.toolDeleteDashboard([id: '412', confirm: true])
 
         then:
         r.success == false
@@ -812,30 +822,52 @@ class ToolDashboardSpec extends ToolSpecBase {
     }
 
     def "delete succeeds by EFFECT when /dashboard/delete lies with success:false but the dashboard is gone"() {
-        given: 'the real-hub shape: delete returns success:false even though it deleted; child-app check shows 412 absent'
+        given: 'the real-hub shape: delete returns success:false even though it deleted; statusJson then answers {}'
         enableWrite()
-        hubGet.register('/dashboard/delete') { params -> '{"success":false,"message":null}' }
-        hubGet.register('/hub2/appsList') { params ->
-            '{"apps":[{"data":{"id":19,"name":"Easy Dashboards","type":"Easy Dashboard Parent"},' +
-            '"children":[{"data":{"id":99,"name":"Other","type":"Easy Dashboard"},"children":[]}]}]}'
+        def gone = [false]
+        hubGet.register('/dashboard/delete') { params -> gone[0] = true; '{"success":false,"message":null}' }
+        hubGet.register('/installedapp/statusJson/412') { params ->
+            gone[0] ? '{}' : JsonOutput.toJson([installedApp: [name: 'Easy Dashboard', systemAppType: false]])
         }
 
         when:
-        def r = script.toolDeleteDashboard([dashboardId: '412', confirm: true])
+        def r = script.toolDeleteDashboard([id: '412', confirm: true])
 
-        then: 'verify-by-effect: 412 is no longer present, so the delete is reported as success'
+        then: 'verify-by-effect: one status read shows 412 gone, so the delete is reported as success'
         r.success == true
         r.id == '412'
+        hubGet.calls.count { it.path == '/installedapp/statusJson/412' } == 2
+
+        and: 'no app-tree walk is spent on the confirmation'
+        !hubGet.calls.any { it.path == '/hub2/appsList' || it.path == '/dashboard/all' }
     }
 
-    def "delete does NOT false-claim success when removal cannot be confirmed (both reads fail)"() {
-        given: 'delete lies with success:false AND both presence reads fail (/hub2/appsList unmocked + /dashboard/all throws)'
+    def "delete of an id whose status page answers {} reports already absent without a delete"() {
+        given:
         enableWrite()
-        hubGet.register('/dashboard/delete') { params -> '{"success":false,"message":null}' }
-        hubGet.register('/dashboard/all') { params -> throw new RuntimeException('endpoint down') }
+        hubGet.register('/installedapp/statusJson/412') { params -> '{}' }
 
         when:
-        def r = script.toolDeleteDashboard([dashboardId: '412', confirm: true])
+        def r = script.toolDeleteDashboard([id: '412', confirm: true])
+
+        then:
+        r.success == true
+        r.alreadyAbsent == true
+        !hubGet.calls.any { it.path == '/dashboard/delete' }
+    }
+
+    def "delete does NOT false-claim success when removal cannot be confirmed (the verification read fails)"() {
+        given: 'delete lies with success:false AND the status read after it fails'
+        enableWrite()
+        def deleted = [false]
+        hubGet.register('/dashboard/delete') { params -> deleted[0] = true; '{"success":false,"message":null}' }
+        hubGet.register('/installedapp/statusJson/412') { params ->
+            if (deleted[0]) throw new RuntimeException('endpoint down')
+            JsonOutput.toJson([installedApp: [name: 'Easy Dashboard', systemAppType: false]])
+        }
+
+        when:
+        def r = script.toolDeleteDashboard([id: '412', confirm: true])
 
         then: 'a destructive op is NOT reported as success without confirming evidence'
         r.success == false
@@ -843,19 +875,19 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.note != null
     }
 
-    // ---------- hub_clone_dashboard ----------
+    // ---------- hub_create_dashboard with sourceId: copy by value ----------
 
     def "clone copies the source config into a new dashboard (clone-by-value, not the session-bound cloneAsEasy)"() {
         given:
         enableWrite()
 
         when:
-        def r = script.toolCloneDashboard([dashboardId: '412'])
+        def r = script.toolCreateDashboard([sourceId: '412'])
 
         then: 'reads the source (412) via the list, then creates a copy via /dashboard/create'
         r.success == true
         r.sourceId == '412'
-        r.newId == '777'
+        r.id == '777'
         def createCall = hubGet.calls.find { it.path == '/dashboard/create' }
         createCall.params.name == 'Living Room (copy)'
         createCall.params.deviceIds == '12,34'
@@ -869,7 +901,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolCloneDashboard([dashboardId: '412'])
+        script.toolCreateDashboard([sourceId: '412'])
 
         then: 'the source 412 config (theme dark, showModeTile true) flows into /dashboard/create, not just name+devices'
         def createCall = hubGet.calls.find { it.path == '/dashboard/create' }
@@ -882,7 +914,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def r = script.toolCloneDashboard([dashboardId: '9999'])
+        def r = script.toolCreateDashboard([sourceId: '9999'])
 
         then: 'clone surfaces a runtime failure rather than letting create throw IllegalArgumentException'
         r.success == false
@@ -901,7 +933,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         // /installedapp/configure/json/38 unmocked -> enrichment fails -> the get match is partial (no deviceIds)
 
         when:
-        def r = script.toolCloneDashboard([dashboardId: '38'])
+        def r = script.toolCreateDashboard([sourceId: '38'])
 
         then: 'clone returns a runtime failure naming the device list -- NOT a caller-blaming isError validation result thrown by create'
         r.success == false
@@ -909,15 +941,67 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.error.toLowerCase().contains('device list')
     }
 
-    def "clone without id throws"() {
+    def "copy refuses #arg beside sourceId before reading or writing anything"() {
         given:
         enableWrite()
 
         when:
-        script.toolCloneDashboard([:])
+        script.toolCreateDashboard([sourceId: '412', (arg): value])
 
         then:
-        thrown(IllegalArgumentException)
+        def e = thrown(IllegalArgumentException)
+        e.message.contains(arg)
+        e.message.contains('sourceId')
+        hubGet.calls.isEmpty()
+
+        where:
+        arg         | value
+        'type'      | 'legacy'
+        'deviceIds' | ['12']
+        'options'   | [theme: 'dark']
+    }
+
+    def "copy rejects a non-numeric sourceId"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolCreateDashboard([sourceId: 'abc'])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('sourceId')
+    }
+
+    def "copy takes a caller name instead of the '(copy)' default"() {
+        given:
+        enableWrite()
+
+        when:
+        def r = script.toolCreateDashboard([sourceId: '412', name: 'Kitchen Wall'])
+
+        then:
+        r.success == true
+        r.name == 'Kitchen Wall'
+        hubGet.calls.find { it.path == '/dashboard/create' }.params.name == 'Kitchen Wall'
+    }
+
+    def "copy carries the source PINs into the new dashboard even though the result masks them"() {
+        given:
+        enableWrite()
+        settingsMap.enableRead = true
+        hubGet.register('/dashboard/all') { params ->
+            '[{"installedAppId":412,"name":"Living Room","version":"2.0","showClockTile":true,"deviceIds":"[12]","dashboardPin":"1111","hsmPin":"2222"}]'
+        }
+
+        when:
+        def r = script.executeTool('hub_create_dashboard', [sourceId: '412'])
+
+        then:
+        r.success == true
+        def createCall = hubGet.calls.find { it.path == '/dashboard/create' }
+        createCall.params.dashboardPin == '1111'
+        createCall.params.hsmPin == '2222'
     }
 
     // ---------- dispatch envelopes (via mcpDriver.callTool) ----------
@@ -930,9 +1014,9 @@ class ToolDashboardSpec extends ToolSpecBase {
         mcpDriver.parseInner(resp).count == 2
     }
 
-    def "hub_get_dashboard via dispatch returns the dashboard"() {
+    def "hub_list_dashboards with id via dispatch returns the one dashboard"() {
         when:
-        def resp = mcpDriver.callTool('hub_get_dashboard', [dashboardId: '412'])
+        def resp = mcpDriver.callTool('hub_list_dashboards', [id: '412'])
 
         then:
         mcpDriver.parseInner(resp).name == 'Living Room'
@@ -954,7 +1038,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def resp = mcpDriver.callTool('hub_update_dashboard', [dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34']])
+        def resp = mcpDriver.callTool('hub_update_dashboard', [id: '412', name: 'Living Room', deviceIds: ['12', '34']])
 
         then:
         mcpDriver.parseInner(resp).success == true
@@ -965,18 +1049,18 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def resp = mcpDriver.callTool('hub_delete_dashboard', [dashboardId: '412', confirm: true])
+        def resp = mcpDriver.callTool('hub_delete_dashboard', [id: '412', confirm: true])
 
         then:
         mcpDriver.parseInner(resp).success == true
     }
 
-    def "hub_clone_dashboard via dispatch returns the success envelope"() {
+    def "hub_create_dashboard copy via dispatch returns the success envelope"() {
         given:
         enableWrite()
 
         when:
-        def resp = mcpDriver.callTool('hub_clone_dashboard', [dashboardId: '412'])
+        def resp = mcpDriver.callTool('hub_create_dashboard', [sourceId: '412'])
 
         then:
         mcpDriver.parseInner(resp).success == true
@@ -1002,8 +1086,8 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         then:
         cat.tools*.name.containsAll([
-            'hub_list_dashboards', 'hub_get_dashboard', 'hub_create_dashboard',
-            'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard'])
+            'hub_list_dashboards', 'hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard'])
+        !cat.tools*.name.any { it in ['hub_get_dashboard', 'hub_clone_dashboard'] }
     }
 
     def "the hub_read_dashboards gateway catalog lists only the read sub-tools"() {
@@ -1011,7 +1095,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def cat = script.handleGateway('hub_read_dashboards', null, null)
 
         then:
-        (cat.tools*.name as Set) == ['hub_list_dashboards', 'hub_get_dashboard'] as Set
+        (cat.tools*.name as Set) == ['hub_list_dashboards'] as Set
     }
 
     def "hub_list_dashboards routes THROUGH the hub_manage_dashboards gateway"() {
@@ -1035,7 +1119,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def r = script.handleGateway('hub_manage_dashboards', 'hub_delete_dashboard', [dashboardId: '412', confirm: true])
+        def r = script.handleGateway('hub_manage_dashboards', 'hub_delete_dashboard', [id: '412', confirm: true])
 
         then:
         r.success == true
@@ -1102,7 +1186,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyLayout('700', LEGACY_LAYOUT)
 
         when:
-        def r = script.toolGetDashboard([dashboardId: '700'])
+        def r = script.toolListDashboards([id: '700'])
 
         then:
         r.id == '700'
@@ -1114,6 +1198,32 @@ class ToolDashboardSpec extends ToolSpecBase {
         !r.partial
     }
 
+    def "get legacy: the list row's access token and devices reach the layout without a status read, and the token never leaks"() {
+        given: 'the /dashboard/all row carries what the hub UI builds the legacy URL from (accessToken) plus deviceIds'
+        settingsMap.enableRead = true
+        hubGet.register('/dashboard/all') { params ->
+            JsonOutput.toJson([[installedAppId: 700, name: 'Studio', version: '1.0', deviceIds: '[16,4]', accessToken: 'tok-row']])
+        }
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+
+        when:
+        def listed = script.executeTool('hub_list_dashboards', [:])
+        def r = script.executeTool('hub_list_dashboards', [id: '700'])
+
+        then: 'the layout read used the row token; the status page was never read'
+        r.type == 'legacy'
+        r.name == 'Studio'
+        r.deviceIds == ['16', '4']
+        r.layout.tiles.size() == 2
+        !r.partial
+        hubGet.calls.find { it.path == '/apps/api/700/dashboard/700/layout' }.params.access_token == 'tok-row'
+        !hubGet.calls.any { it.path == '/installedapp/statusJson/700' }
+
+        and: 'no result carries the token'
+        !JsonOutput.toJson(listed).contains('tok-row')
+        !JsonOutput.toJson(r).contains('tok-row')
+    }
+
     def "get legacy: flags partial when the status page is unreadable (layout unavailable, not empty)"() {
         given: 'the list classifies 700 as legacy (v1.0), but statusJson/700 is unreadable (unregistered -> throws)'
         hubGet.register('/dashboard/all') { params ->
@@ -1121,7 +1231,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolGetDashboard([dashboardId: '700'])
+        def r = script.toolListDashboards([id: '700'])
 
         then:
         r.id == '700'
@@ -1138,7 +1248,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyStatus('700', [accessToken: null, label: 'Studio'])   // legacy:true but no accessToken
 
         when:
-        def r = script.toolGetDashboard([dashboardId: '700'])
+        def r = script.toolListDashboards([id: '700'])
 
         then:
         r.type == 'legacy'
@@ -1156,7 +1266,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyMint('700')
 
         when:
-        def r = script.toolGetDashboard([dashboardId: '700'])
+        def r = script.toolListDashboards([id: '700'])
 
         then:
         r.type == 'legacy'
@@ -1167,13 +1277,23 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     // ---------- create legacy ----------
 
-    def "a legacy dashboard refuses version, which only an Easy Dashboard takes"() {
+    def "the removed dashboardId and version arguments are refused through dispatch before any write"() {
+        given:
+        enableWrite()
+
         when:
-        script.toolCreateDashboard([name: 'Patio', type: 'legacy', version: '2.0'])
+        script.executeTool(tool, args)
 
         then:
         def e = thrown(IllegalArgumentException)
-        e.message.contains('version applies only to Easy Dashboards')
+        e.message.contains('Unknown')
+        e.message.contains(bad)
+        !hubGet.calls.any { it.path.startsWith('/dashboard/create') || it.path.startsWith('/dashboard/update') }
+
+        where:
+        tool                   | args                                                        | bad
+        'hub_create_dashboard' | [name: 'Patio', deviceIds: ['12'], version: '2.0']          | 'version'
+        'hub_update_dashboard' | [dashboardId: '412', name: 'X', deviceIds: ['12']]          | 'dashboardId'
     }
 
     def "create legacy refuses a protected parent before creating or configuring a dashboard"() {
@@ -1337,7 +1457,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700',
+        def r = script.toolUpdateDashboard([id: '700',
             layout: [cols: 8, tiles: [[id: 5, template: 'mode', col: 1, row: 1]]]])
 
         then:
@@ -1364,7 +1484,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700',
+        def r = script.toolUpdateDashboard([id: '700',
             addTiles: [[template: 'attribute', device: '4', col: 3, row: 2]]])
 
         then:
@@ -1388,7 +1508,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when: 'the second add in the tool-documented workflow'
-        def r = script.toolUpdateDashboard([dashboardId: '700', addTiles: [[template: 'mode', col: 2, row: 1]]])
+        def r = script.toolUpdateDashboard([id: '700', addTiles: [[template: 'mode', col: 2, row: 1]]])
 
         then: 'no id collision with the existing tile 0'
         r.success == true
@@ -1403,7 +1523,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700',
+        def r = script.toolUpdateDashboard([id: '700',
             addTiles: [[template: 'clock', col: 1, row: 1, templateExtra: 'seconds']]])
 
         then:
@@ -1420,7 +1540,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when: 'add a tile identical to the existing clock (id 0): same template/col/row, default spans'
-        def r = script.toolUpdateDashboard([dashboardId: '700', addTiles: [[template: 'clock', col: 1, row: 1]]])
+        def r = script.toolUpdateDashboard([id: '700', addTiles: [[template: 'clock', col: 1, row: 1]]])
 
         then:
         r.success == true
@@ -1437,7 +1557,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700',
+        def r = script.toolUpdateDashboard([id: '700',
             addTiles: [[template: 'attribute', device: '99', col: 4, row: 4]]])
 
         then:
@@ -1454,7 +1574,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyLayout('700', LEGACY_LAYOUT)
 
         when:
-        script.toolUpdateDashboard([dashboardId: '700', addTiles: [[template: 'clock', col: 1]]])   // no row
+        script.toolUpdateDashboard([id: '700', addTiles: [[template: 'clock', col: 1]]])   // no row
 
         then:
         def e = thrown(IllegalArgumentException)
@@ -1469,7 +1589,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', updateTiles: [[
+        def r = script.toolUpdateDashboard([id: '700', updateTiles: [[
             id: 0, col: 4, colSpan: 2, fields: false, metaClass: [Fields: [getClass: [0, null]]]
         ]]])
 
@@ -1491,7 +1611,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyLayout('700', LEGACY_LAYOUT)
 
         when:
-        script.toolUpdateDashboard([dashboardId: '700', updateTiles: [[id: 99, col: 1]]])
+        script.toolUpdateDashboard([id: '700', updateTiles: [[id: 99, col: 1]]])
 
         then:
         def e = thrown(IllegalArgumentException)
@@ -1506,7 +1626,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', removeTileIds: [1, 9]])
+        def r = script.toolUpdateDashboard([id: '700', removeTileIds: [1, 9]])
 
         then:
         r.success == true
@@ -1523,7 +1643,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700',
+        def r = script.toolUpdateDashboard([id: '700',
             removeTileIds: [0],
             updateTiles: [[id: 1, col: 5]],
             addTiles: [[template: 'mode', col: 3, row: 2]]])
@@ -1549,7 +1669,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', setOptions: [
+        def r = script.toolUpdateDashboard([id: '700', setOptions: [
             cols: 10, bgColor: '#123456', fields: false, metaClass: [Fields: [getClass: [0, null]]]
         ]])
 
@@ -1569,12 +1689,12 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyLayout('700', LEGACY_LAYOUT)
 
         when: 'tiles must go through the tile ops, not setOptions'
-        script.toolUpdateDashboard([dashboardId: '700', setOptions: [tiles: []]])
+        script.toolUpdateDashboard([id: '700', setOptions: [tiles: []]])
         then:
         thrown(IllegalArgumentException)
 
         when: 'the name is the app label, not a layout field'
-        script.toolUpdateDashboard([dashboardId: '700', setOptions: [name: 'X']])
+        script.toolUpdateDashboard([id: '700', setOptions: [name: 'X']])
         then:
         thrown(IllegalArgumentException)
     }
@@ -1587,7 +1707,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyStatus('700', [accessToken: null])
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', addTiles: [[template: 'clock', col: 1, row: 1]]])
+        def r = script.toolUpdateDashboard([id: '700', addTiles: [[template: 'clock', col: 1, row: 1]]])
 
         then:
         r.success == false
@@ -1603,7 +1723,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', setOptions: [cols: 5]])
+        def r = script.toolUpdateDashboard([id: '700', setOptions: [cols: 5]])
 
         then: 'no save was fired on top of an unreadable layout'
         r.success == false
@@ -1623,7 +1743,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', name: 'X', setOptions: [cols: 5]])
+        def r = script.toolUpdateDashboard([id: '700', name: 'X', setOptions: [cols: 5]])
 
         then: 'the failure reports nothing after the rename was attempted -- and the layout save never fired'
         r.success == false
@@ -1642,7 +1762,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', deviceIds: ['5'], setOptions: [cols: 5]])
+        def r = script.toolUpdateDashboard([id: '700', deviceIds: ['5'], setOptions: [cols: 5]])
 
         then:
         r.success == false
@@ -1660,12 +1780,12 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', setOptions: [cols: 5]])
+        def r = script.toolUpdateDashboard([id: '700', setOptions: [cols: 5]])
 
         then:
         r.success == false
         r.error.toLowerCase().contains('layout save failed')
-        r.note.toLowerCase().contains('hub_get_dashboard')
+        r.note.toLowerCase().contains('hub_list_dashboards')
     }
 
     def "update legacy: a layout save whose echo has no tiles list reports the outcome unconfirmed"() {
@@ -1678,7 +1798,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', setOptions: [cols: 5]])
+        def r = script.toolUpdateDashboard([id: '700', setOptions: [cols: 5]])
 
         then:
         r.success == false
@@ -1691,7 +1811,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyStatus('700')
 
         when:
-        script.toolUpdateDashboard([dashboardId: '700', layout: 'not-a-map'])
+        script.toolUpdateDashboard([id: '700', layout: 'not-a-map'])
 
         then:
         thrown(IllegalArgumentException)
@@ -1730,7 +1850,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolDeleteDashboard([dashboardId: '909', confirm: true])
+        def r = script.toolDeleteDashboard([id: '909', confirm: true])
 
         then: 'neither the Easy delete endpoint nor the force-delete was touched'
         r.success == false
@@ -1757,11 +1877,11 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolCloneDashboard([dashboardId: '700'])
+        def r = script.toolCreateDashboard([sourceId: '700'])
 
         then:
         r.success == false
-        r.newId == '882'
+        r.id == '882'
         r.error.toLowerCase().contains('unconfirmed')
     }
 
@@ -1781,15 +1901,13 @@ class ToolDashboardSpec extends ToolSpecBase {
     }
 
     def "delete legacy: reports failure when removal can't be CONFIRMED (verification read failed)"() {
-        given: 'forcedelete fires but both presence sources are unreadable -> tri-state null'
+        given: 'forcedelete fires but the status read after it fails -> tri-state null'
         enableWrite()
-        registerLegacyStatus('700')
+        registerLegacyStatus('700', [afterDelete: 'fail'])
         stubForceDelete(false)
-        hubGet.register('/hub2/appsList') { params -> throw new RuntimeException('appsList down') }
-        hubGet.register('/dashboard/all') { params -> throw new RuntimeException('dashboard/all down') }
 
         when:
-        def r = script.toolDeleteDashboard([dashboardId: '700', confirm: true])
+        def r = script.toolDeleteDashboard([id: '700', confirm: true])
 
         then: 'a destructive op never claims success it cannot verify'
         r.success == false
@@ -1805,7 +1923,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def forms = captureFormPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', name: 'Renamed'])
+        def r = script.toolUpdateDashboard([id: '700', name: 'Renamed'])
 
         then:
         r.success == true
@@ -1825,7 +1943,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def forms = captureFormPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', name: 'Combo', deviceIds: ['5', '6']])
+        def r = script.toolUpdateDashboard([id: '700', name: 'Combo', deviceIds: ['5', '6']])
 
         then:
         r.success == true
@@ -1849,7 +1967,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyStatus('700')
 
         when:
-        script.toolUpdateDashboard([dashboardId: '700', layout: [tiles: []], addTiles: [[template: 'x', col: 1, row: 1]]])
+        script.toolUpdateDashboard([id: '700', layout: [tiles: []], addTiles: [[template: 'x', col: 1, row: 1]]])
 
         then:
         thrown(IllegalArgumentException)
@@ -1861,7 +1979,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyStatus('700')
 
         when:
-        script.toolUpdateDashboard([dashboardId: '700'])
+        script.toolUpdateDashboard([id: '700'])
 
         then:
         thrown(IllegalArgumentException)
@@ -1873,7 +1991,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyStatus('700')
 
         when:
-        script.toolUpdateDashboard([dashboardId: '700', name: 'Kept', options: [theme: 'dark']])
+        script.toolUpdateDashboard([id: '700', name: 'Kept', options: [theme: 'dark']])
 
         then:
         thrown(IllegalArgumentException)
@@ -1884,7 +2002,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12'],
+        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12'],
             addTiles: [[template: 'clock', col: 1, row: 1]]])
 
         then:
@@ -1899,7 +2017,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '909', name: 'X', deviceIds: ['5'], layout: [tiles: []]])
+        def r = script.toolUpdateDashboard([id: '909', name: 'X', deviceIds: ['5'], layout: [tiles: []]])
 
         then: 'no write fired; the type could not be determined'
         r.success == false
@@ -1912,16 +2030,13 @@ class ToolDashboardSpec extends ToolSpecBase {
     // ---------- delete legacy ----------
 
     def "delete legacy: force-deletes then confirms removal by absence"() {
-        given:
+        given: 'statusJson answers {} once the force-delete fired -> confirmed absent'
         enableWrite()
-        registerLegacyStatus('700')
+        registerLegacyStatus('700', [afterDelete: 'gone'])
         stubForceDelete(false)
-        hubGet.register('/hub2/appsList') { params ->   // 700 no longer present -> confirmed absent
-            JsonOutput.toJson([apps: [[data: [id: 21, name: 'HD', type: 'Hubitat® Dashboard'], children: []]]])
-        }
 
         when:
-        def r = script.toolDeleteDashboard([dashboardId: '700', confirm: true])
+        def r = script.toolDeleteDashboard([id: '700', confirm: true])
 
         then:
         r.success == true
@@ -1930,16 +2045,13 @@ class ToolDashboardSpec extends ToolSpecBase {
     }
 
     def "delete legacy: a forcedelete that throws still confirms deletion by effect"() {
-        given: 'forcedelete answers 500/drops (committed-but-error), but the child list shows 700 gone'
+        given: 'forcedelete answers 500/drops (committed-but-error), but the status page shows 700 gone'
         enableWrite()
-        registerLegacyStatus('700')
+        registerLegacyStatus('700', [afterDelete: 'gone'])
         stubForceDelete(true)
-        hubGet.register('/hub2/appsList') { params ->
-            JsonOutput.toJson([apps: [[data: [id: 21, name: 'HD', type: 'Hubitat® Dashboard'], children: []]]])
-        }
 
         when:
-        def r = script.toolDeleteDashboard([dashboardId: '700', confirm: true])
+        def r = script.toolDeleteDashboard([id: '700', confirm: true])
 
         then:
         r.success == true
@@ -1949,15 +2061,11 @@ class ToolDashboardSpec extends ToolSpecBase {
     def "delete legacy: reports success:false when the dashboard is still present after force-delete"() {
         given:
         enableWrite()
-        registerLegacyStatus('700')
+        registerLegacyStatus('700')   // 700 STILL present after the force-delete
         stubForceDelete(false)
-        hubGet.register('/hub2/appsList') { params ->   // 700 STILL present
-            JsonOutput.toJson([apps: [[data: [id: 21, name: 'HD', type: 'Hubitat® Dashboard'],
-                children: [[data: [id: 700, name: 'Kitchen', type: 'Dashboard'], children: []]]]]])
-        }
 
         when:
-        def r = script.toolDeleteDashboard([dashboardId: '700', confirm: true])
+        def r = script.toolDeleteDashboard([id: '700', confirm: true])
 
         then:
         r.success == false
@@ -1984,14 +2092,14 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolCloneDashboard([dashboardId: '700'])
+        def r = script.toolCreateDashboard([sourceId: '700'])
 
         then:
         r.success == true
         r.sourceId == '700'
-        r.newId == '880'
+        r.id == '880'
         r.type == 'legacy'
-        r.message.toLowerCase().contains('cloned')
+        r.message.toLowerCase().contains('copied')
 
         and: "the source's layout was posted to the new dashboard, authorized by the copy's own token"
         posts.size() == 1
@@ -2013,12 +2121,12 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyStatus('881', [accessToken: null, label: 'Studio (copy)'])
 
         when:
-        def r = script.toolCloneDashboard([dashboardId: '700'])
+        def r = script.toolCreateDashboard([sourceId: '700'])
 
         then:
         r.success == false
         r.sourceId == '700'
-        r.newId == '881'                            // the copy WAS created; only the layout write failed
+        r.id == '881'                            // the copy WAS created; only the layout write failed
         r.type == 'legacy'
         r.error.toLowerCase().contains('layout could not be written')
         r.note != null
@@ -2035,7 +2143,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         registerLegacyLayout('700', LEGACY_LAYOUT)
 
         when:
-        def r = script.handleGateway('hub_manage_dashboards', 'hub_get_dashboard', [dashboardId: '700'])
+        def r = script.handleGateway('hub_manage_dashboards', 'hub_list_dashboards', [id: '700'])
 
         then:
         r.type == 'legacy'
@@ -2050,7 +2158,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         captureFormPosts()
 
         when:
-        def resp = mcpDriver.callTool('hub_update_dashboard', [dashboardId: '700', name: 'Envelope'])
+        def resp = mcpDriver.callTool('hub_update_dashboard', [id: '700', name: 'Envelope'])
 
         then:
         def inner = mcpDriver.parseInner(resp)

@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 115 MCP tools (36 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 113 MCP tools (36 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 115 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 113 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -255,9 +255,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (115 total — 36 on tools/list)
+### MCP Tools (113 total — 36 on tools/list)
 
-The server has 115 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 113 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (13) — Always visible on tools/list
 
@@ -408,12 +408,11 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 </details>
 
 <details>
-<summary><b>hub_read_dashboards</b> (2) — Easy Dashboard reads (read-only)</summary>
+<summary><b>hub_read_dashboards</b> (1) — Easy and legacy Hubitat® Dashboard reads (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_dashboards` | List Easy Dashboards (id, name, tile/theme config). Optional `pinToken` if the hub requires it |
-| `hub_get_dashboard` | Get one Easy Dashboard's full config by id (list-then-filter) |
+| `hub_list_dashboards` | List Easy and legacy Hubitat® Dashboards (id, name, type), or pass `id` to read one dashboard in full (Easy config, or a legacy dashboard's devices and tile layout) |
 
 </details>
 
@@ -644,18 +643,16 @@ The **Developer Mode** pattern — for LLM-agent and CI/CD pipelines that need t
 </details>
 
 <details>
-<summary><b>hub_manage_dashboards</b> (6) — Easy Dashboard CRUD</summary>
+<summary><b>hub_manage_dashboards</b> (4) — Easy and legacy Hubitat® Dashboard management</summary>
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_dashboards` | List Easy Dashboards (id, name, tile/theme config). Optional `pinToken` if the hub requires it (also in `hub_read_dashboards`) |
-| `hub_get_dashboard` | Get one Easy Dashboard's full config by id (list-then-filter; also in `hub_read_dashboards`) |
-| `hub_create_dashboard` | Create an Easy Dashboard from `name` + `deviceIds` (≥1) plus tile toggles, navigation, theme, and PINs |
-| `hub_update_dashboard` | Replace an Easy Dashboard's config WHOLESALE by id (no server-side read-merge — pass the full desired config; read it first with `hub_get_dashboard`) |
-| `hub_delete_dashboard` | Permanently delete an Easy Dashboard by id (devices are not deleted; `confirm=true` + recent backup) |
-| `hub_clone_dashboard` | Clone an Easy Dashboard into a new one (clone-by-value) |
+| `hub_list_dashboards` | List Easy and legacy Hubitat® Dashboards, or pass `id` to read one in full (also in `hub_read_dashboards`) |
+| `hub_create_dashboard` | Create an Easy Dashboard from `name` + `deviceIds` (≥1) plus tile toggles, navigation, theme, and PINs, or an empty legacy one (`type='legacy'`); `sourceId` copies an existing dashboard by value |
+| `hub_update_dashboard` | Update by `id`: an Easy Dashboard's config is replaced WHOLESALE (read it first with `hub_list_dashboards(id)`); a legacy dashboard's name, authorized devices, or tile layout (wholesale or granular tile ops) |
+| `hub_delete_dashboard` | Permanently delete an Easy or legacy dashboard by `id` (devices are not deleted; `confirm=true` + recent backup) |
 
-Easy Dashboards are the hub's touch-friendly device dashboards (classic child apps of the Easy Dashboard Parent). The list endpoint may be `pinToken`-gated on some hubs (an unexpectedly-empty list is the tell).
+Easy Dashboards are the hub's touch-friendly device dashboards (classic child apps of the Easy Dashboard Parent); legacy Hubitat® Dashboards are the classic tile-grid dashboards.
 
 </details>
 
