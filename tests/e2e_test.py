@@ -5475,8 +5475,8 @@ class TestRunner:
         return None
 
     def _read_dashboard(self, dash_id: str, gateway: str = "hub_manage_dashboards"):
-        """One dashboard in full: hub_list_dashboards with an id."""
-        return self.client.call_tool(gateway, {"tool": "hub_list_dashboards", "args": {"id": dash_id}})
+        """One dashboard in full: hub_get_dashboard."""
+        return self.client.call_tool(gateway, {"tool": "hub_get_dashboard", "args": {"id": dash_id}})
 
     def _dashboard_id_present(self, dash_id: str) -> bool:
         """True iff a dashboard with this specific installedAppId is on the hub.
@@ -5528,29 +5528,33 @@ class TestRunner:
             raise SkipTest("dashboard created but not listable (pinToken likely required for /dashboard/all)")
         self.created_dashboard_ids.append(dash_id)
 
-        # READ back one dashboard: hub_list_dashboards with an id, through the pure-read gateway.
+        # READ back one dashboard with hub_get_dashboard, through the pure-read gateway.
         got = self._read_dashboard(dash_id, "hub_read_dashboards")
-        assert isinstance(got, dict), f"hub_list_dashboards(id) returned non-dict: {got}"
+        assert isinstance(got, dict), f"hub_get_dashboard returned non-dict: {got}"
         assert got.get("id") == dash_id and got.get("name") == dash_name, f"dashboard id/name mismatch: {got}"
-        assert "dashboards" not in got, f"hub_list_dashboards(id) returned the list instead of the dashboard: {got}"
         # The read reaches the hub's full dashboard list (not the id-and-name fallback), so the
         # theme set on create comes back and a wholesale update can carry it.
-        assert got.get("theme") == "dark", f"hub_list_dashboards(id) lost the dashboard's theme: {got}"
+        assert got.get("theme") == "dark", f"hub_get_dashboard lost the dashboard's theme: {got}"
         # Hide passwords and credentials masks the PIN in the read.
-        assert got.get("dashboardPin") == "***redacted (password)***", f"hub_list_dashboards(id) returned the PIN in clear: {got}"
+        assert got.get("dashboardPin") == "***redacted (password)***", f"hub_get_dashboard returned the PIN in clear: {got}"
         listed_all = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})
         assert listed_all.get("source") == "dashboard-all", \
             f"hub_list_dashboards fell back to the child-app list: {listed_all.get('source')} {listed_all.get('note')}"
 
         # UPDATE (wholesale): flip a tile toggle and confirm it took -- the U in the CRUD cycle.
         # The full config read above is what makes the wholesale round-trip possible.
+        # The update carries the FULL config just read (theme, tiles, navigation, both PINs), as the
+        # documented read-then-wholesale-update flow does; only showClockTile changes.
         new_clock = not bool(got.get("showClockTile"))
         upd_devices = [str(x) for x in (got.get("deviceIds") or [switch_id])]
+        upd_options = {k: got[k] for k in ("showModeTile", "showClockTile", "showCalendarTile", "showHSMTile",
+                                           "showEdit", "showNavigation", "showTutorial", "navigationSelection",
+                                           "theme", "dashboardPin", "hsmPin") if k in got}
+        upd_options["showClockTile"] = new_clock
         uw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_update_dashboard",
-                "args": {"id": dash_id, "name": dash_name, "deviceIds": upd_devices,
-                         "options": {"showClockTile": new_clock, "dashboardPin": got.get("dashboardPin")}}}),
+                "args": {"id": dash_id, "name": dash_name, "deviceIds": upd_devices, "options": upd_options}}),
             lambda: bool((self._read_dashboard(dash_id) or {}).get("showClockTile")) == new_clock,
             "update dashboard",
         )
@@ -5660,7 +5664,7 @@ class TestRunner:
 
         # READ back: a legacy dashboard carries type="legacy" and a nested layout {tiles:[...], ...}.
         got = self._read_dashboard(dash_id)
-        assert isinstance(got, dict), f"hub_list_dashboards(id, legacy) returned non-dict: {got}"
+        assert isinstance(got, dict), f"hub_get_dashboard(legacy) returned non-dict: {got}"
         assert "accessToken" not in json.dumps(got), f"the legacy read leaked the dashboard's access token: {got}"
         assert got.get("type") == "legacy", f"expected a legacy dashboard, got: {got}"
         layout = got.get("layout")
@@ -5705,14 +5709,16 @@ class TestRunner:
             copy_id = str(pw["evidence"])
         else:
             resp = pw["response"]
-            if isinstance(resp, dict) and resp.get("id"):
+            if isinstance(resp, dict) and resp.get("id") and str(resp["id"]) != dash_id:
                 self.created_dashboard_ids.append(str(resp["id"]))
             assert isinstance(resp, dict) and resp.get("success"), f"hub_create_dashboard(sourceId, legacy) failed: {resp}"
             assert resp.get("type") == "legacy", f"legacy copy result is not legacy: {resp}"
-            copy_id = str(resp["id"])
+            copy_id = str(resp.get("id") or "")
+        assert copy_id and copy_id != dash_id, f"the legacy copy has no new id (got {copy_id!r}, source {dash_id})"
         if copy_id not in self.created_dashboard_ids:
             self.created_dashboard_ids.append(copy_id)
         copied = self._read_dashboard(copy_id)
+        assert isinstance(copied, dict) and copied.get("name") == copy_name, f"legacy copy name mismatch: {copied}"
         clayout = copied.get("layout") if isinstance(copied, dict) else None
         assert isinstance(clayout, dict) and any((t or {}).get("template") == "clock" for t in (clayout.get("tiles") or [])), \
             f"the legacy copy did not carry the source's clock tile: {copied}"

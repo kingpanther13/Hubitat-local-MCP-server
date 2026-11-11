@@ -1489,17 +1489,19 @@ Read the current mesh variable state (shared/linked/available lists) with `hub_g
 
 ## Dashboards
 
-Reference for the dashboard tools (hub_list_dashboards, hub_create_dashboard, hub_update_dashboard, hub_delete_dashboard). Every dashboard tool takes the dashboard's `id` from `hub_list_dashboards`. They cover TWO kinds of dashboard, distinguished by the `type` field every tool reports:
+Reference for the dashboard tools (hub_list_dashboards, hub_get_dashboard, hub_create_dashboard, hub_update_dashboard, hub_delete_dashboard). The single-dashboard tools take the dashboard's `id` from `hub_list_dashboards`. They cover TWO kinds of dashboard, distinguished by the `type` field every tool reports:
 
 - **Easy Dashboard** (`type: "easy"`) — the modern touch-friendly device dashboard: a device list plus tile toggles, navigation, theme, and optional PINs. Config is replaced wholesale.
 - **Legacy Hubitat® Dashboard** (`type: "legacy"`) — the classic, richly-customizable dashboard app: an explicit tile grid you lay out yourself (each tile's position, size, template, plus grid colors and fonts). Edited via a full layout replace or granular tile ops.
 
 ### hub_list_dashboards
 
-Read-only.
+Read-only; each entry carries `id`, `name`, and `type`. Easy entries also carry their tile/theme config. A list built from the dashboard parents' child apps (when the hub's own list is unreadable) carries id + name + type only; `partial: true` marks a list that may be missing dashboards.
 
-- **Without `id`** — every dashboard: `id`, `name`, `type`. Easy entries also carry their tile/theme config.
-- **With `id`** — that one dashboard in full. Easy: tiles, navigation, theme, devices, and PINs. Legacy: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). This is the read `hub_update_dashboard` takes straight back.
+### hub_get_dashboard
+
+Read-only. For an Easy Dashboard: tiles, navigation, theme, devices, and PINs. For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). This is the read `hub_update_dashboard` takes straight back.
+
 - PINs read `***redacted (password)***` while Hide passwords and credentials is on; passing that back to `hub_update_dashboard` keeps the stored PIN.
 - A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
 
@@ -1524,7 +1526,7 @@ Write op. `type` selects the kind: `easy` (default) or `legacy`.
 Update by id; the behavior depends on the dashboard's kind.
 
 **Easy Dashboard** — wholesale config replace:
-- **Read `hub_list_dashboards(id)` first** and pass the FULL config back; this is a wholesale replace, not a partial patch. `name` and `deviceIds` (>=1) are required; any omitted field reverts to its default, except an omitted PIN, which is read and re-sent (the result flags `pinPreserveFailed` when it could not be read).
+- **Read `hub_get_dashboard` first** and pass the FULL config back; this is a wholesale replace, not a partial patch. `name` and `deviceIds` (>=1) are required; any omitted field reverts to its default, except an omitted PIN, which is read and re-sent (the result flags `pinPreserveFailed` when it could not be read).
 - `options`: same keys as `hub_create_dashboard.options`.
 - Passing any legacy-only arg (`layout`, `setOptions`, `addTiles`, `updateTiles`, `removeTileIds`) at an Easy Dashboard is rejected.
 
@@ -1532,7 +1534,7 @@ Update by id; the behavior depends on the dashboard's kind.
 - `name` — renames the dashboard's app label.
 - `deviceIds` — wholesale-replaces the authorized-device list.
 - Layout edits are EITHER `layout` OR the granular ops, never both:
-  - `layout` — a full layout object (as returned by `hub_list_dashboards(id)`), replaced wholesale.
+  - `layout` — a full layout object (as returned by `hub_get_dashboard`), replaced wholesale.
   - Granular ops — `removeTileIds`, `updateTiles`, `addTiles`, `setOptions`. They apply in that fixed order in ONE save: removals → updates → adds → options. All validation runs before the save, so a bad op leaves the layout untouched.
 - Retry-safe semantics: `removeTileIds` skips an id that is already gone (with a warning), and `addTiles` skips a tile identical to an existing one (with a warning), so a retried call cannot stack duplicates. An `updateTiles` entry for an unknown tile id throws.
 - The `options` arg does NOT apply to legacy — pass grid/color/font fields via `setOptions` instead.

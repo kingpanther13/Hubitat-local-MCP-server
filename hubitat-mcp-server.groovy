@@ -164,11 +164,10 @@ definition(
     singleInstance: true
 )
 
-// Dashboard CRUD tools (hub_list_dashboards / get / create / update / delete / clone), covering both
+// Dashboard tools (hub_list_dashboards / get / create (incl. copy) / update / delete), covering both
 // Easy Dashboards and legacy Hubitat® Dashboards, are implemented in the McpDashboardsLib library
-// (libraries/mcp-dashboards-lib.groovy), delivered to real hubs via the required HPM bundle (issue
-// #209 modularization). Gateway entries + dispatch cases stay in this file; defs + impls + per-tool
-// metadata live in the library.
+// (libraries/mcp-dashboards-lib.groovy, inlined into the shipped app by tools/build-release-app.py).
+// Gateway entries + dispatch cases stay in this file; defs + impls + per-tool metadata live in the library.
 #include mcp.McpDashboardsLib
 
 // issue #209 modularization: room-management tool implementations live in the McpRoomsLib
@@ -6081,29 +6080,33 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_dashboards: [
-            description: "Manage Hubitat dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards: list or read one, create or copy, update, and delete. Easy update REPLACES the config wholesale (read it first with hub_list_dashboards(id)); legacy update edits name, authorized devices, or the tile layout (grid, background, colors) either wholesale or via granular tile ops. Delete is destructive (confirm + recent backup). Reads are also in hub_read_dashboards.",
-            tools: ["hub_list_dashboards", "hub_create_dashboard", "hub_update_dashboard", "hub_delete_dashboard"],
+            description: "Manage Hubitat dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards: list, view, create or copy, update, and delete. Easy update REPLACES the config wholesale (read it first with hub_get_dashboard); legacy update edits name, authorized devices, or the tile layout (grid, background, colors) either wholesale or via granular tile ops. Delete is destructive (confirm + recent backup). Reads are also in hub_read_dashboards.",
+            tools: ["hub_list_dashboards", "hub_get_dashboard", "hub_create_dashboard", "hub_update_dashboard", "hub_delete_dashboard"],
             summaries: [
-                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type), or read one in full. Args: id?",
+                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). No args",
+                hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: id",
                 hub_create_dashboard: "Create an Easy or empty legacy dashboard, or copy one. Args: name, type?, deviceIds, options? | sourceId, name?",
                 hub_update_dashboard: "Update by id: Easy wholesale, or legacy name/deviceIds/layout (or tile ops). Args: id, name?, deviceIds?, options?/layout?/addTiles?/updateTiles?/removeTileIds?/setOptions?",
                 hub_delete_dashboard: "Permanently delete an Easy or legacy dashboard (DESTRUCTIVE). Args: id, confirm=true"
             ],
             searchHints: [
-                hub_list_dashboards: "list show view read inspect easy legacy hubitat dashboards dashboard tiles layout grid template config panels touch UI screen wall tablet",
+                hub_list_dashboards: "list show easy legacy hubitat dashboards dashboard tiles panels touch UI screen wall tablet",
+                hub_get_dashboard: "view read inspect easy legacy hubitat dashboard tiles layout grid template config one",
                 hub_create_dashboard: "add new copy duplicate clone easy legacy hubitat dashboard tiles devices layout template panel touch screen wall tablet build",
                 hub_update_dashboard: "edit modify change replace easy legacy hubitat dashboard tile layout grid background color move resize template devices theme navigation config",
                 hub_delete_dashboard: "remove delete destroy easy legacy hubitat dashboard panel tiles"
             ]
         ],
         hub_read_dashboards: [
-            description: "Read-only dashboard inspection: list dashboards (Easy and legacy Hubitat®) or read one dashboard's full config by id -- Easy tiles/navigation/theme/devices, or a legacy dashboard's authorized devices and tile layout (grid, colors). Create/copy/update/delete live in hub_manage_dashboards.",
-            tools: ["hub_list_dashboards"],
+            description: "Read-only dashboard inspection: list dashboards (Easy and legacy Hubitat®) and view one dashboard's full config -- Easy tiles/navigation/theme/devices, or a legacy dashboard's authorized devices and tile layout (grid, colors). Create/copy/update/delete live in hub_manage_dashboards.",
+            tools: ["hub_list_dashboards", "hub_get_dashboard"],
             summaries: [
-                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type), or read one in full. Args: id?"
+                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). No args",
+                hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: id"
             ],
             searchHints: [
-                hub_list_dashboards: "list show view read inspect easy legacy hubitat dashboards dashboard tiles layout grid template config panels touch UI screen wall tablet read"
+                hub_list_dashboards: "list show easy legacy hubitat dashboards dashboard tiles panels touch UI screen wall tablet read",
+                hub_get_dashboard: "view read inspect easy legacy hubitat dashboard tiles layout grid template config one read"
             ]
         ]
     ]
@@ -6363,7 +6366,7 @@ def getToolDisplayMeta() {
         hub_read_rooms: [title: "Read Rooms", summary: "Read-only room queries: list rooms and room details."],
         hub_read_rules: [title: "Read Rules", summary: "Read-only rule introspection: custom rules, Rule Machine rules, Visual Rules, rule health."],
         hub_read_variables: [title: "Read Variables", summary: "Read-only hub-variable queries: list, get, recent changes."],
-        hub_read_dashboards: [title: "Read Dashboards", summary: "Read-only queries for Easy and legacy Hubitat® Dashboards: list and read one config."],
+        hub_read_dashboards: [title: "Read Dashboards", summary: "Read-only queries for Easy and legacy Hubitat® Dashboards: list and view config."],
         hub_manage_custom_rules: [title: "Manage Custom Rules", summary: "Create, update, delete, test, export, import, and clone custom-engine rules."],
         hub_manage_devices: [title: "Manage Devices", summary: "Control devices and update device properties, plus device queries."],
         hub_manage_variables: [title: "Manage Variables", summary: "Create, set, and delete hub variables and their connectors."],
@@ -6378,7 +6381,7 @@ def getToolDisplayMeta() {
         hub_manage_rule_machine: [title: "Manage Rule Machine", summary: "Author, trigger, pause, inspect, and delete Visual Rules Builder and Rule Machine rules."],
         hub_manage_native_rules_and_apps: [title: "Manage Native Rules and Apps", summary: "Runtime control of Rule Machine rules plus create, edit, clone, export, import, and delete classic native apps."],
         hub_manage_mcp: [title: "Manage MCP Server", summary: "Self-administer the MCP app's own settings (Developer Mode)."],
-        hub_manage_dashboards: [title: "Manage Dashboards", summary: "List, read, create, copy, update, and delete Easy and legacy Hubitat® Dashboards."]
+        hub_manage_dashboards: [title: "Manage Dashboards", summary: "List, view, create, copy, update, and delete Easy and legacy Hubitat® Dashboards."]
     ])
     return _toolMetadataPut("getToolDisplayMeta", meta)
 }
@@ -7194,6 +7197,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
 
         // Dashboard CRUD -- Easy (classic /dashboard/* endpoints) + legacy Hubitat® Dashboards; impl in McpDashboardsLib
         case "hub_list_dashboards": return _dashboardPublic(toolListDashboards(args))
+        case "hub_get_dashboard": return _dashboardPublic(toolGetDashboard(args))
         case "hub_create_dashboard": return _dashboardPublic(toolCreateDashboard(args))
         case "hub_update_dashboard": return _dashboardPublic(toolUpdateDashboard(args))
         case "hub_delete_dashboard": return toolDeleteDashboard(args)
@@ -12801,17 +12805,19 @@ Read the current mesh variable state (shared/linked/available lists) with `hub_g
     ,
         dashboards: '''## Dashboards
 
-Reference for the dashboard tools (hub_list_dashboards, hub_create_dashboard, hub_update_dashboard, hub_delete_dashboard). Every dashboard tool takes the dashboard's `id` from `hub_list_dashboards`. They cover TWO kinds of dashboard, distinguished by the `type` field every tool reports:
+Reference for the dashboard tools (hub_list_dashboards, hub_get_dashboard, hub_create_dashboard, hub_update_dashboard, hub_delete_dashboard). The single-dashboard tools take the dashboard's `id` from `hub_list_dashboards`. They cover TWO kinds of dashboard, distinguished by the `type` field every tool reports:
 
 - **Easy Dashboard** (`type: "easy"`) — the modern touch-friendly device dashboard: a device list plus tile toggles, navigation, theme, and optional PINs. Config is replaced wholesale.
 - **Legacy Hubitat® Dashboard** (`type: "legacy"`) — the classic, richly-customizable dashboard app: an explicit tile grid you lay out yourself (each tile's position, size, template, plus grid colors and fonts). Edited via a full layout replace or granular tile ops.
 
 ### hub_list_dashboards
 
-Read-only.
+Read-only; each entry carries `id`, `name`, and `type`. Easy entries also carry their tile/theme config. A list built from the dashboard parents' child apps (when the hub's own list is unreadable) carries id + name + type only; `partial: true` marks a list that may be missing dashboards.
 
-- **Without `id`** — every dashboard: `id`, `name`, `type`. Easy entries also carry their tile/theme config.
-- **With `id`** — that one dashboard in full. Easy: tiles, navigation, theme, devices, and PINs. Legacy: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). This is the read `hub_update_dashboard` takes straight back.
+### hub_get_dashboard
+
+Read-only. For an Easy Dashboard: tiles, navigation, theme, devices, and PINs. For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). This is the read `hub_update_dashboard` takes straight back.
+
 - PINs read `***redacted (password)***` while Hide passwords and credentials is on; passing that back to `hub_update_dashboard` keeps the stored PIN.
 - A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
 
@@ -12836,7 +12842,7 @@ Write op. `type` selects the kind: `easy` (default) or `legacy`.
 Update by id; the behavior depends on the dashboard's kind.
 
 **Easy Dashboard** — wholesale config replace:
-- **Read `hub_list_dashboards(id)` first** and pass the FULL config back; this is a wholesale replace, not a partial patch. `name` and `deviceIds` (>=1) are required; any omitted field reverts to its default, except an omitted PIN, which is read and re-sent (the result flags `pinPreserveFailed` when it could not be read).
+- **Read `hub_get_dashboard` first** and pass the FULL config back; this is a wholesale replace, not a partial patch. `name` and `deviceIds` (>=1) are required; any omitted field reverts to its default, except an omitted PIN, which is read and re-sent (the result flags `pinPreserveFailed` when it could not be read).
 - `options`: same keys as `hub_create_dashboard.options`.
 - Passing any legacy-only arg (`layout`, `setOptions`, `addTiles`, `updateTiles`, `removeTileIds`) at an Easy Dashboard is rejected.
 
@@ -12844,7 +12850,7 @@ Update by id; the behavior depends on the dashboard's kind.
 - `name` — renames the dashboard's app label.
 - `deviceIds` — wholesale-replaces the authorized-device list.
 - Layout edits are EITHER `layout` OR the granular ops, never both:
-  - `layout` — a full layout object (as returned by `hub_list_dashboards(id)`), replaced wholesale.
+  - `layout` — a full layout object (as returned by `hub_get_dashboard`), replaced wholesale.
   - Granular ops — `removeTileIds`, `updateTiles`, `addTiles`, `setOptions`. They apply in that fixed order in ONE save: removals → updates → adds → options. All validation runs before the save, so a bad op leaves the layout untouched.
 - Retry-safe semantics: `removeTileIds` skips an id that is already gone (with a warning), and `addTiles` skips a tile identical to an existing one (with a warning), so a retried call cannot stack duplicates. An `updateTiles` entry for an unknown tile id throws.
 - The `options` arg does NOT apply to legacy — pass grid/color/font fields via `setOptions` instead.

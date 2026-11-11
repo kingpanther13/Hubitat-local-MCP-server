@@ -432,6 +432,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         'non-list children'    | '{"apps":[{"data":{"id":42,"type":"Easy Dashboard Parent"},"children":{}}]}'
         'missing app type'     | '{"apps":[{"data":{"id":42}}]}'
         'blank protected type' | '{"apps":[{"data":{"id":42,"type":""}}]}'
+        'whitespace protected type' | '{"apps":[{"data":{"id":42,"type":"   "}}]}'
         'empty app data'       | '{"apps":[{"data":{}}]}'
         'invalid app ID'       | '{"apps":[{"id":"bad","type":"Easy Dashboard Parent"}]}'
     }
