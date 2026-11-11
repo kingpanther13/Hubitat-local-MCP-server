@@ -123,7 +123,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         settingsMap.useGateways = true
 
         when:
-        def response = mcpDriver.callTool('hub_manage_devices', [tool: 'hub_delete_room', args: [room: 'x']])
+        def response = mcpDriver.callTool('hub_manage_devices', [tool: 'hub_delete_room', args: [id: 'x']])
 
         then: "the gateway 'Unknown tool' refusal stands alone -- no resolved-sub-tool guide pointer"
         response.error.code == -32602

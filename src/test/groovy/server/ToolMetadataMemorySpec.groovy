@@ -44,13 +44,13 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         where:
         method                       | mutate
         'getGatewayConfig'           | { it.hub_manage_rooms.tools.clear() }
-        'getToolDisplayMeta'         | { it.hub_get_room.title = 'poisoned' }
+        'getToolDisplayMeta'         | { it.hub_list_rooms.title = 'poisoned' }
         'getReadOnlyToolNames'        | { it.clear() }
         'getIdempotentWriteToolNames' | { it.clear() }
         'getIdempotentToolNames'      | { it.clear() }
         'getOpenWorldToolNames'       | { it.clear() }
         'getDeveloperModeOnlyToolNames' | { it.clear() }
-        'requiredParamsByTool'       | { it.hub_get_room.clear() }
+        'requiredParamsByTool'       | { it.hub_delete_room.clear() }
     }
 
     def "warm visibility uses tool names without rebuilding definitions and honors changed settings"() {
@@ -61,15 +61,15 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
 
         expect:
         script.getHiddenToolNames().contains('hub_create_room')
-        !script.getHiddenToolNames().contains('hub_get_room')
+        !script.getHiddenToolNames().contains('hub_list_rooms')
 
         when:
         settingsMap.enableWrite = true
-        settingsMap.disabled_tools = ['hub_get_room']
+        settingsMap.disabled_tools = ['hub_list_rooms']
 
         then:
         !script.getHiddenToolNames().contains('hub_create_room')
-        script.getHiddenToolNames().contains('hub_get_room')
+        script.getHiddenToolNames().contains('hub_list_rooms')
     }
 
     def "metadata invalidation refreshes required names on a same-version deployment"() {

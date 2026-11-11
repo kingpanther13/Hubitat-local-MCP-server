@@ -8,7 +8,7 @@
 
 **Dedicated test-hub prompt:** "Create a disposable test device, inspect its preferences and configuration, and verify boolean, numeric, text and enum changes using an independent native read. Restore each original value and verify restoration, then remove only the device and driver you created. Leave every existing device and automation unchanged."
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 115 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 114 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -826,7 +826,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_manage_rooms` → `hub_list_rooms`.
 
-### T28 — Discover hub_get_room (hub_manage_rooms)
+### T28 — Discover hub_list_rooms with id (hub_manage_rooms)
 
 ```json
 {
@@ -835,7 +835,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_rooms` → `hub_get_room`.
+**Expected**: Discovers `hub_manage_rooms` → `hub_list_rooms(id=<that room's id>)`, which returns the room's devices with labels and current states.
 
 ### T29 — Discover hub_create_room (hub_manage_rooms)
 
@@ -858,7 +858,19 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_rooms` → `hub_update_room`.
+**Expected**: Discovers `hub_manage_rooms` → `hub_update_room(id=<room id>, name='BAT Rename Done', confirm=true)`; the result carries `previousName`.
+
+### T30b — Set a room's devices (hub_update_room deviceIds)
+
+```json
+{
+  "setup_prompt": "Create a room called 'BAT Device Room' with no devices, and create a virtual switch called 'BAT Room Switch'.",
+  "test_prompt": "Put 'BAT Room Switch' in the room 'BAT Device Room', then show me what's in that room.",
+  "teardown_prompt": "Delete the room 'BAT Device Room' and the virtual switch 'BAT Room Switch'."
+}
+```
+
+**Expected**: `hub_update_room(id=<room id>, deviceIds=[<switch id>], confirm=true)` (the room's full list), then `hub_list_rooms(id=<room id>)` lists the switch. The result carries `deviceIds` and `deviceCount: 1`; the switch's previous room (if any) no longer lists it.
 
 ### T31 — Discover hub_delete_room (hub_manage_rooms)
 
@@ -869,7 +881,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_rooms` → `hub_delete_room`.
+**Expected**: Discovers `hub_manage_rooms` → `hub_list_rooms` for the room id → `hub_delete_room(id=<room id>, confirm=true)`.
 
 ### T35 — Discover hub_get_info (core)
 
@@ -1612,7 +1624,7 @@ These test correct routing when the request is ambiguous.
 
 ```json
 {
-  "test_prompt": "Call hub_manage_rooms with tool='hub_get_room' but don't specify which room. Report what happens."
+  "test_prompt": "Call hub_manage_rooms with tool='hub_update_room' but don't specify which room. Report what happens."
 }
 ```
 
@@ -2117,7 +2129,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_get_room`.
+**Expected**: `hub_list_rooms(id=<room id>)`.
 **Equivalent to**: T28
 
 #### T232 — Add a new room
@@ -2592,7 +2604,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_list_rooms` → `hub_create_room` → `hub_get_room` → `hub_update_room` → `hub_delete_room`.
+**Expected**: `hub_list_rooms` → `hub_create_room` → `hub_list_rooms(id)` → `hub_update_room` → `hub_delete_room`.
 **Equivalent to**: T82
 
 #### T298 — Full diagnostic workup
@@ -2762,19 +2774,19 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 115 |
+| Total distinct tools in codebase | 114 |
 
 With Developer Mode on, `hub_update_package` joins the flat core tools, so a Developer Mode hub lists one more.
 
-**8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (6), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
+**8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (6), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (1), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
-**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (11), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (11), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (4), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 115 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 114 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -3158,9 +3170,9 @@ Run on a dedicated test hub. Record the original Developer Mode, logging level a
 
 On an authorized test hub, switch to flat mode and call `hub_list_rooms` directly; a gateway call must be refused.
 Return to gateway mode and verify `hub_read_rooms(tool='hub_list_rooms')` works. Avoid the full flat tools/list fetch.
-Call `hub_read_rooms(tool='hub_get_room', args={})` twice, then search for `get room`.
-Both invalid calls must identify `room` as required without `FLAT_TRIM` text; search must still find
-`hub_get_room`. Repeat the existing Read/Write, Advanced override, and BPS gate scenarios after warming
+Call `hub_read_files(tool='hub_read_file', args={})` twice, then search for `read file`.
+Both invalid calls must identify `fileName` as required without `FLAT_TRIM` text; search must still find
+`hub_read_file`. Repeat the existing Read/Write, Advanced override, and BPS gate scenarios after warming
 the catalog: settings must take effect immediately despite cached metadata. Preserve the original settings.
 This scenario requires no room creation or device command.
 

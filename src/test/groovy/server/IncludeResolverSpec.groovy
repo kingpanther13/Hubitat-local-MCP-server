@@ -162,7 +162,7 @@ class IncludeResolverSpec extends Specification {
 
         then: 'the room tool impls are inlined and both the directive and the library() decl are stripped'
         out.contains('def toolListRooms')
-        out.contains('def toolRenameRoom')
+        out.contains('def toolUpdateRoom')
         !out.contains('#include')
         !out.contains('library(name: "McpRoomsLib"')
     }

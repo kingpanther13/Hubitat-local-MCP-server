@@ -70,7 +70,7 @@ class GatewayToggleSpec extends ToolSpecBase {
 
         and: 'every previously-proxied sub-tool is now top-level'
         names.contains('hub_list_rooms')
-        names.contains('hub_get_room')
+        names.contains('hub_update_room')
         names.contains('hub_list_files')
         names.contains('hub_get_logs')
         names.contains('hub_get_radio_details')
@@ -140,7 +140,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         subTool << [
             'hub_delete_custom_rule', 'hub_test_custom_rule', 'hub_export_custom_rule', 'hub_import_custom_rule', 'hub_clone_custom_rule',
             'hub_list_variables', 'hub_get_variable', 'hub_set_variable', 'hub_delete_variable',
-            'hub_list_rooms', 'hub_get_room', 'hub_create_room', 'hub_delete_room', 'hub_update_room',
+            'hub_list_rooms', 'hub_create_room', 'hub_delete_room', 'hub_update_room',
             'hub_reboot', 'hub_shutdown', 'hub_delete_device',
             'hub_list_apps', 'hub_list_drivers', 'hub_get_source',
             'hub_list_backups', 'hub_get_backup',

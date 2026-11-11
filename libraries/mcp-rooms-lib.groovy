@@ -1,43 +1,10 @@
-library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room management tool implementations for the MCP Rule Server (hub_list_rooms/hub_get_room/hub_create_room/hub_delete_room/hub_update_room); #include'd by the main app. Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.")
+library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room tool implementations for the MCP Rule Server (hub_list_rooms/hub_create_room/hub_update_room/hub_delete_room); #include'd by the main app. Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.")
 
+// Without id: every room's summary. With id: that room's devices, read from the Devices page.
 def toolListRooms(args = null) {
-    def rooms = getRooms()
-    if (!rooms) {
-        return [rooms: [], count: 0, message: "No rooms configured on this hub."]
-    }
-    def roomList = rooms.findAll { it != null }.collect { room ->
-        [
-            id: room.id?.toString(),
-            name: room.name,
-            deviceCount: room.deviceIds?.size() ?: 0,
-            deviceIds: room.deviceIds?.collect { it.toString() } ?: []
-        ]
-    }.sort { it.name }
-    def cursor = args?.cursor
-    def paged = _paginateList(roomList, cursor, 100, "hub_list_rooms")
-    def result = [rooms: paged.page, count: paged.page.size()]
-    if (cursor != null) {
-        result.total = roomList.size()
-        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
-    }
-    return result
-}
-
-def toolGetRoom(String roomIdentifier) {
-    if (!roomIdentifier) throw new IllegalArgumentException("Room name or ID is required")
-
-    def rooms = getRooms()
-    if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
-
-    // Find room by ID or name (case-insensitive)
-    def room = rooms.find { it?.id?.toString() == roomIdentifier } ?:
-               rooms.find { it?.name?.toLowerCase() == roomIdentifier.toLowerCase() }
-
-    if (!room) {
-        def available = rooms.collect { it?.name }.sort()
-        throw new IllegalArgumentException("Room '${roomIdentifier}' not found. Available rooms: ${available.join(', ')}")
-    }
-
+    if (args?.id == null) return _listRoomSummaries(args?.cursor)
+    if (args.cursor != null) throw new IllegalArgumentException("cursor pages the room list; omit it when passing id.")
+    def room = _requireRoom(args.id).room
     List roomIds = (room.deviceIds ?: []).collect { it.toString() }
     Map pageById = [:]
     if (roomIds) {
@@ -68,7 +35,6 @@ def toolGetRoom(String roomIdentifier) {
         if ("currentStates" in rec.missingFields) devInfo.metadataUnavailable = true
         devices << devInfo
     }
-
     return [
         id: room.id?.toString(),
         name: room.name,
@@ -77,192 +43,157 @@ def toolGetRoom(String roomIdentifier) {
     ]
 }
 
-def toolCreateRoom(args) {
-    requireDestructiveConfirm(args.confirm)
-    if (!args.name?.trim()) {
-        throw new IllegalArgumentException("Room name is required")
-    }
-
-    def roomName = args.name.trim()
-
-    // Check for duplicate name
+private Map _listRoomSummaries(cursor) {
     def rooms = getRooms()
-    if (rooms?.find { it?.name?.toLowerCase() == roomName.toLowerCase() }) {
-        throw new IllegalArgumentException("A room named '${roomName}' already exists")
+    if (!rooms) {
+        return [rooms: [], count: 0, message: "No rooms configured on this hub."]
     }
+    def roomList = rooms.findAll { it != null }.collect { room ->
+        [
+            id: room.id?.toString(),
+            name: room.name,
+            deviceCount: room.deviceIds?.size() ?: 0,
+            deviceIds: room.deviceIds?.collect { it.toString() } ?: []
+        ]
+    }.sort { it.name }
+    def paged = _paginateList(roomList, cursor, 100, "hub_list_rooms")
+    def result = [rooms: paged.page, count: paged.page.size()]
+    if (cursor != null) {
+        result.total = roomList.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
+    return result
+}
 
-    // Build device IDs list. Validate each element before coercing so a non-numeric id is a clean
-    // IllegalArgumentException (an isError validation result) naming the offending value, not an opaque NumberFormatException.
-    def deviceIds = (args.deviceIds ?: []).collect {
-        def s = it?.toString()?.trim()
+// getRooms() is the in-process room list, not a hub request. The hub's /room/save answers success
+// for an unknown roomId without changing anything, so every write checks the id here first.
+private Map _requireRoom(id) {
+    String rid = id?.toString()?.trim()
+    if (!rid) throw new IllegalArgumentException("id is required: the room id from hub_list_rooms.")
+    def rooms = (getRooms() ?: []).findAll { it != null }
+    def room = rooms.find { it.id?.toString() == rid }
+    if (!room) throw new IllegalArgumentException("No room has id '${rid}'. Call hub_list_rooms for room ids.")
+    return [room: room, rooms: rooms]
+}
+
+private List _roomDeviceIds(deviceIds) {
+    if (!(deviceIds instanceof List)) {
+        throw new IllegalArgumentException("deviceIds must be an array of device ids, e.g. [\"12\",\"34\"].")
+    }
+    return deviceIds.collect {
+        String s = it?.toString()?.trim()
         if (!(s ==~ /\d+/)) {
             throw new IllegalArgumentException("deviceIds must be numeric device ids; got '${it}'. Use hub_list_devices to find device ids.")
         }
         s as Integer
+    }.unique()
+}
+
+// The hub allows duplicate room names; the tools refuse them so a room name stays unambiguous.
+private void _requireUniqueRoomName(List rooms, String name, exceptId) {
+    if (rooms.find { it.name?.toLowerCase() == name.toLowerCase() && it.id?.toString() != exceptId?.toString() }) {
+        throw new IllegalArgumentException("A room named '${name}' already exists.")
     }
+}
 
-    // POST /room/save with roomId: 0 to create (Grails convention). Routed through
-    // hubInternalPostJson for the shared Hub Security cookie-refresh retry; the
-    // creation is confirmed against getRooms() below.
-    def body = [roomId: 0, name: roomName, deviceIds: deviceIds]
-    def jsonStr = groovy.json.JsonOutput.toJson(body)
-    mcpLog("debug", "room", "hub_create_room: POST /room/save body: ${jsonStr}")
+private Map _roomFailure(String error, String note) {
+    return [success: false, isError: true, error: error,
+            note: "${note} See hub_get_tool_guide(section='rooms').".toString()]
+}
 
+// One POST /room/save, the call the hub's Rooms page makes. The hub answers {roomId} on success
+// and {error} (HTTP 200) for a bad device id. Returns [roomId] or [failure: <structured error>].
+private Map _saveRoom(roomId, String name, List deviceIds, String action) {
     def parsed
     try {
-        parsed = hubInternalPostJson("/room/save", jsonStr, 30)
-    } catch (Exception httpErr) {
-        throw new RuntimeException("Failed to create room '${roomName}': ${httpErr.message}")
+        parsed = hubInternalPostJson("/room/save", groovy.json.JsonOutput.toJson([roomId: roomId, name: name, deviceIds: deviceIds]), 30)
+    } catch (Exception e) {
+        return [failure: _roomFailure("Could not ${action}: ${e.message}".toString(),
+            "The hub may still have saved it; check with hub_list_rooms before retrying.")]
     }
-    if (parsed?.error) {
-        throw new RuntimeException("Failed to create room: ${parsed.error}")
+    if (parsed instanceof Map && parsed.error) {
+        return [failure: _roomFailure("The hub refused to ${action}: ${parsed.error}".toString(),
+            "Nothing was saved. Check the device ids with hub_list_devices.")]
     }
+    def savedId = (parsed instanceof Map && !parsed._unparseable) ? parsed.roomId : null
+    if (savedId == null) {
+        String body = (parsed instanceof Map && parsed._unparseable) ? parsed.message : (parsed == null ? "an empty body" : parsed.toString().take(200))
+        return [failure: _roomFailure("The hub's answer to ${action} carried no roomId (${body}).".toString(),
+            "The save may have landed; check with hub_list_rooms before retrying.")]
+    }
+    return [roomId: savedId.toString()]
+}
 
-    // Verify creation (case-insensitive to handle any normalization)
-    def updatedRooms = getRooms()
-    def newRoom = updatedRooms?.find { it?.name?.toLowerCase() == roomName.toLowerCase() }
-    if (!newRoom) {
-        throw new RuntimeException("Room creation endpoint returned success but room '${roomName}' not found in rooms list")
-    }
+def toolCreateRoom(args) {
+    requireDestructiveConfirm(args.confirm)
+    String name = args.name?.toString()?.trim()
+    if (!name) throw new IllegalArgumentException("Room name is required")
+    List deviceIds = args.deviceIds == null ? [] : _roomDeviceIds(args.deviceIds)
+    _requireUniqueRoomName((getRooms() ?: []).findAll { it != null }, name, null)
 
-    mcpLog("info", "room", "Created room '${roomName}' (ID: ${newRoom.id})")
+    def saved = _saveRoom(0, name, deviceIds, "create room '${name}'")
+    if (saved.failure) return saved.failure
+    mcpLog("info", "room", "Created room '${name}' (ID: ${saved.roomId})")
     return [
         success: true,
-        room: [id: newRoom.id?.toString(), name: newRoom.name, deviceCount: newRoom.deviceIds?.size() ?: 0],
-        message: "Room '${roomName}' created successfully."
+        room: [id: saved.roomId, name: name, deviceCount: deviceIds.size(), deviceIds: deviceIds.collect { it.toString() }],
+        message: "Room '${name}' created."
     ]
+}
+
+def toolUpdateRoom(args) {
+    requireDestructiveConfirm(args.confirm)
+    boolean hasName = args.name != null
+    boolean hasDevices = args.deviceIds != null
+    if (!hasName && !hasDevices) throw new IllegalArgumentException("Pass name, deviceIds, or both.")
+    String newName = hasName ? args.name.toString().trim() : null
+    if (hasName && !newName) throw new IllegalArgumentException("name must not be blank.")
+    List newIds = hasDevices ? _roomDeviceIds(args.deviceIds) : null
+    Map found = _requireRoom(args.id)
+    def room = found.room
+    String roomId = room.id.toString()
+    String oldName = room.name
+    if (hasName) _requireUniqueRoomName(found.rooms, newName, roomId)
+
+    List currentIds = (room.deviceIds ?: []).collect { it as Integer }
+    String finalName = hasName ? newName : oldName
+    List finalIds = hasDevices ? newIds : currentIds
+    def saved = _saveRoom(roomId as Integer, finalName, finalIds, "update room ${roomId}")
+    if (saved.failure) return saved.failure
+
+    Map updated = [id: roomId, name: finalName]
+    if (finalName != oldName) updated.previousName = oldName
+    if (hasDevices) {
+        updated.deviceIds = finalIds.collect { it.toString() }
+        updated.deviceCount = finalIds.size()
+        List dropped = (currentIds - finalIds).collect { it.toString() }
+        if (dropped) updated.unassignedDeviceIds = dropped
+    }
+    mcpLog("info", "room", "Updated room ${roomId}: '${oldName}' -> '${finalName}'${hasDevices ? ", ${finalIds.size()} devices" : ''}")
+    return [success: true, room: updated, message: "Room '${finalName}' updated."]
 }
 
 def toolDeleteRoom(args) {
     requireDestructiveConfirm(args.confirm)
-    if (!args.room?.trim()) {
-        throw new IllegalArgumentException("Room name or ID is required")
-    }
+    def room = _requireRoom(args.id).room
+    String roomId = room.id.toString()
+    String roomName = room.name
+    int deviceCount = room.deviceIds?.size() ?: 0
 
-    def rooms = getRooms()
-    if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
-
-    def room = rooms.find { it?.id?.toString() == args.room.trim() } ?:
-               rooms.find { it?.name?.toLowerCase() == args.room.trim().toLowerCase() }
-    if (!room) {
-        def available = rooms.collect { it?.name }.sort()
-        throw new IllegalArgumentException("Room '${args.room}' not found. Available rooms: ${available.join(', ')}")
-    }
-
-    def roomId = room.id
-    def roomName = room.name
-    def deviceCount = room.deviceIds?.size() ?: 0
-    mcpLog("debug", "room", "hub_delete_room: deleting room '${roomName}' (ID: ${roomId}), ${deviceCount} devices will be unassigned")
-
-    def deleteSuccess = false
-    def deleteError = null
-
-    // Try POST /room/delete/<id> first, then GET /room/delete/<id>
-    def attempts = [
-        [desc: "POST /room/delete/${roomId}", method: "POST"],
-        [desc: "GET /room/delete/${roomId}", method: "GET"],
-    ]
-    for (def att : attempts) {
-        if (deleteSuccess) break
-        try {
-            if (att.method == "POST") {
-                // Routed through hubInternalPostJson for the shared cookie-refresh retry.
-                def parsed = hubInternalPostJson("/room/delete/${roomId}", groovy.json.JsonOutput.toJson([roomId: roomId as Integer]), 30)
-                if (parsed?.error) {
-                    throw new RuntimeException("API error: ${parsed.error}")
-                }
-                deleteSuccess = true
-            } else {
-                hubInternalGet("/room/delete/${roomId}")
-                mcpLog("debug", "room", "hub_delete_room: ${att.desc} succeeded")
-                deleteSuccess = true
-            }
-        } catch (Exception e) {
-            mcpLog("debug", "room", "hub_delete_room: ${att.desc} failed: ${e.message}")
-            deleteError = e.message
-        }
-    }
-
-    if (!deleteSuccess) {
-        throw new RuntimeException("Failed to delete room '${roomName}'. Last error: ${deleteError}")
-    }
-
-    // Verify deletion
-    def updatedRooms = getRooms()
-    def stillExists = updatedRooms?.find { it?.id?.toString() == roomId.toString() }
-    if (stillExists) {
-        throw new RuntimeException("Delete endpoint returned success but room '${roomName}' still exists")
+    // GET, as the hub's Rooms page does (POST answers 405); the hub answers an empty 200.
+    try {
+        hubInternalGet("/room/delete/${roomId}")
+    } catch (Exception e) {
+        return _roomFailure("Could not delete room '${roomName}' (${roomId}): ${e.message}".toString(),
+            "Check with hub_list_rooms whether it is gone before retrying.")
     }
 
     mcpLog("info", "room", "Deleted room '${roomName}' (ID: ${roomId}), ${deviceCount} devices unassigned")
-    def deviceWord = deviceCount == 1 ? "device" : "devices"
-    def verbForm = deviceCount == 1 ? "is" : "are"
     return [
         success: true,
-        deletedRoom: [id: roomId.toString(), name: roomName],
+        deletedRoom: [id: roomId, name: roomName],
         devicesUnassigned: deviceCount,
-        message: "Room '${roomName}' deleted. ${deviceCount} ${deviceWord} ${verbForm} now unassigned."
-    ]
-}
-
-def toolRenameRoom(args) {
-    requireDestructiveConfirm(args.confirm)
-    if (!args.room?.trim()) {
-        throw new IllegalArgumentException("Room name or ID is required")
-    }
-    if (!args.newName?.trim()) {
-        throw new IllegalArgumentException("New room name is required")
-    }
-
-    def newName = args.newName.trim()
-    def rooms = getRooms()
-    if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
-
-    def room = rooms.find { it?.id?.toString() == args.room.trim() } ?:
-               rooms.find { it?.name?.toLowerCase() == args.room.trim().toLowerCase() }
-    if (!room) {
-        def available = rooms.collect { it?.name }.sort()
-        throw new IllegalArgumentException("Room '${args.room}' not found. Available rooms: ${available.join(', ')}")
-    }
-
-    // Check for name conflict
-    if (rooms.find { it?.name?.toLowerCase() == newName.toLowerCase() && it.id != room.id }) {
-        throw new IllegalArgumentException("A room named '${newName}' already exists")
-    }
-
-    def oldName = room.name
-    def roomId = room.id
-    def deviceIds = room.deviceIds?.collect { it as Integer } ?: []
-
-    // POST /room/save with existing roomId and new name. Routed through
-    // hubInternalPostJson for the shared cookie-refresh retry; the rename is
-    // confirmed against getRooms() below.
-    def body = [roomId: roomId as Integer, name: newName, deviceIds: deviceIds]
-    def jsonStr = groovy.json.JsonOutput.toJson(body)
-    mcpLog("debug", "room", "hub_update_room: POST /room/save body: ${jsonStr}")
-
-    def parsed
-    try {
-        parsed = hubInternalPostJson("/room/save", jsonStr, 30)
-    } catch (Exception httpErr) {
-        throw new RuntimeException("Failed to rename room '${oldName}': ${httpErr.message}")
-    }
-    if (parsed?.error) {
-        throw new RuntimeException("Failed to rename room: ${parsed.error}")
-    }
-
-    // Verify rename
-    def updatedRooms = getRooms()
-    def updatedRoom = updatedRooms?.find { it?.id?.toString() == roomId.toString() }
-    if (!updatedRoom || updatedRoom.name != newName) {
-        throw new RuntimeException("Rename endpoint returned success but room name did not change")
-    }
-
-    mcpLog("info", "room", "Renamed room '${oldName}' -> '${newName}' (ID: ${roomId})")
-    return [
-        success: true,
-        room: [id: roomId.toString(), name: newName, previousName: oldName],
-        message: "Room renamed from '${oldName}' to '${newName}'."
+        message: "Room '${roomName}' deleted. ${deviceCount} ${deviceCount == 1 ? 'device is' : 'devices are'} now unassigned."
     ]
 }
 
@@ -272,63 +203,54 @@ def _getAllToolDefinitions_partRooms() {
     return [
         [
             name: "hub_list_rooms",
-            description: "List all rooms on the hub, each with its ID, name, device count, and assigned device IDs. Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only — call hub_get_room for per-device states.",
+            description: "List rooms (id, name, deviceCount, deviceIds), or read one room by id with each device's label and current states. Read-only.[[FLAT_TRIM]] A device outside the MCP device selection comes back with accessible=false and no states. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                    id: [type: "string", description: "Room id to read, e.g. \"5\". Omit to list every room."],
+                    cursor: [type: "string", description: "Opt-in list pagination (not with id). Omit for all; pass \"\" for the first page, then nextCursor (page size 100)."]
                 ]
             ]
         ],
         [
-            name: "hub_get_room",
-            description: "Get one room's details: its ID, name, and the full list of assigned devices with each device's current attribute states. Use when you need device-level detail for a single room; for a name-and-count overview of all rooms use hub_list_rooms instead. Read-only and parallel-safe.[[FLAT_TRIM]] Devices unreachable via MCP are returned with accessible=false and no states.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    room: [type: "string", description: "Room name (case-insensitive) or room ID, e.g. \"Living Room\" or \"5\""]
-                ],
-                required: ["room"]
-            ]
-        ],
-        [
             name: "hub_create_room",
-            description: "Create a new room on the hub, optionally assigning devices to it at creation.[[FLAT_TRIM]] Use when a needed room does not yet exist; to only move devices into an existing room, set the device's room with hub_update_device instead.[[/FLAT_TRIM]] Requires Write master, backup <24h, confirm=true.",
+            description: "Create a room, optionally with devices (each moves out of its current room). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Returns the new room's id. Room names must be unique. To move devices into an existing room use hub_update_room instead. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Name for the new room, e.g. \"Garage\""],
-                    deviceIds: [type: "array", description: "Optional device IDs to assign to the room at creation, e.g. [\"12\",\"34\"].", items: [type: "string"]],
+                    deviceIds: [type: "array", description: "Optional device ids, e.g. [\"12\",\"34\"].", items: [type: "string"]],
                     confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved creating this room."]
                 ],
                 required: ["name", "confirm"]
             ]
         ],
         [
-            name: "hub_delete_room",
-            description: """⚠️ DESTRUCTIVE: Permanently deletes a room. Devices become unassigned (not deleted). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]]
-
-PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]""",
+            name: "hub_update_room",
+            description: "Rename a room and/or replace its device list, by id; an omitted field keeps its value. deviceIds is the FULL list: a device left out becomes unassigned, an added one leaves its previous room. Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Start from hub_list_rooms(id). After a rename, automations or dashboards that name the room may need updating. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    room: [type: "string", description: "Room name (case-insensitive) or room ID to delete, e.g. \"Garage\" or \"5\""],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]
+                    id: [type: "string", description: "Room id, e.g. \"5\""],
+                    name: [type: "string", description: "New room name"],
+                    deviceIds: [type: "array", description: "Complete device list, e.g. [\"12\",\"34\"]; [] empties the room.", items: [type: "string"]],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved the change."]
                 ],
-                required: ["room", "confirm"]
+                required: ["id", "confirm"]
             ]
         ],
         [
-            name: "hub_update_room",
-            description: "Rename a room. Device assignments preserved.[[FLAT_TRIM]] Automations/dashboards referencing the room by name may need updating.[[/FLAT_TRIM]] Requires Write master + confirm + backup <24h.",
+            name: "hub_delete_room",
+            description: """⚠️ DESTRUCTIVE: Permanently deletes a room by id. Its devices become unassigned (not deleted). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]]
+
+PRE-FLIGHT: 1) Backup <24h 2) Verify the room with hub_list_rooms(id) 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    room: [type: "string", description: "Current room name (case-insensitive) or room ID, e.g. \"Garage\" or \"5\""],
-                    newName: [type: "string", description: "New name for the room, e.g. \"Workshop\""],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                    id: [type: "string", description: "Room id, e.g. \"5\""],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user explicitly approved the deletion."]
                 ],
-                required: ["room", "newName", "confirm"]
+                required: ["id", "confirm"]
             ]
         ]
     ]
@@ -338,30 +260,23 @@ def _readOnlyToolNames_partRooms() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Rooms (read)
-        "hub_list_rooms", "hub_get_room"
-    ]
+    return ["hub_list_rooms"]
 }
 
 def _idempotentWriteToolNames_partRooms() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Rooms
-        "hub_update_room", "hub_delete_room"
-    ]
+    // hub_update_room sets the name and device list wholesale, so a repeat lands the same state.
+    return ["hub_update_room", "hub_delete_room"]
 }
 
 def _toolDisplayMeta_partRooms() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
-        // Rooms
-        hub_list_rooms: [title: "List Rooms", summary: "List all rooms with IDs, names, and device counts."],
-        hub_get_room: [title: "Get Room Details", summary: "Get one room's details with its assigned devices."],
+        hub_list_rooms: [title: "List Rooms", summary: "List rooms, or read one room's devices and their current states."],
         hub_create_room: [title: "Create Room", summary: "Create a new room, optionally assigning devices."],
-        hub_delete_room: [title: "Delete Room", summary: "Permanently delete a room."],
-        hub_update_room: [title: "Rename Room", summary: "Rename an existing room."]
+        hub_update_room: [title: "Update Room", summary: "Rename a room or replace its device list."],
+        hub_delete_room: [title: "Delete Room", summary: "Permanently delete a room."]
     ]
 }
