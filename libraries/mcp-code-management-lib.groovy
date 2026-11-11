@@ -1137,8 +1137,74 @@ private String _codeCreateUnknownOutcomeNote(String type) {
     return "Whether the ${type} was saved is unknown. Check ${_codeListCall(type)} before retrying: a retry can create a duplicate at a new id.".toString()
 }
 
+// The hub marks up the line number in a compile error (boom on line <span id='errorLine'>1</span>).
+private String _hubMessageText(msg) {
+    String text = msg?.toString()
+    if (text == null) return null
+    return text.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").trim()
+}
+
+// A refusal that names a problem in the source: a compile error, or a missing or invalid definition.
+private boolean _isSourceErrorMessage(String msg) {
+    return msg && (msg =~ /(?i)\bline\s*\d+|startup failed|unexpected|expecting|unable to resolve|compil|syntax|cannot be empty|definition|metadata/).find()
+}
+
+// [name, namespace] from the source's definition(...) call, or null when it has no name.
+private Map _driverDefinitionName(String source) {
+    def block = (source =~ /(?s)\bdefinition\s*\((.*?)\)/)
+    if (!block.find()) return null
+    String params = block.group(1)
+    def name = (params =~ /\bname\s*:\s*(["'])(.*?)\1/)
+    if (!name.find()) return null
+    def namespace = (params =~ /\bnamespace\s*:\s*(["'])(.*?)\1/)
+    return [name: name.group(2), namespace: namespace.find() ? namespace.group(2) : null]
+}
+
+// A driver save the hub refused without a source error may still have landed: concurrent creates
+// have answered "Cannot get property 'id' on null object" for drivers that were saved. The driver
+// list, matched on the definition's name and namespace, settles it.
+private Map _settleRefusedDriverCreate(String sourceCode, String hubMsg, String sourceMode) {
+    String error = "Driver installation failed: ${hubMsg}".toString()
+    Map definition = _driverDefinitionName(sourceCode)
+    if (definition == null) return _codeCreateFailure("driver", error, _codeCreateUnknownOutcomeNote("driver"))
+    def rows
+    try {
+        def txt = hubInternalGet("/hub2/userDeviceTypes", null, 30)
+        rows = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "Driver list read after a refused create failed: ${e.message}")
+        rows = null
+    }
+    if (!(rows instanceof List)) return _codeCreateFailure("driver", error, _codeCreateUnknownOutcomeNote("driver"))
+    def matches = rows.findAll { it instanceof Map && it.name?.toString() == definition.name &&
+        (definition.namespace == null || it.namespace?.toString() == definition.namespace) }
+    String described = "'${definition.name}'${definition.namespace ? " (namespace ${definition.namespace})" : ''}".toString()
+    if (matches.isEmpty()) {
+        return _codeCreateFailure("driver", error,
+            "The hub's reply is not a source error, and no driver named ${described} is on the hub, so the driver was not saved. Retry the create.".toString())
+    }
+    if (matches.size() > 1) {
+        return _codeCreateFailure("driver", error,
+            "The hub's reply is not a source error, and ${matches.size()} drivers named ${described} are on the hub (ids ${matches*.id.join(', ')}). Check hub_list_drivers before retrying: a retry can create another duplicate.".toString())
+    }
+    def row = matches[0]
+    mcpLog("info", "hub-admin", "Driver create was refused (${hubMsg}) but driver ${row.id} named ${described} is on the hub")
+    return [
+        success: true,
+        message: "Driver installed: the hub refused the save, but a driver named ${described} is on the hub.".toString(),
+        driverId: row.id?.toString(),
+        version: row.version,
+        foundByName: true,
+        hubMessage: hubMsg,
+        sourceMode: sourceMode,
+        sourceLength: sourceCode.length(),
+        note: "The hub's reply to the save was '${hubMsg}', which is not a source error, and the driver list shows a driver with this name. Read it with hub_get_source(type='driver', id='${row.id}') to confirm it holds this source.".toString(),
+        lastBackup: formatTimestamp(state.lastBackupTimestamp)
+    ]
+}
+
 // The save response is the hub's verdict: compile errors and other refusals come back on it, so no
-// read follows. The caller has already passed requireDestructiveConfirm.
+// read follows.
 private Map _createCodeItem(String type, args) {
     Map resolved = _resolveCodeSource(args)
     String sourceCode = resolved.code
@@ -1155,17 +1221,13 @@ private Map _createCodeItem(String type, args) {
     }
 
     if (parsed instanceof Map && parsed.success == false) {
-        def hubMsg = parsed.message ?: parsed.errorMessage ?: "the hub refused the source"
+        String hubMsg = _hubMessageText(parsed.message ?: parsed.errorMessage) ?: "the hub refused the source"
         mcpLog("warn", "hub-admin", "${label} create refused: ${hubMsg}")
+        if (type == "driver" && !_isSourceErrorMessage(hubMsg)) return _settleRefusedDriverCreate(sourceCode, hubMsg, sourceMode)
         String note = type == "library" ?
-            "The source needs a library() block with name, namespace, author and description. Fix the reported issue and retry." :
-            "The hub compiles the source on save. Fix the reported issue -- a Groovy compile error, or a required definition() field (apps need a non-empty iconUrl and iconX2Url) -- and retry."
-        def failure = _codeCreateFailure(type, "${label} installation failed: ${hubMsg}".toString(), note)
-        if (_isConcurrentSaveRefusal(type, hubMsg)) {
-            failure.note = _concurrentSaveNote(type)
-            failure.retryable = true
-        }
-        return failure
+            "The source needs a library() block with name, namespace, author and description. Fix the source and retry." :
+            "Fix the source and retry."
+        return _codeCreateFailure(type, "${label} installation failed: ${hubMsg}".toString(), note)
     }
 
     def newItemId = (parsed instanceof Map && parsed.success == true) ? parsed.id?.toString() : null
@@ -1234,10 +1296,14 @@ private Map _createDriversBulk(args) {
                 entry.version = r.version
                 entry.sourceMode = r.sourceMode
                 entry.sourceLength = r.sourceLength
+                if (r.foundByName) {
+                    entry.foundByName = true
+                    entry.hubMessage = r.hubMessage
+                    entry.note = r.note
+                }
             } else {
                 entry.error = r.error ?: "Install failed"
                 if (r.note) entry.note = r.note
-                if (r.retryable) entry.retryable = true
                 if (r.lastBackup) entry.lastBackup = r.lastBackup
                 allSucceeded = false
             }
@@ -1541,7 +1607,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                 success = false
                 errorMsg = "Hub reported success but saved to ${type} id ${parsed.id} instead of the targeted id ${itemIdInt} -- a duplicate code entry may have been created. Check Apps Code / Drivers Code before retrying."
             } else if (!success) {
-                errorMsg = parsed.message ?: parsed.errorMessage ?: "hub response lacked success=true: ${parsed.toString().take(200)}"
+                errorMsg = _hubMessageText(parsed.message ?: parsed.errorMessage) ?: "hub response lacked success=true: ${parsed.toString().take(200)}"
             }
         } else if (parsed == null) {
             // null is strictly an EMPTY body (a non-JSON body comes back as the _unparseable
@@ -2092,10 +2158,40 @@ private boolean _isMissingAppBackupFailure(Exception e) {
     return e instanceof IllegalArgumentException && e.message?.contains("no source code returned")
 }
 
-private String _deleteRefusedNote(String type) {
-    if (type == "library") return "If the library is in use, remove the #include references from apps and drivers first."
-    if (type == "driver") return "If the driver is in use, switch its devices to another driver first."
-    return "If the app code is in use, remove its app instances first."
+private String _deleteInUseNote(String type) {
+    if (type == "library") return "Remove the #include references from apps and drivers first."
+    if (type == "driver") return "Switch its devices to another driver first."
+    return "Remove its app instances first."
+}
+
+// The hub refuses a delete of an item in use with a message saying so, and a delete of a driver
+// that does not exist with a bare status:false; only the first gets the in-use advice.
+private Map _deleteRefusal(String type, Integer id, hubMsg, String responseText) {
+    String listCall = _codeListCall(type)
+    Map out = [success: false, id: id, type: type, response: responseText?.take(500)]
+    String msg = hubMsg?.toString()?.trim()
+    if (!msg) {
+        out.error = "The hub refused the delete of ${type} ${id} without giving a reason. The ${type} may not exist.".toString()
+        out.note = "Check ${listCall} for the ${type} id.".toString()
+    } else if (msg =~ /(?i)\bin use\b/) {
+        out.error = msg
+        out.note = _deleteInUseNote(type)
+    } else {
+        out.error = msg
+        out.note = "Check ${listCall} for the ${type} id.".toString()
+    }
+    return out
+}
+
+// A positive Integer written as plain digits: no sign, no spaces, nothing a hub path would carry
+// verbatim.
+private Integer _deleteIdArg(rawId) {
+    String raw = rawId?.toString()
+    if (raw != null && raw ==~ /\d{1,10}/) {
+        Long value = raw as Long
+        if (value > 0 && value <= Integer.MAX_VALUE) return value as Integer
+    }
+    throw new IllegalArgumentException("id is required and must be a positive integer (got: '${rawId}')")
 }
 
 def toolDeleteItem(args) {
@@ -2104,16 +2200,13 @@ def toolDeleteItem(args) {
         throw new IllegalArgumentException("type is required and must be one of: app, driver, library")
     }
     requireDestructiveConfirm(args.confirm)
-    String id = args.id?.toString()
-    if (!id?.isInteger() || id.toInteger() <= 0) {
-        throw new IllegalArgumentException("id is required and must be a positive integer (got: '${args.id}')")
-    }
+    Integer id = _deleteIdArg(args.id)
     String label = type.capitalize()
 
     boolean backupSucceeded = true
     def backupTaken = null
     try {
-        backupTaken = (type == "library") ? backupLibrarySource(id) : backupItemSource(type, id)
+        backupTaken = (type == "library") ? backupLibrarySource(id.toString()) : backupItemSource(type, id.toString())
     } catch (Exception backupErr) {
         // An unreadable backup index refuses the delete: the backup's fate is unknown.
         Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
@@ -2141,9 +2234,9 @@ def toolDeleteItem(args) {
                     note: "Check ${_codeListCall(type)} to see whether the ${type} is still there.".toString()]
         }
         if (parsed.success != true && parsed.status?.toString() != "true") {
-            def hubMsg = parsed.message ?: parsed.error ?: parsed.errorMessage ?: "The hub refused the delete"
-            mcpLog("warn", "hub-admin", "Delete ${type} ${id} refused: ${hubMsg}")
-            return [success: false, error: hubMsg, id: id, type: type, response: responseText?.take(500), note: _deleteRefusedNote(type)]
+            def hubMsg = parsed.message ?: parsed.error ?: parsed.errorMessage
+            mcpLog("warn", "hub-admin", "Delete ${type} ${id} refused: ${hubMsg ?: 'no reason given'}")
+            return _deleteRefusal(type, id, hubMsg, responseText)
         }
 
         mcpLog("info", "hub-admin", "${label} ID ${id} deleted successfully")
@@ -2394,7 +2487,7 @@ def toolUpdateLibraryCode(args) {
         if (stale != null) return _versionConflictResult("library", "libraryId", libraryId, sentVersion, stale.currentVersion, expectedVersion != null)
 
         if (result?.success == false) {
-            def msg = result?.message ?: "Hub returned failure"
+            def msg = _hubMessageText(result?.message) ?: "Hub returned failure"
             mcpLog("warn", "hub-admin", "Library update failed: ${msg}")
             return [
                 success: false,

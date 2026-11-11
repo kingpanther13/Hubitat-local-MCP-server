@@ -1613,7 +1613,7 @@ def helperMethod() { return "ok" }
 
         then:
         result.success == true
-        result.id == '42'
+        result.id == 42
         result.backupFile == 'mcp-backup-library-42.groovy'
         uploads == ['mcp-backup-library-42.groovy']
         result.restoreHint.contains('hub_create_library')
@@ -1642,7 +1642,7 @@ def helperMethod() { return "ok" }
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.id == '42'
+        inner.id == 42
         inner.backupFile == 'mcp-backup-library-42.groovy'
         uploads == ['mcp-backup-library-42.groovy']
         inner.restoreHint.contains('hub_create_library')
@@ -1687,7 +1687,7 @@ def helperMethod() { return "ok" }
 
         and: 'response still references the existing backup file'
         result.success == true
-        result.id == '42'
+        result.id == 42
         result.backupFile == 'mcp-backup-library-42.groovy'
         result.restoreHint.contains('hub_create_library')
     }
@@ -1724,7 +1724,7 @@ def helperMethod() { return "ok" }
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.id == '42'
+        inner.id == 42
         inner.backupFile == 'mcp-backup-library-42.groovy'
         inner.restoreHint.contains('hub_create_library')
 
@@ -1792,7 +1792,7 @@ def helperMethod() { return "ok" }
         result.success == false
         // Fail-closed path: hub message returned directly, not a generic "Delete may have failed" string
         result.error.contains('Library is in use')
-        result.id == '42'
+        result.id == 42
         result.note.contains('#include')
     }
 
@@ -1816,7 +1816,7 @@ def helperMethod() { return "ok" }
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Library is in use')
-        inner.id == '42'
+        inner.id == 42
         inner.note.contains('#include')
 
         where:
@@ -1882,7 +1882,7 @@ def helperMethod() { return "ok" }
         then:
         result.success == false
         result.error.contains('Could not confirm')
-        result.id == '42'
+        result.id == 42
         result.response == ''
     }
 
@@ -1904,7 +1904,7 @@ def helperMethod() { return "ok" }
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Could not confirm')
-        inner.id == '42'
+        inner.id == 42
         inner.response == ''
 
         where:
@@ -1928,7 +1928,7 @@ def helperMethod() { return "ok" }
         then:
         result.success == false
         result.error.contains('Could not confirm')
-        result.id == '42'
+        result.id == 42
         result.note.contains('hub_list_libraries')
     }
 
@@ -1952,7 +1952,7 @@ def helperMethod() { return "ok" }
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Could not confirm')
-        inner.id == '42'
+        inner.id == 42
         inner.note.contains('hub_list_libraries')
 
         where:

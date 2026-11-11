@@ -134,30 +134,125 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.note.contains('duplicate')
     }
 
-    def "a colliding save on create gets the retryable note, not a fix-the-source note"() {
+    static final String DRIVER_SRC = 'metadata { definition(name: "Probe Driver", namespace: "mcptest", author: "x") { capability "Switch" } }'
+
+    def "a driver create the hub refuses without a source error is a success when the driver list has its name"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            [success: false, message: "Cannot get property 'id' on null object"]
+        }
+        hubGet.register('/hub2/userDeviceTypes') { params ->
+            '[{"id": 41, "name": "Other", "namespace": "mcptest", "version": 1}, {"id": 42, "name": "Probe Driver", "namespace": "mcptest", "version": 1}]'
+        }
+
+        when:
+        def result = script.toolCreateDriver([source: DRIVER_SRC, confirm: true])
+
+        then:
+        result.success == true
+        result.driverId == '42'
+        result.version == 1
+        result.foundByName == true
+        result.hubMessage == "Cannot get property 'id' on null object"
+        result.note.contains('hub_get_source')
+        !result.containsKey('retryable')
+    }
+
+    def "a driver create the hub refuses without a source error is a refusal when no driver has its name"() {
         given:
         enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'java.sql.SQLException: Failed to update device type']
         }
+        hubGet.register('/hub2/userDeviceTypes') { params -> '[{"id": 41, "name": "Probe Driver", "namespace": "other"}]' }
 
         when:
-        def result = script.toolCreateDriver([source: 'code', confirm: true])
+        def result = script.toolCreateDriver([source: DRIVER_SRC, confirm: true])
 
         then:
         result.success == false
+        result.driverId == null
         result.error.contains('SQLException')
-        result.retryable == true
-        result.note.contains('the source itself was not rejected')
+        result.note.contains("no driver named 'Probe Driver' (namespace mcptest) is on the hub")
+        !result.note.contains('Fix the source')
+        !result.containsKey('retryable')
     }
 
-    def "a bulk entry carries the hub's version, no verification fields, and a refused entry's retryable flag"() {
+    @spock.lang.Unroll
+    def "a refused driver create whose outcome cannot be settled says to check the list: #label"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            [success: false, message: "Cannot get property 'id' on null object"]
+        }
+        if (listBody != null) hubGet.register('/hub2/userDeviceTypes') { params -> listBody }
+
+        when:
+        def result = script.toolCreateDriver([source: source, confirm: true])
+
+        then:
+        result.success == false
+        result.driverId == null
+        result.note.contains('hub_list_drivers')
+        result.note.contains('duplicate')
+
+        where:
+        label                     | source        | listBody
+        'no definition name'      | 'metadata {}' | '[]'
+        'the list is unreadable'  | DRIVER_SRC    | null
+        'two drivers by the name' | DRIVER_SRC    | '[{"id": 1, "name": "Probe Driver", "namespace": "mcptest"}, {"id": 2, "name": "Probe Driver", "namespace": "mcptest"}]'
+    }
+
+    @spock.lang.Unroll
+    def "a #type create compile error comes back without markup and with no list read"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            [success: false, message: "unexpected token: boom @ line <span id='errorLine'>1</span>, column 1."]
+        }
+
+        when:
+        def result = script."toolCreate${type.capitalize()}"([source: DRIVER_SRC, confirm: true])
+
+        then:
+        result.success == false
+        result[idField] == null
+        result.error == "${type.capitalize()} installation failed: unexpected token: boom @ line 1, column 1.".toString()
+        result.note.contains('Fix the source')
+        !result.note.contains('iconUrl')
+        !result.containsKey('retryable')
+        hubGet.calls.isEmpty()
+
+        where:
+        type     | idField
+        'app'    | 'appId'
+        'driver' | 'driverId'
+    }
+
+    def "an app create refused for a missing definition field returns the hub's message and a neutral note"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            [success: false, message: 'description,author cannot be empty in definition section']
+        }
+
+        when:
+        def result = script.toolCreateApp([source: 'definition(name: "X")', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('description,author cannot be empty in definition section')
+        result.note == 'Fix the source and retry.'
+    }
+
+    def "a bulk entry carries the hub's version and no verification fields; a refused entry has no retryable flag"() {
         given:
         enableWrite()
         def calls = 0
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             calls++
-            calls == 1 ? [success: true, id: 5, version: 1] : [success: false, message: 'java.sql.SQLException: Failed to update device type']
+            calls == 1 ? [success: true, id: 5, version: 1] : [success: false, message: 'unexpected token: } @ line 2']
         }
 
         when:
@@ -167,7 +262,26 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.calls.isEmpty()
         result.success == false
         result.installs[0] == [driverId: '5', success: true, version: 1, sourceMode: 'source', sourceLength: 1]
-        result.installs[1].retryable == true
+        result.installs[1].success == false
+        !result.installs[1].containsKey('retryable')
+    }
+
+    def "a bulk entry found by name after a refused save is reported as installed and flagged"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            [success: false, message: "Cannot get property 'id' on null object"]
+        }
+        hubGet.register('/hub2/userDeviceTypes') { params -> '[{"id": 42, "name": "Probe Driver", "namespace": "mcptest", "version": 1}]' }
+
+        when:
+        def result = script.toolCreateDriver([installs: [[source: DRIVER_SRC]], confirm: true])
+
+        then:
+        result.success == true
+        result.installs[0].driverId == '42'
+        result.installs[0].foundByName == true
+        result.installs[0].note.contains('hub_get_source')
     }
 
     @spock.lang.Unroll
@@ -278,7 +392,43 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.calls.isEmpty()
 
         where:
-        badId << ['abc', '0', '-3', '1.5', null]
+        badId << ['abc', '0', '-3', '1.5', null, ' 999999', '999999 ', '+999999', '2147483648', '']
+    }
+
+    def "hub_delete_item uses the parsed id for the backup key, the hub path and the result"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","version":1,"source":"x"}' }
+        hubGet.register('/driver/editor/deleteJson/12') { params -> '{"status":true}' }
+
+        when:
+        def result = script.toolDeleteItem([type: 'driver', id: '012', confirm: true])
+
+        then:
+        result.success == true
+        result.id == 12
+        hubGet.calls.find { it.path == '/driver/ajax/code' }.params == [id: '12']
+        hubGet.calls.any { it.path == '/driver/editor/deleteJson/12' }
+        backupIndex.containsKey('driver_12')
+    }
+
+    def "deleting a missing app id within an hour of a backup of that id reports success"() {
+        given: 'a backup of app 999 taken a minute ago, and an app the hub no longer has'
+        enableWrite()
+        backupIndex = [app_999: [type: 'app', id: '999', fileName: 'mcp-backup-app-999.groovy', version: 3,
+                                 timestamp: 1234567890000L - 60_000L, sourceLength: 10]]
+        hubGet.register('/app/ajax/code') { params -> '{"id":null,"name":null,"version":null,"source":null,"status":"success"}' }
+        hubGet.register('/app/edit/deleteJsonSafe/999') { params -> '{"status":true}' }
+
+        when:
+        def result = script.toolDeleteItem([type: 'app', id: '999', confirm: true])
+
+        then: 'the reused backup skips the source read, and the hub accepts the delete of a missing app'
+        result.success == true
+        result.backupFile == 'mcp-backup-app-999.groovy'
+        !hubGet.calls.any { it.path == '/app/ajax/code' }
+        hubGet.calls.any { it.path == '/app/edit/deleteJsonSafe/999' }
     }
 
     @spock.lang.Unroll
@@ -302,7 +452,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "a driver id the hub cannot read still reaches the delete, and the hub's status:false is the answer"() {
+    def "a driver id the hub cannot read still reaches the delete, and a bare status:false says the driver may not exist"() {
         given:
         enableWrite()
         hubGet.register('/driver/ajax/code') { params -> throw new RuntimeException('HTTP 500') }
@@ -313,11 +463,29 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        result.error == 'The hub refused the delete'
-        result.id == '999'
+        result.error.contains('without giving a reason')
+        result.error.contains('may not exist')
+        result.id == 999
         result.type == 'driver'
         result.response == '{"status":false}'
-        result.note.contains('another driver')
+        result.note.contains('hub_list_drivers')
+        !result.note.contains('another driver')
+    }
+
+    def "a missing library's refusal carries the hub's message and no in-use note"() {
+        given:
+        enableWrite()
+        hubGet.register('/library/list/single/data/5') { params -> '[]' }
+        hubGet.register('/library/edit/deleteJson/5') { params -> '{"status":false,"message":"No library found for id 5"}' }
+
+        when:
+        def result = script.toolDeleteItem([type: 'library', id: '5', confirm: true])
+
+        then:
+        result.success == false
+        result.error == 'No library found for id 5'
+        result.note.contains('hub_list_libraries')
+        !result.note.contains('#include')
     }
 
     @spock.lang.Unroll
@@ -347,20 +515,29 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         'driver'  | '/driver/editor/deleteJson/8'  | '{"unrelated":true}'           | 'hub_list_drivers'
     }
 
-    def "a refused app delete carries the hub's message and the remove-instances note"() {
+    @spock.lang.Unroll
+    def "a refused #type delete gets the in-use note only when the hub says the item is in use: '#message'"() {
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","version":1,"source":"x"}' }
-        hubGet.register('/app/edit/deleteJsonSafe/8') { params -> '{"status":false,"message":"App has instances"}' }
+        hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","version":1,"source":"x"}' }
+        hubGet.register(path) { params -> groovy.json.JsonOutput.toJson([status: false, message: message]) }
 
         when:
-        def result = script.toolDeleteItem([type: 'app', id: '8', confirm: true])
+        def result = script.toolDeleteItem([type: type, id: '8', confirm: true])
 
         then:
         result.success == false
-        result.error == 'App has instances'
-        result.note.contains('app instances')
+        result.error == message
+        result.note.contains(inUse ? inUseText : listCall)
+        !result.note.contains(inUse ? listCall : inUseText)
+
+        where:
+        type     | path                          | message                              | inUse | inUseText          | listCall
+        'app'    | '/app/edit/deleteJsonSafe/8'  | 'App is still in use by 1 app'       | true  | 'app instances'    | 'hub_list_apps'
+        'app'    | '/app/edit/deleteJsonSafe/8'  | 'Something else went wrong'          | false | 'app instances'    | 'hub_list_apps'
+        'driver' | '/driver/editor/deleteJson/8' | 'Driver In Use by 2 devices'         | true  | 'another driver'   | 'hub_list_drivers'
     }
 
     // -------- toolCreateApp / toolCreateDriver --------
@@ -1486,7 +1663,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.installs[1].error != null
         result.installs[1].error.toLowerCase().contains('compile failed')
         result.installs[1].note != null
-        result.installs[1].note.contains('compiles the source')
+        result.installs[1].note.contains('Fix the source')
         result.installs[1].lastBackup != null
     }
 
@@ -1524,7 +1701,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.installs[1].error != null
         inner.installs[1].error.toLowerCase().contains('compile failed')
         inner.installs[1].note != null
-        inner.installs[1].note.contains('compiles the source')
+        inner.installs[1].note.contains('Fix the source')
         inner.installs[1].lastBackup != null
 
         where:
@@ -2362,6 +2539,25 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.sourceMode == 'source'
     }
 
+    def "hub_update_driver returns a compile error without the hub's markup"() {
+        given:
+        enableWrite()
+        hubGet.register('/driver/ajax/code') { params ->
+            '{"status": "ok", "version": 4, "source": "metadata { }"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            [success: false, message: "boom on line <span id='errorLine'>1</span>"]
+        }
+
+        when:
+        def result = script.toolUpdateDriverCode([driverId: '55', source: 'metadata { v2 }', confirm: true])
+
+        then:
+        result.success == false
+        result.error == 'boom on line 1'
+    }
+
     def "hub_update_driver maps the collision answer to a retryable note, not a syntax hint"() {
         given:
         enableWrite()
@@ -3091,7 +3287,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        result.id == '33'
+        result.id == 33
         result.backupFile == 'mcp-backup-app-33.groovy'
         uploads == ['mcp-backup-app-33.groovy']
         result.restoreHint.contains('hub_create_app')
@@ -3123,7 +3319,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.id == '33'
+        inner.id == 33
         inner.backupFile == 'mcp-backup-app-33.groovy'
         uploads == ['mcp-backup-app-33.groovy']
         inner.restoreHint.contains('hub_create_app')
@@ -3193,7 +3389,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error == 'in use'
-        result.id == '55'
+        result.id == 55
     }
 
     @spock.lang.Unroll
@@ -3218,7 +3414,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error == 'in use'
-        inner.id == '55'
+        inner.id == 55
 
         where:
         useGateways << [true, false]
@@ -3243,7 +3439,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         deletePath == '/driver/editor/deleteJson/77'
         result.success == true
-        result.id == '77'
+        result.id == 77
         result.backupFile == 'mcp-backup-driver-77.groovy'
     }
 
@@ -3271,7 +3467,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.id == '77'
+        inner.id == 77
         inner.backupFile == 'mcp-backup-driver-77.groovy'
 
         where:
