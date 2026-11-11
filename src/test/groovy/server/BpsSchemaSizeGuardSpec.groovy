@@ -7,7 +7,7 @@ import support.ToolSpecBase
  * enableMandatoryBPS gate reads is normally undeclared in tool inputSchema: declaring
  * a property on every write tool would inflate the flat tools/list toward the 120KB cap. The LLM
  * learns the param from the block-message contract + the best_practice_reference guide instead.
- * hub_set_rule, hub_set_native_app and the code create, update and delete tools are the exceptions: their strict
+ * hub_set_rule, hub_set_native_app and the three code-update tools are the exceptions: their strict
  * top-level schemas must declare the accepted key.
  * This guards against spreading that property across the remaining catalog.
  */
@@ -21,8 +21,7 @@ class BpsSchemaSizeGuardSpec extends ToolSpecBase {
         }*.name
 
         then:
-        offenders as Set == ['hub_set_rule', 'hub_set_native_app', 'hub_create_app', 'hub_create_driver', 'hub_create_library',
-                             'hub_update_app', 'hub_update_driver', 'hub_update_library', 'hub_delete_item'] as Set
+        offenders as Set == ['hub_set_rule', 'hub_set_native_app', 'hub_update_app', 'hub_update_driver', 'hub_update_library'] as Set
     }
 
     // Issue #518: a client that drops undeclared top-level arguments loses the key on a direct

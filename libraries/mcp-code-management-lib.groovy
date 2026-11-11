@@ -2821,21 +2821,19 @@ Supply the code via exactly one of source / sourceFile / importUrl (mutually exc
 After the code installs, create a running instance with a SECOND call: hub_create_app(codeAppId: <newAppId>, confirm: true).
 [[/FLAT_TRIM]]
 
-The hub compiles on save and returns success=false with its error. Requires Write master + confirm + backup <24h. A code install returns the new appId and version; codeAppId mode returns the new instanceAppId.
+The hub compiles on save and returns success=false with its error. Requires Write master + confirm + backup <24h. Returns the new appId and version (codeAppId: the instanceAppId).
 [[FLAT_TRIM]]
 A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
                 type: "object",
-                additionalProperties: false,
                 properties: [
                     source: [type: "string", description: "Inline Groovy source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-app.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     codeAppId: [type: "integer", description: "Second-step mode: instantiate already-installed code (the appId from a prior call) and commit the install; not combinable with source/sourceFile/importUrl."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    bestPracticeKey: [type: "string"]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
             ]
@@ -2846,14 +2844,13 @@ A transport drop can lose the response while the hub still commits this write; v
 
 Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). For >1 driver use BULK mode (the installs param).
 
-The hub compiles on save and returns success=false with its error. Requires Write master + confirm + backup <24h. Returns the new driverId and version; bulk mode returns one result per entry in installs.
+The hub compiles on save and returns success=false with its error. Requires Write master + confirm + backup <24h. Returns the new driverId and version (bulk: one result per entry).
 [[FLAT_TRIM]]
 MCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
                 type: "object",
-                additionalProperties: false,
                 properties: [
                     source: [type: "string", description: "Inline Groovy source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
@@ -2871,8 +2868,7 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                             ]
                         ]
                     ],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    bestPracticeKey: [type: "string"]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
             ]
@@ -2970,12 +2966,10 @@ For type=driver, MCP 2026-07-28 clients automatically continue this slow write a
 """,
             inputSchema: [
                 type: "object",
-                additionalProperties: false,
                 properties: [
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What to delete."],
                     id: [type: "string", description: "App/driver/library code ID (positive integer), from hub_list_apps(scope='types') / hub_list_drivers / hub_list_libraries respectively."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    bestPracticeKey: [type: "string"]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["type", "id", "confirm"]
             ]
@@ -2994,13 +2988,11 @@ A transport drop can lose the response while the hub still commits this write; v
 """,
             inputSchema: [
                 type: "object",
-                additionalProperties: false,
                 properties: [
                     source: [type: "string", description: "Inline source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    bestPracticeKey: [type: "string"]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
             ]
