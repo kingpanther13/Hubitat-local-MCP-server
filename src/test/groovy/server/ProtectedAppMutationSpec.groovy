@@ -62,8 +62,8 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             ['toolDeleteNativeApp', [appId: ' 42 ', force: true]],
             ['toolSetVisualRule', [appId: 42, paused: true]],
             ['toolDeleteVisualRule', [appId: 42]],
-            ['toolUpdateDashboard', [dashboardId: '42', name: 'Changed']],
-            ['toolDeleteDashboard', [dashboardId: '42']],
+            ['toolUpdateDashboard', [id: '42', name: 'Changed']],
+            ['toolDeleteDashboard', [id: '42']],
             ['toolRunRmRule', [ruleId: 42, action: 'stop']],
             ['toolSetRulePaused', [ruleId: 42, paused: true]],
             ['toolSetRmRuleBoolean', [ruleId: 42, value: true]]
@@ -228,7 +228,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true}' }
         hubGet.register('/dashboard/delete') { writes << '/dashboard/delete'; '{"success":true}' }
         def leaf = "hub_${operation}_dashboard".toString()
-        def args = operation == 'update' ? [dashboardId: '42', name: 'Changed', deviceIds: ['1']] : [dashboardId: '42', confirm: true]
+        def args = operation == 'update' ? [id: '42', name: 'Changed', deviceIds: ['1']] : [id: '42', confirm: true]
 
         when:
         script.executeTool(gateway ? 'hub_manage_dashboards' : leaf,
@@ -253,8 +253,9 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             JsonOutput.toJson([apps: [[data: [id: 42, type: 'MCP Rule Server']],
                 [data: [id: 21, type: parentType], children: present ? [[data: [id: 43, type: type]]] : []]]])
         }
+        // statusJson answers {} for a removed app, which is how the delete confirms itself.
         hubGet.register('/installedapp/statusJson/43') {
-            JsonOutput.toJson([installedApp: [id: 43, name: type, systemAppType: true]])
+            present ? JsonOutput.toJson([installedApp: [id: 43, name: type, systemAppType: true]]) : '{}'
         }
         hubGet.register('/dashboard/delete') {
             writes << '/dashboard/delete'
@@ -267,7 +268,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             [status: 302]
         }
         def delete = {
-            def args = [dashboardId: '43', confirm: true]
+            def args = [id: '43', confirm: true]
             script.executeTool(gateway ? 'hub_manage_dashboards' : 'hub_delete_dashboard',
                 gateway ? [tool: 'hub_delete_dashboard', args: args] : args)
         }
@@ -306,7 +307,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteDashboard([dashboardId: '999', confirm: true])
+        def result = script.toolDeleteDashboard([id: '999', confirm: true])
 
         then:
         result.success == true
@@ -322,7 +323,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { inventory }
 
         when:
-        script.toolDeleteDashboard([dashboardId: '43', confirm: true])
+        script.toolDeleteDashboard([id: '43', confirm: true])
 
         then:
         def error = thrown(IllegalArgumentException)
@@ -371,7 +372,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         def method = operation == 'update' ? 'toolUpdateDashboard' : 'toolDeleteDashboard'
 
         when:
-        def result = script."$method"([dashboardId: '43', name: 'Easy', deviceIds: ['1'], confirm: true,
+        def result = script."$method"([id: '43', name: 'Easy', deviceIds: ['1'], confirm: true,
             options: [dashboardPin: '', hsmPin: '']])
 
         then:

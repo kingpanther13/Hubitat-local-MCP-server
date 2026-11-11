@@ -8,7 +8,7 @@
 
 **Dedicated test-hub prompt:** "Create a disposable test device, inspect its preferences and configuration, and verify boolean, numeric, text and enum changes using an independent native read. Restore each original value and verify restoration, then remove only the device and driver you created. Leave every existing device and automation unchanged."
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 115 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 113 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2762,19 +2762,19 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 115 |
+| Total distinct tools in codebase | 113 |
 
 With Developer Mode on, `hub_update_package` joins the flat core tools, so a Developer Mode hub lists one more.
 
-**8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (6), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
+**8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (6), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (1)
 
-**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (11), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (4), `hub_manage_destructive_ops` (4), `hub_manage_devices` (11), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 115 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 113 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -4597,7 +4597,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 ## Section 17: Dashboard Tests — Easy & legacy Hubitat® (hub_manage_dashboards / hub_read_dashboards)
 
-Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issue #259 item #9; legacy coverage issue #326). The 6 tools live in the `hub_manage_dashboards` gateway; the two reads (`hub_list_dashboards`, `hub_get_dashboard`) are also surfaced in the pure-read `hub_read_dashboards` gateway. Reads require the Read master; create/update/clone require the Write master; delete additionally requires `confirm=true` + a hub backup within 24h. Every list entry carries a `type` (`easy` or `legacy`). Easy Dashboards are classic child apps of the Easy Dashboard Parent, driven by `GET /dashboard/*` endpoints and configured with tile toggles/theme; legacy Hubitat® Dashboards are child apps of the built-in Hubitat® Dashboard parent, whose design lives in a nested `layout` (tiles + grid + colors) edited wholesale or via granular tile ops. The list endpoint may be pinToken-gated on some hubs (an unexpectedly-empty list is the tell).
+Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issue #259 item #9; legacy coverage issue #326). The 4 tools live in the `hub_manage_dashboards` gateway; the read (`hub_list_dashboards`, which lists every dashboard or, given an `id`, reads one in full) is also surfaced in the pure-read `hub_read_dashboards` gateway. Every tool takes the dashboard's `id`. Reads require the Read master; create (including a copy) and update require the Write master; delete additionally requires `confirm=true` + a hub backup within 24h. Every list entry carries a `type` (`easy` or `legacy`). Easy Dashboards are classic child apps of the Easy Dashboard Parent, driven by `GET /dashboard/*` endpoints and configured with tile toggles/theme; legacy Hubitat® Dashboards are child apps of the built-in Hubitat® Dashboard parent, whose design lives in a nested `layout` (tiles + grid + colors) edited wholesale or via granular tile ops. The list endpoint may be pinToken-gated on some hubs (an unexpectedly-empty list is the tell).
 
 ### Safety Rules for Section 17
 
@@ -4616,9 +4616,11 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 }
 ```
 
-**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_create_dashboard)` with `name='BAT Dash Create'`, `deviceIds=[<id>]`, `showClockTile=true`, no `confirm` needed (create needs only the Write master). The response returns `success=true` and (when the hub provides it) the new dashboard `id`. A follow-up `hub_get_dashboard(id=N)` returns the dashboard with `showClockTile` truthy and the device present. The dashboard also appears in `hub_list_dashboards`.
+**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_create_dashboard)` with `name='BAT Dash Create'`, `deviceIds=[<id>]`, `showClockTile=true`, no `confirm` needed (create needs only the Write master). The response returns `success=true` and (when the hub provides it) the new dashboard `id`. A follow-up `hub_list_dashboards(id=N)` returns the dashboard with `showClockTile` truthy and the device present. The dashboard also appears in `hub_list_dashboards`.
 
-**Failure modes**: the AI sends `deviceIds` as an empty list (rejected -32602 — an Easy Dashboard needs ≥1 device). The booleans go over the wire as JSON booleans instead of the strings "true"/"false" (wire-format break — the dashboard's tile would not toggle). `hub_get_dashboard` called without an id (rejected -32602). The list comes back empty after a successful create (the read may be pinToken-gated — retry `hub_list_dashboards` with a pinToken).
+**Failure modes**: the AI sends `deviceIds` as an empty list (rejected -32602 — an Easy Dashboard needs ≥1 device). The booleans go over the wire as JSON booleans instead of the strings "true"/"false" (wire-format break — the dashboard's tile would not toggle). `hub_update_dashboard` called without an id (rejected). The list comes back empty after a successful create (the dashboard page token may be unreadable — the list then falls back to the child-app enumeration, which carries id + name only).
+
+**Last live run**: 2026-11-11, C-7 2.5.2.139 running the build of 819c67f1, driven by an AI client given only the setup, test and teardown prompts: pass -- `hub_create_dashboard(name, deviceIds:[<switch>], options:{showClockTile:true})` returned `success:true` and the new `id`; `hub_list_dashboards(id)` read it back with `showClockTile:true` and the switch in `deviceIds`. Teardown deleted the dashboard and the switch.
 
 ### T721 — Update replaces the config wholesale (read-first)
 
@@ -4630,23 +4632,27 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 }
 ```
 
-**Expected**: because `hub_update_dashboard` replaces the config WHOLESALE (no server-side read-merge), the correct flow is `hub_get_dashboard` first to capture the full current config, then `hub_update_dashboard(id=N, name='BAT Dash Renamed', deviceIds=[<id>], theme='dark', showClockTile=true, ...)` carrying every field. The read-back shows the new name, `theme='dark'`, the device present, and the clock tile still on.
+**Expected**: because `hub_update_dashboard` replaces the config WHOLESALE (no server-side read-merge), the correct flow is `hub_list_dashboards(id=N)` first to capture the full current config, then `hub_update_dashboard(id=N, name='BAT Dash Renamed', deviceIds=[<id>], theme='dark', showClockTile=true, ...)` carrying every field. The read-back shows the new name, `theme='dark'`, the device present, and the clock tile still on.
 
 **Failure modes**: the AI calls update with only `name` + `theme` and omits `deviceIds`/`showClockTile` (rejected -32602 for missing deviceIds; or, if a future caller bypassed the guard, the clock tile and devices would silently revert to defaults — the wholesale-replace trap the description warns about). update called without an `id` or without a `name` (both rejected -32602).
 
-### T722 — Clone an Easy Dashboard
+**Last live run**: 2026-11-11, C-7 2.5.2.139 running the build of 819c67f1, driven by an AI client given only the setup, test and teardown prompts: pass -- the AI read the dashboard with `hub_list_dashboards(id)` first, then sent `hub_update_dashboard(id, name:'BAT Dash Renamed', deviceIds, options:{...every tile toggle, theme:'dark'})`; the read-back showed the new name, `theme:'dark'`, the device and `showClockTile:true`.
+
+### T722 — Copy an Easy Dashboard
 
 ```json
 {
   "setup_prompt": "The Write master is enabled and a recent backup exists. Create a virtual switch 'BAT Dash CloneSwitch' and an Easy Dashboard 'BAT Dash CloneSrc' showing that switch. Note the dashboard id.",
-  "test_prompt": "Make a copy of the Easy Dashboard 'BAT Dash CloneSrc'. Then list the Easy Dashboards and confirm a clone now exists alongside the original.",
-  "teardown_prompt": "Delete both the original 'BAT Dash CloneSrc' and the clone. Delete the virtual switch 'BAT Dash CloneSwitch'."
+  "test_prompt": "Make a copy of the Easy Dashboard 'BAT Dash CloneSrc'. Then list the Easy Dashboards and confirm a copy now exists alongside the original.",
+  "teardown_prompt": "Delete both the original 'BAT Dash CloneSrc' and the copy. Delete the virtual switch 'BAT Dash CloneSwitch'."
 }
 ```
 
-**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_clone_dashboard)` with the source `id`; the response returns `success=true`, `sourceId`, and (when the hub provides it) `newId`. `hub_list_dashboards` shows both the source and the clone.
+**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_create_dashboard)` with `sourceId=<source id>` and no other config (a copy takes the source's devices and settings; only `name` may be given, default `'BAT Dash CloneSrc (copy)'`); the response returns `success=true`, `sourceId`, and (when the hub provides it) the copy's `id`. `hub_list_dashboards` shows both the source and the copy.
 
-**Failure modes**: clone called without an `id` (rejected -32602). The clone is reported successful but never appears in the list (verify with `hub_list_dashboards` — the clone may need a pinToken to surface).
+**Failure modes**: the AI passes `deviceIds`, `options` or `type` alongside `sourceId` (rejected before any write — copy first, then change the copy with `hub_update_dashboard`). The copy is reported successful but never appears in the list (verify with `hub_list_dashboards`).
+
+**Last live run**: 2026-11-11, C-7 2.5.2.139 running the build of 819c67f1, driven by an AI client given only the setup, test and teardown prompts: pass -- `hub_create_dashboard(sourceId)` with no other arguments returned `success:true`, the copy's `id`, `sourceId` and the name 'BAT Dash CloneSrc (copy)'; `hub_list_dashboards` listed both, each with the switch.
 
 ### T723 — Create a legacy Hubitat® Dashboard, add a tile, read it back, then delete it
 
@@ -4658,9 +4664,11 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 }
 ```
 
-**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_create_dashboard)` with `name='BAT Legacy Dash'`, `type='legacy'`, `deviceIds=[<id>]` — a legacy dashboard starts with an EMPTY layout, so no `options`/tile toggles are passed. The response returns `success=true`, `type='legacy'`, and the new dashboard `id`. The AI then calls `hub_update_dashboard(id=N, addTiles=[{template:'clock', col:1, row:1}])`; the response has `success=true`, `type='legacy'`, `tileCount>=1`, and the saved `layout` echo. A follow-up `hub_get_dashboard(id=N)` returns `type='legacy'` with a nested `layout` object whose `tiles` array contains the clock tile.
+**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_create_dashboard)` with `name='BAT Legacy Dash'`, `type='legacy'`, `deviceIds=[<id>]` — a legacy dashboard starts with an EMPTY layout, so no `options`/tile toggles are passed. The response returns `success=true`, `type='legacy'`, and the new dashboard `id`. The AI then calls `hub_update_dashboard(id=N, addTiles=[{template:'clock', col:1, row:1}])`; the response has `success=true`, `type='legacy'`, `tileCount>=1`, and the saved `layout` echo. A follow-up `hub_list_dashboards(id=N)` returns `type='legacy'` with a nested `layout` object whose `tiles` array contains the clock tile.
 
-**Failure modes**: the AI passes `options` or Easy tile toggles like `showClockTile` on the legacy create (rejected -32602 — a legacy dashboard's look lives in its layout, not `options`). The built-in Hubitat® Dashboard parent app is not installed, so create returns `success=false` with an error naming the parent app (a hub-provisioning precondition, not a wire-format bug — install the app and retry). `hub_get_dashboard` called without an id (rejected -32602).
+**Failure modes**: the AI passes `options` or Easy tile toggles like `showClockTile` on the legacy create (rejected -32602 — a legacy dashboard's look lives in its layout, not `options`). The built-in Hubitat® Dashboard parent app is not installed, so create returns `success=false` with an error naming the parent app (a hub-provisioning precondition, not a wire-format bug — install the app and retry).
+
+**Last live run**: 2026-11-11, C-7 2.5.2.139 running the build of 819c67f1, driven by an AI client given only the setup, test and teardown prompts: pass -- `hub_create_dashboard(name, type:'legacy', deviceIds)` returned `success:true`, `type:'legacy'` and an empty layout; `hub_update_dashboard(id, addTiles:[{template:'clock', col:1, row:1}])` returned `tileCount:1`; `hub_list_dashboards(id)` showed the clock tile at col 1, row 1.
 
 ### T724 — Edit a legacy dashboard's layout granularly (add tile + set grid/color options)
 
@@ -4676,7 +4684,9 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Failure modes**: the AI passes `layout` (wholesale) AND granular ops (`addTiles`/`setOptions`) in the same call (rejected -32602 — pass one or the other). The device tile references a device the dashboard hasn't authorized (accepted, but the response carries a `warnings` entry that the tile will show no data until the device is authorized via `deviceIds`). The AI puts grid/color settings in `options` instead of `setOptions` (rejected -32602 — `options` is Easy-only).
 
-### T725 — Clone a legacy Hubitat® Dashboard
+**Last live run**: 2026-11-11, C-7 2.5.2.139 running the build of 819c67f1, driven by an AI client given only the setup, test and teardown prompts: pass -- one `hub_update_dashboard(id, addTiles:[{template:'switches', device, col:2, row:1}], setOptions:{bgColor:'#404040', cols:4})` returned `tileCount:2` with no warnings; the read-back showed both tiles, the new `bgColor` and `cols:4`. (The hub's default layout is already 4 columns on a dark grey, so the AI picked a different grey to make the change visible.)
+
+### T725 — Copy a legacy Hubitat® Dashboard
 
 ```json
 {
@@ -4686,9 +4696,11 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 }
 ```
 
-**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_clone_dashboard)` with the source `id`; for a legacy source the clone is BY VALUE — a fresh legacy dashboard with the source's layout copied in, leaving the source untouched. The response returns `success=true`, `type='legacy'`, `sourceId`, and `newId`. `hub_list_dashboards` shows both, each with `type='legacy'`, and the copy's layout carries the source's tiles.
+**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_create_dashboard)` with `sourceId=<source id>`; for a legacy source the copy is BY VALUE — a fresh legacy dashboard with the source's authorized devices and layout copied in, leaving the source untouched. The response returns `success=true`, `type='legacy'`, `sourceId`, and the copy's `id`. `hub_list_dashboards` shows both, each with `type='legacy'`, and the copy's layout carries the source's tiles.
 
-**Failure modes**: clone called without an `id` (rejected -32602). The copy is created but its layout write fails (the response reports `success=false` WITH the `newId` and a note to re-apply the layout via `hub_update_dashboard`). The clone never appears in the list (verify with `hub_list_dashboards` — it may need a pinToken to surface).
+**Failure modes**: the AI passes `type`, `deviceIds` or `options` alongside `sourceId` (rejected before any write). The copy is created but its layout write fails (the response reports `success=false` WITH the copy's `id` and a note to re-apply the layout via `hub_update_dashboard`). The copy never appears in the list (verify with `hub_list_dashboards`).
+
+**Last live run**: 2026-11-11, C-7 2.5.2.139 running the build of 819c67f1, driven by an AI client given only the setup, test and teardown prompts: pass -- `hub_create_dashboard(sourceId)` returned `success:true`, `type:'legacy'`, `sourceId` and the copy's `id`; `hub_list_dashboards` listed both as legacy with the same devices, and `hub_list_dashboards(id)` on the copy showed the source's two tiles.
 
 ---
 
