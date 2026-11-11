@@ -1149,11 +1149,6 @@ private String _hubMessageText(msg) {
     return text.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").trim()
 }
 
-// A refusal that names a problem in the source: a compile error, or a missing or invalid definition.
-private boolean _isSourceErrorMessage(String msg) {
-    return msg && (msg =~ /(?i)\bline\s*\d+|startup failed|unexpected|expecting|unable to resolve|compil|syntax|cannot be empty|definition|metadata/).find()
-}
-
 // [name, namespace] from the source's definition(...) call, or null when it has no name.
 private Map _driverDefinitionName(String source) {
     def block = (source =~ /(?s)\bdefinition\s*\((.*?)\)/)
@@ -1165,45 +1160,47 @@ private Map _driverDefinitionName(String source) {
     return [name: name.group(2), namespace: namespace.find() ? namespace.group(2) : null]
 }
 
-// A driver save the hub refused without a source error may still have landed: concurrent creates
-// have answered "Cannot get property 'id' on null object" for drivers that were saved. The driver
-// list, matched on the definition's name and namespace, settles it.
+// Concurrent driver creates have answered a null-object error for saves that did land, so a
+// refusal is checked against the drivers carrying this definition's name before it is reported.
 private Map _settleRefusedDriverCreate(String sourceCode, String hubMsg, String sourceMode) {
     String error = "Driver installation failed: ${hubMsg}".toString()
+    Map unknown = _codeCreateFailure("driver", error, _codeCreateUnknownOutcomeNote("driver"))
     Map definition = _driverDefinitionName(sourceCode)
-    if (definition == null) return _codeCreateFailure("driver", error, _codeCreateUnknownOutcomeNote("driver"))
-    def rows
+    if (definition == null) return unknown
+    def exact = []
     try {
         def txt = hubInternalGet("/hub2/userDeviceTypes", null, 30)
-        rows = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+        def rows = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+        if (!(rows instanceof List)) return unknown
+        def named = rows.findAll { it instanceof Map && it.name?.toString() == definition.name &&
+            (definition.namespace == null || it.namespace?.toString() == definition.namespace) }
+        if (named.size() > 3) return unknown
+        for (row in named) {
+            def codeText = hubInternalGet("/driver/ajax/code", [id: row.id?.toString()])
+            def code = codeText ? new groovy.json.JsonSlurper().parseText(codeText) : null
+            if (!(code instanceof Map) || code.status == "error" || code.source == null) return unknown
+            if (code.source.toString() == sourceCode) exact << [id: row.id?.toString(), version: code.version]
+        }
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "Driver list read after a refused create failed: ${e.message}")
-        rows = null
+        mcpLog("warn", "hub-admin", "Driver reads after a refused create failed: ${e.message}")
+        return unknown
     }
-    if (!(rows instanceof List)) return _codeCreateFailure("driver", error, _codeCreateUnknownOutcomeNote("driver"))
-    def matches = rows.findAll { it instanceof Map && it.name?.toString() == definition.name &&
-        (definition.namespace == null || it.namespace?.toString() == definition.namespace) }
-    String described = "'${definition.name}'${definition.namespace ? " (namespace ${definition.namespace})" : ''}".toString()
-    if (matches.isEmpty()) {
-        return _codeCreateFailure("driver", error,
-            "The hub's reply is not a source error, and no driver named ${described} is on the hub, so the driver was not saved. Retry the create.".toString())
+    if (exact.isEmpty()) {
+        return _codeCreateFailure("driver", error, "Nothing was saved: no driver on the hub holds this source. Fix the source and retry.")
     }
-    if (matches.size() > 1) {
-        return _codeCreateFailure("driver", error,
-            "The hub's reply is not a source error, and ${matches.size()} drivers named ${described} are on the hub (ids ${matches*.id.join(', ')}). Check hub_list_drivers before retrying: a retry can create another duplicate.".toString())
-    }
-    def row = matches[0]
-    mcpLog("info", "hub-admin", "Driver create was refused (${hubMsg}) but driver ${row.id} named ${described} is on the hub")
+    if (exact.size() > 1) return unknown
+    def match = exact[0]
+    mcpLog("info", "hub-admin", "Driver create was refused (${hubMsg}) but driver ${match.id} holds the sent source")
     return [
         success: true,
-        message: "Driver installed: the hub refused the save, but a driver named ${described} is on the hub.".toString(),
-        driverId: row.id?.toString(),
-        version: row.version,
-        foundByName: true,
+        message: "Driver installed: the hub refused the save, but a driver with this exact source is on the hub.",
+        driverId: match.id,
+        version: match.version,
+        foundAfterRefusal: true,
         hubMessage: hubMsg,
         sourceMode: sourceMode,
         sourceLength: sourceCode.length(),
-        note: "The hub's reply to the save was '${hubMsg}', which is not a source error, and the driver list shows a driver with this name. Read it with hub_get_source(type='driver', id='${row.id}') to confirm it holds this source.".toString(),
+        note: "The hub refused the save ('${hubMsg}'), but driver ${match.id} on the hub holds exactly this source, so it was saved. Do not retry.".toString(),
         lastBackup: formatTimestamp(state.lastBackupTimestamp)
     ]
 }
@@ -1228,7 +1225,7 @@ private Map _createCodeItem(String type, args) {
     if (parsed instanceof Map && parsed.success == false) {
         String hubMsg = _hubMessageText(parsed.message ?: parsed.errorMessage) ?: "the hub refused the source"
         mcpLog("warn", "hub-admin", "${label} create refused: ${hubMsg}")
-        if (type == "driver" && !_isSourceErrorMessage(hubMsg)) return _settleRefusedDriverCreate(sourceCode, hubMsg, sourceMode)
+        if (type == "driver") return _settleRefusedDriverCreate(sourceCode, hubMsg, sourceMode)
         String note = type == "library" ?
             "The source needs a library() block with name, namespace, author and description. Fix the source and retry." :
             "Fix the source and retry."
@@ -1301,8 +1298,8 @@ private Map _createDriversBulk(args) {
                 entry.version = r.version
                 entry.sourceMode = r.sourceMode
                 entry.sourceLength = r.sourceLength
-                if (r.foundByName) {
-                    entry.foundByName = true
+                if (r.foundAfterRefusal) {
+                    entry.foundAfterRefusal = true
                     entry.hubMessage = r.hubMessage
                     entry.note = r.note
                 }
@@ -2171,7 +2168,7 @@ private String _deleteInUseNote(String type) {
 
 // The hub refuses a delete of an item in use with a message saying so, and a delete of a driver
 // that does not exist with a bare status:false; only the first gets the in-use advice.
-private Map _deleteRefusal(String type, Integer id, hubMsg, String responseText) {
+private Map _deleteRefusal(String type, String id, hubMsg, String responseText) {
     String listCall = _codeListCall(type)
     Map out = [success: false, id: id, type: type, response: responseText?.take(500)]
     String msg = hubMsg?.toString()?.trim()
@@ -2205,13 +2202,15 @@ def toolDeleteItem(args) {
         throw new IllegalArgumentException("type is required and must be one of: app, driver, library")
     }
     requireDestructiveConfirm(args.confirm)
-    Integer id = _deleteIdArg(args.id)
+    Integer idInt = _deleteIdArg(args.id)
+    // The result carries the canonical digits as a String, the schema type of id.
+    String id = idInt.toString()
     String label = type.capitalize()
 
     boolean backupSucceeded = true
     def backupTaken = null
     try {
-        backupTaken = (type == "library") ? backupLibrarySource(id.toString()) : backupItemSource(type, id.toString())
+        backupTaken = (type == "library") ? backupLibrarySource(id) : backupItemSource(type, id)
     } catch (Exception backupErr) {
         // An unreadable backup index refuses the delete: the backup's fate is unknown.
         Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
@@ -2227,7 +2226,7 @@ def toolDeleteItem(args) {
     String deletePath = [app: "/app/edit/deleteJsonSafe/", driver: "/driver/editor/deleteJson/", library: "/library/edit/deleteJson/"][type]
     mcpLog("warn", "hub-admin", "Deleting ${type} ID: ${id}")
     try {
-        def responseText = hubInternalGet("${deletePath}${id}".toString())
+        def responseText = hubInternalGet("${deletePath}${idInt}".toString())
         def parsed = null
         if (responseText) {
             try { parsed = new groovy.json.JsonSlurper().parseText(responseText) }
