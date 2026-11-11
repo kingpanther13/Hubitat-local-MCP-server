@@ -315,14 +315,14 @@ class HandleToolsCallSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
 
-        when: 'gateway mode: the pre-check throws for the missing fileName'
+        when: 'gateway mode: the pre-check throws for the missing id'
         settingsMap.useGateways = true
-        def gw = mcpDriver.callTool('hub_manage_files', [tool: 'hub_read_file', args: [:]])
+        def gw = mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_get_room', args: [:]])
         def gwInner = mcpDriver.parseInner(gw)
 
         and: 'flat mode: the leaf handler throws its own message'
         settingsMap.useGateways = false
-        def flat = mcpDriver.callTool('hub_read_file', [:])
+        def flat = mcpDriver.callTool('hub_get_room', [:])
         def flatInner = mcpDriver.parseInner(flat)
 
         then: 'both are results, never JSON-RPC errors'
@@ -333,12 +333,11 @@ class HandleToolsCallSpec extends ToolSpecBase {
 
         and: 'the gateway text lists the parameters; both name the leaf'
         gwInner.success == false
-        gwInner.tool == 'hub_read_file'
-        gwInner.error.contains('Missing required parameter for hub_read_file:')
-        gwInner.error.contains('fileName')
+        gwInner.tool == 'hub_get_room'
+        gwInner.error.contains('Missing required parameter for hub_get_room: id.')
         flatInner.success == false
-        flatInner.tool == 'hub_read_file'
-        flatInner.error.contains('fileName')
+        flatInner.tool == 'hub_get_room'
+        flatInner.error.contains('id is required')
 
         and: 'the internal validation marker never reaches the wire'
         !gwInner.containsKey('__validation')
@@ -346,7 +345,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
 
         and: 'each refusal logs exactly one validation line and no duplicate failure line'
         def entries = script.getDebugLogEntries()
-        entries.count { it.message?.toString()?.startsWith('Validation error in hub_read_file') } == 2
+        entries.count { it.message?.toString()?.startsWith('Validation error in hub_get_room') } == 2
         !entries.any { it.message?.toString()?.contains('returned a failure result') }
     }
 }

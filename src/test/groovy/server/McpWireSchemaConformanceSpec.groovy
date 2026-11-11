@@ -534,8 +534,8 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         // isError: true and must carry the modern resultType like every other result.
         when:
         def response = dispatch(
-            [jsonrpc: '2.0', id: 8, method: 'tools/call', params: [name: 'hub_read_file', arguments: [:]]],
-            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call', 'Mcp-Name': 'hub_read_file'])
+            [jsonrpc: '2.0', id: 8, method: 'tools/call', params: [name: 'hub_get_room', arguments: [:]]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call', 'Mcp-Name': 'hub_get_room'])
 
         then:
         response.error == null

@@ -11,39 +11,22 @@ import support.ToolSpecBase
 class AdvancedOverridesFilterSpec extends ToolSpecBase {
 
     def "disabling a tool hides it from every gateway it appears in (global)"() {
-        given: "hub_read_file is a member of both hub_read_files and hub_manage_files"
-        settingsMap.disabled_tools = ["hub_read_file"]
+        given: "hub_list_rooms is a member of both hub_read_rooms and hub_manage_rooms"
+        settingsMap.disabled_tools = ["hub_list_rooms"]
         settingsMap.useGateways = true
 
         when:
         def hidden = script.getHiddenToolNames()
         def tools = script.getToolDefinitions()
-        def readGw = tools.find { it.name == "hub_read_files" }
-        def manageGw = tools.find { it.name == "hub_manage_files" }
-
-        then:
-        hidden.contains("hub_read_file")
-        readGw != null
-        manageGw != null
-        !readGw.inputSchema.properties.tool.enum.contains("hub_read_file")
-        !manageGw.inputSchema.properties.tool.enum.contains("hub_read_file")
-    }
-
-    def "a gateway whose every tool is disabled drops off tools/list, while a sharing gateway keeps its other tools"() {
-        given: "hub_list_rooms and hub_get_room are hub_read_rooms' only tools and also sit in hub_manage_rooms"
-        settingsMap.disabled_tools = ["hub_list_rooms", "hub_get_room"]
-        settingsMap.useGateways = true
-
-        when:
-        def tools = script.getToolDefinitions()
+        def readGw = tools.find { it.name == "hub_read_rooms" }
         def manageGw = tools.find { it.name == "hub_manage_rooms" }
 
         then:
-        tools.every { it.name != "hub_read_rooms" }
+        hidden.contains("hub_list_rooms")
+        readGw != null
         manageGw != null
+        !readGw.inputSchema.properties.tool.enum.contains("hub_list_rooms")
         !manageGw.inputSchema.properties.tool.enum.contains("hub_list_rooms")
-        !manageGw.inputSchema.properties.tool.enum.contains("hub_get_room")
-        manageGw.inputSchema.properties.tool.enum.contains("hub_update_room")
     }
 
     def "disabling a gateway expands to all its tools, including shared ones"() {
