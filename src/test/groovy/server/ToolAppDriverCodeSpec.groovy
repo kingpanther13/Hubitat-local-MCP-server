@@ -183,7 +183,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.success == false
         result.driverId == null
         result.error == "Driver installation failed: ${NULL_ID_REPLY}".toString()
-        result.note.contains('Nothing was saved')
+        result.note.contains('No driver on the hub holds this source') && result.note.contains('hub_list_drivers')
         !result.containsKey('retryable')
     }
 
@@ -202,8 +202,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.success == false
         result.driverId == null
         result.error == 'Driver installation failed: unexpected token: boom @ line 1, column 1.'
-        result.note.contains('Nothing was saved')
-        result.note.contains('Fix the source')
+        result.note.contains('No driver on the hub holds this source') && result.note.contains('hub_list_drivers')
+        result.note.toLowerCase().contains('fix the source')
         hubGet.calls*.path == ['/hub2/userDeviceTypes']
     }
 

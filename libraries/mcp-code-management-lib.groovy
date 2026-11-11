@@ -1160,8 +1160,9 @@ private Map _driverDefinitionName(String source) {
     return [name: name.group(2), namespace: namespace.find() ? namespace.group(2) : null]
 }
 
-// Concurrent driver creates have answered a null-object error for saves that did land, so a
-// refusal is checked against the drivers carrying this definition's name before it is reported.
+// Concurrent driver creates have answered a null-object error for saves that did land, sometimes
+// many seconds later, so a refusal is checked against the drivers carrying this definition's name
+// before it is reported, and a miss is not proof that nothing was saved.
 private Map _settleRefusedDriverCreate(String sourceCode, String hubMsg, String sourceMode) {
     String error = "Driver installation failed: ${hubMsg}".toString()
     Map unknown = _codeCreateFailure("driver", error, _codeCreateUnknownOutcomeNote("driver"))
@@ -1186,7 +1187,7 @@ private Map _settleRefusedDriverCreate(String sourceCode, String hubMsg, String 
         return unknown
     }
     if (exact.isEmpty()) {
-        return _codeCreateFailure("driver", error, "Nothing was saved: no driver on the hub holds this source. Fix the source and retry.")
+        return _codeCreateFailure("driver", error, "No driver on the hub holds this source. A compile error means nothing was saved: fix the source and retry. If other saves were running at the same time, check hub_list_drivers before retrying: the hub can finish a refused save later.")
     }
     if (exact.size() > 1) return unknown
     def match = exact[0]
