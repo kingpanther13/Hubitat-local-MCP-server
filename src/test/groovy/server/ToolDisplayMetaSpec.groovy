@@ -229,7 +229,7 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         (opts.tools.keySet() as Set) == expectedToolKeys
 
         and: 'labels follow the bare name / friendly name / tag / summary format'
-        opts.gateways['hub_read_rooms'] == "hub_read_rooms — Read Rooms [read] — Read-only room queries: list rooms or read one room's devices."
+        opts.gateways['hub_read_rooms'] == 'hub_read_rooms — Read Rooms [read] — Read-only room queries: list rooms and room details.'
         opts.tools['hub_delete_device'] == 'hub_delete_device — Delete Device [write] — Permanently delete a device from the hub (no undo).'
 
         and: 'pure-read gateways are tagged [read], write-bearing ones [write]'

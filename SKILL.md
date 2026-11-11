@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 114 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 115 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -32,7 +32,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 114 tools (36 on tools/list + gateways)│  │
+│  │  - 115 tools (36 on tools/list + gateways)│  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -93,12 +93,12 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 114 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 115 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
 
 **Architecture:**
 - `getGatewayConfig()` — defines 23 gateways, each with a description, tools list, and summaries map
 - `getToolDefinitions()` — returns 13 core tools + 23 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 114 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getAllToolDefinitions()` — returns all 115 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
@@ -114,7 +114,7 @@ Read gateways (`hub_read_*`, every sub-tool read-only):
 | `hub_read_devices` | 6 | List/get devices, device attributes, device events, compatible-device catalog search, Hub Mesh read incl. available device/variable links (read-only) |
 | `hub_read_diagnostics` | 6 | Logs page tabs (log history, stats, cloud calls, events, jobs, hub actions) and the MCP log, metrics, memory history, device health, radio details (zwave/zigbee), captured states (read-only) |
 | `hub_read_files` | 2 | File Manager list + read (read-only) |
-| `hub_read_rooms` | 1 | Room list, or one room by id (read-only) |
+| `hub_read_rooms` | 2 | Room list + one room by id (read-only) |
 | `hub_read_rules` | 6 | Custom-engine rule get/test, native rule list, rule health, Visual Rules Builder rule list/read (read-only) |
 | `hub_read_variables` | 3 | Hub connector and rule engine variable list/get (+ opt-in dependents) + change history (read-only) |
 | `hub_read_dashboards` | 2 | Dashboard list + get config by id, covering both Easy and legacy Hubitat® Dashboards (read-only) |
@@ -124,7 +124,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 |---------|-------|--------|
 | `hub_manage_custom_rules` | 8 | Custom-engine rule get/create/update/delete/test/export/import/clone |
 | `hub_manage_variables` | 8 | Hub connector and rule engine variables (CRUD + connector + history + Hub Mesh variable share/link/unlink) |
-| `hub_manage_rooms` | 4 | Room CRUD (list/read, create, update name and devices, delete) |
+| `hub_manage_rooms` | 5 | Room CRUD (list, get, create, update name and devices, delete) |
 | `hub_manage_destructive_ops` | 4 | Hub reboot, shutdown, device deletion, and destructive ops by target via `hub_call_destructive_ops` (radio reset/wipe + firmware, network disconnect, cloud-controller disable/enable) (write) |
 | `hub_manage_backup` | 4 | Backup management — list code + whole-hub DB backups (+ auto-backup schedule), get code-backup source, restore (apps/drivers/rule snapshots), delete whole-hub DB backups (write) |
 | `hub_manage_code` | 10 | Install/update apps+drivers+libraries, install/delete/export HPM-style bundles, delete item (app/driver/library) (write) |
@@ -500,11 +500,12 @@ All routes require the Write master. Validation runs before mutation; runtime fa
 
 ### Room Management
 
-4 tools for full room CRUD, using `POST /room/save` (JSON) and `GET /room/delete/<id>` as the hub's Rooms page does. Every tool addresses a room by its `id`; `getRooms()` (the in-process SDK room list, not an HTTP call) is the existence and duplicate-name check before a write:
+5 tools for full room CRUD, using `POST /room/save` (JSON) and `GET /room/delete/<id>` as the hub's Rooms page does. Every tool addresses a room by its `id`; `getRooms()` (the in-process SDK room list, not an HTTP call) is the existence and duplicate-name check before a write:
 
 | Tool | Access Gate | Description |
 |------|------------|-------------|
-| `hub_list_rooms` | None | Without `id`: all rooms with IDs, names, device ids via `getRooms()` (cursor-pageable). With `id`: that room's devices with labels and current states from the Devices page |
+| `hub_list_rooms` | None | All rooms with IDs, names, device ids via `getRooms()` (cursor-pageable) |
+| `hub_get_room` | None | One room by `id`: its devices with labels and current states from the Devices page |
 | `hub_create_room` | Write master + confirm | Creates room via `POST /room/save` with `roomId: 0`; the new id comes from the response's `roomId` |
 | `hub_delete_room` | Write master + confirm | Deletes room via `GET /room/delete/<id>` (POST answers 405). Devices become unassigned |
 | `hub_update_room` | Write master + confirm | `POST /room/save` with the existing `roomId`, the new or current `name`, and the new or current `deviceIds` (a wholesale device list) |

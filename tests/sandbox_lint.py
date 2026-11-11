@@ -2598,7 +2598,7 @@ def _device_gate_libraries() -> list[str]:
 # Every entry is a documented scope decision, not a convenience.
 DEVICE_GATE_EXEMPT = {
     "toolListDevices": "population is the Devices page scoped by _mcpAuthorizedIds (selection + MCP children, or every device with bypass); no caller-supplied device id",
-    "toolListRooms": "with an id, room devices are served from the Devices page only for ids in _mcpAuthorizedIds (or every device with bypass); any other id gets the accessible=false row; no caller-supplied device id",
+    "toolGetRoom": "room devices are served from the Devices page only for ids in _mcpAuthorizedIds (or every device with bypass); any other id gets the accessible=false row; no caller-supplied device id",
     "toolDeleteDevice": "administrative force-delete keeps its documented broader scope behind confirm + backup",
     "toolCreateDevice": "creates the device it then reads; there is no pre-existing device to authorize",
     "toolCreateVirtualDevice": "MCP-child ownership scoped (reads only the child it created)",

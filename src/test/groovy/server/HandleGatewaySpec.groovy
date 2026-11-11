@@ -23,7 +23,7 @@ class HandleGatewaySpec extends ToolSpecBase {
         result.gateway == 'hub_manage_rooms'
         result.mode == 'catalog'
         result.tools instanceof List
-        result.tools*.name == ['hub_list_rooms', 'hub_create_room', 'hub_delete_room', 'hub_update_room']
+        result.tools*.name == ['hub_list_rooms', 'hub_get_room', 'hub_create_room', 'hub_delete_room', 'hub_update_room']
         result.tools.every { it.description && it.inputSchema }
         result.tools.every { !it.containsKey('outputSchema') }
     }
@@ -241,13 +241,13 @@ class HandleGatewaySpec extends ToolSpecBase {
     }
 
     def "JSON-encoded string args containing fields is parsed and fields are accessible to the tool"() {
-        given: 'hub_list_rooms calls getRooms() -- stub it with a known room'
+        given: 'hub_get_room calls getRooms() -- stub it with a known room'
         script.metaClass.getRooms = { ->
             [[id: 42, name: 'Office', deviceIds: []]]
         }
 
         when: 'args is a JSON string encoding {"id":"42"}'
-        def result = script.handleGateway('hub_manage_rooms', 'hub_list_rooms', '{"id":"42"}')
+        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', '{"id":"42"}')
 
         then: 'string was parsed; the id parameter reached the tool; correct room returned'
         !result.isError
@@ -384,18 +384,18 @@ class HandleGatewaySpec extends ToolSpecBase {
         given: 'a stale memo lists an extra requirement removed from the compiled catalog'
         // Supplying the current requirements must reach dispatch without extra_param.
         script.metaClass.getRooms = { [[id: 7, name: 'Kitchen', deviceIds: []]] }
-        atomicStateMap.requiredParamsByTool = ['hub_list_rooms': ['extra_param']]
+        atomicStateMap.requiredParamsByTool = ['hub_get_room': ['id', 'extra_param']]
         atomicStateMap.requiredParamsByToolFingerprint = 'stale-fingerprint'
 
-        when: 'call a tool with no live required params, omitting the stale extra'
-        def result = script.handleGateway('hub_manage_rooms', 'hub_list_rooms', [id: '7'])
+        when: 'supply only the live-required param, omitting the stale extra'
+        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [id: '7'])
 
         then: 'the pre-check passes (no missing-param throw) -- dispatch reached the impl and returned the room'
         notThrown(IllegalArgumentException)
         result.name == 'Kitchen'
 
-        and: 'the in-memory memo has the live shape: no required params'
-        !script.requiredParamsByTool().containsKey('hub_list_rooms')
+        and: 'the in-memory memo has the live shape'
+        script.requiredParamsByTool()['hub_get_room'] == ['id']
     }
 
     def "retired persisted metadata is ignored even if it claims a matching fingerprint"() {
@@ -445,11 +445,11 @@ class HandleGatewaySpec extends ToolSpecBase {
         notThrown(IllegalArgumentException)
 
         when: 'a tool without additionalProperties:false is checked the same way'
-        script._rejectUnknownArgs('hub_list_rooms', [id: '1', whatever: true])
+        script._rejectUnknownArgs('hub_get_room', [id: '1', whatever: true])
 
         then:
         def lenient = thrown(IllegalArgumentException)
-        lenient.message.contains('Unknown hub_list_rooms argument: whatever')
+        lenient.message.contains('Unknown hub_get_room argument: whatever')
 
         when: 'a tool with no properties says so'
         script._rejectUnknownArgs('hub_list_modes', [whatever: true])

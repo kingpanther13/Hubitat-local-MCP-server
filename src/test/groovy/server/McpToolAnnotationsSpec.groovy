@@ -85,7 +85,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_get_radio_details', 'hub_get_device_health', 'hub_get_metrics',
             'hub_list_apps', 'hub_get_source', 'hub_list_backups', 'hub_get_backup',
             'hub_get_compatible_devices',
-            'hub_list_rooms',
+            'hub_list_rooms', 'hub_get_room',
             'hub_list_files', 'hub_read_file',
             'hub_get_app_config',
             'hub_list_hpm_packages',
@@ -199,7 +199,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // Direct unit test of the helper -- catches regressions independently of
         // the larger getToolDefinitions() integration path.
         when:
-        def readOnly = ['hub_list_rooms'] as Set
+        def readOnly = ['hub_list_rooms', 'hub_get_room'] as Set
         // displayMeta is a required param; null deliberately skips title emission
         // (the hint contract under test here is independent of titles).
         def ann = script.annotationsForLeaf('hub_list_rooms', readOnly, null, [] as Set, [] as Set)
@@ -221,8 +221,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
     def "annotationsForGateway: all-read sub-tools roll up to read-only, no destructiveHint"() {
         when:
-        def readOnly = ['hub_list_rooms', 'hub_list_devices'] as Set
-        def ann = script.annotationsForGateway(['hub_list_rooms', 'hub_list_devices'], readOnly, [] as Set, [] as Set)
+        def readOnly = ['hub_list_rooms', 'hub_get_room', 'hub_list_devices'] as Set
+        def ann = script.annotationsForGateway(['hub_list_rooms', 'hub_get_room'], readOnly, [] as Set, [] as Set)
 
         then:
         ann.readOnlyHint == true
@@ -231,7 +231,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
     def "annotationsForGateway: any write sub-tool flips gateway to write+destructive"() {
         when:
-        def readOnly = ['hub_list_rooms'] as Set
+        def readOnly = ['hub_list_rooms', 'hub_get_room'] as Set
         def ann = script.annotationsForGateway(['hub_list_rooms', 'hub_delete_room'], readOnly, [] as Set, [] as Set)
 
         then:
@@ -255,9 +255,9 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // toggle-hidden while at least one read sub-tool stays visible), so this
         // unit-level test pins the helper contract directly.
         when:
-        def readOnly = ['hub_list_rooms', 'hub_list_devices'] as Set
+        def readOnly = ['hub_list_rooms', 'hub_get_room', 'hub_list_devices'] as Set
         def withWrites = script.annotationsForGateway(['hub_list_rooms', 'hub_delete_room'], readOnly, [] as Set, [] as Set)
-        def writesHidden = script.annotationsForGateway(['hub_list_rooms', 'hub_list_devices'], readOnly, [] as Set, [] as Set)
+        def writesHidden = script.annotationsForGateway(['hub_list_rooms', 'hub_get_room'], readOnly, [] as Set, [] as Set)
 
         then:
         withWrites.readOnlyHint == false
@@ -502,7 +502,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_list_apps', 'hub_list_drivers', 'hub_list_libraries', 'hub_list_bundles',
             'hub_get_source',
             'hub_list_backups', 'hub_get_backup',
-            'hub_list_rooms',
+            'hub_list_rooms', 'hub_get_room',
             'hub_list_files', 'hub_read_file',
             'hub_list_device_dependents', 'hub_get_app_config',
             'hub_list_hpm_packages',
@@ -568,7 +568,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 114
+        names.size() == 115
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk
