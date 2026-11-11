@@ -379,6 +379,27 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "hub_delete_item requires a valid type, named in the refusal, before any hub call: #label"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolDeleteItem(args)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('type')
+        ex.message.contains('app, driver, library')
+        hubGet.calls.isEmpty()
+        backupIndex.isEmpty()
+
+        where:
+        label          | args
+        'missing type' | [id: '5', confirm: true]
+        'unknown type' | [type: 'bundle', id: '5', confirm: true]
+    }
+
+    @spock.lang.Unroll
     def "hub_delete_item rejects id '#badId' before any hub call"() {
         given:
         enableWrite()

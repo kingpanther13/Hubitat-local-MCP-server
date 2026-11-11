@@ -31,6 +31,9 @@ class AppCodeClient:
             unknown = sorted(set(args) - CREATE_APP_ARGS)
             if unknown:
                 raise et.McpToolError(tool, f"Unknown hub_create_app arguments: {', '.join(unknown)}")
+            if "ClassThatDoesNotExistBatE2e" in args["source"]:
+                return {"success": False, "appId": None, "note": "Fix the source and retry.",
+                        "error": "App installation failed: unable to resolve class ClassThatDoesNotExistBatE2eCreate"}
             app_id = str(len(self.created) + 1)
             self.apps[app_id] = {"success": True, "version": 1, "source": args["source"]}
             self.created.append(app_id)
@@ -72,6 +75,8 @@ class AppCodeClient:
             app_id = str(args["id"])
             if "item_id" in args:
                 raise et.McpToolError(tool, "Unknown hub_delete_item argument: item_id")
+            if not app_id.isdigit():
+                raise et.McpToolError(tool, f"id is required and must be a positive integer (got: '{app_id}')")
             if app_id not in self.apps:
                 result = {"success": False, "error": f"App {app_id} does not exist"}
             else:

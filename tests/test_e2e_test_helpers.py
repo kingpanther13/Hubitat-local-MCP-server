@@ -2402,6 +2402,13 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
 
     def write_once(gateway, tool, args, label):
         write_calls.append((gateway, tool, args, label))
+        if tool == "hub_create_driver" and "installs" in args:
+            return {"success": False, "installs": [{
+                "driverId": None, "success": False,
+                "error": "Unknown installs[] argument: sourcefile.", "note": "Correct the key."}]}
+        if tool == "hub_create_driver" and "ClassThatDoesNotExistBatE2eDrv" in args["source"]:
+            return {"success": False, "driverId": None,
+                    "error": "Driver installation failed: unable to resolve class ClassThatDoesNotExistBatE2eDrv"}
         if tool == "hub_create_driver":
             return {"success": True, "driverId": 77, "version": 1}
         if tool == "hub_update_driver":
@@ -2414,7 +2421,9 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
 
     assert [(gateway, tool, label) for gateway, tool, _args, label in write_calls] == [
         ("hub_manage_code", "hub_create_driver", "driver code create"),
+        ("hub_manage_code", "hub_create_driver", "hub_create_driver compile error"),
         ("hub_manage_code", "hub_update_driver", "driver code round-trip"),
+        ("hub_manage_code", "hub_create_driver", "driver bulk create unknown key"),
     ]
     create_args = write_calls[0][2]
     assert create_args["confirm"] is True
