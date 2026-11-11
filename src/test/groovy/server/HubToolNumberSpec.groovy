@@ -249,7 +249,7 @@ class HubToolNumberSpec extends ToolSpecBase {
         inner.mode == 'catalog'
         inner.tools*.name.every { (it as String).startsWith('hub3_') }
         (inner.tools*.name as Set).collect { (it as String).replaceFirst(/^hub3_/, 'hub_') } as Set ==
-            ['hub_list_rooms'] as Set
+            ['hub_list_rooms', 'hub_get_room'] as Set
     }
 
     def "tools/call dispatch: hub_search_tools results carry hub3_ tool names when enabled"() {

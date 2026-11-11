@@ -11,7 +11,8 @@ import support.ToolSpecBase
 /**
  * Spec for the room tools (libraries/mcp-rooms-lib.groovy):
  *
- * - toolListRooms   -> hub_list_rooms   (read; with id, one room's devices)
+ * - toolListRooms   -> hub_list_rooms   (read)
+ * - toolGetRoom     -> hub_get_room     (read; one room's devices by id)
  * - toolCreateRoom  -> hub_create_room  (Write master + confirm + 24h backup)
  * - toolUpdateRoom  -> hub_update_room  (Write master + confirm + 24h backup)
  * - toolDeleteRoom  -> hub_delete_room  (Write master + confirm + 24h backup)
@@ -173,9 +174,9 @@ class ToolRoomsSpec extends ToolSpecBase {
         ex.message.contains('hub_list_rooms')
     }
 
-    // -------- hub_list_rooms(id): one room --------
+    // -------- hub_get_room: one room by id --------
 
-    def "hub_list_rooms with id builds device rows from the Devices page and flags ids it cannot serve as not-accessible"() {
+    def "hub_get_room builds device rows from the Devices page and flags ids it cannot serve as not-accessible"() {
         given: 'a room with a page device MCP can reach, an id missing from the page, and a page device MCP cannot reach'
         installGetRoomsStub([
             [id: 6, name: 'Hall', deviceIds: [300]],
@@ -188,7 +189,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         ])
 
         when:
-        def result = script.toolListRooms([id: '7'])
+        def result = script.toolGetRoom([id: '7'])
 
         then: 'one page read; the reachable device carries the page label, name and string states'
         hubGet.calls*.path == ['/hub2/devicesList']
@@ -207,14 +208,14 @@ class ToolRoomsSpec extends ToolSpecBase {
         }
     }
 
-    def "hub_list_rooms with id serves every page device when the allowlist bypass is on, and omits empty states"() {
+    def "hub_get_room serves every page device when the allowlist bypass is on, and omits empty states"() {
         given:
         settingsMap.bypassDeviceAllowlist = true
         installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [200, 999]]])
         registerDevicesPage([[id: 200, name: 'Den Fan', currentStates: []]])
 
         when:
-        def result = script.toolListRooms([id: '7'])
+        def result = script.toolGetRoom([id: '7'])
 
         then: 'an unlabelled device reads its name as both label and name'
         result.devices[1] == [id: '200', label: 'Den Fan', name: 'Den Fan']
@@ -223,39 +224,39 @@ class ToolRoomsSpec extends ToolSpecBase {
         result.devices[0] == [id: '999', label: "(device not on the hub's Devices page)", name: 'unknown', accessible: true, metadataUnavailable: true]
     }
 
-    def "hub_list_rooms with id marks a device whose page entry carries no states as unknown, not stateless"() {
+    def "hub_get_room marks a device whose page entry carries no states as unknown, not stateless"() {
         given:
         settingsMap.bypassDeviceAllowlist = true
         installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [200]]])
         registerDevicesPage([[id: 200, name: 'Den Fan']])
 
         expect:
-        script.toolListRooms([id: '7']).devices == [[id: '200', label: 'Den Fan', name: 'Den Fan', metadataUnavailable: true]]
+        script.toolGetRoom([id: '7']).devices == [[id: '200', label: 'Den Fan', name: 'Den Fan', metadataUnavailable: true]]
     }
 
-    def "hub_list_rooms with id masks credential-named states when credential redaction is on"() {
+    def "hub_get_room masks credential-named states when credential redaction is on"() {
         given:
         installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [100]]])
         childDevicesList << new TestDevice(id: 100, name: 'den_light', label: 'Den Light')
         registerDevicesPage([[id: 100, name: 'Den Light', currentStates: [[key: 'apiToken', value: 'abc123'], [key: 'switch', value: 'on']]]])
 
         when:
-        def masked = script.toolListRooms([id: '7'])
+        def masked = script.toolGetRoom([id: '7'])
         settingsMap.redactCredentials = false
-        def plain = script.toolListRooms([id: '7'])
+        def plain = script.toolGetRoom([id: '7'])
 
         then:
         masked.devices[0].currentStates == [apiToken: script._appConfigRedactedMarker(), switch: 'on']
         plain.devices[0].currentStates == [apiToken: 'abc123', switch: 'on']
     }
 
-    def "hub_list_rooms with id returns the structured error when the Devices page cannot be read"() {
+    def "hub_get_room returns the structured error when the Devices page cannot be read"() {
         given: 'a room with a device and no /hub2/devicesList fixture, so the read fails'
         installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [100]]])
         childDevicesList << new TestDevice(id: 100, name: 'den_light', label: 'Den Light')
 
         when:
-        def result = script.toolListRooms([id: '7'])
+        def result = script.toolGetRoom([id: '7'])
 
         then:
         result.success == false
@@ -264,12 +265,12 @@ class ToolRoomsSpec extends ToolSpecBase {
         result.note == "Retry; if it persists check the hub's Devices page."
     }
 
-    def "hub_list_rooms with id on a room with no devices does not read the Devices page"() {
+    def "hub_get_room on a room with no devices does not read the Devices page"() {
         given:
         installGetRoomsStub([[id: 7, name: 'Den', deviceIds: []]])
 
         when:
-        def result = script.toolListRooms([id: 7])
+        def result = script.toolGetRoom([id: 7])
 
         then: 'a numeric id is read as the same string id'
         result == [id: '7', name: 'Den', deviceCount: 0, devices: []]
@@ -277,7 +278,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_list_rooms with id via dispatch returns the room and flags unresolvable ids (useGateways=#useGateways)"() {
+    def "hub_get_room via dispatch returns the room and flags unresolvable ids (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [100, 999]]])
@@ -286,8 +287,8 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         when:
         def response = useGateways
-            ? mcpDriver.callTool('hub_read_rooms', [tool: 'hub_list_rooms', args: [id: '7']])
-            : mcpDriver.callTool('hub_list_rooms', [id: '7'])
+            ? mcpDriver.callTool('hub_read_rooms', [tool: 'hub_get_room', args: [id: '7']])
+            : mcpDriver.callTool('hub_get_room', [id: '7'])
 
         then:
         response.error == null
@@ -302,14 +303,14 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_list_rooms with id via dispatch flags the Devices page failure on the envelope (useGateways=#useGateways)"() {
+    def "hub_get_room via dispatch flags the Devices page failure on the envelope (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [100]]])
         childDevicesList << new TestDevice(id: 100, name: 'den_light', label: 'Den Light')
 
         when:
-        def response = mcpDriver.callTool('hub_list_rooms', [id: '7'])
+        def response = mcpDriver.callTool('hub_get_room', [id: '7'])
 
         then:
         response.result.isError == true
@@ -319,33 +320,33 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_list_rooms refuses an unknown id, and cursor together with id, before reading anything"() {
+    def "hub_get_room refuses an unknown id and a missing id before reading anything"() {
         given:
         installGetRoomsStub([[id: 1, name: 'Kitchen', deviceIds: [5]]])
 
         when:
-        script.toolListRooms([id: '42'])
+        script.toolGetRoom([id: '42'])
 
         then:
         def unknown = thrown(IllegalArgumentException)
         unknown.message == "No room has id '42'. Call hub_list_rooms for room ids."
 
         when:
-        script.toolListRooms([id: '1', cursor: ''])
+        script.toolGetRoom([id: '  '])
 
         then:
-        def both = thrown(IllegalArgumentException)
-        both.message.contains('cursor')
+        def blank = thrown(IllegalArgumentException)
+        blank.message == "id is required: the room id from hub_list_rooms."
         hubGet.calls.empty
         getRoomsCalls == 1
     }
 
-    def "hub_list_rooms with id refuses when the hub has no rooms at all"() {
+    def "hub_get_room refuses when the hub has no rooms at all"() {
         given:
         script.metaClass.getRooms = { -> null }
 
         when:
-        script.toolListRooms([id: '1'])
+        script.toolGetRoom([id: '1'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -353,26 +354,33 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_list_rooms via dispatch: #label is an isError validation result (useGateways=#useGateways)"() {
+    def "#tool via dispatch: #label is an isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         installGetRoomsStub([[id: 1, name: 'Kitchen', deviceIds: []]])
 
         when:
-        def response = mcpDriver.callTool('hub_list_rooms', args)
+        def response = mcpDriver.callTool(tool, args)
 
         then:
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains(needle)
+        hubGet.calls.empty
 
         where:
-        label            | args                  | needle                                  | useGateways
-        'an unknown id'  | [id: '42']            | "No room has id '42'"                   | true
-        'an unknown id'  | [id: '42']            | "No room has id '42'"                   | false
-        'cursor with id' | [id: '1', cursor: ''] | 'cursor pages the room list'            | true
-        'cursor with id' | [id: '1', cursor: ''] | 'cursor pages the room list'            | false
-        'a stale name'   | [room: 'Kitchen']     | 'Unknown hub_list_rooms argument: room' | true
-        'a stale name'   | [room: 'Kitchen']     | 'Unknown hub_list_rooms argument: room' | false
+        tool             | label            | args                  | needle                                  | useGateways
+        'hub_get_room'   | 'an unknown id'  | [id: '42']            | "No room has id '42'"                   | true
+        'hub_get_room'   | 'an unknown id'  | [id: '42']            | "No room has id '42'"                   | false
+        'hub_get_room'   | 'a missing id'   | [:]                   | 'id is required'                        | true
+        'hub_get_room'   | 'a missing id'   | [:]                   | 'id is required'                        | false
+        'hub_get_room'   | 'a stale name'   | [room: 'Kitchen']     | 'Unknown hub_get_room argument: room'   | true
+        'hub_get_room'   | 'a stale name'   | [room: 'Kitchen']     | 'Unknown hub_get_room argument: room'   | false
+        'hub_get_room'   | 'a cursor'       | [id: '1', cursor: ''] | 'Unknown hub_get_room argument: cursor' | true
+        'hub_get_room'   | 'a cursor'       | [id: '1', cursor: ''] | 'Unknown hub_get_room argument: cursor' | false
+        'hub_list_rooms' | 'an id'          | [id: '1']             | 'Unknown hub_list_rooms argument: id'   | true
+        'hub_list_rooms' | 'an id'          | [id: '1']             | 'Unknown hub_list_rooms argument: id'   | false
+        'hub_list_rooms' | 'a stale name'   | [room: 'Kitchen']     | 'Unknown hub_list_rooms argument: room' | true
+        'hub_list_rooms' | 'a stale name'   | [room: 'Kitchen']     | 'Unknown hub_list_rooms argument: room' | false
     }
 
     // -------- strict arguments and the gateway surface --------
@@ -396,16 +404,32 @@ class ToolRoomsSpec extends ToolSpecBase {
         where:
         tool              | gateway            | args                                     | bad
         'hub_list_rooms'  | 'hub_read_rooms'   | [room: 'Office']                         | 'room'
+        'hub_get_room'    | 'hub_read_rooms'   | [id: '8', room: 'Office']                | 'room'
         'hub_create_room' | 'hub_manage_rooms' | [name: 'Den', confirm: true, roomId: 0]  | 'roomId'
         'hub_update_room' | 'hub_manage_rooms' | [id: '8', newName: 'Den', confirm: true] | 'newName'
         'hub_delete_room' | 'hub_manage_rooms' | [room: '8', id: '8', confirm: true]      | 'room'
     }
 
-    def "the room gateways list four tools, the read gateway only hub_list_rooms"() {
+    def "hub_get_room through its read gateway without an id names the missing parameter"() {
+        given:
+        installGetRoomsStub([[id: 1, name: 'Kitchen', deviceIds: []]])
+
+        when:
+        def response = mcpDriver.callTool('hub_read_rooms', [tool: 'hub_get_room', args: [:]])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Missing required parameter for hub_get_room: id')
+        getRoomsCalls == 0
+        hubGet.calls.empty
+    }
+
+    def "the room gateways list five tools, the read gateway the two reads"() {
         expect:
-        script.handleGateway('hub_manage_rooms', null, null).tools*.name == ['hub_list_rooms', 'hub_create_room', 'hub_delete_room', 'hub_update_room']
-        script.handleGateway('hub_read_rooms', null, null).tools*.name == ['hub_list_rooms']
-        script.getAllToolDefinitions().every { it.name != 'hub_get_room' }
+        script.handleGateway('hub_manage_rooms', null, null).tools*.name == ['hub_list_rooms', 'hub_get_room', 'hub_create_room', 'hub_delete_room', 'hub_update_room']
+        script.handleGateway('hub_read_rooms', null, null).tools*.name == ['hub_list_rooms', 'hub_get_room']
+        script.getAllToolDefinitions().find { it.name == 'hub_get_room' }.inputSchema.required == ['id']
+        !script.getAllToolDefinitions().find { it.name == 'hub_list_rooms' }.inputSchema.properties.containsKey('id')
     }
 
     def "a RETURNED isError sets top-level isError on the JSON-RPC envelope, not just content (#209)"() {

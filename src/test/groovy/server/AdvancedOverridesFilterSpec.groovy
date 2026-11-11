@@ -29,9 +29,9 @@ class AdvancedOverridesFilterSpec extends ToolSpecBase {
         !manageGw.inputSchema.properties.tool.enum.contains("hub_read_file")
     }
 
-    def "a gateway whose only tool is disabled drops off tools/list, while a sharing gateway keeps its other tools"() {
-        given: "hub_list_rooms is hub_read_rooms' only tool and also sits in hub_manage_rooms"
-        settingsMap.disabled_tools = ["hub_list_rooms"]
+    def "a gateway whose every tool is disabled drops off tools/list, while a sharing gateway keeps its other tools"() {
+        given: "hub_list_rooms and hub_get_room are hub_read_rooms' only tools and also sit in hub_manage_rooms"
+        settingsMap.disabled_tools = ["hub_list_rooms", "hub_get_room"]
         settingsMap.useGateways = true
 
         when:
@@ -42,6 +42,7 @@ class AdvancedOverridesFilterSpec extends ToolSpecBase {
         tools.every { it.name != "hub_read_rooms" }
         manageGw != null
         !manageGw.inputSchema.properties.tool.enum.contains("hub_list_rooms")
+        !manageGw.inputSchema.properties.tool.enum.contains("hub_get_room")
         manageGw.inputSchema.properties.tool.enum.contains("hub_update_room")
     }
 
