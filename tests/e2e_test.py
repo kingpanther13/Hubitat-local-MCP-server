@@ -2926,14 +2926,14 @@ class TestRunner:
         missing = []
         for _ in range(2):
             try:
-                self.client.call_tool("hub_read_files", {"tool": "hub_read_file", "args": {}}, flat=True)
-                raise AssertionError("gateway accepted a missing required fileName")
+                self.client.call_tool("hub_read_rooms", {"tool": "hub_get_room", "args": {}}, flat=True)
+                raise AssertionError("gateway accepted a missing required room id")
             except McpError as exc:
                 missing.append(str(exc))
-        assert all("Missing required parameter" in msg and "fileName" in msg for msg in missing), missing
+        assert all("Missing required parameter for hub_get_room: id" in msg for msg in missing), missing
         assert all("FLAT_TRIM" not in msg for msg in missing), missing
-        found = self.client.call_tool("hub_search_tools", {"query": "read file", "maxResults": 10}, flat=True)
-        assert any(row.get("tool") == "hub_read_file" for row in found.get("results", [])), found
+        found = self.client.call_tool("hub_search_tools", {"query": "get room", "maxResults": 10}, flat=True)
+        assert any(row.get("tool") == "hub_get_room" for row in found.get("results", [])), found
 
     @test("infrastructure")
     def test_search_tools_counts_distinct_not_gateway_rows(self) -> None:

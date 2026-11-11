@@ -3170,9 +3170,9 @@ Run on a dedicated test hub. Record the original Developer Mode, logging level a
 
 On an authorized test hub, switch to flat mode and call `hub_list_rooms` directly; a gateway call must be refused.
 Return to gateway mode and verify `hub_read_rooms(tool='hub_list_rooms')` works. Avoid the full flat tools/list fetch.
-Call `hub_read_files(tool='hub_read_file', args={})` twice, then search for `read file`.
-Both invalid calls must identify `fileName` as required without `FLAT_TRIM` text; search must still find
-`hub_read_file`. Repeat the existing Read/Write, Advanced override, and BPS gate scenarios after warming
+Call `hub_read_rooms(tool='hub_get_room', args={})` twice, then search for `get room`.
+Both invalid calls must identify `id` as required without `FLAT_TRIM` text; search must still find
+`hub_get_room`. Repeat the existing Read/Write, Advanced override, and BPS gate scenarios after warming
 the catalog: settings must take effect immediately despite cached metadata. Preserve the original settings.
 This scenario requires no room creation or device command.
 
