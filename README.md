@@ -29,7 +29,7 @@ Behind the scenes, the AI uses MCP tools to control devices, create automation r
 ## Requirements
 
 - Hubitat Elevation C-7, C-8, or C-8 Pro
-- Hubitat firmware 2.3.0+ (for OAuth and internal API support)
+- Hubitat firmware: the current stable release. On older firmware, update the hub or use an older release of this server.
 
 ## Installation
 

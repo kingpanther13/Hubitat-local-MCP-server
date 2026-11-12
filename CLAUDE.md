@@ -335,6 +335,13 @@ Scope discipline is the partner rule to Boy Scout — they're different things. 
 
 When in doubt, treat the problem as in-scope, name it, and surface the trade-off to the user. The user can always shrink the scope; only the user can grow it.
 
+## Firmware support
+
+- The server supports the current stable Hubitat firmware only. Do not add version checks, fallbacks or alternate code paths for firmware older than current stable. A hub on older firmware updates, or keeps an older release of this server.
+- Features from beta firmware are welcome, but each needs a working path on current stable: the stable hub either gets an equivalent result or a clear message that the feature needs newer firmware. Beta-over-stable is the only kind of fallback to add.
+- Existing older-firmware fallbacks may stay while they cost nothing to maintain. They are not tested (older firmware cannot be loaded for testing). One that makes a new test, tool or e2e run fail is removed, not fixed.
+- Reviews flag a new older-firmware fallback the same way they flag new legacy rule-engine code.
+
 ## Boundaries
 
 **🚫 Never edit** — `pr_guard.py` (CI: `.github/workflows/pr-guard.yml`) flags any of these on every PR:
