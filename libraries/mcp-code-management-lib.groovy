@@ -2792,7 +2792,7 @@ A transport drop can lose the response while the hub still commits this write; v
             name: "hub_create_driver",
             description: """⚠️ Install new driver. Show code to user and get confirmation first.
 
-Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). Send driver creates one at a time: wait for one to finish before sending the next. For >1 driver use BULK mode (the installs param), which runs the entries in order.
+Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). Send driver creates one at a time, never in parallel; for >1 driver use BULK mode (the installs param), which runs them in order.
 
 The hub compiles on save and returns success=false with its error. Requires Write master + confirm + backup <24h. Returns the new driverId and version (bulk: one result per entry).
 [[FLAT_TRIM]]
