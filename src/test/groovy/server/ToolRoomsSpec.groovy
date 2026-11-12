@@ -387,7 +387,8 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     @Unroll
     def "#tool refuses an argument its schema does not declare, through its gateway, before any request"() {
-        given:
+        given: 'gateway mode pinned: this case calls the gateway'
+        settingsMap.useGateways = true
         enableWrite()
         installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [600]]])
         def posts = postJson([roomId: 8])
@@ -411,7 +412,8 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     def "hub_get_room through its read gateway without an id names the missing parameter"() {
-        given:
+        given: 'gateway mode pinned: this case calls the gateway'
+        settingsMap.useGateways = true
         installGetRoomsStub([[id: 1, name: 'Kitchen', deviceIds: []]])
 
         when:
