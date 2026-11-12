@@ -32,6 +32,13 @@ class AppCodeClient:
             unknown = sorted(set(args) - CREATE_APP_ARGS)
             if unknown:
                 raise et.McpToolError(tool, f"Unknown hub_create_app arguments: {', '.join(unknown)}")
+            if "codeAppId" in args:
+                # The hub answers an Apps Code id it does not have with a 500.
+                return {"success": False, "codeAppId": args["codeAppId"], "status": 500,
+                        "error": f"Hub returned a server error (status 500). codeAppId {args['codeAppId']} "
+                                 "may not exist in Apps Code (check hub_list_apps(scope='types'))."}
+            if "sourceFile" in args:
+                raise et.McpToolError(tool, f"Source file '{args['sourceFile']}' not found in File Manager")
             if "ClassThatDoesNotExistBatE2e" in args["source"]:
                 return {"success": False, "appId": None, "note": "Fix the source and retry.",
                         "error": "App installation failed: unable to resolve class ClassThatDoesNotExistBatE2eCreate"}
@@ -114,6 +121,28 @@ def test_app_lifecycle_scenarios_are_independent_and_clean_up(method, restore_co
     assert client.counts["hub_update_app"] == update_count
     assert client.created == client.deleted == ["1"]
     assert client.apps == {}
+
+
+def test_update_scenario_refuses_unknown_code_id_missing_file_and_unknown_delete_key():
+    client = AppCodeClient()
+    runner_for(client).test_update_app_code_lifecycle()
+    creates = [args for tool, args in client.calls if tool == "hub_create_app"]
+    assert {"codeAppId": 2147483000, "confirm": True} in creates
+    assert any(a.get("sourceFile", "").startswith("BAT_E2E_missing_") for a in creates)
+    deletes = [args for tool, args in client.calls if tool == "hub_delete_item"]
+    assert any("id" in a and "item_id" in a for a in deletes)
+    assert all("item_id" in a for a in deletes)
+
+
+def test_update_scenario_fails_when_unknown_code_id_is_accepted():
+    class AcceptsAnyCode(AppCodeClient):
+        def call_tool(self, gateway, arguments):
+            if arguments["tool"] == "hub_create_app" and "codeAppId" in arguments["args"]:
+                return {"success": True, "instanceAppId": "9"}
+            return super().call_tool(gateway, arguments)
+
+    with pytest.raises(AssertionError, match="Apps Code id that does not exist"):
+        runner_for(AcceptsAnyCode()).test_update_app_code_lifecycle()
 
 
 @pytest.mark.parametrize("restore_leg", [1, 2, 3, 4])

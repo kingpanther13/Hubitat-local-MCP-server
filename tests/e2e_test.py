@@ -10819,7 +10819,17 @@ def updated() {}
             assert missing.get("success") is False and "does not exist" in str(missing.get("error")), \
                 f"deleting an app id that does not exist was not refused: {missing}"
 
-            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error, lock conflict and unknown argument all refused with no write; OAuth leg checked")
+            # Neither create writes anything: an Apps Code id the hub does not have comes back as a
+            # success:false result, and a File Manager file that does not exist is a validation error.
+            no_class = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_app", "args": {"codeAppId": 2147483000, "confirm": True}})
+            assert no_class.get("success") is False and "exist in Apps Code" in str(no_class.get("error")), \
+                f"creating an instance of an Apps Code id that does not exist was not refused: {no_class}"
+            missing_file = f"BAT_E2E_missing_{time.time_ns()}.groovy"
+            self._assert_code_call_refused("hub_create_app", {
+                "sourceFile": missing_file, "confirm": True}, f"Source file '{missing_file}' not found in File Manager")
+
+            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error, lock conflict, unknown argument, unknown codeAppId and missing sourceFile all refused with no write; OAuth leg checked")
         finally:
             if code_app_id:
                 try:

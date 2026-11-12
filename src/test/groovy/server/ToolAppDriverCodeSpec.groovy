@@ -542,7 +542,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","version":1,"source":"x"}' }
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","version":1,"source":"x"}' }
-        hubGet.register(path) { params -> groovy.json.JsonOutput.toJson([status: false, message: message]) }
+        hubGet.register(path) { params -> groovy.json.JsonOutput.toJson([status: false, (key): message]) }
 
         when:
         def result = script.toolDeleteItem([type: type, item_id: '8', confirm: true])
@@ -554,10 +554,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         !result.note.contains(inUse ? listCall : inUseText)
 
         where:
-        type     | path                          | message                              | inUse | inUseText          | listCall
-        'app'    | '/app/edit/deleteJsonSafe/8'  | 'App is still in use by 1 app'       | true  | 'app instances'    | 'hub_list_apps'
-        'app'    | '/app/edit/deleteJsonSafe/8'  | 'Something else went wrong'          | false | 'app instances'    | 'hub_list_apps'
-        'driver' | '/driver/editor/deleteJson/8' | 'Driver In Use by 2 devices'         | true  | 'another driver'   | 'hub_list_drivers'
+        // The app delete names its reason in message; the driver delete in error.
+        type     | path                          | key       | message                                                     | inUse | inUseText        | listCall
+        'app'    | '/app/edit/deleteJsonSafe/8'  | 'message' | 'App is still in use by 1 app'                              | true  | 'app instances'  | 'hub_list_apps'
+        'app'    | '/app/edit/deleteJsonSafe/8'  | 'message' | 'Something else went wrong'                                 | false | 'app instances'  | 'hub_list_apps'
+        'driver' | '/driver/editor/deleteJson/8' | 'error'   | 'Driver is in use by the following devices: [ Lamp (12) ]' | true  | 'another driver' | 'hub_list_drivers'
     }
 
     // -------- toolCreateApp / toolCreateDriver --------
