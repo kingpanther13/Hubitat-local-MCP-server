@@ -517,8 +517,13 @@ private Map _copyDashboard(Map args) {
     }
     def created = _createDashboard([name: name, deviceIds: src.deviceIds, options: opts])
     if (created.success == true) {
-        return [success: true, id: created.id, sourceId: sourceId, type: "easy", name: name,
-                message: "Copied dashboard ${sourceId} into a new dashboard${created.id ? ' (' + created.id + ')' : ''}."]
+        def ok = [success: true, id: created.id, sourceId: sourceId, type: "easy", name: name,
+                  message: "Copied dashboard ${sourceId} into a new dashboard${created.id ? ' (' + created.id + ')' : ''}."]
+        // The app-config fallback read carries no theme, so the copy fell back to the default.
+        if (!src.containsKey("theme")) {
+            ok.warnings = ["The source dashboard's theme could not be read, so the copy uses the default 'legacy' theme. Set it with hub_update_dashboard."]
+        }
+        return ok
     }
     def out = [success: false, sourceId: sourceId, error: created.error ?: "creating the copy failed",
                note: created.note ?: "The copy may not have been created; verify with hub_list_dashboards."]
@@ -577,6 +582,12 @@ private Map _updateDashboard(Map args) {
         return [success: false, id: updateId,
                 error: "Could not determine the dashboard's type (the status read failed), so no update was attempted.",
                 note: "Transient hub error (details logged); retry."]
+    }
+    if (status.present != true) {
+        // statusJson answers {} for a removed id: don't route a write at it as if it were Easy.
+        return [success: false, id: updateId,
+                error: "No dashboard found with id '${updateId}', so no update was attempted.",
+                note: "Call hub_list_dashboards to see valid ids."]
     }
     if (status.legacy == true) {
         return _updateLegacyDashboard(updateId, status, args)

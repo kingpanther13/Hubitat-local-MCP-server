@@ -19,10 +19,10 @@ import support.ToolSpecBase
  * hub_delete_dashboard passes; the other tools only need the Write master (create/update) or
  * nothing (reads).
  *
- * NOTE on the legacy probe: update AND delete now call _legacyDashboardProbe(id) first
+ * NOTE on the status probe: update AND delete call _dashboardStatus(id) first
  * (GET /installedapp/statusJson/<id>). For update a null probe (unreadable status) fails safe
  * WITHOUT firing the Easy /dashboard/update, so every Easy update test needs a statusJson stub
- * answering a NON-legacy installed app -> the probe returns [legacy:false] and the Easy path
+ * answering a NON-legacy installed app -> the probe returns [present:true, legacy:false] and the Easy path
  * runs. Those defaults for the Easy fixture ids (412, 38) are seeded in setup() below.
  */
 class ToolDashboardSpec extends ToolSpecBase {
@@ -64,7 +64,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     // ---------- legacy Hubitat® Dashboard stub helpers ----------
 
-    // Register /installedapp/statusJson/<id> so _legacyDashboardProbe classifies <id> as a legacy
+    // Register /installedapp/statusJson/<id> so _dashboardStatus classifies <id> as a legacy
     // dashboard. opts: accessToken (String, or key present + null to OMIT the token), deviceIds
     // (a JSON-array string like "[16, 4]"), label, localAccess (bool).
     // Set by stubForceDelete once the force-delete fires; registerLegacyStatus(afterDelete: ...) reads it.
@@ -1161,6 +1161,69 @@ class ToolDashboardSpec extends ToolSpecBase {
         then:
         r.success == false
         r.isError == true
+    }
+
+    def "update of a removed id (statusJson answers {}) fails without any write, for Easy and legacy args"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/statusJson/9999') { params -> '{}' }
+
+        when:
+        def easy = script.toolUpdateDashboard([id: '9999', name: 'Gone', deviceIds: ['12']])
+        def legacy = script.toolUpdateDashboard([id: '9999', addTiles: [[template: 'clock', col: 1, row: 1]]])
+
+        then: 'a not-found failure, not an Easy write and not a "this is an Easy Dashboard" refusal'
+        [easy, legacy].every { r -> r.success == false && r.isError == true && r.id == '9999' && r.error.contains('No dashboard found') }
+        !hubGet.calls.any { it.path == '/dashboard/update' }
+        !hubGet.calls.any { it.path.contains('/layout') }
+    }
+
+    def "hub_update_dashboard of a removed id via dispatch (gateway=#gatewayMode) is an isError result"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/statusJson/9999') { params -> '{}' }
+
+        when:
+        def resp = callDashboard(gatewayMode, 'hub_manage_dashboards', 'hub_update_dashboard', [id: '9999', name: 'Gone', deviceIds: ['12']])
+
+        then:
+        resp.result.isError == true
+        new JsonSlurper().parseText(resultText(resp)).error.contains('No dashboard found')
+        !hubGet.calls.any { it.path == '/dashboard/update' }
+
+        where:
+        gatewayMode << [true, false]
+    }
+
+    def "an Easy copy warns when the source theme was unreadable (child-app fallback), and not when it was read"() {
+        given: 'the hub list is unreadable, so the source comes from the child-app tree + app-config page (no theme)'
+        enableWrite()
+        hubGet.register('/dashboard/all') { params -> '[]' }
+        hubGet.register('/hub2/appsList') { params ->
+            '{"apps":[{"data":{"id":19,"name":"Easy Dashboards","type":"Easy Dashboard Parent"},' +
+            '"children":[{"data":{"id":38,"name":"Dashboard 1","type":"Easy Dashboard"},"children":[]}]}]}'
+        }
+        hubGet.register('/installedapp/configure/json/38') { params ->
+            '{"app":{"label":"Dashboard 1"},"settings":{"showClockTile":"true","devicesPicked":{"8":"Lamp"}}}'
+        }
+
+        when:
+        def fallback = script.toolCreateDashboard([sourceId: '38'])
+
+        then:
+        fallback.success == true
+        fallback.warnings.size() == 1
+        fallback.warnings[0].contains('theme')
+        hubGet.calls.find { it.path == '/dashboard/create' }.params.theme == 'legacy'
+
+        when: 'the hub list is readable again, the source theme is copied and nothing is warned'
+        hubGet.register('/dashboard/all') { params -> LIST_JSON }
+        def read = script.toolCreateDashboard([sourceId: '412'])
+
+        then:
+        read.success == true
+        !read.containsKey('warnings')
+        hubGet.calls.findAll { it.path == '/dashboard/create' }.last().params.theme == 'dark'
     }
 
     def "a child-app fallback over a malformed app tree is reported partial, and a missing id says the list was incomplete"() {
