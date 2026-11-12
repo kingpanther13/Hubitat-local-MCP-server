@@ -886,18 +886,14 @@ private Map _createUserAppInstance(Integer codeAppId) {
 }
 
 private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requireLiveSettings = false, boolean readLiveSettings = true) {
-    // The ONE Done-submit implementation for an installed-app instance. Both callers ARE the same
-    // UI action -- Done on a pending shell fires installed()/initialize(), on an installed instance
-    // it fires updated() (the triggerUpdated refresh); the hub picks the callback, the request is
-    // identical. Firmware fact (live, 2.5.0.159): /installedapp/configure/<id>/<page> is the HTML
-    // page and answers POST with 405; the submit target is /installedapp/update/json.
+    // Done on a pending shell fires installed()/initialize(); on an installed instance it fires
+    // updated(). The hub picks the callback; the request is identical. Firmware fact (live,
+    // 2.5.0.159): /installedapp/configure/<id>/<page> is the HTML page and answers POST with 405;
+    // the submit target is /installedapp/update/json.
     // Returns [status, page, submitted, liveSettingsUnavailable, shapeRejections].
-    // `requireLiveSettings` = "a wrong value here OVERWRITES a configured instance, so refuse rather
-    // than guess". The triggerUpdated refresh passes true: its whole job is a no-op re-submit, and if
-    // the live settings cannot be read there is nothing to gain and a device wipe to lose. The install
-    // commit passes false -- a fresh shell HAS no configured values, so the page defaults are correct
-    // and refusing would block the install for no benefit. It also passes readLiveSettings=false: a
-    // shell created a moment ago has no stored settings, so the statusJson read would return nothing.
+    // requireLiveSettings: a wrong value here overwrites a configured instance, so when the live
+    // settings cannot be read, refuse rather than guess. readLiveSettings=false skips the statusJson
+    // read for an instance with no stored settings to read.
     def cfg = _rmFetchConfigJson(instanceId, pageName)
     def page = pageName ?: (cfg?.configPage?.name?.toString()) ?: "mainPage"
     def schema = _rmCollectInputSchema(cfg?.configPage)
@@ -1664,9 +1660,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                         return successResult
                     }
                     // Submitting Done on an already-installed instance is what fires
-                    // updated(). Goes through the SAME _submitAppDoneForm the install-commit
-                    // uses -- one Done-submit implementation, one endpoint. The status check
-                    // matters: hubInternalPostForm hands back a status for a response the
+                    // updated(). The status check matters: hubInternalPostForm hands back a status for a response the
                     // platform client does not throw on, and without this a rejected Done
                     // would report updatedFired:true.
                     // requireLiveSettings=true: this instance is CONFIGURED, and a Done built from
