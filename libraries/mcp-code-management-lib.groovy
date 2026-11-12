@@ -1660,9 +1660,9 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                         return successResult
                     }
                     // Submitting Done on an already-installed instance is what fires
-                    // updated(). The status check matters: hubInternalPostForm hands back a status for a response the
-                    // platform client does not throw on, and without this a rejected Done
-                    // would report updatedFired:true.
+                    // updated(). The status check matters: hubInternalPostForm hands back a
+                    // status for a response the platform client does not throw on, and
+                    // without this a rejected Done would report updatedFired:true.
                     // requireLiveSettings=true: this instance is CONFIGURED, and a Done built from
                     // page defaults would overwrite it. Refusing loses only the refresh.
                     def submit = _submitAppDoneForm(triggerId, null, true)
