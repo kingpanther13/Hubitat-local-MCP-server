@@ -285,6 +285,38 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.installs[1].success == true
     }
 
+    def "a bulk entry whose only source key is misspelled is named as unknown, and a non-object entry still needs a source"() {
+        given:
+        enableWrite()
+        def calls = 0
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> calls++; [success: true, id: 5, version: 1] }
+
+        when:
+        def result = script.toolCreateDriver([installs: [[sorce: 'a'], 'not-an-object'], confirm: true])
+
+        then:
+        calls == 0
+        result.success == false
+        result.installs[0].error.startsWith('Unknown installs[] argument: sorce.')
+        result.installs[1].error == "Each installs entry must have a 'source', 'sourceFile', or 'importUrl' field."
+    }
+
+    def "a bulk update entry whose driverId key is misspelled is named as unknown, and a non-object entry still needs a driverId"() {
+        given:
+        enableWrite()
+        def calls = 0
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> calls++; [success: true, id: 5, version: 2] }
+
+        when:
+        def result = script.toolUpdateDriverCode([confirm: true, updates: [[driverid: '55', source: 'new'], 'not-an-object']])
+
+        then:
+        calls == 0
+        result.updates[0].driverId == 'item[0]'
+        result.updates[0].error.startsWith('Unknown updates[] argument: driverid.')
+        result.updates[1].error == "Each updates entry must have a 'driverId' field."
+    }
+
     // -------- one delete path --------
 
     @spock.lang.Unroll

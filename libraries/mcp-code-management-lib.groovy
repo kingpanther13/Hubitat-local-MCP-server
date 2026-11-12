@@ -1228,14 +1228,15 @@ private Map _createDriversBulk(args) {
                     resume: [note: "Completed driver installs are retained. Continue with only installsRemaining; do not repeat completed installs."]]
         }
         def item = args.installs[idx]
-        if (!(item instanceof Map) || (item.source == null && item.sourceFile == null && item.importUrl == null)) {
-            itemResults << [driverId: null, success: false, error: "Each installs entry must have a 'source', 'sourceFile', or 'importUrl' field."]
+        // Unknown keys first, so a misspelled source key is named rather than reported as missing.
+        def unknownKeys = item instanceof Map ? item.keySet().collect { it as String }.findAll { !(it in bulkEntryKeys) } : []
+        if (unknownKeys) {
+            itemResults << [driverId: null, success: false, error: "Unknown installs[] argument${unknownKeys.size() == 1 ? '' : 's'}: ${unknownKeys.sort().join(', ')}. Nothing was installed for this entry. Valid arguments: ${bulkEntryKeys.join(', ')}.".toString(), note: "Correct or remove the key and send this entry again. See ${_codeGuidePointer()}.".toString()]
             allSucceeded = false
             continue
         }
-        def unknownKeys = item.keySet().collect { it as String }.findAll { !(it in bulkEntryKeys) }
-        if (unknownKeys) {
-            itemResults << [driverId: null, success: false, error: "Unknown installs[] argument${unknownKeys.size() == 1 ? '' : 's'}: ${unknownKeys.sort().join(', ')}. Nothing was installed for this entry. Valid arguments: ${bulkEntryKeys.join(', ')}.".toString(), note: "Correct or remove the key and send this entry again. See ${_codeGuidePointer()}.".toString()]
+        if (!(item instanceof Map) || (item.source == null && item.sourceFile == null && item.importUrl == null)) {
+            itemResults << [driverId: null, success: false, error: "Each installs entry must have a 'source', 'sourceFile', or 'importUrl' field."]
             allSucceeded = false
             continue
         }
@@ -2036,15 +2037,16 @@ def toolUpdateDriverCode(args) {
                         resume: [note: "Completed driver updates are retained. Continue with only updatesRemaining, preserving their order and expectedVersion values."]]
             }
             def item = args.updates[idx]
-            if (!(item instanceof Map) || !item.driverId) {
-                itemResults << [driverId: item?.driverId?.toString() ?: "item[${idx}]", success: false, error: "Each updates entry must have a 'driverId' field."]
+            // A misspelled lock must not fall through to a lock-free save of this entry, and a
+            // misspelled driverId is named rather than reported as missing.
+            def unknownKeys = item instanceof Map ? item.keySet().collect { it as String }.findAll { !(it in bulkEntryKeys) } : []
+            if (unknownKeys) {
+                itemResults << [driverId: item.driverId?.toString() ?: "item[${idx}]", success: false, error: "Unknown updates[] argument${unknownKeys.size() == 1 ? '' : 's'}: ${unknownKeys.sort().join(', ')}. Nothing was changed for this driver. Valid arguments: ${bulkEntryKeys.join(', ')}.", note: "Correct or remove the key and send this entry again. See ${_codeGuidePointer()}.".toString()]
                 allSucceeded = false
                 continue
             }
-            // A misspelled lock must not fall through to a lock-free save of this entry.
-            def unknownKeys = item.keySet().collect { it as String }.findAll { !(it in bulkEntryKeys) }
-            if (unknownKeys) {
-                itemResults << [driverId: item.driverId.toString(), success: false, error: "Unknown updates[] argument${unknownKeys.size() == 1 ? '' : 's'}: ${unknownKeys.sort().join(', ')}. Nothing was changed for this driver. Valid arguments: ${bulkEntryKeys.join(', ')}.", note: "Correct or remove the key and send this entry again. See ${_codeGuidePointer()}.".toString()]
+            if (!(item instanceof Map) || !item.driverId) {
+                itemResults << [driverId: (item instanceof Map ? item.driverId?.toString() : null) ?: "item[${idx}]", success: false, error: "Each updates entry must have a 'driverId' field."]
                 allSucceeded = false
                 continue
             }
