@@ -885,19 +885,19 @@ private Map _createUserAppInstance(Integer codeAppId) {
     return out
 }
 
-// The ONE Done-submit implementation for an installed-app instance. Both callers ARE the same
-// UI action -- Done on a pending shell fires installed()/initialize(), on an installed instance
-// it fires updated() (the triggerUpdated refresh); the hub picks the callback, the request is
-// identical. Firmware fact (live, 2.5.0.159): /installedapp/configure/<id>/<page> is the HTML
-// page and answers POST with 405; the submit target is /installedapp/update/json.
-// Returns [status, page, submitted, liveSettingsUnavailable, shapeRejections].
-// `requireLiveSettings` = "a wrong value here OVERWRITES a configured instance, so refuse rather
-// than guess". The triggerUpdated refresh passes true: its whole job is a no-op re-submit, and if
-// the live settings cannot be read there is nothing to gain and a device wipe to lose. The install
-// commit passes false -- a fresh shell HAS no configured values, so the page defaults are correct
-// and refusing would block the install for no benefit. It also passes readLiveSettings=false: a
-// shell created a moment ago has no stored settings, so the statusJson read would return nothing.
 private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requireLiveSettings = false, boolean readLiveSettings = true) {
+    // The ONE Done-submit implementation for an installed-app instance. Both callers ARE the same
+    // UI action -- Done on a pending shell fires installed()/initialize(), on an installed instance
+    // it fires updated() (the triggerUpdated refresh); the hub picks the callback, the request is
+    // identical. Firmware fact (live, 2.5.0.159): /installedapp/configure/<id>/<page> is the HTML
+    // page and answers POST with 405; the submit target is /installedapp/update/json.
+    // Returns [status, page, submitted, liveSettingsUnavailable, shapeRejections].
+    // `requireLiveSettings` = "a wrong value here OVERWRITES a configured instance, so refuse rather
+    // than guess". The triggerUpdated refresh passes true: its whole job is a no-op re-submit, and if
+    // the live settings cannot be read there is nothing to gain and a device wipe to lose. The install
+    // commit passes false -- a fresh shell HAS no configured values, so the page defaults are correct
+    // and refusing would block the install for no benefit. It also passes readLiveSettings=false: a
+    // shell created a moment ago has no stored settings, so the statusJson read would return nothing.
     def cfg = _rmFetchConfigJson(instanceId, pageName)
     def page = pageName ?: (cfg?.configPage?.name?.toString()) ?: "mainPage"
     def schema = _rmCollectInputSchema(cfg?.configPage)
@@ -1099,9 +1099,9 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     return out
 }
 
-// Exactly one of source / sourceFile / importUrl. A missing file or a failed fetch throws here,
-// before anything is written to the hub.
 private Map _resolveCodeSource(args) {
+    // Exactly one of source / sourceFile / importUrl. A missing file or a failed fetch throws here,
+    // before anything is written to the hub.
     def modesSet = [args.sourceFile, args.source, args.importUrl].count { it }
     if (modesSet > 1) {
         throw new IllegalArgumentException("Provide exactly one of 'source' (inline), 'sourceFile' (File Manager filename), or 'importUrl' (URL the hub will fetch).")
@@ -1110,9 +1110,17 @@ private Map _resolveCodeSource(args) {
         mcpLog("info", "hub-admin", "Reading code source from File Manager: ${args.sourceFile}")
         def bytes = null
         // The hub throws for a missing file rather than returning null.
+        String readError = null
         try { bytes = downloadHubFile(args.sourceFile) }
-        catch (Exception e) { mcpLog("warn", "hub-admin", "Reading ${args.sourceFile} from File Manager failed: ${e.message}") }
-        if (bytes == null) throw new IllegalArgumentException("Source file '${args.sourceFile}' not found in File Manager")
+        catch (Exception e) {
+            readError = e.message ?: e.class.simpleName
+            // A missing file throws with just its name, which adds nothing to the message below.
+            if (readError == args.sourceFile.toString()) readError = null
+            mcpLog("warn", "hub-admin", "Reading ${args.sourceFile} from File Manager failed: ${readError}")
+        }
+        if (bytes == null) {
+            throw new IllegalArgumentException("Source file '${args.sourceFile}' not found in File Manager${readError ? " (the hub's read failed: ${readError})" : ""}".toString())
+        }
         String code = new String(bytes, "UTF-8")
         mcpLog("info", "hub-admin", "Read ${code.length()} chars from ${args.sourceFile}")
         return [code: code, mode: "sourceFile"]
@@ -1139,15 +1147,15 @@ private String _codeCreateUnknownOutcomeNote(String type) {
     return "Whether the ${type} was saved is unknown. Check ${_codeListCall(type)} before retrying: a retry can create a duplicate at a new id.".toString()
 }
 
-// The hub marks up the line number in a compile error (boom on line <span id='errorLine'>1</span>).
 private String _hubMessageText(msg) {
+    // The hub marks up the line number in a compile error (boom on line <span id='errorLine'>1</span>).
     String text = msg?.toString()
     if (text == null) return null
     return text.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").trim()
 }
 
-// [name, namespace] from the source's definition(...) call, or null when it has no name.
 private Map _driverDefinitionName(String source) {
+    // [name, namespace] from the source's definition(...) call, or null when it has no name.
     def block = (source =~ /(?s)\bdefinition\s*\((.*?)\)/)
     if (!block.find()) return null
     String params = block.group(1)
@@ -1157,10 +1165,10 @@ private Map _driverDefinitionName(String source) {
     return [name: name.group(2), namespace: namespace.find() ? namespace.group(2) : null]
 }
 
-// Concurrent driver creates have answered a null-object error for saves that did land, sometimes
-// many seconds later, so a refusal is checked against the drivers carrying this definition's name
-// before it is reported, and a miss is not proof that nothing was saved.
 private Map _settleRefusedDriverCreate(String sourceCode, String hubMsg, String sourceMode) {
+    // Concurrent driver creates have answered a null-object error for saves that did land, sometimes
+    // many seconds later, so a refusal is checked against the drivers carrying this definition's name
+    // before it is reported, and a miss is not proof that nothing was saved.
     String error = "Driver installation failed: ${hubMsg}".toString()
     Map unknown = _codeCreateFailure("driver", error, _codeCreateUnknownOutcomeNote("driver"))
     Map definition = _driverDefinitionName(sourceCode)
@@ -1203,9 +1211,9 @@ private Map _settleRefusedDriverCreate(String sourceCode, String hubMsg, String 
     ]
 }
 
-// The save response is the hub's verdict: compile errors and other refusals come back on it, so no
-// read follows.
 private Map _createCodeItem(String type, args) {
+    // The save response is the hub's verdict: compile errors and other refusals come back on it, so no
+    // read follows.
     Map resolved = _resolveCodeSource(args)
     String sourceCode = resolved.code
     String sourceMode = resolved.mode
@@ -2152,10 +2160,14 @@ def toolUpdateDriverCode(args) {
     return toolUpdateItemCodeInner("driver", "driverId", args)
 }
 
-// The hub answers status:true to an app delete whether or not the id exists, so the backup's read
-// finding no source is the only sign the app is not there.
-private boolean _isMissingAppBackupFailure(Exception e) {
-    return e instanceof IllegalArgumentException && e.message?.contains("no source code returned")
+private boolean _isMissingItemBackupFailure(String type, Exception e) {
+    // The backup read is the first request a delete makes, so it is where a missing app or library
+    // shows: no source for an app (whose delete answers status:true for any id), an empty list for a
+    // library. A missing driver's read fails with a server error that does not say why.
+    if (!(e instanceof IllegalArgumentException)) return false
+    if (type == "app") return e.message?.contains("no source code returned")
+    if (type == "library") return e.message?.contains("library not found")
+    return false
 }
 
 private String _deleteInUseNote(String type) {
@@ -2164,9 +2176,9 @@ private String _deleteInUseNote(String type) {
     return "Remove its app instances first."
 }
 
-// The hub refuses a delete of an item in use with a message saying so, and a delete of a driver
-// that does not exist with a bare status:false; only the first gets the in-use advice.
 private Map _deleteRefusal(String type, String id, hubMsg, String responseText) {
+    // The hub refuses a delete of an item in use with a message saying so, and a delete of a driver
+    // that does not exist with a bare status:false; only the first gets the in-use advice.
     String listCall = _codeListCall(type)
     Map out = [success: false, id: id, type: type, response: responseText?.take(500)]
     String msg = hubMsg?.toString()?.trim()
@@ -2183,9 +2195,9 @@ private Map _deleteRefusal(String type, String id, hubMsg, String responseText) 
     return out
 }
 
-// A positive Integer written as plain digits: no sign, no spaces, nothing a hub path would carry
-// verbatim.
 private Integer _deleteIdArg(rawId) {
+    // A positive Integer written as plain digits: no sign, no spaces, nothing a hub path would carry
+    // verbatim.
     String raw = rawId?.toString()
     if (raw != null && raw ==~ /\d{1,10}/) {
         Long value = raw as Long
@@ -2205,7 +2217,6 @@ def toolDeleteItem(args) {
     String id = idInt.toString()
     String label = type.capitalize()
 
-    boolean backupSucceeded = true
     def backupTaken = null
     try {
         backupTaken = (type == "library") ? backupLibrarySource(id) : backupItemSource(type, id)
@@ -2213,12 +2224,19 @@ def toolDeleteItem(args) {
         // An unreadable backup index refuses the delete: the backup's fate is unknown.
         Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
         if (unavailable != null) return unavailable + [id: id, type: type]
-        if (type == "app" && _isMissingAppBackupFailure(backupErr)) {
-            return [success: false, error: "App ${id} does not exist".toString(), id: id, type: type,
-                    note: "Nothing was deleted. ${_codeListCall('app')} lists the app code ids.".toString()]
+        // No delete without a backup: the delete is what makes the source unrecoverable.
+        mcpLog("warn", "hub-admin", "Pre-delete backup failed for ${type} ${id}: ${backupErr.message} -- delete not sent")
+        String listCall = _codeListCall(type)
+        if (_isMissingItemBackupFailure(type, backupErr)) {
+            return [success: false, error: "${label} ${id} does not exist".toString(), id: id, type: type,
+                    note: "Nothing was deleted. ${listCall} lists the ${type} ids.".toString()]
         }
-        backupSucceeded = false
-        mcpLog("warn", "hub-admin", "Pre-delete backup failed for ${type} ${id}: ${backupErr.message} -- proceeding with delete")
+        if (backupErr.message?.contains("file upload failed")) {
+            return [success: false, error: "Pre-delete backup failed for ${type} ${id}: ${backupErr.message}".toString(), id: id, type: type,
+                    note: "Nothing was deleted. Retry once File Manager accepts writes.".toString()]
+        }
+        return [success: false, error: "Could not read the source of ${type} ${id} for the pre-delete backup: ${backupErr.message}. The ${type} may not exist.".toString(),
+                id: id, type: type, note: "Nothing was deleted. Check ${listCall} for the ${type} id.".toString()]
     }
 
     String deletePath = [app: "/app/edit/deleteJsonSafe/", driver: "/driver/editor/deleteJson/", library: "/library/edit/deleteJson/"][type]
@@ -2246,7 +2264,7 @@ def toolDeleteItem(args) {
         def backupEntry = (_itemBackupManifest())?.get("${type}_${id}".toString()) ?: backupTaken
         def result = [
             success: true,
-            message: backupSucceeded ? "${label} deleted successfully. Source code backed up to File Manager.".toString() : "${label} deleted successfully. WARNING: Pre-delete backup failed -- source code may not be recoverable.".toString(),
+            message: "${label} deleted successfully. Source code backed up to File Manager.".toString(),
             id: id,
             type: type,
             lastBackup: formatTimestamp(state.lastBackupTimestamp),
@@ -2254,7 +2272,6 @@ def toolDeleteItem(args) {
             backupRetentionNote: backupEntry ? _itemBackupRetentionNote() : null,
             restoreHint: backupEntry ? "To restore: use '${[app: 'hub_create_app', driver: 'hub_create_driver', library: 'hub_create_library'][type]}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote()}".toString() : null
         ]
-        if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
         return result
     } catch (Exception e) {
         mcpLogError("hub-admin", "${label} deletion failed", e)

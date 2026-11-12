@@ -493,27 +493,64 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "a driver id the hub cannot read still reaches the delete, and a bare status:false says the driver may not exist"() {
+    def "a driver whose source cannot be read is refused before the delete: it may not exist"() {
         given:
         enableWrite()
         hubGet.register('/driver/ajax/code') { params -> throw new RuntimeException('HTTP 500') }
-        hubGet.register('/driver/editor/deleteJson/999') { params -> '{"status":false}' }
+        hubGet.register('/driver/editor/deleteJson/999') { params -> '{"status":true}' }
 
         when:
         def result = script.toolDeleteItem([type: 'driver', id: '999', confirm: true])
 
         then:
         result.success == false
-        result.error.contains('without giving a reason')
+        result.error.startsWith('Could not read the source of driver 999')
         result.error.contains('may not exist')
         result.id == '999'
         result.type == 'driver'
+        result.note.startsWith('Nothing was deleted')
+        result.note.contains('hub_list_drivers')
+        !hubGet.calls.any { it.path == '/driver/editor/deleteJson/999' }
+    }
+
+    def "a delete the hub refuses with a bare status:false says the driver may not exist"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","version":1,"source":"x"}' }
+        hubGet.register('/driver/editor/deleteJson/998') { params -> '{"status":false}' }
+
+        when:
+        def result = script.toolDeleteItem([type: 'driver', id: '998', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('without giving a reason')
+        result.error.contains('may not exist')
         result.response == '{"status":false}'
         result.note.contains('hub_list_drivers')
         !result.note.contains('another driver')
     }
 
-    def "a missing library's refusal carries the hub's message and no in-use note"() {
+    def "a backup that cannot be written refuses the delete and says to retry once File Manager accepts writes"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String name, byte[] content -> throw new RuntimeException('disk full') }
+        hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","version":1,"source":"x"}' }
+        hubGet.register('/driver/editor/deleteJson/997') { params -> '{"status":true}' }
+
+        when:
+        def result = script.toolDeleteItem([type: 'driver', id: '997', confirm: true])
+
+        then:
+        result.success == false
+        result.error.startsWith('Pre-delete backup failed for driver 997')
+        result.error.contains('disk full')
+        result.note == 'Nothing was deleted. Retry once File Manager accepts writes.'
+        !hubGet.calls.any { it.path == '/driver/editor/deleteJson/997' }
+    }
+
+    def "a missing library is refused at the backup read with no delete request and no in-use note"() {
         given:
         enableWrite()
         hubGet.register('/library/list/single/data/5') { params -> '[]' }
@@ -524,9 +561,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        result.error == 'No library found for id 5'
+        result.error == 'Library 5 does not exist'
         result.note.contains('hub_list_libraries')
         !result.note.contains('#include')
+        !hubGet.calls.any { it.path == '/library/edit/deleteJson/5' }
     }
 
     @spock.lang.Unroll
@@ -826,7 +864,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "a sourceFile the hub throws for is reported as not found in File Manager, on create and update"() {
         given:
         enableWrite()
-        script.metaClass.downloadHubFile = { String fileName -> throw new RuntimeException(fileName) }
+        script.metaClass.downloadHubFile = { String fileName -> throw new RuntimeException("read of ${fileName} failed: disk busy") }
         def posted = false
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> posted = true; [:] }
 
@@ -836,6 +874,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains("Source file 'missing.groovy' not found in File Manager")
+        mcpDriver.parseInner(response).error.contains("(the hub's read failed: read of missing.groovy failed: disk busy)")
         !posted
 
         where:
@@ -3390,7 +3429,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_delete_item (app) proceeds with a warning when pre-delete backup fails"() {
+    def "hub_delete_item (app) sends no delete when the pre-delete backup fails"() {
         given:
         enableWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -3403,14 +3442,15 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         when:
         def result = script.toolDeleteItem([type: 'app', id: '44', confirm: true])
 
-        then: 'delete still succeeds, but the response flags that the backup could not be created'
-        result.success == true
-        result.message.contains('backup failed')
-        result.backupWarning.contains('permanently lost')
+        then: 'the backup failure refuses the delete before it is sent'
+        result.success == false
+        result.error.startsWith('Could not read the source of')
+        result.note.startsWith('Nothing was deleted')
+        !hubGet.calls.any { it.path == '/app/edit/deleteJsonSafe/44' }
     }
 
     @spock.lang.Unroll
-    def "hub_delete_item (app) via dispatch proceeds with backupWarning when pre-delete backup fails (useGateways=#useGateways)"() {
+    def "hub_delete_item (app) via dispatch sends no delete when the pre-delete backup fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -3426,9 +3466,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.success == true
-        inner.message.contains('backup failed')
-        inner.backupWarning.contains('permanently lost')
+        inner.success == false
+        inner.error.startsWith('Could not read the source of')
+        inner.note.startsWith('Nothing was deleted')
+        !hubGet.calls.any { it.path == '/app/edit/deleteJsonSafe/44' }
 
         where:
         useGateways << [true, false]

@@ -1732,7 +1732,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "delete_library proceeds with backupWarning when pre-delete backup fails"() {
+    def "delete_library sends no delete when the pre-delete backup fails"() {
         given:
         enableWrite()
         hubGet.register('/library/list/single/data/42') { params ->
@@ -1746,13 +1746,14 @@ def helperMethod() { return "ok" }
         def result = script.toolDeleteItem([type: 'library', id: '42', confirm: true])
 
         then:
-        result.success == true
-        result.message.contains('backup failed')
-        result.backupWarning.contains('permanently lost')
+        result.success == false
+        result.error.startsWith('Could not read the source of')
+        result.note.startsWith('Nothing was deleted')
+        !hubGet.calls.any { it.path == '/library/edit/deleteJson/42' }
     }
 
     @spock.lang.Unroll
-    def "delete_library via dispatch proceeds with backupWarning envelope when pre-delete backup fails (useGateways=#useGateways)"() {
+    def "delete_library via dispatch sends no delete when the pre-delete backup fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1768,9 +1769,10 @@ def helperMethod() { return "ok" }
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.success == true
-        inner.message.contains('backup failed')
-        inner.backupWarning.contains('permanently lost')
+        inner.success == false
+        inner.error.startsWith('Could not read the source of')
+        inner.note.startsWith('Nothing was deleted')
+        !hubGet.calls.any { it.path == '/library/edit/deleteJson/42' }
 
         where:
         useGateways << [true, false]
