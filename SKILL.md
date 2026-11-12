@@ -364,8 +364,8 @@ All three:
 |--------|---------|
 | `currentVersion()` | Single source of truth for version string |
 | `buildRuleExport(ruleData)` | Build portable rule export map (used by export and delete backup) |
-| `toolInstallItem(type, args)` | Shared install logic for apps and drivers |
-| `toolDeleteItem(type, idParam, deletePath, args)` | Shared delete logic for apps and drivers |
+| `_createCodeItem(type, args)` | Shared single create for apps, drivers and libraries: one POST to the type's `saveOrUpdateJson` |
+| `toolDeleteItem(args)` | Shared delete for apps, drivers and libraries: pre-delete backup, then the type's delete endpoint |
 | `hubInternalPostJson(path, jsonBody, timeout?, isRetry?, query?)` | POST to hub internal API with a JSON body (code saves, device preferences and other JSON endpoints); returns the parsed Map/List, `[_unparseable: true, message]` for a non-JSON body, or null for an empty one |
 | `updateRuleFromParent(data)` | Child app method — handles all rule updates including enable/disable via `enabled=true/false` |
 | `shouldRetryWithFreshCookie(e, isRetry)` | Hub Security auth retry detection |

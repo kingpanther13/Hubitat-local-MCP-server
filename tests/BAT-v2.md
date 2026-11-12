@@ -3344,9 +3344,9 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 }
 ```
 
-**Expected**: Tool resolves the file from File Manager, POSTs to `/driver/save`, fetches the new driver back to verify it compiled, and returns `success: true` with `driverId` set and `sourceMode: 'sourceFile'`. No inline source was sent in the install call -- the source came from File Manager.
+**Expected**: Tool resolves the file from File Manager, POSTs it once to `/driver/saveOrUpdateJson` with no read after the save, and returns `success: true` with `driverId`, `version` and `sourceMode: 'sourceFile'`. No inline source was sent in the install call -- the source came from File Manager.
 
-### T401 — hub_create_driver compile failure detected (post-install verification)
+### T401 — hub_create_driver compile failure reported from the save response
 
 ```json
 {
@@ -3356,7 +3356,7 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 }
 ```
 
-**Expected**: Tool returns `success: false` with the hub's compile error message. On current firmware no driver is created; where an older firmware leaves an error-state stub, the response carries its ID. AI reports the error and does not claim success.
+**Expected**: Tool returns `success: false`, a null `driverId` and the hub's compile error message without markup. AI reports the error and does not claim success.
 
 ### T402 — hub_update_driver bulk mode (happy path)
 
@@ -3408,11 +3408,11 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 
 ```json
 {
-  "test_prompt": "Call hub_create_driver with both sourceFile='x.groovy' AND installs=[{sourceFile: 'f.groovy'}] and confirm=true."
+  "test_prompt": "In one request, install a single driver from the File Manager file x.groovy and also a batch containing the driver from f.groovy, confirming the install. Report what the hub says."
 }
 ```
 
-**Expected**: Tool throws `IllegalArgumentException` (JSON-RPC -32602) with a message containing 'bulk mode' and 'source'. No install is attempted.
+**Expected**: AI calls `hub_create_driver` with both `sourceFile='x.groovy'` and `installs=[{sourceFile: 'f.groovy'}]` (`confirm=true`). Tool refuses with a validation error whose message contains 'bulk mode' and 'source'. No install is attempted.
 
 ---
 
@@ -3458,11 +3458,11 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 **Expected**: AI calls `hub_read_apps_code(tool='hub_get_source', args={type:'library', id:'999999'})`. Result: `{success:false, error:'...not found...'}` or similar. AI reports the error clearly and suggests using hub2/userLibraries or the Hubitat web UI (FOR DEVELOPERS > Libraries code) to find valid library IDs.
 
-### T508 — hub_delete_item (type=library) proceeds with warning when backup fails
+### T508 — hub_delete_item (type=library) refuses when the pre-delete backup fails
 
 (Manual test -- not automatable without simulating File Manager failure.)
 
-**Expected behavior**: If `uploadHubFile` fails during pre-delete backup, `hub_delete_item` (type=library) still proceeds and sets `backupWarning` in the response. The deletion is not blocked by a backup failure. The response message contains "WARNING: Pre-delete backup failed".
+**Expected behavior**: If `uploadHubFile` fails during pre-delete backup, `hub_delete_item` (type=library) sends no delete and returns `success: false` with an error starting "Pre-delete backup failed" and a note saying nothing was deleted. The library is still on the hub.
 
 ### T509 — hub_install_bundle installs a code bundle the HPM way
 
