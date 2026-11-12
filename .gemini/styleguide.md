@@ -28,7 +28,7 @@ Link to these docs from your review comments when relevant; do not paste their c
 
 ## Custom review checks
 
-The three checks below are **soft requests**, not blockers. Phrase them as suggestions in your review ("Consider adding…", "Could you clarify…"). Do not mark a PR as blocked, do not use a "Request changes" review state, and do not lower the overall review verdict solely because of one of these. The author may push back; if they do, defer to them.
+The checks below are **soft requests**, not blockers. Phrase them as suggestions in your review ("Consider adding…", "Could you clarify…"). Do not mark a PR as blocked, do not use a "Request changes" review state, and do not lower the overall review verdict solely because of one of these. The author may push back; if they do, defer to them.
 
 ### 1. Release Notes section presence
 
@@ -76,3 +76,7 @@ When a PR adds or renames an MCP tool, best-effort judgement: does the tool foll
 8. **Pagination** — cursor support on any tool that can return a long list.
 
 Raise mismatches as suggestions only (e.g. "Consider `hub_get_room_health` instead of `check_room_health` — `check` folds into `get` in the verb vocabulary"). Don't mark as blocking, don't lower the verdict for naming nits. Author pushback ends the discussion.
+
+### 5. No new fallbacks for firmware older than current stable
+
+Flag any new version check, fallback or alternate code path whose only purpose is firmware older than current stable (`AGENTS.md` § Firmware support). A beta-firmware feature is fine when it keeps a working current-stable path; check that the stable path exists.
