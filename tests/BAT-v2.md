@@ -4620,7 +4620,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Failure modes**: the AI sends `deviceIds` as an empty list (refused with an `isError: true` tool result — an Easy Dashboard needs ≥1 device). The booleans go over the wire as JSON booleans instead of the strings "true"/"false" (wire-format break — the dashboard's tile would not toggle). `hub_update_dashboard` or `hub_get_dashboard` called without an id (refused with an `isError: true` tool result). The list comes back empty after a successful create (the dashboard page token may be unreadable — the list then falls back to the child-app enumeration, which carries id + name only).
 
-**Last live run**: 2026-11-11, C-7 2.5.2.139 running the build of 819c67f1, driven by an AI client given only the setup, test and teardown prompts: pass -- `hub_create_dashboard(name, deviceIds:[<switch>], options:{showClockTile:true})` returned `success:true` and the new `id`; `hub_list_dashboards(id)` read it back with `showClockTile:true` and the switch in `deviceIds`. Teardown deleted the dashboard and the switch. (On that build the single-dashboard read was `hub_list_dashboards(id)`; it is `hub_get_dashboard(id)` again since the review round, so re-run before relying on this result.)
+**Last live run**: 2026-11-11, a test hub running the build of 93177fc0, driven by an AI client given only the setup, test and teardown prompts: pass -- `hub_create_dashboard(name, deviceIds:[<switch>], options:{showClockTile:true})` returned `success:true` and the new `id`; `hub_get_dashboard(id)` read it back with `showClockTile:true` and the switch in `deviceIds`. Teardown deleted the dashboard and the switch. (Also passed 2026-11-11 on a C-7, 2.5.2.139, build of 819c67f1, where the read was `hub_list_dashboards(id)`.)
 
 ### T721 — Update replaces the config wholesale (read-first)
 
@@ -4636,7 +4636,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Failure modes**: the AI calls update with only `name` + `theme` and omits `deviceIds`/`showClockTile` (refused with an `isError: true` tool result for missing deviceIds; or, if a future caller bypassed the guard, the clock tile and devices would silently revert to defaults — the wholesale-replace trap the description warns about). update called without an `id` or without a `name` (both rejected -32602).
 
-**Last live run**: 2026-11-11, C-7 2.5.2.139 running the build of 819c67f1, driven by an AI client given only the setup, test and teardown prompts: pass -- the AI read the dashboard with `hub_list_dashboards(id)` first, then sent `hub_update_dashboard(id, name:'BAT Dash Renamed', deviceIds, options:{...every tile toggle, theme:'dark'})`; the read-back showed the new name, `theme:'dark'`, the device and `showClockTile:true`. (On that build the single-dashboard read was `hub_list_dashboards(id)`; it is `hub_get_dashboard(id)` again since the review round, so re-run before relying on this result.)
+**Last live run**: 2026-11-11, a test hub running the build of 93177fc0, driven by an AI client given only the setup, test and teardown prompts: pass -- the AI read the dashboard with `hub_get_dashboard(id)` first, then sent `hub_update_dashboard(id, name:'BAT Dash Renamed', deviceIds, options:{showClockTile:true, theme:'dark', showEdit:true, showNavigation:true})`; the read-back showed the new name, `theme:'dark'`, the device and `showClockTile:true`. (Also passed 2026-11-11 on a C-7, 2.5.2.139, build of 819c67f1.)
 
 ### T722 — Copy an Easy Dashboard
 
@@ -4652,7 +4652,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Failure modes**: the AI passes `deviceIds`, `options` or `type` alongside `sourceId` (rejected before any write — copy first, then change the copy with `hub_update_dashboard`). The copy is reported successful but never appears in the list (verify with `hub_list_dashboards`).
 
-**Last live run**: 2026-11-11, C-7 2.5.2.139 running the build of 819c67f1, driven by an AI client given only the setup, test and teardown prompts: pass -- `hub_create_dashboard(sourceId)` with no other arguments returned `success:true`, the copy's `id`, `sourceId` and the name 'BAT Dash CloneSrc (copy)'; `hub_list_dashboards` listed both, each with the switch.
+**Last live run**: 2026-11-11, a test hub running the build of 93177fc0, driven by an AI client given only the setup, test and teardown prompts: pass -- `hub_create_dashboard(sourceId)` with no other arguments returned `success:true`, the copy's `id` and the name 'BAT Dash CloneSrc (copy)'; `hub_list_dashboards` listed both as easy, each with the switch. (Also passed 2026-11-11 on a C-7, 2.5.2.139, build of 819c67f1.)
 
 ### T723 — Create a legacy Hubitat® Dashboard, add a tile, read it back, then delete it
 
@@ -4668,7 +4668,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Failure modes**: the AI passes `options` or Easy tile toggles like `showClockTile` on the legacy create (refused with an `isError: true` tool result — a legacy dashboard's look lives in its layout, not `options`). The built-in Hubitat® Dashboard parent app is not installed, so create returns `success=false` with an error naming the parent app (a hub-provisioning precondition, not a wire-format bug — install the app and retry).
 
-**Last live run**: 2026-11-11, C-7 2.5.2.139 running the build of 819c67f1, driven by an AI client given only the setup, test and teardown prompts: pass -- `hub_create_dashboard(name, type:'legacy', deviceIds)` returned `success:true`, `type:'legacy'` and an empty layout; `hub_update_dashboard(id, addTiles:[{template:'clock', col:1, row:1}])` returned `tileCount:1`; `hub_list_dashboards(id)` showed the clock tile at col 1, row 1. (On that build the single-dashboard read was `hub_list_dashboards(id)`; it is `hub_get_dashboard(id)` again since the review round, so re-run before relying on this result.)
+**Last live run**: 2026-11-11, a test hub running the build of 93177fc0, driven by an AI client given only the setup, test and teardown prompts: pass -- `hub_create_dashboard(name, type:'legacy', deviceIds)` returned `success:true` and `type:'legacy'`; `hub_update_dashboard(id, addTiles:[{template:'clock', col:1, row:1}])` succeeded; `hub_get_dashboard(id)` showed the clock tile at col 1, row 1 and the switch in `deviceIds`. (Also passed 2026-11-11 on a C-7, 2.5.2.139, build of 819c67f1.)
 
 ### T724 — Edit a legacy dashboard's layout granularly (add tile + set grid/color options)
 
@@ -4684,7 +4684,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Failure modes**: the AI passes `layout` (wholesale) AND granular ops (`addTiles`/`setOptions`) in the same call (refused with an `isError: true` tool result — pass one or the other). The device tile references a device the dashboard hasn't authorized (accepted, but the response carries a `warnings` entry that the tile will show no data until the device is authorized via `deviceIds`). The AI puts grid/color settings in `options` instead of `setOptions` (refused with an `isError: true` tool result — `options` is Easy-only).
 
-**Last live run**: 2026-11-11, C-7 2.5.2.139 running the build of 819c67f1, driven by an AI client given only the setup, test and teardown prompts: pass -- one `hub_update_dashboard(id, addTiles:[{template:'switches', device, col:2, row:1}], setOptions:{bgColor:'#404040', cols:4})` returned `tileCount:2` with no warnings; the read-back showed both tiles, the new `bgColor` and `cols:4`. (The hub's default layout is already 4 columns on a dark grey, so the AI picked a different grey to make the change visible.)
+**Last live run**: 2026-11-11, a test hub running the build of 93177fc0, driven by an AI client given only the setup, test and teardown prompts: pass -- one `hub_update_dashboard(id, addTiles:[{template:'switches', device, col:2, row:1}], setOptions:{bgColor:'#333333', cols:4})` succeeded; the read-back showed both tiles, `bgColor:'#333333'` and `cols:4`. The default layout is already 4 columns, so a separate check on the same build set `setOptions:{cols:6, rows:5}` and read back `cols:6`, `rows:5`. (Also passed 2026-11-11 on a C-7, 2.5.2.139, build of 819c67f1.)
 
 ### T725 — Copy a legacy Hubitat® Dashboard
 
@@ -4700,7 +4700,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Failure modes**: the AI passes `type`, `deviceIds` or `options` alongside `sourceId` (rejected before any write). The copy is created but its layout write fails (the response reports `success=false` WITH the copy's `id` and a note to re-apply the layout via `hub_update_dashboard`). The copy never appears in the list (verify with `hub_list_dashboards`).
 
-**Last live run**: 2026-11-11, C-7 2.5.2.139 running the build of 819c67f1, driven by an AI client given only the setup, test and teardown prompts: pass -- `hub_create_dashboard(sourceId)` returned `success:true`, `type:'legacy'`, `sourceId` and the copy's `id`; `hub_list_dashboards` listed both as legacy with the same devices, and `hub_list_dashboards(id)` on the copy showed the source's two tiles. (On that build the single-dashboard read was `hub_list_dashboards(id)`; it is `hub_get_dashboard(id)` again since the review round, so re-run before relying on this result.)
+**Last live run**: 2026-11-11, a test hub running the build of 93177fc0, driven by an AI client given only the setup, test and teardown prompts: pass -- `hub_create_dashboard(sourceId)` returned `success:true` and the copy's `id` named 'BAT Legacy CloneSrc (copy)'; `hub_list_dashboards` listed both as legacy with the same devices, and `hub_get_dashboard(id)` on the copy showed the source's two tiles. (Also passed 2026-11-11 on a C-7, 2.5.2.139, build of 819c67f1.)
 
 ---
 
