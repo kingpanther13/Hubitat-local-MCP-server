@@ -1221,7 +1221,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         leaf                | leafArgs
         'hub_create_driver' | [source: 'metadata { }', confirm: true]
         'hub_update_driver' | [driverId: '55', source: 'metadata { }', confirm: true]
-        'hub_delete_item'   | [type: 'driver', id: '55', confirm: true]
+        'hub_delete_item'   | [type: 'driver', item_id: '55', confirm: true]
     }
 
     def "modern hub_delete_item keeps unproven #itemType deletion on the synchronous path"() {
@@ -1234,7 +1234,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             [success: true, itemType: actual.type]
         }
         def args = [tool: 'hub_delete_item', args: [
-            type: itemType, id: '55', confirm: true
+            type: itemType, item_id: '55', confirm: true
         ]]
 
         when:

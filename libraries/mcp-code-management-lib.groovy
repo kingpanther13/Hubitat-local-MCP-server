@@ -2142,7 +2142,7 @@ private Integer _deleteIdArg(rawId) {
         Long value = raw as Long
         if (value > 0 && value <= Integer.MAX_VALUE) return value as Integer
     }
-    throw new IllegalArgumentException("id is required and must be a positive integer (got: '${rawId}')")
+    throw new IllegalArgumentException("item_id is required and must be a positive integer (got: '${rawId}')")
 }
 
 def toolDeleteItem(args) {
@@ -2151,8 +2151,8 @@ def toolDeleteItem(args) {
         throw new IllegalArgumentException("type is required and must be one of: app, driver, library")
     }
     requireDestructiveConfirm(args.confirm)
-    Integer idInt = _deleteIdArg(args.id)
-    // The result carries the canonical digits as a String, the schema type of id.
+    Integer idInt = _deleteIdArg(args.item_id)
+    // The result carries the canonical digits as a String, the schema type of item_id.
     String id = idInt.toString()
     String label = type.capitalize()
 
@@ -2924,10 +2924,10 @@ For type=driver, MCP 2026-07-28 clients automatically continue this slow write a
                 type: "object",
                 properties: [
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What to delete."],
-                    id: [type: "string", description: "App/driver/library code ID (positive integer), from hub_list_apps(scope='types') / hub_list_drivers / hub_list_libraries respectively."],
+                    item_id: [type: "string", description: "App/driver/library code ID (positive integer), from hub_list_apps(scope='types') / hub_list_drivers / hub_list_libraries respectively."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
-                required: ["type", "id", "confirm"]
+                required: ["type", "item_id", "confirm"]
             ]
         ],
         // Hub Admin Library Management Tools

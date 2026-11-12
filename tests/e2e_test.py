@@ -6489,7 +6489,7 @@ def updated() {}
             if code_id:
                 try:
                     self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {
-                        "type": "app", "id": code_id, "confirm": True}})
+                        "type": "app", "item_id": code_id, "confirm": True}})
                 except (McpError, McpToolError, requests.HTTPError) as exc:
                     print(f"  [WARN] password snapshot cleanup: delete code {code_id} failed: {exc}")
 
@@ -6631,7 +6631,7 @@ def updated() {}
             for code_id in codes:
                 try:
                     gone = self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {
-                        "type": "app", "id": code_id, "confirm": True}})
+                        "type": "app", "item_id": code_id, "confirm": True}})
                     if gone.get("success") is not True:
                         print(f"  [WARN] form fixture cleanup: delete code {code_id} reported failure: {gone}")
                 except (McpError, McpToolError, requests.HTTPError) as exc:
@@ -6718,7 +6718,7 @@ def updated() {}
                     print(f"  [WARN] form types cleanup: delete instance {instance} failed: {exc}")
             if code:
                 try:
-                    self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {"type": "app", "id": code, "confirm": True}})
+                    self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {"type": "app", "item_id": code, "confirm": True}})
                 except (McpError, McpToolError, requests.HTTPError) as exc:
                     print(f"  [WARN] form types cleanup: delete code {code} failed: {exc}")
 
@@ -10642,7 +10642,7 @@ def updated() {}
             item_type = "app" if tool == "hub_create_app" else "driver"
             try:
                 self.client.call_tool("hub_manage_code", {
-                    "tool": "hub_delete_item", "args": {"type": item_type, "id": stray, "confirm": True}})
+                    "tool": "hub_delete_item", "args": {"type": item_type, "item_id": stray, "confirm": True}})
             except Exception as exc:
                 print(f"  [WARN] {tool} compile-error leg: delete stray {item_type} {stray} failed: {exc}")
         assert result.get("success") is False and stray is None, \
@@ -10809,12 +10809,12 @@ def updated() {}
             self._assert_code_call_refused("hub_create_app", {
                 "installs": [{"source": source_v1}], "confirm": True}, "installs")
             self._assert_code_call_refused("hub_delete_item", {
-                "type": "app", "id": "2147483000", "item_id": "2147483000", "confirm": True}, "item_id")
+                "type": "app", "item_id": "2147483000", "id": "2147483000", "confirm": True}, "argument: id.")
             self._assert_code_call_refused("hub_delete_item", {
-                "type": "app", "id": "abc", "confirm": True}, "positive integer")
+                "type": "app", "item_id": "abc", "confirm": True}, "positive integer")
             missing = self.client.call_tool("hub_manage_code", {
                 "tool": "hub_delete_item",
-                "args": {"type": "app", "id": "2147483000", "confirm": True},
+                "args": {"type": "app", "item_id": "2147483000", "confirm": True},
             })
             assert missing.get("success") is False and "does not exist" in str(missing.get("error")), \
                 f"deleting an app id that does not exist was not refused: {missing}"
@@ -10825,7 +10825,7 @@ def updated() {}
                 try:
                     self.client.call_tool("hub_manage_code", {
                         "tool": "hub_delete_item",
-                        "args": {"type": "app", "id": code_app_id, "confirm": True},
+                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] app-code update cleanup: delete code class {code_app_id} failed: {exc}")
@@ -10953,7 +10953,7 @@ def updated() {}
                 try:
                     self.client.call_tool("hub_manage_code", {
                         "tool": "hub_delete_item",
-                        "args": {"type": "app", "id": code_app_id, "confirm": True},
+                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] app-code restore cleanup: delete code class {code_app_id} failed: {exc}")
@@ -11049,7 +11049,7 @@ def updated() {}
             # refusal carries the remove-instances note.
             in_use = self.client.call_tool("hub_manage_code", {
                 "tool": "hub_delete_item",
-                "args": {"type": "app", "id": code_app_id, "confirm": True},
+                "args": {"type": "app", "item_id": code_app_id, "confirm": True},
             })
             assert in_use.get("success") is False and "in use" in str(in_use.get("error")).lower() \
                 and "instances" in str(in_use.get("note")), \
@@ -11153,7 +11153,7 @@ def updated() {}
                 try:
                     self.client.call_tool("hub_manage_code", {
                         "tool": "hub_delete_item",
-                        "args": {"type": "app", "id": code_app_id, "confirm": True},
+                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] triggerUpdated cleanup: delete code class {code_app_id} failed: {exc}")
@@ -11309,7 +11309,7 @@ def updated() {}
                 try:
                     self.client.call_tool("hub_manage_code", {
                         "tool": "hub_delete_item",
-                        "args": {"type": "driver", "id": driver_id, "confirm": True},
+                        "args": {"type": "driver", "item_id": driver_id, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] driver-code update cleanup: delete driver code class {driver_id} failed: {exc}")
@@ -17504,7 +17504,7 @@ def updated() {}
                         print(f"  Sweep: deleting stranded deadman code class {a.get('id')}")
                         self.client.call_tool("hub_manage_code", {
                             "tool": "hub_delete_item",
-                            "args": {"type": "app", "id": str(a.get("id")), "confirm": True},
+                            "args": {"type": "app", "item_id": str(a.get("id")), "confirm": True},
                         })
                     except Exception as exc:
                         print(f"  [WARN] deadman sweep: code-class delete failed: {exc}")
@@ -17522,7 +17522,7 @@ def updated() {}
                         print(f"  Sweep: deleting stranded throwaway driver code class {d.get('id')}")
                         self.client.call_tool("hub_manage_code", {
                             "tool": "hub_delete_item",
-                            "args": {"type": "driver", "id": str(d.get("id")), "confirm": True},
+                            "args": {"type": "driver", "item_id": str(d.get("id")), "confirm": True},
                         })
                     except Exception as exc:
                         print(f"  [WARN] driver sweep: code-class delete failed: {exc}")

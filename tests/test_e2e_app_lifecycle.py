@@ -11,6 +11,7 @@ import e2e_test as et
 UPDATE_APP_ARGS = {"appId", "source", "sourceFile", "importUrl", "resave", "backup",
                    "expectedVersion", "triggerUpdated", "oauth", "confirm"}
 CREATE_APP_ARGS = {"source", "sourceFile", "importUrl", "codeAppId", "confirm"}
+DELETE_ITEM_ARGS = {"type", "item_id", "confirm"}
 
 
 class AppCodeClient:
@@ -72,11 +73,13 @@ class AppCodeClient:
         elif tool == "hub_get_backup":
             result = {"source": self.backups[args["backupKey"]]}
         elif tool == "hub_delete_item":
-            app_id = str(args["id"])
-            if "item_id" in args:
-                raise et.McpToolError(tool, "Unknown hub_delete_item argument: item_id")
+            unknown = sorted(set(args) - DELETE_ITEM_ARGS)
+            if unknown:
+                raise et.McpToolError(tool, f"Unknown hub_delete_item argument: {', '.join(unknown)}. Nothing was changed. "
+                                            "Valid arguments: type, item_id, confirm.")
+            app_id = str(args["item_id"])
             if not app_id.isdigit():
-                raise et.McpToolError(tool, f"id is required and must be a positive integer (got: '{app_id}')")
+                raise et.McpToolError(tool, f"item_id is required and must be a positive integer (got: '{app_id}')")
             if app_id not in self.apps:
                 result = {"success": False, "error": f"App {app_id} does not exist"}
             else:

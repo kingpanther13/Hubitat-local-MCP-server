@@ -2394,6 +2394,7 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
                     "error": "unable to resolve class ClassThatDoesNotExistBatE2eDrv",
                 }
             if (name, tool) == ("hub_manage_code", "hub_delete_item"):
+                assert set(arguments["args"]) == {"type", "item_id", "confirm"}, arguments
                 return {"success": True}
             raise AssertionError(f"unexpected direct call: {name} {arguments}")
 
