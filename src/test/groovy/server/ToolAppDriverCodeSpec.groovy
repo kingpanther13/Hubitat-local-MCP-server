@@ -5,12 +5,13 @@ import support.TestChildApp
 import support.ToolSpecBase
 
 /**
- * Spec for the hub_manage_code gateway tools in hubitat-mcp-server.groovy:
+ * Spec for the hub_manage_code gateway tools in libraries/mcp-code-management-lib.groovy
+ * (toolRestoreItemBackup is in libraries/mcp-item-backups-lib.groovy):
  *
  * - toolCreateApp           -> hub_create_app     (source|sourceFile|importUrl; codeAppId)
  * - toolCreateDriver        -> hub_create_driver  (source|sourceFile|importUrl; bulk installs[])
- * - toolUpdateAppCode       -> hub_update_app     (three source modes: source, sourceFile, resave)
- * - toolUpdateDriverCode    -> hub_update_driver  (three source modes + bulk updates array)
+ * - toolUpdateAppCode       -> hub_update_app     (four source modes: source, sourceFile, importUrl, resave)
+ * - toolUpdateDriverCode    -> hub_update_driver  (four source modes + bulk updates array)
  * - toolDeleteItem (type=app)    -> hub_delete_item
  * - toolDeleteItem (type=driver) -> hub_delete_item
  * - toolRestoreItemBackup   -> hub_restore_backup

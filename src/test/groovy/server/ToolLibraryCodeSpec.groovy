@@ -13,7 +13,6 @@ import support.ToolSpecBase
  *
  * Hub API contracts verified here:
  *   GET  /library/list/single/data/<id>  -- returns [{id, version, source, name, namespace, ...}]
- *   GET  /hub2/userLibraries             -- returns [{id, name, namespace, ...}] (no source)
  *   POST /library/saveOrUpdateJson       -- JSON body {id, source, version}; returns {success, message, id, version}
  *   GET  /library/edit/deleteJson/<id>   -- returns {success: true, message: null}
  *
