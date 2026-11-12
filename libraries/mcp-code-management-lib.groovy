@@ -1154,63 +1154,6 @@ private String _hubMessageText(msg) {
     return text.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").trim()
 }
 
-private Map _driverDefinitionName(String source) {
-    // [name, namespace] from the source's definition(...) call, or null when it has no name.
-    def block = (source =~ /(?s)\bdefinition\s*\((.*?)\)/)
-    if (!block.find()) return null
-    String params = block.group(1)
-    def name = (params =~ /\bname\s*:\s*(["'])(.*?)\1/)
-    if (!name.find()) return null
-    def namespace = (params =~ /\bnamespace\s*:\s*(["'])(.*?)\1/)
-    return [name: name.group(2), namespace: namespace.find() ? namespace.group(2) : null]
-}
-
-private Map _settleRefusedDriverCreate(String sourceCode, String hubMsg, String sourceMode) {
-    // Concurrent driver creates have answered a null-object error for saves that did land, sometimes
-    // many seconds later, so a refusal is checked against the drivers carrying this definition's name
-    // before it is reported, and a miss is not proof that nothing was saved.
-    String error = "Driver installation failed: ${hubMsg}".toString()
-    Map unknown = _codeCreateFailure("driver", error, _codeCreateUnknownOutcomeNote("driver"))
-    Map definition = _driverDefinitionName(sourceCode)
-    if (definition == null) return unknown
-    def exact = []
-    try {
-        def txt = hubInternalGet("/hub2/userDeviceTypes", null, 30)
-        def rows = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        if (!(rows instanceof List)) return unknown
-        def named = rows.findAll { it instanceof Map && it.name?.toString() == definition.name &&
-            (definition.namespace == null || it.namespace?.toString() == definition.namespace) }
-        if (named.size() > 3) return unknown
-        for (row in named) {
-            def codeText = hubInternalGet("/driver/ajax/code", [id: row.id?.toString()])
-            def code = codeText ? new groovy.json.JsonSlurper().parseText(codeText) : null
-            if (!(code instanceof Map) || code.status == "error" || code.source == null) return unknown
-            if (code.source.toString() == sourceCode) exact << [id: row.id?.toString(), version: code.version]
-        }
-    } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "Driver reads after a refused create failed: ${e.message}")
-        return unknown
-    }
-    if (exact.isEmpty()) {
-        return _codeCreateFailure("driver", error, "No driver on the hub holds this source. A compile error means nothing was saved: fix the source and retry. If other saves were running at the same time, check hub_list_drivers before retrying: the hub can finish a refused save later.")
-    }
-    if (exact.size() > 1) return unknown
-    def match = exact[0]
-    mcpLog("info", "hub-admin", "Driver create was refused (${hubMsg}) but driver ${match.id} holds the sent source")
-    return [
-        success: true,
-        message: "Driver installed: the hub refused the save, but a driver with this exact source is on the hub.",
-        driverId: match.id,
-        version: match.version,
-        foundAfterRefusal: true,
-        hubMessage: hubMsg,
-        sourceMode: sourceMode,
-        sourceLength: sourceCode.length(),
-        note: "The hub refused the save ('${hubMsg}'), but driver ${match.id} on the hub holds exactly this source, so it was saved. Do not retry.".toString(),
-        lastBackup: formatTimestamp(state.lastBackupTimestamp)
-    ]
-}
-
 private Map _createCodeItem(String type, args) {
     // The save response is the hub's verdict: compile errors and other refusals come back on it, so no
     // read follows.
@@ -1231,7 +1174,6 @@ private Map _createCodeItem(String type, args) {
     if (parsed instanceof Map && parsed.success == false) {
         String hubMsg = _hubMessageText(parsed.message ?: parsed.errorMessage) ?: "the hub refused the source"
         mcpLog("warn", "hub-admin", "${label} create refused: ${hubMsg}")
-        if (type == "driver") return _settleRefusedDriverCreate(sourceCode, hubMsg, sourceMode)
         String note = type == "library" ?
             "The source needs a library() block with name, namespace, author and description. Fix the source and retry." :
             "Fix the source and retry."
@@ -1304,11 +1246,6 @@ private Map _createDriversBulk(args) {
                 entry.version = r.version
                 entry.sourceMode = r.sourceMode
                 entry.sourceLength = r.sourceLength
-                if (r.foundAfterRefusal) {
-                    entry.foundAfterRefusal = true
-                    entry.hubMessage = r.hubMessage
-                    entry.note = r.note
-                }
             } else {
                 entry.error = r.error ?: "Install failed"
                 if (r.note) entry.note = r.note
@@ -2859,7 +2796,7 @@ A transport drop can lose the response while the hub still commits this write; v
             name: "hub_create_driver",
             description: """⚠️ Install new driver. Show code to user and get confirmation first.
 
-Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). For >1 driver use BULK mode (the installs param).
+Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). Send driver creates one at a time: wait for one to finish before sending the next. For >1 driver use BULK mode (the installs param), which runs the entries in order.
 
 The hub compiles on save and returns success=false with its error. Requires Write master + confirm + backup <24h. Returns the new driverId and version (bulk: one result per entry).
 [[FLAT_TRIM]]
