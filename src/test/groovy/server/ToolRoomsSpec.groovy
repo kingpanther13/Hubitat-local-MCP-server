@@ -189,7 +189,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         ])
 
         when:
-        def result = script.toolGetRoom([id: '7'])
+        def result = script.toolGetRoom([roomId: '7'])
 
         then: 'one page read; the reachable device carries the page label, name and string states'
         hubGet.calls*.path == ['/hub2/devicesList']
@@ -215,7 +215,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         registerDevicesPage([[id: 200, name: 'Den Fan', currentStates: []]])
 
         when:
-        def result = script.toolGetRoom([id: '7'])
+        def result = script.toolGetRoom([roomId: '7'])
 
         then: 'an unlabelled device reads its name as both label and name'
         result.devices[1] == [id: '200', label: 'Den Fan', name: 'Den Fan']
@@ -231,7 +231,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         registerDevicesPage([[id: 200, name: 'Den Fan']])
 
         expect:
-        script.toolGetRoom([id: '7']).devices == [[id: '200', label: 'Den Fan', name: 'Den Fan', metadataUnavailable: true]]
+        script.toolGetRoom([roomId: '7']).devices == [[id: '200', label: 'Den Fan', name: 'Den Fan', metadataUnavailable: true]]
     }
 
     def "hub_get_room masks credential-named states when credential redaction is on"() {
@@ -241,9 +241,9 @@ class ToolRoomsSpec extends ToolSpecBase {
         registerDevicesPage([[id: 100, name: 'Den Light', currentStates: [[key: 'apiToken', value: 'abc123'], [key: 'switch', value: 'on']]]])
 
         when:
-        def masked = script.toolGetRoom([id: '7'])
+        def masked = script.toolGetRoom([roomId: '7'])
         settingsMap.redactCredentials = false
-        def plain = script.toolGetRoom([id: '7'])
+        def plain = script.toolGetRoom([roomId: '7'])
 
         then:
         masked.devices[0].currentStates == [apiToken: script._appConfigRedactedMarker(), switch: 'on']
@@ -256,7 +256,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         childDevicesList << new TestDevice(id: 100, name: 'den_light', label: 'Den Light')
 
         when:
-        def result = script.toolGetRoom([id: '7'])
+        def result = script.toolGetRoom([roomId: '7'])
 
         then:
         result.success == false
@@ -270,7 +270,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         installGetRoomsStub([[id: 7, name: 'Den', deviceIds: []]])
 
         when:
-        def result = script.toolGetRoom([id: 7])
+        def result = script.toolGetRoom([roomId: 7])
 
         then: 'a numeric id is read as the same string id'
         result == [id: '7', name: 'Den', deviceCount: 0, devices: []]
@@ -287,8 +287,8 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         when:
         def response = useGateways
-            ? mcpDriver.callTool('hub_read_rooms', [tool: 'hub_get_room', args: [id: '7']])
-            : mcpDriver.callTool('hub_get_room', [id: '7'])
+            ? mcpDriver.callTool('hub_read_rooms', [tool: 'hub_get_room', args: [roomId: '7']])
+            : mcpDriver.callTool('hub_get_room', [roomId: '7'])
 
         then:
         response.error == null
@@ -310,7 +310,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         childDevicesList << new TestDevice(id: 100, name: 'den_light', label: 'Den Light')
 
         when:
-        def response = mcpDriver.callTool('hub_get_room', [id: '7'])
+        def response = mcpDriver.callTool('hub_get_room', [roomId: '7'])
 
         then:
         response.result.isError == true
@@ -320,23 +320,23 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_get_room refuses an unknown id and a missing id before reading anything"() {
+    def "hub_get_room refuses an unknown roomId and a missing roomId before reading anything"() {
         given:
         installGetRoomsStub([[id: 1, name: 'Kitchen', deviceIds: [5]]])
 
         when:
-        script.toolGetRoom([id: '42'])
+        script.toolGetRoom([roomId: '42'])
 
         then:
         def unknown = thrown(IllegalArgumentException)
         unknown.message == "No room has id '42'. Call hub_list_rooms for room ids."
 
         when:
-        script.toolGetRoom([id: '  '])
+        script.toolGetRoom([roomId: '  '])
 
         then:
         def blank = thrown(IllegalArgumentException)
-        blank.message == "id is required: the room id from hub_list_rooms."
+        blank.message == "roomId is required: the room id from hub_list_rooms."
         hubGet.calls.empty
         getRoomsCalls == 1
     }
@@ -346,7 +346,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         script.metaClass.getRooms = { -> null }
 
         when:
-        script.toolGetRoom([id: '1'])
+        script.toolGetRoom([roomId: '1'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -368,19 +368,21 @@ class ToolRoomsSpec extends ToolSpecBase {
         hubGet.calls.empty
 
         where:
-        tool             | label            | args                  | needle                                  | useGateways
-        'hub_get_room'   | 'an unknown id'  | [id: '42']            | "No room has id '42'"                   | true
-        'hub_get_room'   | 'an unknown id'  | [id: '42']            | "No room has id '42'"                   | false
-        'hub_get_room'   | 'a missing id'   | [:]                   | 'id is required'                        | true
-        'hub_get_room'   | 'a missing id'   | [:]                   | 'id is required'                        | false
-        'hub_get_room'   | 'a stale name'   | [room: 'Kitchen']     | 'Unknown hub_get_room argument: room'   | true
-        'hub_get_room'   | 'a stale name'   | [room: 'Kitchen']     | 'Unknown hub_get_room argument: room'   | false
-        'hub_get_room'   | 'a cursor'       | [id: '1', cursor: ''] | 'Unknown hub_get_room argument: cursor' | true
-        'hub_get_room'   | 'a cursor'       | [id: '1', cursor: ''] | 'Unknown hub_get_room argument: cursor' | false
-        'hub_list_rooms' | 'an id'          | [id: '1']             | 'Unknown hub_list_rooms argument: id'   | true
-        'hub_list_rooms' | 'an id'          | [id: '1']             | 'Unknown hub_list_rooms argument: id'   | false
-        'hub_list_rooms' | 'a stale name'   | [room: 'Kitchen']     | 'Unknown hub_list_rooms argument: room' | true
-        'hub_list_rooms' | 'a stale name'   | [room: 'Kitchen']     | 'Unknown hub_list_rooms argument: room' | false
+        tool             | label               | args                      | needle                                  | useGateways
+        'hub_get_room'   | 'an unknown roomId' | [roomId: '42']            | "No room has id '42'"                   | true
+        'hub_get_room'   | 'an unknown roomId' | [roomId: '42']            | "No room has id '42'"                   | false
+        'hub_get_room'   | 'a missing roomId'  | [:]                       | 'roomId is required'                    | true
+        'hub_get_room'   | 'a missing roomId'  | [:]                       | 'roomId is required'                    | false
+        'hub_get_room'   | 'a stale id'        | [id: '1']                 | 'Unknown hub_get_room argument: id'     | true
+        'hub_get_room'   | 'a stale id'        | [id: '1']                 | 'Unknown hub_get_room argument: id'     | false
+        'hub_get_room'   | 'a stale name'      | [room: 'Kitchen']         | 'Unknown hub_get_room argument: room'   | true
+        'hub_get_room'   | 'a stale name'      | [room: 'Kitchen']         | 'Unknown hub_get_room argument: room'   | false
+        'hub_get_room'   | 'a cursor'          | [roomId: '1', cursor: ''] | 'Unknown hub_get_room argument: cursor' | true
+        'hub_get_room'   | 'a cursor'          | [roomId: '1', cursor: ''] | 'Unknown hub_get_room argument: cursor' | false
+        'hub_list_rooms' | 'an id'             | [id: '1']                 | 'Unknown hub_list_rooms argument: id'   | true
+        'hub_list_rooms' | 'an id'             | [id: '1']                 | 'Unknown hub_list_rooms argument: id'   | false
+        'hub_list_rooms' | 'a stale name'      | [room: 'Kitchen']         | 'Unknown hub_list_rooms argument: room' | true
+        'hub_list_rooms' | 'a stale name'      | [room: 'Kitchen']         | 'Unknown hub_list_rooms argument: room' | false
     }
 
     // -------- strict arguments and the gateway surface --------
@@ -403,15 +405,17 @@ class ToolRoomsSpec extends ToolSpecBase {
         hubGet.calls.empty
 
         where:
-        tool              | gateway            | args                                     | bad
-        'hub_list_rooms'  | 'hub_read_rooms'   | [room: 'Office']                         | 'room'
-        'hub_get_room'    | 'hub_read_rooms'   | [id: '8', room: 'Office']                | 'room'
-        'hub_create_room' | 'hub_manage_rooms' | [name: 'Den', confirm: true, roomId: 0]  | 'roomId'
-        'hub_update_room' | 'hub_manage_rooms' | [id: '8', newName: 'Den', confirm: true] | 'newName'
-        'hub_delete_room' | 'hub_manage_rooms' | [room: '8', id: '8', confirm: true]      | 'room'
+        tool              | gateway            | args                                               | bad
+        'hub_list_rooms'  | 'hub_read_rooms'   | [room: 'Office']                                   | 'room'
+        'hub_get_room'    | 'hub_read_rooms'   | [roomId: '8', room: 'Office']                      | 'room'
+        'hub_create_room' | 'hub_manage_rooms' | [name: 'Den', confirm: true, roomId: 0]            | 'roomId'
+        'hub_update_room' | 'hub_manage_rooms' | [roomId: '8', newName: 'Den', confirm: true]       | 'newName'
+        'hub_update_room' | 'hub_manage_rooms' | [roomId: '8', id: '8', name: 'Den', confirm: true] | 'id'
+        'hub_delete_room' | 'hub_manage_rooms' | [room: '8', roomId: '8', confirm: true]            | 'room'
+        'hub_delete_room' | 'hub_manage_rooms' | [roomId: '8', id: '8', confirm: true]              | 'id'
     }
 
-    def "hub_get_room through its read gateway without an id names the missing parameter"() {
+    def "hub_get_room through its read gateway without a roomId names the missing parameter"() {
         given: 'gateway mode pinned: this case calls the gateway'
         settingsMap.useGateways = true
         installGetRoomsStub([[id: 1, name: 'Kitchen', deviceIds: []]])
@@ -421,7 +425,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('Missing required parameter for hub_get_room: id')
+        mcpDriver.parseInner(response).error.contains('Missing required parameter for hub_get_room: roomId')
         getRoomsCalls == 0
         hubGet.calls.empty
     }
@@ -430,7 +434,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         expect:
         script.handleGateway('hub_manage_rooms', null, null).tools*.name == ['hub_list_rooms', 'hub_get_room', 'hub_create_room', 'hub_delete_room', 'hub_update_room']
         script.handleGateway('hub_read_rooms', null, null).tools*.name == ['hub_list_rooms', 'hub_get_room']
-        script.getAllToolDefinitions().find { it.name == 'hub_get_room' }.inputSchema.required == ['id']
+        script.getAllToolDefinitions().find { it.name == 'hub_get_room' }.inputSchema.required == ['roomId']
         !script.getAllToolDefinitions().find { it.name == 'hub_list_rooms' }.inputSchema.properties.containsKey('id')
     }
 
@@ -577,9 +581,9 @@ class ToolRoomsSpec extends ToolSpecBase {
         when:
         def result = script.toolCreateRoom([name: 'Garage', confirm: true])
 
-        then:
+        then: 'a runtime failure: success=false with error and note, not an isError validation result'
         result.success == false
-        result.isError == true
+        !result.containsKey('isError')
         result.error.contains(errorNeedle)
         result.note.contains(noteNeedle)
         result.note.contains("hub_get_tool_guide(section='rooms')")
@@ -592,22 +596,34 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_create_room via dispatch flags a hub refusal on the envelope (useGateways=#useGateways)"() {
+    def "#tool via dispatch returns #label as success=false without flagging isError (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        installGetRoomsStub([])
+        installGetRoomsStub([[id: 5, name: 'Old Room', deviceIds: [300]]])
         postJson([error: 'Invalid room or device ids'])
+        hubGet.register('/room/delete/5') { throw new RuntimeException('HTTP 500: boom') }
 
         when:
-        def response = mcpDriver.callTool('hub_create_room', [name: 'Garage', deviceIds: ['99999'], confirm: true])
+        def response = useGateways
+            ? mcpDriver.callTool('hub_manage_rooms', [tool: tool, args: args])
+            : mcpDriver.callTool(tool, args)
 
-        then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('Invalid room or device ids')
+        then: 'the JSON-RPC envelope and the tool result both carry no isError'
+        response.error == null
+        !response.result.containsKey('isError')
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        !inner.containsKey('isError')
+        inner.error.contains(errorNeedle)
+        inner.note.contains("hub_get_tool_guide(section='rooms')")
 
         where:
-        useGateways << [true, false]
+        [tool, label, args, errorNeedle, useGateways] << [
+            ['hub_create_room', 'a hub refusal', [name: 'Garage', deviceIds: ['99999'], confirm: true], 'The hub refused to create room'],
+            ['hub_update_room', 'a hub refusal', [roomId: '5', deviceIds: ['99999'], confirm: true], 'The hub refused to update room 5: Invalid room or device ids'],
+            ['hub_delete_room', 'a failed delete request', [roomId: '5', confirm: true], "Could not delete room 'Old Room' (5): HTTP 500: boom"]
+        ].collectMany { row -> [true, false].collect { gw -> row + [gw] } }
     }
 
     // -------- hub_update_room --------
@@ -620,7 +636,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         def posts = postJson([roomId: 8])
 
         when:
-        def result = script.toolUpdateRoom(args + [id: '8', confirm: true])
+        def result = script.toolUpdateRoom(args + [roomId: '8', confirm: true])
 
         then: 'exactly one save, carrying the merged name and device list'
         posts == [[path: '/room/save', body: [roomId: 8, name: sentName, deviceIds: sentIds]]]
@@ -657,13 +673,14 @@ class ToolRoomsSpec extends ToolSpecBase {
         posts.empty
 
         where:
-        label                      | args                         | needle
-        'neither name nor devices' | [id: '8']                    | 'Pass name, deviceIds, or both.'
-        'a blank name'             | [id: '8', name: ' ']         | 'name must not be blank'
-        'a non-numeric device id'  | [id: '8', deviceIds: ['x1']] | "deviceIds must be numeric device ids; got 'x1'"
-        'an unknown room id'       | [id: '999', name: 'Attic']   | "No room has id '999'"
-        'a missing id'             | [name: 'Attic']              | 'id is required'
-        'a colliding name'         | [id: '8', name: 'den']       | "A room named 'den' already exists."
+        label                       | args                             | needle
+        'neither name nor devices'  | [roomId: '8']                    | 'Pass name, deviceIds, or both.'
+        'a blank name'              | [roomId: '8', name: ' ']         | 'name must not be blank'
+        'a non-numeric device id'   | [roomId: '8', deviceIds: ['x1']] | "deviceIds must be numeric device ids; got 'x1'"
+        'deviceIds that is no list' | [roomId: '8', deviceIds: '600']  | 'deviceIds must be an array'
+        'an unknown room id'        | [roomId: '999', name: 'Attic']   | "No room has id '999'"
+        'a missing roomId'          | [name: 'Attic']                  | 'roomId is required'
+        'a colliding name'          | [roomId: '8', name: 'den']       | "A room named 'den' already exists."
     }
 
     def "hub_update_room throws when confirm is not provided"() {
@@ -671,7 +688,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolUpdateRoom([id: '8', name: 'Study'])
+        script.toolUpdateRoom([roomId: '8', name: 'Study'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -685,12 +702,12 @@ class ToolRoomsSpec extends ToolSpecBase {
         def posts = postJson([error: 'Invalid room or device ids'])
 
         when:
-        def result = script.toolUpdateRoom([id: '8', deviceIds: ['99999'], confirm: true])
+        def result = script.toolUpdateRoom([roomId: '8', deviceIds: ['99999'], confirm: true])
 
         then:
         posts.size() == 1
         result.success == false
-        result.isError == true
+        !result.containsKey('isError')
         result.error == 'The hub refused to update room 8: Invalid room or device ids'
         result.note.startsWith('Nothing was saved.')
     }
@@ -702,7 +719,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         enableWrite()
         installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [600]]])
         def posts = postJson([roomId: 8])
-        def args = [id: '8', name: 'Study', deviceIds: ['601'], confirm: true]
+        def args = [roomId: '8', name: 'Study', deviceIds: ['601'], confirm: true]
 
         when:
         def response = useGateways
@@ -728,7 +745,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         def posts = postJson([roomId: 999])
 
         when:
-        def response = mcpDriver.callTool('hub_update_room', [id: '999', name: 'Attic', confirm: true])
+        def response = mcpDriver.callTool('hub_update_room', [roomId: '999', name: 'Attic', confirm: true])
 
         then:
         response.result.isError == true
@@ -750,7 +767,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         hubGet.register('/room/delete/5') { '' }
 
         when:
-        def result = script.toolDeleteRoom([id: '5', confirm: true])
+        def result = script.toolDeleteRoom([roomId: '5', confirm: true])
 
         then: 'one GET, no POST, no re-read of the rooms'
         hubGet.calls*.path == ['/room/delete/5']
@@ -770,13 +787,13 @@ class ToolRoomsSpec extends ToolSpecBase {
         []         | 0     | '0 devices are'
     }
 
-    def "hub_delete_room refuses an unknown room id or a missing id before any request"() {
+    def "hub_delete_room refuses an unknown room id or a missing roomId before any request"() {
         given:
         enableWrite()
         installGetRoomsStub([[id: 1, name: 'Kitchen', deviceIds: []]])
 
         when:
-        script.toolDeleteRoom([id: '5', confirm: true])
+        script.toolDeleteRoom([roomId: '5', confirm: true])
 
         then:
         def unknown = thrown(IllegalArgumentException)
@@ -787,7 +804,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         then:
         def missing = thrown(IllegalArgumentException)
-        missing.message.contains('id is required')
+        missing.message.contains('roomId is required')
         hubGet.calls.empty
     }
 
@@ -796,7 +813,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolDeleteRoom([id: '5'])
+        script.toolDeleteRoom([roomId: '5'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -810,11 +827,11 @@ class ToolRoomsSpec extends ToolSpecBase {
         hubGet.register('/room/delete/5') { throw new RuntimeException('HTTP 500: boom') }
 
         when:
-        def result = script.toolDeleteRoom([id: '5', confirm: true])
+        def result = script.toolDeleteRoom([roomId: '5', confirm: true])
 
         then:
         result.success == false
-        result.isError == true
+        !result.containsKey('isError')
         result.error == "Could not delete room 'Old Room' (5): HTTP 500: boom"
         result.note.contains('hub_list_rooms')
         result.note.contains("hub_get_tool_guide(section='rooms')")
@@ -830,8 +847,8 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         when:
         def response = useGateways
-            ? mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_delete_room', args: [id: '5', confirm: true]])
-            : mcpDriver.callTool('hub_delete_room', [id: '5', confirm: true])
+            ? mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_delete_room', args: [roomId: '5', confirm: true]])
+            : mcpDriver.callTool('hub_delete_room', [roomId: '5', confirm: true])
 
         then:
         response.error == null
@@ -854,7 +871,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         installGetRoomsStub([[id: 1, name: 'Kitchen', deviceIds: []]])
 
         when:
-        def response = mcpDriver.callTool('hub_delete_room', [id: '5', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_room', [roomId: '5', confirm: true])
 
         then:
         response.result.isError == true

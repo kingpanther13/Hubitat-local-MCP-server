@@ -1,4 +1,4 @@
-library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room tool implementations for the MCP Rule Server (hub_list_rooms/hub_get_room/hub_create_room/hub_update_room/hub_delete_room); #include'd by the main app. Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.")
+library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room tools: hub_list_rooms, hub_get_room, hub_create_room, hub_update_room, hub_delete_room.")
 
 def toolListRooms(args = null) {
     return _listRoomSummaries(args?.cursor)
@@ -6,7 +6,7 @@ def toolListRooms(args = null) {
 
 // One room's devices, read from the Devices page.
 def toolGetRoom(args) {
-    def room = _requireRoom(args?.id).room
+    def room = _requireRoom(args?.roomId).room
     List roomIds = (room.deviceIds ?: []).collect { it.toString() }
     Map pageById = [:]
     if (roomIds) {
@@ -69,9 +69,9 @@ private Map _listRoomSummaries(cursor) {
 
 // getRooms() is the in-process room list, not a hub request. The hub's /room/save answers success
 // for an unknown roomId without changing anything, so every write checks the id here first.
-private Map _requireRoom(id) {
-    String rid = id?.toString()?.trim()
-    if (!rid) throw new IllegalArgumentException("id is required: the room id from hub_list_rooms.")
+private Map _requireRoom(roomId) {
+    String rid = roomId?.toString()?.trim()
+    if (!rid) throw new IllegalArgumentException("roomId is required: the room id from hub_list_rooms.")
     def rooms = (getRooms() ?: []).findAll { it != null }
     def room = rooms.find { it.id?.toString() == rid }
     if (!room) throw new IllegalArgumentException("No room has id '${rid}'. Call hub_list_rooms for room ids.")
@@ -99,7 +99,7 @@ private void _requireUniqueRoomName(List rooms, String name, exceptId) {
 }
 
 private Map _roomFailure(String error, String note) {
-    return [success: false, isError: true, error: error,
+    return [success: false, error: error,
             note: "${note} See hub_get_tool_guide(section='rooms').".toString()]
 }
 
@@ -151,7 +151,7 @@ def toolUpdateRoom(args) {
     String newName = hasName ? args.name.toString().trim() : null
     if (hasName && !newName) throw new IllegalArgumentException("name must not be blank.")
     List newIds = hasDevices ? _roomDeviceIds(args.deviceIds) : null
-    Map found = _requireRoom(args.id)
+    Map found = _requireRoom(args.roomId)
     def room = found.room
     String roomId = room.id.toString()
     String oldName = room.name
@@ -177,7 +177,7 @@ def toolUpdateRoom(args) {
 
 def toolDeleteRoom(args) {
     requireDestructiveConfirm(args.confirm)
-    def room = _requireRoom(args.id).room
+    def room = _requireRoom(args.roomId).room
     String roomId = room.id.toString()
     String roomName = room.name
     int deviceCount = room.deviceIds?.size() ?: 0
@@ -199,8 +199,6 @@ def toolDeleteRoom(args) {
     ]
 }
 
-// Tool DEFINITIONS for the room tools (issue #209: schema lives with the impl). Concatenated
-// into getAllToolDefinitions() in the main app; gateway membership + dispatch stay in main.
 def _getAllToolDefinitions_partRooms() {
     return [
         [
@@ -219,9 +217,9 @@ def _getAllToolDefinitions_partRooms() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    id: [type: "string", description: "Room id from hub_list_rooms, e.g. \"5\""]
+                    roomId: [type: "string", description: "Room id from hub_list_rooms, e.g. \"5\""]
                 ],
-                required: ["id"]
+                required: ["roomId"]
             ]
         ],
         [
@@ -239,52 +237,46 @@ def _getAllToolDefinitions_partRooms() {
         ],
         [
             name: "hub_update_room",
-            description: "Rename a room and/or replace its device list, by id; an omitted field keeps its value. deviceIds is the FULL list: a device left out becomes unassigned, an added one leaves its previous room. Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Start from hub_get_room(id). After a rename, automations or dashboards that name the room may need updating. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
+            description: "Rename a room and/or replace its device list, by id; an omitted field keeps its value. deviceIds is the FULL list: a device left out becomes unassigned, an added one leaves its previous room. Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Start from hub_get_room(roomId). After a rename, automations or dashboards that name the room may need updating. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    id: [type: "string", description: "Room id, e.g. \"5\""],
+                    roomId: [type: "string", description: "Room id, e.g. \"5\""],
                     name: [type: "string", description: "New room name"],
                     deviceIds: [type: "array", description: "Complete device list, e.g. [\"12\",\"34\"]; [] empties the room.", items: [type: "string"]],
                     confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved the change."]
                 ],
-                required: ["id", "confirm"]
+                required: ["roomId", "confirm"]
             ]
         ],
         [
             name: "hub_delete_room",
             description: """⚠️ DESTRUCTIVE: Permanently deletes a room by id. Its devices become unassigned (not deleted). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]]
 
-PRE-FLIGHT: 1) Backup <24h 2) Verify the room with hub_get_room(id) 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]""",
+PRE-FLIGHT: 1) Backup <24h 2) Verify the room with hub_get_room(roomId) 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    id: [type: "string", description: "Room id, e.g. \"5\""],
+                    roomId: [type: "string", description: "Room id, e.g. \"5\""],
                     confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user explicitly approved the deletion."]
                 ],
-                required: ["id", "confirm"]
+                required: ["roomId", "confirm"]
             ]
         ]
     ]
 }
 
 def _readOnlyToolNames_partRooms() {
-    // Read-only classification membership for this library's tools, contributed to the
-    // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
-    // the tool). A tool absent from every part list is write+destructive by default.
     return ["hub_list_rooms", "hub_get_room"]
 }
 
 def _idempotentWriteToolNames_partRooms() {
-    // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
-    // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
     // hub_update_room sets the name and device list wholesale, so a repeat lands the same state.
+    // A repeat hub_delete_room is refused before any request (the id is no longer a room).
     return ["hub_update_room", "hub_delete_room"]
 }
 
 def _toolDisplayMeta_partRooms() {
-    // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
-    // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
         hub_list_rooms: [title: "List Rooms", summary: "List all rooms with their ids, names, and device ids."],
         hub_get_room: [title: "Get Room Details", summary: "Get one room's details with its devices and their current states."],

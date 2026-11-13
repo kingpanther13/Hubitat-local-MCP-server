@@ -334,10 +334,10 @@ class HandleToolsCallSpec extends ToolSpecBase {
         and: 'the gateway text lists the parameters; both name the leaf'
         gwInner.success == false
         gwInner.tool == 'hub_get_room'
-        gwInner.error.contains('Missing required parameter for hub_get_room: id.')
+        gwInner.error.contains('Missing required parameter for hub_get_room: roomId.')
         flatInner.success == false
         flatInner.tool == 'hub_get_room'
-        flatInner.error.contains('id is required')
+        flatInner.error.contains('roomId is required')
 
         and: 'the internal validation marker never reaches the wire'
         !gwInner.containsKey('__validation')

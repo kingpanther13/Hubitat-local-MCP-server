@@ -835,7 +835,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected**: Discovers `hub_manage_rooms` → `hub_get_room(id=<that room's id>)`, which returns the room's devices with labels and current states.
+**Expected**: Discovers `hub_manage_rooms` → `hub_get_room(roomId=<that room's id>)`, which returns the room's devices with labels and current states.
 
 ### T29 — Discover hub_create_room (hub_manage_rooms)
 
@@ -858,7 +858,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected**: Discovers `hub_manage_rooms` → `hub_update_room(id=<room id>, name='BAT Rename Done', confirm=true)`; the result carries `previousName`.
+**Expected**: Discovers `hub_manage_rooms` → `hub_update_room(roomId=<room id>, name='BAT Rename Done', confirm=true)`; the result carries `previousName`.
 
 ### T30b — Set a room's devices (hub_update_room deviceIds)
 
@@ -870,7 +870,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected**: `hub_update_room(id=<room id>, deviceIds=[<switch id>], confirm=true)` (the room's full list), then `hub_get_room(id=<room id>)` lists the switch. The result carries `deviceIds` and `deviceCount: 1`; the switch's previous room (if any) no longer lists it.
+**Expected**: `hub_update_room(roomId=<room id>, deviceIds=[<switch id>], confirm=true)` (the room's full list), then `hub_get_room(roomId=<room id>)` lists the switch. The result carries `deviceIds` and `deviceCount: 1`; the switch's previous room (if any) no longer lists it.
 
 ### T31 — Discover hub_delete_room (hub_manage_rooms)
 
@@ -881,7 +881,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected**: Discovers `hub_manage_rooms` → `hub_list_rooms` for the room id → `hub_delete_room(id=<room id>, confirm=true)`.
+**Expected**: Discovers `hub_manage_rooms` → `hub_list_rooms` for the room id → `hub_delete_room(roomId=<room id>, confirm=true)`.
 
 ### T35 — Discover hub_get_info (core)
 
@@ -2129,7 +2129,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_get_room(id=<room id>)`.
+**Expected**: `hub_get_room(roomId=<room id>)`.
 **Equivalent to**: T28
 
 #### T232 — Add a new room
@@ -2604,7 +2604,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_list_rooms` → `hub_create_room` → `hub_get_room(id)` → `hub_update_room` → `hub_delete_room`.
+**Expected**: `hub_list_rooms` → `hub_create_room` → `hub_get_room(roomId)` → `hub_update_room` → `hub_delete_room`.
 **Equivalent to**: T82
 
 #### T298 — Full diagnostic workup
@@ -3171,7 +3171,7 @@ Run on a dedicated test hub. Record the original Developer Mode, logging level a
 On an authorized test hub, switch to flat mode and call `hub_list_rooms` directly; a gateway call must be refused.
 Return to gateway mode and verify `hub_read_rooms(tool='hub_list_rooms')` works. Avoid the full flat tools/list fetch.
 Call `hub_read_rooms(tool='hub_get_room', args={})` twice, then search for `get room`.
-Both invalid calls must identify `id` as required without `FLAT_TRIM` text; search must still find
+Both invalid calls must identify `roomId` as required without `FLAT_TRIM` text; search must still find
 `hub_get_room`. Repeat the existing Read/Write, Advanced override, and BPS gate scenarios after warming
 the catalog: settings must take effect immediately despite cached metadata. Preserve the original settings.
 This scenario requires no room creation or device command.
