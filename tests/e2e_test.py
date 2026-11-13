@@ -16839,7 +16839,7 @@ def updated() {}
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": {
                     "name": "hub_get_tool_guide",
-                    "arguments": {"section": "rooms"},
+                    "arguments": {"section": "device_authorization"},
                     "_meta": {
                         "io.modelcontextprotocol/clientInfo": {"name": client_name, "version": "1.0.0"},
                         "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
@@ -16850,10 +16850,10 @@ def updated() {}
             return json.loads(resp.json()["result"]["content"][0]["text"])
 
         openai = guide("openai-mcp")
-        assert "content" not in openai and openai.get("contentText", "").startswith("## Rooms"), \
+        assert "content" not in openai and openai.get("contentText", "").startswith("## Device Authorization"), \
             f"openai-mcp must get the guide under contentText: {str(openai)[:300]}"
         other = guide("hubitat-e2e-modern-probe")
-        assert other.get("content", "").startswith("## Rooms") and "contentText" not in other, \
+        assert other.get("content", "").startswith("## Device Authorization") and "contentText" not in other, \
             f"other clients must keep content: {str(other)[:300]}"
 
     @test("protocol")
