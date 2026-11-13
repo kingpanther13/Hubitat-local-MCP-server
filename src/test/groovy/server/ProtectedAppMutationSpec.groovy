@@ -286,6 +286,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
         then:
         first.success == true
+        !first.containsKey('isError')
         first.alreadyAbsent != true
         !present
         writes.size() == 1
@@ -297,6 +298,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
         then:
         retry.success == true
+        !retry.containsKey('isError')
         retry.alreadyAbsent == true
         retry.id == '43'
         retry.message.contains('already absent')

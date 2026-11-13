@@ -651,9 +651,9 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         then:
         r.success == false
-        !r.containsKey('isError')
+        r.isError == true
         r.error == 'hub reported failure'
-        r.note != null
+        r.note.endsWith("See hub_get_tool_guide(section='dashboards').")
     }
 
     def "update reports the hub's {success:false, message:null} answer as a runtime failure"() {
@@ -667,7 +667,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         then:
         r.success == false
-        !r.containsKey('isError')
+        r.isError == true
         r.error == 'hub reported failure'
     }
 
@@ -882,7 +882,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
-    def "a delete that leaves the dashboard in place returns a structured failure without isError (does NOT throw)"() {
+    def "a delete that leaves the dashboard in place returns a structured failure flagged isError (does NOT throw)"() {
         given: '/dashboard/delete answers as always, but statusJson still lists the app'
         enableWrite()
         hubGet.register('/dashboard/delete') { params -> '{"success":false,"message":null}' }
@@ -892,9 +892,10 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         then:
         r.success == false
-        !r.containsKey('isError')
+        r.isError == true
         r.error.contains('still present')
         r.note.contains('Nothing was deleted')
+        r.note.contains("hub_get_tool_guide(section='dashboards')")
     }
 
     def "delete succeeds by EFFECT when /dashboard/delete lies with success:false but the dashboard is gone"() {
@@ -945,10 +946,10 @@ class ToolDashboardSpec extends ToolSpecBase {
         when:
         def r = script.toolDeleteDashboard([dashboardId: '412', confirm: true])
 
-        then: 'a destructive op is NOT reported as success without confirming evidence, and is not flagged isError'
+        then: 'a destructive op is NOT reported as success without confirming evidence, and is flagged isError'
         r.success == false
         r.outcomeUnknown == true
-        !r.containsKey('isError')
+        r.isError == true
         r.error.toLowerCase().contains('could not be confirmed')
         r.note != null
     }
@@ -1182,12 +1183,12 @@ class ToolDashboardSpec extends ToolSpecBase {
         ok.result.isError != true
         new JsonSlurper().parseText(resultText(ok)).name == 'Living Room'
 
-        and: 'a not-found is a runtime failure: success:false in the result, not an isError envelope'
-        missing.result.isError != true
+        and: 'a not-found is a runtime failure: success:false in the result, flagged isError on the envelope'
+        missing.result.isError == true
         def m = new JsonSlurper().parseText(resultText(missing))
         m.success == false
-        !m.containsKey('isError')
         m.error.contains('No dashboard found')
+        m.note.contains("hub_get_tool_guide(section='dashboards')")
 
         and: 'a bad id is a validation failure, not a protocol error'
         bad.result.isError == true
@@ -1219,8 +1220,8 @@ class ToolDashboardSpec extends ToolSpecBase {
         resultText(refused).contains('sourceId')
         creates == 1
 
-        and: 'an unreadable source is a structured runtime failure, not an isError envelope'
-        failed.result.isError != true
+        and: 'an unreadable source is a structured runtime failure, flagged isError on the envelope'
+        failed.result.isError == true
         def f = new JsonSlurper().parseText(resultText(failed))
         f.success == false
         f.sourceId == '9999'
@@ -1232,13 +1233,29 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     // ---------- review-round fixes ----------
 
-    def "a runtime failure result is success:false without isError"() {
+    def "a runtime failure result is success:false flagged isError, its note pointing at the guide"() {
         when:
         def r = script.toolGetDashboard([dashboardId: '9999'])
 
-        then:
+        then: 'the recovery advice is kept and the guide pointer is appended once'
         r.success == false
-        !r.containsKey('isError')
+        r.isError == true
+        r.note == "Call hub_list_dashboards to see valid ids. See hub_get_tool_guide(section='dashboards')."
+    }
+
+    def "a success result, including an alreadyAbsent delete, carries no isError"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/statusJson/9999') { params -> '{}' }
+
+        when:
+        def got = script.toolGetDashboard([dashboardId: '412'])
+        def listed = script.toolListDashboards()
+        def absent = script.toolDeleteDashboard([dashboardId: '9999', confirm: true])
+
+        then:
+        [got, listed, absent].every { r -> r.success != false && !r.containsKey('isError') }
+        absent.alreadyAbsent == true
     }
 
     def "update of a removed id (statusJson answers {}) fails without any write, for Easy and legacy args"() {
@@ -1251,12 +1268,13 @@ class ToolDashboardSpec extends ToolSpecBase {
         def legacy = script.toolUpdateDashboard([dashboardId: '9999', addTiles: [[template: 'clock', col: 1, row: 1]]])
 
         then: 'a not-found failure, not an Easy write and not a "this is an Easy Dashboard" refusal'
-        [easy, legacy].every { r -> r.success == false && !r.containsKey('isError') && r.id == '9999' && r.error.contains('No dashboard found') }
+        [easy, legacy].every { r -> r.success == false && r.isError == true && r.id == '9999' && r.error.contains('No dashboard found') }
+        [easy, legacy].every { r -> r.note == "Call hub_list_dashboards to see valid ids. See hub_get_tool_guide(section='dashboards')." }
         !hubGet.calls.any { it.path == '/dashboard/update' }
         !hubGet.calls.any { it.path.contains('/layout') }
     }
 
-    def "hub_update_dashboard of a removed id via dispatch (gateway=#gatewayMode) is a success:false result, not isError"() {
+    def "hub_update_dashboard of a removed id via dispatch (gateway=#gatewayMode) is a success:false result flagged isError"() {
         given:
         enableWrite()
         hubGet.register('/installedapp/statusJson/9999') { params -> '{}' }
@@ -1265,10 +1283,11 @@ class ToolDashboardSpec extends ToolSpecBase {
         def resp = callDashboard(gatewayMode, 'hub_manage_dashboards', 'hub_update_dashboard', [dashboardId: '9999', name: 'Gone', deviceIds: ['12']])
 
         then:
-        resp.result.isError != true
+        resp.result.isError == true
         def body = new JsonSlurper().parseText(resultText(resp))
         body.success == false
         body.error.contains('No dashboard found')
+        body.note.endsWith("See hub_get_tool_guide(section='dashboards').")
         !hubGet.calls.any { it.path == '/dashboard/update' }
 
         where:
@@ -1347,7 +1366,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         then:
         r.success == success
         (r.outcomeUnknown == true) == unknown
-        !r.containsKey('isError')
+        (r.isError == true) == !success
         !(r.note ?: '').contains('Nothing was deleted') || after == 'present'
         after == 'gone' || r.error.contains('response body lost')
 
@@ -2361,7 +2380,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         then:
         r.success == false
-        !r.containsKey('isError')
+        r.isError == true
         r.type == 'legacy'
         r.error.toLowerCase().contains('still present')
     }

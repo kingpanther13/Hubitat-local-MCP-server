@@ -3352,7 +3352,7 @@ class TestRunner:
         return ((info.get("mcpClient") or {}).get("client") or {}).get("source")
 
     def _expect_tool_refusal(self, name: str, args: dict, needle: str) -> None:
-        """A validation refusal that fires before anything is sent: an isError carrying `needle`."""
+        """A refusal that fires before anything is written: an isError carrying `needle`."""
         try:
             result = self.client.call_tool(name, args)
         except McpToolError as exc:
@@ -5631,22 +5631,17 @@ class TestRunner:
         if dash_id in self.created_dashboard_ids:
             self.created_dashboard_ids.remove(dash_id)
 
-        # The deleted id: an update is a runtime failure (success:false, not isError) that sends no
+        # The deleted id: an update is a runtime failure (success:false plus isError) that sends no
         # write, and a read reports it missing.
-        gone_upd = self.client.call_tool("hub_manage_dashboards", {
+        self._expect_tool_refusal("hub_manage_dashboards", {
             "tool": "hub_update_dashboard",
-            "args": {"dashboardId": dash_id, "name": dash_name, "deviceIds": upd_devices}})
-        assert isinstance(gone_upd, dict) and gone_upd.get("success") is False, \
-            f"hub_update_dashboard on deleted id {dash_id} did not fail: {gone_upd}"
-        assert not gone_upd.get("isError"), f"a runtime failure must not carry isError: {gone_upd}"
-        assert "No dashboard found" in str(gone_upd.get("error")) and "no update was attempted" in str(gone_upd.get("error")), \
-            f"hub_update_dashboard on deleted id {dash_id} gave the wrong failure: {gone_upd}"
+            "args": {"dashboardId": dash_id, "name": dash_name, "deviceIds": upd_devices}},
+            "No dashboard found")
         assert not self._dashboard_id_present(dash_id), \
             f"hub_update_dashboard on deleted id {dash_id} brought a dashboard back"
-        gone_get = self._read_dashboard(dash_id)
-        assert isinstance(gone_get, dict) and gone_get.get("success") is False, \
-            f"hub_get_dashboard on deleted id {dash_id} did not fail: {gone_get}"
-        assert not gone_get.get("isError"), f"a runtime failure must not carry isError: {gone_get}"
+        self._expect_tool_refusal("hub_read_dashboards", {
+            "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}},
+            f"No dashboard found with id '{dash_id}'")
 
     @test("dashboards")
     def test_dashboard_legacy_lifecycle(self) -> None:
@@ -5660,14 +5655,29 @@ class TestRunner:
         dash_name = f"{PREFIX}LegacyDash"
 
         # CREATE (type=legacy): starts with an empty layout; deviceIds is the authorized-device list.
-        cw = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_dashboards", {
-                "tool": "hub_create_dashboard",
-                "args": {"name": dash_name, "type": "legacy", "deviceIds": [str(switch_id)]},
-            }),
-            lambda: self._find_dashboard_id_by_name(dash_name),
-            "create legacy dashboard",
-        )
+        # A missing legacy parent is NOT skippable: the built-in Hubitat(R) Dashboard app is a
+        # documented e2e-hub precondition (like the Easy Dashboard parent), so a create that
+        # reports it missing fails loudly with the remedy instead of skipping the whole group.
+        try:
+            cw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_dashboards", {
+                    "tool": "hub_create_dashboard",
+                    "args": {"name": dash_name, "type": "legacy", "deviceIds": [str(switch_id)]},
+                }),
+                lambda: self._find_dashboard_id_by_name(dash_name),
+                "create legacy dashboard",
+            )
+        except McpToolError as exc:
+            try:
+                error = str(json.loads(exc.content_text).get("error", ""))
+            except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+                error = exc.content_text
+            if "parent" in error.lower():
+                raise AssertionError(
+                    "legacy Hubitat(R) Dashboard parent app is not installed on the e2e hub -- "
+                    "install the built-in 'Hubitat(R) Dashboard' app there (documented precondition), "
+                    f"then re-run: {error}") from exc
+            raise
         if cw["relayDropped"]:
             if not cw["committed"]:
                 raise SkipTest("create legacy dashboard lost to relay 504 and did not commit")
@@ -5675,14 +5685,6 @@ class TestRunner:
         else:
             resp = cw["response"]
             assert isinstance(resp, dict), f"hub_create_dashboard(legacy) returned non-dict: {resp}"
-            # A missing legacy parent is NOT skippable: the built-in Hubitat(R) Dashboard app is a
-            # documented e2e-hub precondition (like the Easy Dashboard parent), so a create that
-            # reports it missing fails loudly with the remedy instead of skipping the whole group.
-            if resp.get("success") is False and "parent" in str(resp.get("error", "")).lower():
-                raise AssertionError(
-                    "legacy Hubitat(R) Dashboard parent app is not installed on the e2e hub -- "
-                    "install the built-in 'Hubitat(R) Dashboard' app there (documented precondition), "
-                    f"then re-run: {resp.get('error')}")
             assert resp.get("success") is not False, f"hub_create_dashboard(legacy) failed: {resp.get('error')}"
             dash_id = self._find_dashboard_id_by_name(dash_name)
             if not dash_id and resp.get("id"):
