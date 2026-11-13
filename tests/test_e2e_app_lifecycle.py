@@ -95,6 +95,8 @@ class AppCodeClient:
             if unknown:
                 raise et.McpToolError(tool, f"Unknown hub_delete_item argument: {', '.join(unknown)}. Nothing was changed. "
                                             "Valid arguments: type, item_id, confirm.")
+            if args.get("type") != "app":
+                raise et.McpToolError(tool, f"this fake deletes app code only (got type={args.get('type')!r})")
             app_id = str(args["item_id"])
             if not app_id.isdigit():
                 raise et.McpToolError(tool, f"item_id is required and must be a positive integer (got: '{app_id}')")

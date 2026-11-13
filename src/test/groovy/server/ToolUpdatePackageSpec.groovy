@@ -32,7 +32,7 @@ import support.ToolSpecBase
  *     app-source body).
  *   - /hub2/userAppTypes (app-class lookup, parent + child) is stubbed via
  *     hubGet.register.
- *   - The inner write tools (toolInstallBundle / toolUpdateAppCode) are stubbed
+ *   - The inner write helpers (_installBundleFromUrl / toolUpdateAppCode) are stubbed
  *     per-test on script.metaClass so the orchestration -- ordering and abort
  *     behaviour -- is what is exercised, not the (separately specced) bundle/app
  *     write internals.
@@ -218,7 +218,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         settingsMap.remove('enableWrite')  // keep write master default-on; this isolates the confirm gate
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
         registerAppTypes()
 
@@ -240,7 +240,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         registerAppTypes()
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
@@ -277,7 +277,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         registerAppTypes()
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
@@ -297,7 +297,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         given: 'a full 40-char SHA whose per-ref artifact exists (the complement of the abbreviated-SHA reject above)'
         enableDev()
         registerAppTypes()
-        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> [success: true] }
         script.metaClass._bundleArtifactExists = { String u -> true }
         def fullSha = 'a' * 40   // 40 hex chars -> keyPath shas/<sha>
@@ -336,7 +336,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
             groovy.json.JsonOutput.toJson([[id: '228', name: 'MCP Rule Server', namespace: 'mcp']])
         }
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
@@ -355,7 +355,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         registerAppTypes()
         nextHttpThrow = new RuntimeException('connection refused')
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
@@ -374,7 +374,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         registerAppTypes()
         nextManifestThrow = new RuntimeException('connection refused')
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
@@ -393,7 +393,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         registerAppTypes()
         nextManifestBody = '[]'  // JSON array, not the expected object
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
@@ -413,7 +413,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         // A bundle whose location isn't a scheme://host/owner/repo/ref/<path> raw URL -> _reanchorToRef null.
         nextManifestBody = manifest([[name: 'Bad Bundle', location: 'not-a-real-url']], APPS_BOTH)
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
@@ -438,7 +438,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         ]
         nextManifestBody = manifest(BUNDLE_LIBS, apps)
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
@@ -458,7 +458,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         nextHttpBody = APP_WITH_INCLUDE        // has an #include
         nextManifestBody = MANIFEST_NO_BUNDLE  // but no bundle to deliver it
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
@@ -479,7 +479,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         registerAppTypes()
         def calls = []
         def bundleArgs = null
-        script.metaClass.toolInstallBundle = { a -> bundleArgs = a; calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> bundleArgs = [importUrl: bundleUrl, installer: bundleInstaller]; calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << "app:${a.appId}".toString(); [success: true, appId: a.appId] }
 
         when:
@@ -488,9 +488,9 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         then: 'bundle -> child (230) -> self (228) last'
         calls == ['bundle', 'app:230', 'app:228']
 
-        and: 'bundle installed from the manifest-current branches/main URL, with confirm'
+        and: 'bundle installed from the manifest-current branches/main URL, without the installer flag'
         bundleArgs.importUrl.endsWith('/bundle-artifacts/branches/main/mcp-libraries.zip')
-        bundleArgs.confirm == true
+        bundleArgs.installer == false
 
         and:
         result.success == true
@@ -521,7 +521,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         ]
         nextManifestBody = manifest(BUNDLE_LIBS, apps)
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << "app:${a.appId}".toString(); [success: true, appId: a.appId] }
 
         when:
@@ -542,7 +542,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         nextHttpBody = APP_NO_INCLUDE
         nextManifestBody = MANIFEST_NO_BUNDLE
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << "app:${a.appId}".toString(); [success: true, appId: a.appId] }
 
         when:
@@ -562,7 +562,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         registerAppTypes()
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: false, error: 'bundle unreachable'] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: false, error: 'bundle unreachable'] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
@@ -581,7 +581,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         registerAppTypes()
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; throw new RuntimeException('boom') }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; throw new RuntimeException('boom') }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
@@ -599,7 +599,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         registerAppTypes()
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a ->
             calls << "app:${a.appId}".toString()
             (a.appId == '230') ? [success: false, error: 'child compile error'] : [success: true]
@@ -622,7 +622,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         given:
         enableDev()
         registerAppTypes()
-        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> (a.appId == '228') ? [success: false, error: 'self compile error'] : [success: true, appId: a.appId] }
 
         when:
@@ -643,7 +643,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         given:
         enableDev()
         registerAppTypes()
-        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> [ok: true] }
         script.metaClass.toolUpdateAppCode = { a ->
             if (a.appId == '228') throw new RuntimeException('self-update recompile lost response')
             [success: true, appId: a.appId]
@@ -678,7 +678,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         registerAppTypes()
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true, appId: a.appId] }
         def marker = [
             requestId: 'pkg-live', ref: 'feat/other', startedAt: GUARD_NOW - 60000L,
@@ -715,7 +715,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         registerAppTypes()
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true, appId: a.appId] }
         def marker = [
             requestId: 'pkg-live', ref: 'feat/other', startedAt: GUARD_NOW - 60000L,
@@ -744,7 +744,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         registerAppTypes()
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true, appId: a.appId] }
         atomicStateMap.packageDeployInFlight = [requestId: 'pkg-live', ref: 'feat/other', startedAt: GUARD_NOW - 120000L]
         script._writeStateCacheInvalidate()
@@ -822,7 +822,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         given:
         enableDev()
         registerAppTypes()
-        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
         def marker = [requestId: 'pkg-live', ref: 'feat/other',
                       startedAt: GUARD_NOW - (9L * 60L * 1000L), phase: 'queued',
@@ -847,7 +847,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         registerAppTypes()
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << a; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << [importUrl: bundleUrl]; [ok: true] }
         atomicStateMap.packageDeployInFlight = [
             requestId: 'pkg-old', ref: 'old-ref', startedAt: GUARD_NOW - 700000L,
             phase: 'queued', expiresAt: GUARD_NOW - 1L,
@@ -879,11 +879,11 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         def release = new CountDownLatch(1)
         def failure = new AtomicReference()
         def workerEntries = new AtomicInteger(0)
-        script.metaClass.toolInstallBundle = { a ->
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller ->
             workerEntries.incrementAndGet()
             entered.countDown()
             release.await(5, TimeUnit.SECONDS)
-            [success: true]
+            [ok: true]
         }
         script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
         def accepted = script.toolUpdatePackage([ref: 'main', confirm: true])
@@ -945,7 +945,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         given:
         enableDev()
         registerAppTypes()
-        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
 
         when:
@@ -976,7 +976,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         given:
         enableDev()
         registerAppTypes()
-        script.metaClass.toolInstallBundle = { a -> [success: false, error: 'zip fetch failed'] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> [ok: false, error: 'zip fetch failed'] }
         script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
 
         when:
@@ -1095,7 +1095,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         registerAppTypes()
         nextHttpBody = APP_WITH_DUPE
-        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
 
         when:
@@ -1206,7 +1206,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         registerAppTypes()
         def installedUrls = []
-        script.metaClass.toolInstallBundle = { a -> installedUrls << a.importUrl; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> installedUrls << bundleUrl; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> [success: true] }
         script.metaClass._bundleArtifactExists = { String u -> true }
 
@@ -1225,7 +1225,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         given:
         enableDev()
         registerAppTypes()
-        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> [success: true] }
         script.metaClass._bundleArtifactExists = { String u -> false }
 
@@ -1244,7 +1244,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         enableDev()
         registerAppTypes()
         nextManifestBody = manifest(BUNDLE_LIBS_LEGACY, APPS_BOTH)
-        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> [success: true] }
         script.metaClass._bundleArtifactExists = { String u -> false }
 
@@ -1265,7 +1265,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         // outage worth knowing about.
         enableDev()
         registerAppTypes()
-        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> [success: true] }
         script.metaClass._bundleArtifactExists = { String u -> false }
 
@@ -1288,7 +1288,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         nextManifestBody = MANIFEST_INLINED
         publishInlinedAt("shas/${SHA}")
         def calls = []
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
@@ -1317,7 +1317,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         publishInlinedAt("shas/${SHA}")
         def calls = []
         def appArgs = [:]
-        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass._installBundleFromUrl = { String bundleUrl, boolean bundleInstaller -> calls << 'bundle'; [ok: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << "app:${a.appId}".toString(); appArgs.put(a.appId, a); [success: true] }
 
         when:

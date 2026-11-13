@@ -11,12 +11,15 @@ import support.ToolSpecBase
  * hub_delete_bundle (write/destructive), hub_export_bundle (write, File Manager).
  *
  * Hub API contracts verified here:
- *   GET /hub2/userBundles      -> [{id, name, namespace, private, content}] (list)
- *   GET /bundle/delete/<id>    -> 302 redirect (delete; verified by re-list)
- *   GET /bundle/export/<id>    -> application/zip binary (export; saved via uploadHubFile)
+ *   GET /hub2/userBundles          -> [{id, name, namespace, private, content}] (list)
+ *   GET /bundle/deleteJson/<id>    -> {success, message}; success:true even for a missing id
+ *   GET /bundle/deleteJson/<id>?full=true -> also deletes the delivered code the hub does not
+ *                                    find in use, and keeps the rest without saying so
+ *   GET /bundle/export/<id>        -> application/zip binary (export; saved via uploadHubFile)
+ *   GET /hub2/userAppTypes, /hub2/userDeviceTypes, /hub2/userLibraries -> the code lists
+ *                                    deleteCode matches the bundle's contents against, before and after
  *
- * Mocking: hubInternalGet routes through the harness hubGet.register; hubInternalGetRaw is
- * stubbed per-test on script.metaClass; httpGet routes through the appExecutor mock (the
+ * Mocking: hubInternalGet routes through the harness hubGet.register; httpGet routes through the appExecutor mock (the
  * script.metaClass route does not intercept httpGet); uploadHubFile/getHubSecurityCookie are
  * metaClass stubs. Each behaviour also fires via mcpDriver.callTool for the envelope path.
  */
@@ -140,17 +143,29 @@ class ToolBundlesSpec extends ToolSpecBase {
 
     // ==================== hub_delete_bundle ====================
 
-    def "hub_delete_bundle throws when Write tools are disabled"() {
-        given:
-        settingsMap.enableWrite = false
-
-        when:
-        script.executeTool('hub_delete_bundle', [bundleId: "4", confirm: true])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Write tools are disabled')
+    private static Map fixtureBundle(Map over = [:]) {
+        [id: 4, name: "Throwaway", namespace: "mcptest", "private": false,
+         content: "apps [Target App], drivers [], libraries [Shared Lib]"] + over
     }
+
+    // Code lists that drop an id once the full delete runs, unless it is listed in `inUse`.
+    private void stubCodeLists(List apps, List libs, Set inUse = [] as Set) {
+        boolean deleted = false
+        hubGet.register('/bundle/deleteJson/4') { params -> deleted = true; '{"success":true,"message":null}' }
+        hubGet.register('/hub2/userAppTypes') { params ->
+            JsonOutput.toJson(deleted ? apps.findAll { it.id.toString() in inUse } : apps)
+        }
+        hubGet.register('/hub2/userLibraries') { params ->
+            JsonOutput.toJson(deleted ? libs.findAll { it.id.toString() in inUse } : libs)
+        }
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","version":3,"source":"definition()"}' }
+        hubGet.register('/library/list/single/data/21') { params -> '[{"id":21,"version":2,"source":"library()"}]' }
+    }
+
+    private static List targetApps() { [[id: 11, name: "Target App", namespace: "mcptest"], [id: 12, name: "Target App", namespace: "other"]] }
+    private static List sharedLibs() { [[id: 21, name: "Shared Lib", namespace: "elsewhere"]] }
+
+    private boolean deleteSent() { hubGet.calls.any { it.path.startsWith('/bundle/deleteJson') } }
 
     def "hub_delete_bundle throws when confirm is not provided"() {
         given:
@@ -162,117 +177,330 @@ class ToolBundlesSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('SAFETY CHECK FAILED')
+        hubGet.calls.isEmpty()
     }
 
-    def "hub_delete_bundle rejects a non-numeric bundleId"() {
+    @Unroll
+    def "hub_delete_bundle rejects bundleId=#id before any hub call"() {
         given:
         enableWrite()
 
         when:
-        script.toolDeleteBundle([bundleId: "abc", confirm: true])
+        script.toolDeleteBundle([bundleId: id, confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('positive integer')
+        ex.message.contains(message)
+        hubGet.calls.isEmpty()
+
+        where:
+        id      | message
+        null    | 'bundleId is required'
+        '  '    | 'bundleId is required'
+        'abc'   | 'bundleId must be a positive integer'
+        '-4'    | 'bundleId must be a positive integer'
+        '0'     | 'bundleId must be a positive integer'
+        '+4'    | 'bundleId must be a positive integer'
     }
 
-    def "hub_delete_bundle returns success=false when the bundle id is not present"() {
+    @Unroll
+    def "hub_delete_bundle sends the parsed integer for bundleId '#given'"() {
         given:
         enableWrite()
-        hubGet.register('/hub2/userBundles') { params -> bundlesJson([bundle(id: 4)]) }
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([fixtureBundle()]) }
+        hubGet.register('/bundle/deleteJson/4') { params -> '{"success":true,"message":null}' }
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: given, confirm: true])
+
+        then:
+        result.success == true
+        result.bundleId == "4"
+        hubGet.calls*.key == ['/hub2/userBundles', '/bundle/deleteJson/4']
+
+        where:
+        given << [' 4', '4 ', '04']
+    }
+
+    def "hub_delete_bundle rejects a non-boolean deleteCode before any hub call"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolDeleteBundle([bundleId: "4", deleteCode: "true", confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('deleteCode must be true or false')
+        hubGet.calls.isEmpty()
+    }
+
+    @Unroll
+    def "hub_delete_bundle via dispatch refuses an id argument in place of bundleId before any hub call (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([fixtureBundle()]) }
+
+        when:
+        def response = mcpDriver.callTool('hub_delete_bundle', [id: "4", confirm: true])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Unknown hub_delete_bundle argument: id')
+        hubGet.calls.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @Unroll
+    def "hub_delete_bundle via dispatch is refused when Write tools are disabled (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
+
+        when:
+        def response = mcpDriver.callTool('hub_delete_bundle', [bundleId: "4", confirm: true])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
+        hubGet.calls.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "a bundle id that is not on the list is refused without a delete request"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([fixtureBundle()]) }
 
         when:
         def result = script.toolDeleteBundle([bundleId: "999", confirm: true])
 
         then:
         result.success == false
-        result.error.contains("No bundle with id 999")
-    }
-
-    def "hub_delete_bundle deletes the bundle and verifies it is gone via re-list"() {
-        given:
-        enableWrite()
-        def live = [bundle(id: 4)]
-        hubGet.register('/hub2/userBundles') { params -> bundlesJson(live) }
-        def deletedPath = null
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
-            deletedPath = path
-            live.removeAll { it.id == 4 }   // simulate the hub removing it
-            [status: 302, location: "/bundle/list", data: null]
-        }
-
-        when:
-        def result = script.toolDeleteBundle([bundleId: "4", confirm: true])
-
-        then:
-        deletedPath == "/bundle/delete/4"
-        result.success == true
-        result.verified == true
-        result.bundleId == "4"
-        result.bundleName == "mcp_libraries"
-    }
-
-    def "hub_delete_bundle returns success=false when the bundle survives the delete request"() {
-        given:
-        enableWrite()
-        def live = [bundle(id: 4)]
-        hubGet.register('/hub2/userBundles') { params -> bundlesJson(live) }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
-            [status: 200, location: null, data: null]   // hub refused; nothing removed
-        }
-
-        when:
-        def result = script.toolDeleteBundle([bundleId: "4", confirm: true])
-
-        then:
-        result.success == false
-        result.error.contains("still present")
-        result.status == 200
-    }
-
-    def "hub_delete_bundle returns success=false when the delete request throws"() {
-        given:
-        enableWrite()
-        hubGet.register('/hub2/userBundles') { params -> bundlesJson([bundle(id: 4)]) }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
-            throw new RuntimeException("connection refused")
-        }
-
-        when:
-        def result = script.toolDeleteBundle([bundleId: "4", confirm: true])
-
-        then:
-        result.success == false
-        result.error.contains("Bundle delete request failed")
-    }
-
-    def "hub_delete_bundle throws when bundleId is missing"() {
-        given:
-        enableWrite()
-
-        when:
-        script.toolDeleteBundle([confirm: true])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("bundleId is required")
+        result.error == "No bundle with id 999"
+        result.note.contains('Nothing was deleted')
+        !deleteSent()
     }
 
     @Unroll
-    def "hub_delete_bundle via dispatch returns isError validation result envelope when confirm not provided (useGateways=#useGateways)"() {
+    def "an unreadable bundle list refuses the delete (#body)"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> body }
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "4", confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('was not deleted')
+        result.note.contains('reports success for any bundle id')
+        !deleteSent()
+
+        where:
+        body << ['<html>login</html>', '{"not":"a list"}']
+    }
+
+    @Unroll
+    def "a missing bundle via dispatch is a success=false result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([]) }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_bundle', [bundleId: "4"])
+        def response = mcpDriver.callTool('hub_delete_bundle', [bundleId: "4", confirm: true])
 
         then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error == "No bundle with id 4"
+        !deleteSent()
 
         where:
         useGateways << [true, false]
+    }
+
+    def "without deleteCode one list read and one deleteJson call delete the bundle"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([fixtureBundle()]) }
+        hubGet.register('/bundle/deleteJson/4') { params -> '{"success":true,"message":null}' }
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "4", confirm: true])
+
+        then:
+        hubGet.calls*.key == ['/hub2/userBundles', '/bundle/deleteJson/4']
+        result.success == true
+        result.bundleId == "4"
+        result.name == "Throwaway"
+        result.deleteCode == false
+        result.message.contains('stay in Code')
+        !result.containsKey('codeDeleted')
+    }
+
+    def "the hub's success:false is returned with its message"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([fixtureBundle()]) }
+        hubGet.register('/bundle/deleteJson/4') { params -> '{"success":false,"message":"Bundle is locked"}' }
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "4", confirm: true])
+
+        then:
+        result.success == false
+        result.error == "Bundle is locked"
+    }
+
+    @Unroll
+    def "an unrecognized delete reply fails closed: '#body'"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([fixtureBundle()]) }
+        hubGet.register('/bundle/deleteJson/4') { params -> body }
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "4", confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('Could not confirm')
+        result.note.contains('hub_list_bundles')
+
+        where:
+        body << ['<html>Bundles</html>', '{"status":true}', '']
+    }
+
+    def "a thrown delete request reports the outcome unknown"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([fixtureBundle()]) }
+        hubGet.register('/bundle/deleteJson/4') { params -> throw new RuntimeException("connection refused") }
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "4", confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("connection refused")
+        result.note.contains('unknown')
+    }
+
+    def "deleteCode backs up each delivered item, sends full=true and reports code the hub kept"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([fixtureBundle()]) }
+        stubCodeLists(targetApps(), sharedLibs(), ['21'] as Set)
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "4", deleteCode: true, confirm: true])
+
+        then: 'the namespace match picks app 11 over its namesake 12; the library falls back to its unique name'
+        def keys = hubGet.calls*.key
+        keys.indexOf('/bundle/deleteJson/4?full=true') > keys.indexOf('/app/ajax/code?id=11')
+        keys.indexOf('/bundle/deleteJson/4?full=true') > keys.indexOf('/library/list/single/data/21')
+        !keys.contains('/bundle/deleteJson/4')
+        savedFiles.keySet().any { it.contains('mcp-backup-app-11') }
+        savedFiles.keySet().any { it.contains('mcp-backup-library-21') }
+
+        and:
+        result.success == true
+        result.deleteCode == true
+        result.codeDeleted == [[type: 'app', id: '11', name: 'Target App']]
+        result.codeKept == [[type: 'library', id: '21', name: 'Shared Lib']]
+        result.backupFiles.size() == 2
+        result.note.contains('still uses it')
+        result.note.contains('hub_delete_item')
+    }
+
+    @Unroll
+    def "deleteCode via dispatch deletes the delivered code (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([fixtureBundle()]) }
+        stubCodeLists(targetApps(), sharedLibs())
+
+        when:
+        def response = mcpDriver.callTool('hub_delete_bundle', [bundleId: "4", deleteCode: true, confirm: true])
+
+        then:
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.codeDeleted*.id == ['11', '21']
+        inner.codeKept == []
+        inner.note == null
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @Unroll
+    def "deleteCode refuses before any backup or delete when a name is #why"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([fixtureBundle()]) }
+        stubCodeLists(apps, sharedLibs())
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "4", deleteCode: true, confirm: true])
+
+        then:
+        result.success == false
+        result.unresolved == [[type: 'app', name: 'Target App', reason: reason]]
+        result.note.contains('Nothing was deleted')
+        !hubGet.calls.any { it.path in ['/app/ajax/code', '/library/list/single/data/21'] }
+        savedFiles.isEmpty()
+        !deleteSent()
+
+        where:
+        why          | apps                                                                                         | reason
+        'ambiguous'  | [[id: 11, name: "Target App", namespace: "a"], [id: 12, name: "Target App", namespace: "b"]] | '2 apps have this name'
+        'unresolved' | [[id: 11, name: "Other", namespace: "mcptest"]]                                              | 'no app has this name'
+    }
+
+    def "deleteCode refuses when a code list cannot be read"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([fixtureBundle()]) }
+        stubCodeLists(targetApps(), sharedLibs())
+        hubGet.register('/hub2/userLibraries') { params -> throw new RuntimeException('HTTP 500') }
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "4", deleteCode: true, confirm: true])
+
+        then:
+        result.success == false
+        result.unresolved*.name == ['Shared Lib']
+        savedFiles.isEmpty()
+        !deleteSent()
+    }
+
+    def "deleteCode fails closed when a backup cannot be taken"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([fixtureBundle()]) }
+        stubCodeLists(targetApps(), sharedLibs())
+        hubGet.register('/library/list/single/data/21') { params -> '[]' }
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "4", deleteCode: true, confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("Could not back up library 21")
+        result.note == 'Nothing was deleted.'
+        !deleteSent()
     }
 
     // ==================== hub_export_bundle ====================
@@ -345,6 +573,24 @@ class ToolBundlesSpec extends ToolSpecBase {
         result.directDownload == "/local/mcp_libraries.zip"
     }
 
+    @Unroll
+    def "hub_export_bundle sends the parsed integer for bundleId '#given'"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([bundle(id: 4)]) }
+
+        when:
+        def result = script.toolExportBundle([bundleId: given])
+
+        then:
+        exportCaptured.path == "/bundle/export/4"
+        result.success == true
+        result.bundleId == "4"
+
+        where:
+        given << [' 4', '4 ', '04']
+    }
+
     def "hub_export_bundle reads a stream body via duck-typed .bytes (no InputStream class reference)"() {
         given:
         settingsMap.enableWrite = true
@@ -371,9 +617,44 @@ class ToolBundlesSpec extends ToolSpecBase {
         when:
         def result = script.toolExportBundle([bundleId: "4", saveAs: "my backup"])
 
-        then:
+        then: 'saveAs needs no bundle list read'
         savedFiles.containsKey("my_backup.zip")
         result.fileName == "my_backup.zip"
+        hubGet.calls.isEmpty()
+    }
+
+    def "hub_export_bundle with saveAs relies on the HTTP check for a missing id"() {
+        given:
+        settingsMap.enableWrite = true
+        nextExportStatus = 404
+        nextExportData = ("<html>404</html>".getBytes("UTF-8"))
+
+        when:
+        def result = script.toolExportBundle([bundleId: "999", saveAs: "x"])
+
+        then:
+        result.success == false
+        result.error.contains("HTTP 404")
+        savedFiles.isEmpty()
+        hubGet.calls.isEmpty()
+    }
+
+    @Unroll
+    def "hub_export_bundle via dispatch refuses an id argument in place of bundleId (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = true
+
+        when:
+        def response = mcpDriver.callTool('hub_export_bundle', [id: "4"])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Unknown hub_export_bundle argument: id')
+        savedFiles.isEmpty()
+
+        where:
+        useGateways << [true, false]
     }
 
     def "hub_export_bundle returns success=false when the export body is empty"() {
@@ -441,50 +722,6 @@ class ToolBundlesSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
-    }
-
-    // -------- delete: degraded re-list cannot confirm removal --------
-
-    def "hub_delete_bundle returns unverified (success=false) when the post-delete list is degraded"() {
-        given:
-        enableWrite()
-        hubGet.register('/hub2/userBundles') { params -> "<html>not json</html>" }  // degraded list
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
-            [status: 302, location: "/bundle/list", data: null]
-        }
-
-        when:
-        def result = script.toolDeleteBundle([bundleId: "4", confirm: true])
-
-        then:
-        result.success == false
-        result.verified == false
-        result.error.contains("could not be verified")
-    }
-
-    def "hub_delete_bundle reports verified=false when the PRE-delete list is degraded (existence unconfirmed)"() {
-        given:
-        enableWrite()
-        // First list (pre-delete) is degraded -> existence can't be confirmed; second list
-        // (post-delete) is a clean empty list -> the id is absent. Deleting a nonexistent id is a
-        // harmless hub no-op (302), so "absent now" must NOT be reported as a verified deletion.
-        def calls = 0
-        hubGet.register('/hub2/userBundles') { params ->
-            calls++
-            calls == 1 ? "<html>not json</html>" : bundlesJson([])
-        }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
-            [status: 302, location: "/bundle/list", data: null]
-        }
-
-        when:
-        def result = script.toolDeleteBundle([bundleId: "7", confirm: true])
-
-        then:
-        result.success == true
-        result.verified == false
-        result.message.contains("could not confirm the bundle existed")
-        result.bundleId == "7"
     }
 
     // -------- export: error branches + cookie + unexpected body --------

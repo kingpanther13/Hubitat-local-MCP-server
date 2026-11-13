@@ -101,6 +101,14 @@ ALL destructive write tools (`confirm`+backup tier) require these steps in order
 - For libraries (`type="library"`): Check that no apps or drivers reference the library via `#include namespace.LibraryName` before deleting -- deletion breaks any code that still includes it
 - Deletion is permanent; restore the source via `hub_update_app` / `hub_update_driver` / `hub_update_library` with the backup source
 
+#### hub_install_bundle / hub_delete_bundle
+- `hub_install_bundle` unpacks the .zip into Apps/Drivers/Libraries Code the way HPM does and returns the new bundle's `bundleId`; confirm the URL with the user first
+- `hub_delete_bundle` takes the `bundleId` from `hub_list_bundles`; an id not on the list is refused with nothing deleted
+- Without `deleteCode` only the bundle goes; the apps, drivers and libraries it delivered stay in Code
+- `deleteCode=true` backs up each delivered item first (any failed backup deletes nothing), then deletes the bundle with its code. The hub keeps code still in use (an installed app, a device on the driver, code that `#include`s the library) and lists it in `codeKept`; tell the user what was kept and why
+- If a delivered name matches no code item or several, nothing is deleted and the names come back in `unresolved`; delete the bundle without `deleteCode` and then each item with `hub_delete_item`
+- Deleting a library may break apps and drivers that `#include` it
+
 #### hub_delete_room
 - Devices become unassigned (not deleted)
 - List affected devices to the user before proceeding

@@ -178,7 +178,7 @@ definition(
 // the library. First real module of the split.
 #include mcp.McpRoomsLib
 
-// issue #209 modularization: bundle-management tool implementations (hub_list_bundles /
+// issue #209 modularization: bundle tool implementations (hub_install_bundle / hub_list_bundles /
 // hub_delete_bundle / hub_export_bundle) live in the McpBundlesLib library
 // (libraries/mcp-bundles-lib.groovy). New tools authored library-first -- their gateway entries
 // and dispatch cases stay in this file; the tool definitions (_getAllToolDefinitions_partBundles)
@@ -5795,8 +5795,8 @@ def getGatewayConfig() {
                 hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), item_id, confirm=true",
                 hub_create_library: "Install new Groovy library (#include namespace.Name). To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. Args: source|sourceFile|importUrl, confirm=true",
                 hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true",
-                hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), installer?, confirm=true",
-                hub_delete_bundle: "Delete an installed code bundle container by id (DESTRUCTIVE; verifies via re-list). Code it delivered may remain in Code -- delete separately. Args: bundleId (from hub_list_bundles), confirm=true",
+                hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code); returns the new bundleId. Args: importUrl (zip), installer?, confirm=true",
+                hub_delete_bundle: "Delete an installed code bundle by id (DESTRUCTIVE). Its code stays in Code unless deleteCode=true (each item backed up first; in-use code is kept, listed in codeKept). Args: bundleId (from hub_list_bundles), deleteCode?, confirm=true",
                 hub_export_bundle: "Export an installed bundle's .zip to the File Manager (downloadable at /local/<file>). Args: bundleId (from hub_list_bundles), saveAs?"
             ],
             searchHints: [
@@ -5808,7 +5808,7 @@ def getGatewayConfig() {
                 hub_create_library: "add new shared groovy library include namespace",
                 hub_update_library: "modify change edit groovy library shared code push deploy",
                 hub_install_bundle: "install bundle zip package hpm hubitat package manager uploadZipFromUrl library delivery deploy code",
-                hub_delete_bundle: "delete remove uninstall bundle container bundle manager code zip package by id",
+                hub_delete_bundle: "delete remove uninstall bundle container bundle manager code zip package by id delivered apps drivers libraries deleteCode",
                 hub_export_bundle: "export download save bundle zip to file manager backup copy archive container"
             ]
         ],
@@ -11522,6 +11522,7 @@ def _guideSectionForTool(toolName) {
     if (t == 'hub_manage_virtual_device') return 'virtual_devices'
     if (t in ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard']) return 'dashboards'
     if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
+    if (t in ['hub_install_bundle', 'hub_delete_bundle', 'hub_export_bundle']) return 'bundles'
     if (t in ['hub_write_file', 'hub_delete_file']) return 'file_manager'
     if (t in ['hub_call_zwave', 'hub_set_zwave', 'hub_call_zigbee', 'hub_set_zigbee',
               'hub_call_matter']) return 'hub_admin_write_radios'
@@ -11631,6 +11632,9 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_set_app_disabled -> builtin_app_tools_rules
 - hub_set_rule_paused -> builtin_app_tools_rules
 - hub_set_rule_private_boolean -> builtin_app_tools_rules
+- hub_delete_bundle -> bundles
+- hub_export_bundle -> bundles
+- hub_install_bundle -> bundles
 - hub_clone_dashboard -> dashboards
 - hub_create_dashboard -> dashboards
 - hub_delete_dashboard -> dashboards
@@ -12907,8 +12911,16 @@ Reference for the bundle tools (hub_install_bundle, hub_list_bundles, hub_delete
 
 ### hub_install_bundle
 
-- **Verify the install** afterward with hub_list_libraries / hub_get_source.
+- `importUrl` is the bundle .zip the hub fetches and unpacks into Apps/Drivers/Libraries Code, the way Hubitat Package Manager installs a bundle. `installer:true` sets HPM's installer (private) flag; default false. The hub does not deep-validate the zip.
 - **Endpoint routing:** uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else the legacy /bundle/uploadZipFromUrl (the chosen path is also surfaced in the result's `endpoint` field).
+- **Returned id:** the hub's reply carries no id, so the call reads the bundle list before and after and returns the new bundle as `bundle` (id, name, namespace, private, contains) and its id as `bundleId`. When no single new id appears (a reinstall keeps its id) or a list cannot be read, the install still reports success with a `note`; find the bundle with hub_list_bundles. Send bundle installs one at a time.
+
+### hub_delete_bundle
+
+- `bundleId` is the bundle id from hub_list_bundles. The bundle must appear on a clean bundle list before the delete is sent, because the hub reports success for any id: a missing id returns `success:false` ("No bundle with id N") and an unreadable list returns `success:false`, both with nothing deleted.
+- Without `deleteCode` only the bundle is removed; the apps, drivers and libraries it delivered stay in Code. Delete those with hub_delete_item(type, item_id) per item.
+- `deleteCode:true` also deletes the delivered code. Each name in the bundle's `contains` is matched to one code id (same name and the bundle's namespace first, else the name alone if only one item has it); if any name matches none or several, nothing is deleted and the names come back in `unresolved`. Every matched item is backed up first (`backupFiles`); if a backup cannot be taken, nothing is deleted.
+- The hub keeps delivered code that is still in use (an installed app, a device, or code that #includes a library) and still reports success. The result lists `codeDeleted` and `codeKept` (type, id, name), and `codeUnverified` when a code list could not be read afterwards. For `codeKept`, remove the app instances or switch the devices to another driver, then delete each item with hub_delete_item. Deleting a library may break apps and drivers that #include it.
 
 ### hub_list_bundles
 

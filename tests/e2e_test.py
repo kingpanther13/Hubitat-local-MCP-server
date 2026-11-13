@@ -51,6 +51,8 @@ from sdk_conformance_helpers import (
 # ---------------------------------------------------------------------------
 
 PREFIX = "BAT_E2E_"
+# The unused app code inside tests/fixtures/mcp-e2e-throwaway-bundle.zip (namespace mcptest).
+THROWAWAY_BUNDLE_APP = "Deadman Test Target Bundle"
 # Persistent scaffold FIXTURES (the shared switch + temp sensors that rule fixtures reference and the
 # poll tests read, plus the BAT_E2E_KEEP_Room the room-assignment scenario moves a device into)
 # carry this marker so the cleanup sweeps SKIP them by name -- created once and reused across runs,
@@ -14206,7 +14208,8 @@ def updated() {}
 
     # -----------------------------------------------------------------------
     # Bundle tools (issue #209): McpBundlesLib-backed hub_list_bundles /
-    # hub_export_bundle / hub_delete_bundle, end-to-end on the real hub. The package
+    # hub_export_bundle / hub_install_bundle / hub_delete_bundle (issue #561: the install
+    # returns the new id, the delete takes deleteCode), end-to-end on the real hub. The package
     # itself ships no bundle (issue #522: the parent is installed with its libraries
     # inlined), so these work on whatever bundle the hub has, and install the
     # throwaway fixture (unused app code, never libraries) when it has none.
@@ -14214,8 +14217,8 @@ def updated() {}
 
     def _install_throwaway_bundle(self) -> str | None:
         """Install tests/fixtures/mcp-e2e-throwaway-bundle.zip (unused app code in namespace
-        mcptest) at the PR head and return its bundle id, or None on a local run without the
-        PR raw URL env. The caller deletes it."""
+        mcptest) at the PR head through hub_install_bundle and return its bundle id,
+        or None on a local run without the PR raw URL env. The caller deletes it."""
         raw_base = os.environ.get("PR_RAW_BASE")
         sha = os.environ.get("PR_HEAD_SHA_RESOLVED")
         if not (raw_base and sha):
@@ -14244,6 +14247,13 @@ def updated() {}
             time.sleep(3.0)
             installed = {"success": True, "responseLost": True}
         assert installed.get("success") is True, f"throwaway bundle install failed: {installed}"
+        # The tool reports the new id from its own before/after list diff. Accept it only when
+        # it is not a leftover from an earlier run; otherwise fall back to the namespace snapshot.
+        reported = installed.get("bundleId")
+        if reported and str(reported) not in before:
+            bundle = installed.get("bundle") if isinstance(installed.get("bundle"), dict) else {}
+            assert bundle.get("namespace") == "mcptest", f"reported bundle is not the fixture: {installed}"
+            return str(reported)
         # The bundle is on the hub from here on; a listing that fails or cannot name it would
         # leave it to the run-end purge (which deletes mcptest bundles), so read back with retries.
         after: dict[str, dict] = {}
@@ -14266,7 +14276,8 @@ def updated() {}
 
     def _delete_bundle_quietly(self, bid: str, label: str) -> None:
         try:
-            self._write_once("hub_manage_code", "hub_delete_bundle", {"bundleId": bid, "confirm": True}, label)
+            self._write_once("hub_manage_code", "hub_delete_bundle",
+                             {"bundleId": bid, "deleteCode": True, "confirm": True}, label)
         except Exception as exc:
             print(f"  [WARN] {label}: delete {bid} failed: {exc}")
 
@@ -14472,34 +14483,71 @@ def updated() {}
 
     @test("system_tools")
     def test_delete_bundle(self) -> None:
-        """Delete a bundle containing unused app code, verified by re-list.
+        """Delete a bundle together with the unused app code it delivered
+        (hub_delete_bundle(deleteCode=true)), verified by re-listing the bundles and
+        the app code.
 
-        The fixture creates no running app instance or library. Skipped on local runs
+        The fixture creates no running app instance or library. The refusal legs send
+        nothing to the hub and run first; the install and delete are skipped on local runs
         where the PR raw URL env isn't set.
         """
+        self._expect_tool_refusal("hub_delete_bundle", {"bundleId": "abc", "confirm": True},
+                                  "bundleId must be a positive integer")
+        self._expect_tool_refusal("hub_export_bundle", {"bundleId": "+4"}, "bundleId must be a positive integer")
+        self._expect_tool_refusal("hub_delete_bundle", {"bundleId": "4", "id": "4", "confirm": True},
+                                  "Unknown hub_delete_bundle argument: id")
+        self._expect_tool_refusal("hub_delete_bundle", {"id": "4", "confirm": True},
+                                  "Missing required parameter for hub_delete_bundle: bundleId")
+        self._expect_tool_refusal("hub_delete_bundle", {"bundleId": "4", "deleteCode": "true", "confirm": True},
+                                  "deleteCode must be true or false")
+        self._expect_tool_refusal("hub_install_bundle", {"importUrl": "ftp://example.invalid/b.zip", "confirm": True},
+                                  "importUrl scheme must be http or https")
+        self._expect_tool_refusal("hub_install_bundle",
+                                  {"importUrl": "https://example.invalid/b.zip", "installer": "yes", "confirm": True},
+                                  "installer must be true or false")
+        # The hub answers success for any id, so an id missing from the list must come back
+        # as a refusal with nothing deleted.
+        missing = self.client.call_tool("hub_manage_code", {
+            "tool": "hub_delete_bundle", "args": {"bundleId": "2147483646", "confirm": True}})
+        assert missing.get("success") is False and "No bundle with id 2147483646" in str(missing.get("error")), \
+            f"a bundle id missing from the list was not refused: {missing}"
         bid = None
         try:
             bid = self._install_throwaway_bundle()
             if not bid:
                 print("    SKIP test_delete_bundle: PR_RAW_BASE/PR_HEAD_SHA_RESOLVED not set (local run)")
                 return
+            # A zip the hub cannot fetch installs nothing and returns the hub's own reason.
+            missing_url = (f"{os.environ['PR_RAW_BASE']}/{os.environ['PR_HEAD_SHA_RESOLVED']}"
+                           "/tests/fixtures/does-not-exist.zip")
+            refused = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_install_bundle", "args": {"importUrl": missing_url, "confirm": True}})
+            assert refused.get("success") is False and "Cannot retrieve zip file" in str(refused.get("error")), \
+                f"a zip the hub cannot fetch did not return the hub's reason: {refused}"
             deleted = self._write_once(
                 "hub_manage_code", "hub_delete_bundle",
-                {"bundleId": bid, "confirm": True},
+                {"bundleId": bid, "deleteCode": True, "confirm": True},
                 "throwaway bundle delete")
-            assert deleted.get("success") is True, f"hub_delete_bundle did not succeed: {deleted}"
-            assert deleted.get("verified") is True, f"hub_delete_bundle did not verify the id gone: {deleted}"
+            assert deleted.get("success") is True, f"bundle delete did not succeed: {deleted}"
+            gone = [c for c in deleted.get("codeDeleted") or [] if c.get("name") == THROWAWAY_BUNDLE_APP]
+            assert gone and gone[0].get("type") == "app", \
+                f"bundle delete did not report its app code deleted: {deleted}"
+            assert not deleted.get("codeKept"), f"bundle delete kept unused code: {deleted}"
+            assert deleted.get("backupFiles"), f"bundle delete took no code backup: {deleted}"
             relisted = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
             rb = relisted.get("bundles", []) if isinstance(relisted, dict) else []
             assert not any(str(b.get("id")) == bid for b in rb), \
-                f"throwaway bundle {bid} still present after hub_delete_bundle"
+                f"throwaway bundle {bid} still present after the delete"
             bid = None
-            print("    BUNDLE_DELETE ok -- throwaway installed, listed, deleted, verified gone")
+            apps = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_list_apps", "args": {"scope": "types", "nameFilter": THROWAWAY_BUNDLE_APP}})
+            left = [a for a in (apps.get("apps") or []) if isinstance(a, dict)
+                    and a.get("name") == THROWAWAY_BUNDLE_APP and a.get("namespace") == "mcptest"]
+            assert not left, f"the bundle's app code is still installed after deleteCode: {left}"
+            print("    BUNDLE_DELETE ok -- throwaway installed, deleted with its app code, both verified gone")
         finally:
             if bid:
                 self._delete_bundle_quietly(bid, "throwaway bundle cleanup")
-            # Bundle deletion leaves its unused app code behind. The run-end Layer 5
-            # sweep removes its mcptest/Deadman Test Target code alongside the other app fixtures.
 
     def _set_write_cap(self, limit: int) -> None:
         """Set maxConcurrentWrites. Never call this while a write holds a slot: the settings
@@ -16292,7 +16340,7 @@ def updated() {}
         (a heading + substance), proving the best-practice content is actually served, not just named."""
         sections = ["device_authorization", "update_device", "virtual_devices", "builtin_app_tools",
                     "set_rule_reference", "set_native_app_reference", "visual_rule_reference", "rules", "hub_admin_write",
-                    "backup", "file_manager", "best_practice_reference"]
+                    "backup", "file_manager", "bundles", "best_practice_reference"]
         for sec in sections:
             res = self.client.call_tool("hub_get_tool_guide", {"section": sec})
             assert isinstance(res, dict) and res.get("success") is True, f"guide section {sec} not reachable: {res}"
@@ -16364,6 +16412,22 @@ def updated() {}
             self.created_native_app_ids.append(str(app_id))
         finally:
             self._bps_fixture_cleanup(app_id, gateway="hub_manage_native_rules_and_apps")
+
+    @test("best_practice_gating")
+    def test_bps_gate_bundle_tools_unlocked_only_by_bundles_key(self) -> None:
+        """hub_delete_bundle is refused keyless and with the generic key, the refusal pointing at
+        bundles; that section's key passes the gate. The id is not on the bundle list, so the
+        unlocked call deletes nothing."""
+        args = {"bundleId": "2147483646", "confirm": True}
+        self._set_bps(enableMandatoryBPS=True)
+        try:
+            key = self._section_key_after_refusals("hub_manage_code", "hub_delete_bundle", "bundles", args)
+            res = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_delete_bundle", "args": {**args, "bestPracticeKey": key}})
+            assert res.get("success") is False and "No bundle with id 2147483646" in str(res.get("error")), \
+                f"the bundles key did not reach hub_delete_bundle: {res}"
+        finally:
+            self._bps_fixture_cleanup(None)
 
     @test("best_practice_gating")
     def test_guide_full_call_pages_instead_of_hitting_the_size_guard(self) -> None:
@@ -17612,8 +17676,9 @@ def updated() {}
         except Exception as exc:
             print(f"  [WARN] Room sweep failed: {exc}")
 
-        # Layer 7: throwaway bundle from the hub_delete_bundle e2e (mcptest namespace). The test
-        # deletes it in its own finally; this reclaims one a crashed run stranded.
+        # Layer 7: throwaway bundle from the bundle delete e2e (mcptest namespace). The test
+        # deletes it in its own finally; this reclaims one a crashed run stranded, with the
+        # unused app code it delivered (Layer 5 sweeps that code too if this leaves it).
         try:
             bres = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
             for b in (bres.get("bundles", []) if isinstance(bres, dict) else []):
@@ -17622,7 +17687,7 @@ def updated() {}
                         print(f"  Sweep: deleting throwaway bundle '{b.get('name')}' (id={b.get('id')})")
                         self.client.call_tool("hub_manage_code", {
                             "tool": "hub_delete_bundle",
-                            "args": {"bundleId": str(b.get("id")), "confirm": True},
+                            "args": {"bundleId": str(b.get("id")), "deleteCode": True, "confirm": True},
                         })
                     except Exception as exc:
                         print(f"  [WARN] throwaway bundle sweep delete failed for '{b.get('name')}': {exc}")

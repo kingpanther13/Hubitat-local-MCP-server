@@ -2928,6 +2928,7 @@ def _bundle_export_runner(bundles_after_install, write_calls):
             if name == "hub_read_apps_code" and tool == "hub_list_bundles":
                 return {"source": "hub_api", "bundles": bundles_after_install if state["installed"] else []}
             if name == "hub_manage_code" and tool == "hub_install_bundle":
+                assert "type" not in arguments["args"]
                 state["installed"] = True
                 return {"success": True}
             raise AssertionError(f"unexpected direct call: {name} {arguments}")
@@ -2956,7 +2957,7 @@ def test_export_bundle_installs_and_removes_the_throwaway_fixture_when_the_hub_h
     et.TestRunner.test_export_bundle(runner)
     assert state["installed"]
     assert write_calls[0] == ("hub_export_bundle", {"bundleId": "9", "saveAs": f"{et.PREFIX}bundle_export_9.zip"})
-    assert write_calls[-1] == ("hub_delete_bundle", {"bundleId": "9", "confirm": True})
+    assert write_calls[-1] == ("hub_delete_bundle", {"bundleId": "9", "deleteCode": True, "confirm": True})
 
 
 def test_export_bundle_skips_without_a_bundle_or_the_pr_raw_url(monkeypatch):
@@ -3035,44 +3036,86 @@ def test_bundle_fixture_contains_only_unused_app_code():
         assert 'namespace: "mcptest"' in source
 
 
-def test_delete_bundle_uses_logical_write_helper(monkeypatch):
-    monkeypatch.setenv("PR_RAW_BASE", "https://raw.invalid/repo")
-    monkeypatch.setenv("PR_HEAD_SHA_RESOLVED", "abc123")
+def _delete_bundle_runner(install_result, list_results, apps_after, refusals=None):
     write_calls = []
-    # Snapshot before the install, readback after it, re-list after the delete.
-    list_results = iter([
-        {"bundles": []},
-        {"bundles": [{"id": "44", "namespace": "mcptest", "name": "throwaway"}]},
-        {"bundles": []},
-    ])
 
     class FakeClient:
         def call_tool(self, name, arguments=None):
             tool = (arguments or {}).get("tool")
+            if tool == "hub_install_bundle" and arguments["args"]["importUrl"].endswith("/does-not-exist.zip"):
+                return {"success": False, "error": "Bundle install failed: Cannot retrieve zip file from x"}
             if tool == "hub_install_bundle":
-                return {"success": True}
+                assert "type" not in arguments["args"]
+                return install_result
             if tool == "hub_list_bundles":
                 return next(list_results)
+            if tool == "hub_list_apps":
+                assert arguments["args"]["scope"] == "types"
+                return {"apps": apps_after}
+            if tool == "hub_delete_bundle" and arguments["args"].get("bundleId") == "2147483646":
+                return {"success": False, "error": "No bundle with id 2147483646"}
             if tool == "hub_delete_bundle":
                 raise AssertionError("bundle deletion must use the logical write helper")
             raise AssertionError(f"unexpected direct call: {name} {arguments}")
 
     runner = object.__new__(et.TestRunner)
     runner.client = FakeClient()
+    runner._expect_tool_refusal = lambda name, args, needle: (refusals if refusals is not None else []).append(
+        (name, needle))
+
     def write_once(gateway, tool, args, label):
         write_calls.append((gateway, tool, args, label))
-        return {"success": True, "verified": True, "bundleId": args["bundleId"]}
+        return {"success": True, "bundleId": args["bundleId"], "backupFiles": ["mcp-backup-app-12.groovy"],
+                "codeDeleted": [{"type": "app", "id": "12", "name": et.THROWAWAY_BUNDLE_APP}], "codeKept": []}
 
     runner._write_once = write_once
+    return runner, write_calls
+
+
+DELETE_BUNDLE_CALL = {"bundleId": "44", "deleteCode": True, "confirm": True}
+
+
+def test_delete_bundle_uses_logical_write_helper(monkeypatch):
+    monkeypatch.setenv("PR_RAW_BASE", "https://raw.invalid/repo")
+    monkeypatch.setenv("PR_HEAD_SHA_RESOLVED", "abc123")
+    # No id in the install reply: snapshot before, readback after, re-list after the delete.
+    list_results = iter([
+        {"bundles": []},
+        {"bundles": [{"id": "44", "namespace": "mcptest", "name": "throwaway"}]},
+        {"bundles": []},
+    ])
+    refusals = []
+    runner, write_calls = _delete_bundle_runner({"success": True}, list_results, [], refusals)
 
     et.TestRunner.test_delete_bundle(runner)
 
-    assert write_calls == [(
-        "hub_manage_code",
-        "hub_delete_bundle",
-        {"bundleId": "44", "confirm": True},
-        "throwaway bundle delete",
-    )]
+    assert write_calls == [("hub_manage_code", "hub_delete_bundle", DELETE_BUNDLE_CALL, "throwaway bundle delete")]
+    assert {name for name, _ in refusals} == {"hub_delete_bundle", "hub_export_bundle", "hub_install_bundle"}
+
+
+def test_delete_bundle_uses_the_id_the_install_reports(monkeypatch):
+    monkeypatch.setenv("PR_RAW_BASE", "https://raw.invalid/repo")
+    monkeypatch.setenv("PR_HEAD_SHA_RESOLVED", "abc123")
+    # Snapshot before, then only the re-list after the delete: no readback is needed.
+    list_results = iter([{"bundles": []}, {"bundles": []}])
+    installed = {"success": True, "bundleId": "44", "bundle": {"id": "44", "namespace": "mcptest"}}
+    runner, write_calls = _delete_bundle_runner(installed, list_results, [])
+
+    et.TestRunner.test_delete_bundle(runner)
+
+    assert write_calls == [("hub_manage_code", "hub_delete_bundle", DELETE_BUNDLE_CALL, "throwaway bundle delete")]
+
+
+def test_delete_bundle_fails_when_the_app_code_survives(monkeypatch):
+    monkeypatch.setenv("PR_RAW_BASE", "https://raw.invalid/repo")
+    monkeypatch.setenv("PR_HEAD_SHA_RESOLVED", "abc123")
+    list_results = iter([{"bundles": []}, {"bundles": []}])
+    installed = {"success": True, "bundleId": "44", "bundle": {"id": "44", "namespace": "mcptest"}}
+    left = [{"id": 12, "name": et.THROWAWAY_BUNDLE_APP, "namespace": "mcptest"}]
+    runner, _ = _delete_bundle_runner(installed, list_results, left)
+
+    with pytest.raises(AssertionError, match="still installed"):
+        et.TestRunner.test_delete_bundle(runner)
 
 
 def test_build_capacity_recovery_is_the_conformance_reset_seam(monkeypatch):

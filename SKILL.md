@@ -127,7 +127,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 | `hub_manage_rooms` | 5 | Room CRUD |
 | `hub_manage_destructive_ops` | 4 | Hub reboot, shutdown, device deletion, and destructive ops by target via `hub_call_destructive_ops` (radio reset/wipe + firmware, network disconnect, cloud-controller disable/enable) (write) |
 | `hub_manage_backup` | 4 | Backup management — list code + whole-hub DB backups (+ auto-backup schedule), get code-backup source, restore (apps/drivers/rule snapshots), delete whole-hub DB backups (write) |
-| `hub_manage_code` | 10 | Install/update apps+drivers+libraries, install/delete/export HPM-style bundles, delete item (app/driver/library) (write) |
+| `hub_manage_code` | 10 | Install/update apps+drivers+libraries, install/delete/export HPM-style bundles (delete optionally with the code it delivered), delete item (app/driver/library) (write) |
 | `hub_manage_devices` | 11 | Device command/swap/replace/create/update (writes, incl. Hub Mesh device link/unlink) + list/get devices, attributes, events, Hub Mesh (reads) |
 | `hub_manage_logs` | 3 | Logs page and MCP log read, delete (MCP log clear or one scheduled job), MCP log level |
 | `hub_manage_diagnostics` | 7 | Diagnostics, state capture/delete, radio details (zwave/zigbee), memory history, metrics, GC |
