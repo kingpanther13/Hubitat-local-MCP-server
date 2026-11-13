@@ -29008,7 +29008,10 @@ private Map _writeOutcome(result) {
                 : [outcome: "partial", error: "paused with remaining work in the result"]
         }
         if (r.partial == true) return [outcome: "partial", error: _writeOutcomeCode(r, "some items did not apply")]
-        if (_isFailureResult(r)) return [outcome: "failed", error: _writeOutcomeCode(r, "tool returned a failure result")]
+        if (_isFailureResult(r)) {
+            boolean appliedSome = r.applied instanceof List && !r.applied.isEmpty()
+            return [outcome: appliedSome ? "partial" : "failed", error: _writeOutcomeCode(r, "tool returned a failure result")]
+        }
         if (r.stateError instanceof CharSequence && r.stateError.toString().trim()) {
             return [outcome: "unknown", error: "the write ran but reading the resulting state failed"]
         }
