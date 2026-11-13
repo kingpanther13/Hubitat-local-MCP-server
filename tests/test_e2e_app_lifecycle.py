@@ -1,5 +1,6 @@
 """Exercise the app-code E2E assertions and fixture cleanup without a hub."""
 
+import json
 from copy import deepcopy
 
 import pytest
@@ -24,7 +25,17 @@ class AppCodeClient:
         self.deleted = []
         self.counts = {}
 
-    def call_tool(self, gateway, arguments):
+    call_tool_result = et.HubitatMcpClient.call_tool_result
+    call_tool_failure = et.HubitatMcpClient.call_tool_failure
+
+    def call_tool(self, gateway, arguments, *, flat=False):
+        result = self._respond(gateway, arguments)
+        if isinstance(result, dict) and result.get("success") is False:
+            # The server sets isError on every top-level success:false result.
+            raise et.McpToolError(arguments["tool"], json.dumps(result))
+        return result
+
+    def _respond(self, gateway, arguments):
         tool, args = arguments["tool"], arguments["args"]
         self.calls.append((tool, deepcopy(args)))
         self.counts[tool] = self.counts.get(tool, 0) + 1
@@ -136,12 +147,12 @@ def test_update_scenario_refuses_unknown_code_id_missing_file_and_unknown_delete
 
 def test_update_scenario_fails_when_unknown_code_id_is_accepted():
     class AcceptsAnyCode(AppCodeClient):
-        def call_tool(self, gateway, arguments):
+        def _respond(self, gateway, arguments):
             if arguments["tool"] == "hub_create_app" and "codeAppId" in arguments["args"]:
                 return {"success": True, "instanceAppId": "9"}
-            return super().call_tool(gateway, arguments)
+            return super()._respond(gateway, arguments)
 
-    with pytest.raises(AssertionError, match="Apps Code id that does not exist"):
+    with pytest.raises(AssertionError, match=r"hub_manage_code: expected an isError failure result.*instanceAppId"):
         runner_for(AcceptsAnyCode()).test_update_app_code_lifecycle()
 
 

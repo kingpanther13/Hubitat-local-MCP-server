@@ -1561,7 +1561,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error != null
@@ -1617,7 +1617,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error != null
@@ -1664,9 +1664,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 9999])
 
-        then: 'a graceful not-found is a normal tool result, not a transport error'
+        then: 'a graceful not-found is a tool error result, not a transport error'
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.fingerprint == 'app not found (404)'
@@ -1744,7 +1744,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error != null
@@ -1779,7 +1779,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error?.toLowerCase()?.contains('parse') == true
@@ -1827,7 +1827,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.fingerprint == 'missing configPage'
@@ -1878,7 +1878,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.fingerprint == 'sections not a list'

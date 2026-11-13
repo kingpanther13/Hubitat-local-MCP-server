@@ -896,7 +896,7 @@ private boolean _logsHasFetchSnapshot(r) {
 
 // Map.findAll passes key and value, so the unused tab name stays in the signature.
 private boolean _logsTabFailed(mode, r) {
-    return r.isError == true
+    return _isFailureResult(r)
 }
 
 // Apps from /logs/cloudCalls/json, each with its hourly counts (newest first, at most 48),

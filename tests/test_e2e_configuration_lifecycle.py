@@ -251,6 +251,11 @@ def test_configuration_dashboard_resolves_by_name_before_manifest_fallback(rows,
                     {"id": "2", "name": et.CONFIGURATION_DASHBOARD, "type": "legacy"}]},
 ])
 def test_configuration_dashboard_refuses_unreadable_or_ambiguous_list(listed):
-    runner = et.TestRunner(SimpleNamespace(call_tool=lambda name, args=None: listed, app_id="38"))
-    with pytest.raises(AssertionError):
+    def call_tool(name, args=None):
+        if listed.get("success") is False:   # a failure result carries isError, so call_tool raises
+            raise et.McpToolError(name, json.dumps(listed))
+        return listed
+
+    runner = et.TestRunner(SimpleNamespace(call_tool=call_tool, app_id="38"))
+    with pytest.raises((AssertionError, et.McpToolError)):
         runner._configuration_dashboard_ids([36461])

@@ -484,6 +484,17 @@ def _tool_error_payload(exc: McpError) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _runtime_failure_payload(exc: McpError) -> dict | None:
+    """The [success:false] runtime result a raised isError carries, else None.
+
+    A validation refusal or MRTR failure marks isError inside its payload too; a plain
+    runtime failure does not, which is what separates the two."""
+    payload = _tool_error_payload(exc)
+    if payload.get("success") is False and payload.get("isError") is not True:
+        return payload
+    return None
+
+
 # ---------------------------------------------------------------------------
 # MCP Client
 # ---------------------------------------------------------------------------
@@ -1099,6 +1110,32 @@ class HubitatMcpClient:
 
         return result
 
+    def call_tool_result(self, name: str, arguments: dict | None = None, *, flat: bool = False) -> Any:
+        """call_tool, but a runtime failure comes back as its [success:false] payload.
+
+        The server flags every top-level success:false result isError, so call_tool raises it.
+        For a call that may legitimately succeed or fail. A validation refusal (isError inside
+        the payload) and any other raise propagate."""
+        try:
+            return self.call_tool(name, arguments, flat=flat)
+        except McpToolError as exc:
+            payload = _runtime_failure_payload(exc)
+            if payload is None:
+                raise
+            return payload
+
+    def call_tool_failure(self, name: str, arguments: dict | None = None, *, flat: bool = False) -> dict:
+        """A call that MUST fail at runtime: requires the isError envelope over a
+        [success:false] payload (not a validation refusal) and returns that payload."""
+        try:
+            result = self.call_tool(name, arguments, flat=flat)
+        except McpToolError as exc:
+            payload = _runtime_failure_payload(exc)
+            assert payload is not None, \
+                f"{name}: expected a runtime [success:false] failure, got: {exc.content_text[:500]}"
+            return payload
+        raise AssertionError(f"{name}: expected an isError failure result, got: {str(result)[:500]}")
+
     # -- Convenience: REST health endpoint -----------------------------------
 
     def get_health(self) -> dict:
@@ -1607,7 +1644,7 @@ class TestRunner:
 
         def _attempt():
             try:
-                envelope = self.client.call_tool(gateway, {"tool": tool, "args": args})
+                envelope = self.client.call_tool_result(gateway, {"tool": tool, "args": args})
             except McpToolError as exc:
                 if "excessive hub load" not in str(exc):
                     raise
@@ -1872,12 +1909,9 @@ class TestRunner:
             return cached
 
         # One lookup resolves every fixture: they share the E2E_PERM_ label prefix.
+        # A failed lookup raises (isError); treating a listing with no "devices" key as "absent"
+        # would create a duplicate PERMANENT device, and nothing ever sweeps E2E_PERM_*.
         found = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": "E2E_PERM_"})
-        # A structured failure ([success:false,...]) carries no isError, so call_tool returns it as an
-        # ordinary dict with no "devices" key. Treating that as "absent" would create a duplicate
-        # PERMANENT device on every incident, and nothing ever sweeps E2E_PERM_*.
-        assert found.get("success") is not False, \
-            f"could not look up permanent fixture '{label}' -- refusing to create a duplicate: {found}"
         assert isinstance(found.get("devices"), list), \
             f"fixture lookup returned no device list (hub contract drift?) -- refusing to create a duplicate: {found}"
         by_label = {(d.get("label") or ""): str(d["id"]) for d in found["devices"] if d.get("id") is not None}
@@ -3152,6 +3186,8 @@ class TestRunner:
                     "deviceId": supplied_id, "hoursBack": 1, "limit": 1})
             except McpToolError as exc:
                 refused = _tool_error_payload(exc)
+            else:
+                raise AssertionError(f"supplied zero must fail with isError: {supplied_id!r} -> {refused}")
             # Bypass ON reaches native metadata; OFF refuses at the selection gate.
             error = str(refused.get("error", "")) if isinstance(refused, dict) else ""
             assert isinstance(refused, dict) and refused.get("success") is False \
@@ -3219,7 +3255,7 @@ class TestRunner:
             def _drive(value: str) -> bool:
                 self._native_device_command({"deviceId": dev_id, "command": value})
                 for _ in range(3):
-                    r = self.client.call_tool("hub_get_device_attribute", {
+                    r = self.client.call_tool_result("hub_get_device_attribute", {
                         "deviceId": dev_id, "attribute": "switch",
                         "expectedValue": value, "timeoutMs": 4000})
                     if isinstance(r, dict) and r.get("success") is True and r.get("finalValue") == value:
@@ -3428,8 +3464,8 @@ class TestRunner:
     # ---- hub_manage_radio WRITE ops (#257 radio surface) ----
     # These exercise the radio write/destructive tools on the no-devices e2e hub.
     # Each tolerates relay 5xx and radio-absent / structured-error outcomes: the fold
-    # may dispatch to a hub endpoint that 5xx-es behind the cloud relay, or return a
-    # {success: false, error: ...} envelope when the radio is absent. The load-bearing
+    # may dispatch to a hub endpoint that 5xx-es behind the cloud relay, or refuse with an
+    # isError {success: false, error: ...} result when the radio is absent. The load-bearing
     # assertion is that the write dispatched (a structured object came back, or the
     # request reached the hub) — NOT that the radio acted, since the hub has no devices.
 
@@ -3605,8 +3641,7 @@ class TestRunner:
                 raise
             print("    hub_set_zigbee(ping_device): response lost to relay 5xx (acceptable; dispatch reached the hub)")
         else:
-            assert isinstance(result, dict) and result.get("success") is False and "0" in str(result.get("error")), \
-                f"hub_set_zigbee(ping_device) must refuse device 0, got: {result}"
+            raise AssertionError(f"hub_set_zigbee(ping_device) must refuse device 0 with isError, got: {result}")
 
     @test("diagnostics")
     def test_call_destructive_ops_requires_confirm(self) -> None:
@@ -3616,8 +3651,8 @@ class TestRunner:
         # hub's own connectivity / cloud MCP endpoint -- so NONE of those live actions are exercised
         # here (they are manual-only; see tests/BAT-v2.md). Assert only the safety gate: calling the
         # radio reset WITHOUT confirm is refused. confirm is a REQUIRED schema param, so the refusal
-        # surfaces as an isError envelope ("Missing required parameter: confirm") returned as a dict by
-        # call_tool, OR a raised McpError/-32602 -- accept either. Nothing is ever actually reset.
+        # surfaces as an isError result ("Missing required parameter: confirm") that call_tool raises,
+        # OR a raised McpError/-32602 -- accept either. Nothing is ever actually reset.
         refused = False
         detail = None
         try:
@@ -4149,10 +4184,13 @@ class TestRunner:
                 try:
                     refused = self._write_once("hub_manage_devices", "hub_update_device",
                                                device_update_args(device_id, patch), "invalid configuration fixture write")
-                    assert refused.get("success") is False, f"Invalid write succeeded: {refused}"
                 except (McpToolError, McpError) as exc:
-                    affected = next(iter(patch.get("preferences", patch)))
-                    assert affected in str(exc), f"Refusal did not identify {affected}: {exc}"
+                    # A runtime [success:false] refusal was all the old returned-dict leg proved.
+                    if not (isinstance(exc, McpToolError) and _runtime_failure_payload(exc)):
+                        affected = next(iter(patch.get("preferences", patch)))
+                        assert affected in str(exc), f"Refusal did not identify {affected}: {exc}"
+                else:
+                    raise AssertionError(f"Invalid write succeeded: {refused}")
             native, unchanged, current = capture(with_configuration=True)
             assert_native_preferences(native, current, expected)
             assert_fields(unchanged, current, prepared)
@@ -4206,9 +4244,11 @@ class TestRunner:
                         "deviceId": device_id,
                         "preferences": {"probeBool": {"value": False}, "probeMultiple": {"value": []}},
                     }, "empty multiple must refuse the entire preference patch")
-                    assert refused.get("success") is False, f"Implicit empty-list clear succeeded: {refused}"
                 except (McpToolError, McpError) as exc:
-                    assert "probeMultiple" in str(exc), f"Refusal did not identify the empty preference: {exc}"
+                    if not (isinstance(exc, McpToolError) and _runtime_failure_payload(exc)):
+                        assert "probeMultiple" in str(exc), f"Refusal did not identify the empty preference: {exc}"
+                else:
+                    raise AssertionError(f"Implicit empty-list clear succeeded: {refused}")
                 native, changed, current = capture(with_configuration=True)
                 assert_native_preferences(native, current, desired)
                 assert_fields(changed, current, edits)
@@ -4378,7 +4418,7 @@ class TestRunner:
                     "deviceId": device_id, "command": "sendLanProbe", "parameters": [nonce], "includeState": False,
                 }, f"{profile['path']} explicit asynchronous LAN probe")
                 assert result.get("success") is True, f"LAN command dispatch failed: {result}"
-                observed = self.client.call_tool("hub_get_device_attribute", {
+                observed = self.client.call_tool_result("hub_get_device_attribute", {
                     "deviceId": device_id, "attribute": "lanProbeAck", "expectedValue": nonce, "timeoutMs": 10000,
                 })
                 assert observed.get("success") is True and observed.get("finalValue") == nonce, (
@@ -4819,7 +4859,7 @@ class TestRunner:
         def _poll_switch(expected: str) -> Any:
             result: Any = {}
             for _ in range(3):
-                result = self.client.call_tool("hub_get_device_attribute", {
+                result = self.client.call_tool_result("hub_get_device_attribute", {
                     "deviceId": dev_id,
                     "attribute": "switch",
                     "expectedValue": expected,
@@ -4941,10 +4981,10 @@ class TestRunner:
             missing = f"{PREFIX}UnreportedAttribute"
             summary = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
             assert missing not in {row["name"] for row in summary["attributes"]}, summary
-            absent = self.client.call_tool("hub_get_device_attribute", {
+            absent = self.client.call_tool_failure("hub_get_device_attribute", {
                 "deviceId": dev_id, "attribute": missing, "expectedValue": "never", "timeoutMs": 500,
             })
-            assert absent.get("success") is False and absent.get("timedOut") is True, (
+            assert absent.get("timedOut") is True, (
                 f"Missing native attribute must be polled to timeout, not rejected: {absent}"
             )
             assert absent.get("finalValue") is None and absent.get("polledCount", 0) >= 1, absent
@@ -5048,7 +5088,7 @@ class TestRunner:
         def _confirm() -> Any:
             # The confirm half of the flow: the batch reads nothing back, so the whole group is
             # converged in ONE multi-device poll.
-            return self.client.call_tool("hub_get_device_attribute", {
+            return self.client.call_tool_result("hub_get_device_attribute", {
                 "deviceIds": list(switches),
                 "attribute": "switch",
                 "expectedValue": target,
@@ -5111,20 +5151,16 @@ class TestRunner:
 
 
         def _poll_on() -> Any:
-            return self.client.call_tool("hub_get_device_attribute", {
+            return self.client.call_tool_result("hub_get_device_attribute", {
                 "deviceId": sw_a, "attribute": "switch", "expectedValue": "on", "timeoutMs": 3000,
             })
 
         # --- 1. bad entry among good ones ---
-        # Some entries failing is a PARTIAL result, not a failed call: only an all-failed batch
-        # raises the isError envelope, so call_tool returns this one normally and reaching the
-        # assertions below is itself the proof (an isError would have raised McpToolError).
-        batch = self.client.call_tool("hub_call_device_command", {"commands": [
+        # A batch with a failed entry is success:false (partial), so it rides the isError envelope.
+        batch = self.client.call_tool_failure("hub_call_device_command", {"commands": [
             {"deviceId": sw_a, "command": "on"},
             {"deviceId": "99999", "command": "on"},
         ]})
-        assert isinstance(batch, dict), f"unexpected response: {batch!r}"
-        assert batch.get("success") is False, f"a batch with a bad entry must not report success: {batch}"
         assert batch.get("count") == 2 and batch.get("sentCount") == 1 \
             and batch.get("failedCount") == 1, f"wrong counts: {batch}"
         assert batch.get("partial") is True, f"one of two entries failing is a partial batch: {batch}"
@@ -5569,7 +5605,7 @@ class TestRunner:
         assert stored.get("dashboardPin") == "4321", f"the update with the masked PIN changed the stored PIN: {stored}"
 
         # CLONE (clone-by-value: copies the source config into a new dashboard named "<name> (copy)")
-        clone = self.client.call_tool("hub_manage_dashboards", {
+        clone = self.client.call_tool_result("hub_manage_dashboards", {
             "tool": "hub_clone_dashboard", "args": {"dashboardId": dash_id}})
         if isinstance(clone, dict) and clone.get("success"):
             clone_id = clone.get("newId")
@@ -5612,7 +5648,7 @@ class TestRunner:
 
         # CREATE (type=legacy): starts with an empty layout; deviceIds is the authorized-device list.
         cw = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_dashboards", {
+            lambda: self.client.call_tool_result("hub_manage_dashboards", {
                 "tool": "hub_create_dashboard",
                 "args": {"name": dash_name, "type": "legacy", "deviceIds": [str(switch_id)]},
             }),
@@ -5814,12 +5850,16 @@ class TestRunner:
         if str(app_id) in self.created_native_app_ids:
             self.created_native_app_ids.remove(str(app_id))
 
-    def _native_app(self, operation: str, args: dict, app_id: Any = None) -> dict:
-        """One confirmed hub_set_native_app call through its gateway."""
+    def _native_app(self, operation: str, args: dict, app_id: Any = None, *,
+                    refused: bool = False, tolerant: bool = False) -> dict:
+        """One confirmed hub_set_native_app call through its gateway. refused=True requires a runtime
+        [success:false] failure (isError); tolerant=True returns one as its payload."""
         payload = {"operation": operation, "args": args, "confirm": True}
         if app_id is not None:
             payload["app_id"] = int(app_id)
-        return self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_set_native_app", "args": payload})
+        call = self.client.call_tool_failure if refused else \
+            self.client.call_tool_result if tolerant else self.client.call_tool
+        return call("hub_manage_native_rules_and_apps", {"tool": "hub_set_native_app", "args": payload})
 
     def _native_app_form(self, app_id: Any, *steps: dict) -> dict:
         result = self._native_app("form", {"steps": list(steps)}, app_id)
@@ -6049,7 +6089,8 @@ class TestRunner:
         # (The 404 fingerprint/status shape is pinned in Spock; here we prove the real-hub no-raise degrade.)
         if not dw["relayDropped"]:
             try:
-                gone = self.client.call_tool("hub_read_apps_code", {
+                # A structured [success:false] result is the graceful form, even on the isError envelope.
+                gone = self.client.call_tool_result("hub_read_apps_code", {
                     "tool": "hub_get_app_config", "args": {"appId": app_id}})
             except (McpError, McpToolError) as exc:
                 raise AssertionError(
@@ -6074,8 +6115,8 @@ class TestRunner:
         before = basic_rules()
         # A create its first page refuses (a field the page does not render) removes the child it
         # made and returns success:false, so the hub gains no Basic Rule.
-        refused = self._native_app("create", {"app_type": "basic_rule", "fields": {"nope": 1}})
-        assert refused.get("success") is False and "removed" in str(refused.get("error")), refused
+        refused = self._native_app("create", {"app_type": "basic_rule", "fields": {"nope": 1}}, refused=True)
+        assert "removed" in str(refused.get("error")), refused
         left = basic_rules() - before
         assert not left, f"a refused Basic Rule create left app(s) {sorted(left)} behind: {refused}"
         # A label passed as name and in fields is an argument error, refused before the parent creates anything.
@@ -6288,8 +6329,8 @@ class TestRunner:
             form = self._native_app_form(app_id, {"kind": "open", "page": "offMeansPage", "from": "mainPage"},
                                          {"kind": "submit", "expect_page": "offMeansPage", "fields": {"offMeans": ["illuminance rises"]}})
             done = self._native_app_done(form)
-            refused = self._native_app("form", {"steps": [self._rm_step(form, control=done)]}, app_id)
-            assert refused.get("success") is False and "illumsOff" in str(refused.get("error")), \
+            refused = self._native_app("form", {"steps": [self._rm_step(form, control=done)]}, app_id, refused=True)
+            assert "illumsOff" in str(refused.get("error")), \
                 f"Done with an empty required input must be refused: {refused}"
             assert refused.get("partial") is False and not refused.get("reopen_required"), \
                 f"a refused Done must report that nothing was submitted: {refused}"
@@ -6797,8 +6838,8 @@ def updated() {}
             # A button number the controller's Add Button picker does not offer (the permanent button has
             # fewer than 99) is refused after the page's Cancel, with the recovery point it took first.
             refused = self._native_app("create", {"app_type": "button_rule", "controller_id": int(controller_id),
-                                                  "button_number": 99, "event": "pushed"})
-            assert refused.get("success") is False and not refused.get("partial") and "backup" in refused, \
+                                                  "button_number": 99, "event": "pushed"}, refused=True)
+            assert not refused.get("partial") and "backup" in refused, \
                 f"a button number the picker does not offer should be refused with its backup: {refused}"
             assert "not 99" in str(refused.get("error")) and "left unchanged" in str(refused.get("error")), refused
             ctrl_form = self._native_app_form(controller_id, {"kind": "open"})
@@ -6917,15 +6958,18 @@ def updated() {}
                 "settings": self._rm_settings(app_id)}
 
     def _rm_call(self, args: dict) -> dict:
-        """hub_set_rule, with a validation refusal (an isError result) returned as its payload."""
+        """hub_set_rule, with a refusal (validation or runtime, always an isError result) returned as its payload."""
         try:
-            return self.client.call_tool("hub_set_rule", args)
+            result = self.client.call_tool("hub_set_rule", args)
         except McpToolError as exc:
             try:
                 payload = json.loads(exc.content_text)
             except (TypeError, ValueError):
                 payload = None
             return dict(payload if isinstance(payload, dict) else {"error": exc.content_text}, success=False)
+        assert not (isinstance(result, dict) and result.get("success") is False), \
+            f"a success:false result arrived without isError: {result}"
+        return result
 
     @staticmethod
     def _rm_refused(result: dict) -> str:
@@ -7089,8 +7133,10 @@ def updated() {}
                 return keys
             args["cursor"] = result["nextCursor"]
 
-    def _rm_restore(self, key: str, **options: Any) -> dict:
-        return self.client.call_tool("hub_restore_backup", {"scope": "source", "backupKey": key, "confirm": True, **options})
+    def _rm_restore(self, key: str, *, refused: bool = False, **options: Any) -> dict:
+        """refused=True requires a runtime [success:false] failure (isError) and returns its payload."""
+        call = self.client.call_tool_failure if refused else self.client.call_tool
+        return call("hub_restore_backup", {"scope": "source", "backupKey": key, "confirm": True, **options})
 
     def _rm_read_file(self, file_name: str) -> str:
         chunks, offset = [], 0
@@ -7197,7 +7243,7 @@ def updated() {}
             label = listed.get("name") or listed.get("label")
             assert str(label).endswith(" (Paused)"), listed
             for paused in (True, False):
-                result = self.client.call_tool("hub_set_rule_paused", {"ruleId": app_id, "paused": paused})
+                result = self.client.call_tool_result("hub_set_rule_paused", {"ruleId": app_id, "paused": paused})
                 if result.get("success") is False and "excessive hub load" in str(result.get("error", "")):
                     # RMUtils is refused once the hub's load limiter trips; the rule's own Pause button
                     # (a toggle) is the UI's route and is never limited.
@@ -7428,7 +7474,7 @@ def updated() {}
     def test_call_rule_multi_id_aggregates_per_rule(self) -> None:
         ids = [self._rm_rule("AggA", [native_log("aggregate A")])[0], self._rm_rule("AggB", [native_log("aggregate B")])[0]]
         try:
-            result = self.client.call_tool("hub_call_rule", {"ruleId": ids, "action": "stop"})
+            result = self.client.call_tool_result("hub_call_rule", {"ruleId": ids, "action": "stop"})
             rows = result.get("results")
             assert isinstance(rows, list) and sorted(str(r.get("ruleId")) for r in rows) == sorted(map(str, ids)), result
             assert sorted(map(str, result.get("ruleIds", []))) == sorted(map(str, ids)), result
@@ -8175,7 +8221,7 @@ def updated() {}
             edit(target_b, bulb, "dimmerActs", "getSetColor", [("color", "enum", "Custom RGB color"), ("colorH", "text", "#00ff00")],
                  {"color": "Custom RGB color", "colorH": "#00ff00"})
             self._rm_refuse_all(target_b, [[action("dimmerActs", "getSetColor", [("colorLevel", "number", 40)], id=bulb)]])
-            paused = self.client.call_tool("hub_set_rule_paused", {"ruleId": [target_a, target_b], "paused": True})
+            paused = self.client.call_tool_result("hub_set_rule_paused", {"ruleId": [target_a, target_b], "paused": True})
             if paused.get("success") is False:
                 # The hub's load limiter may refuse a batch outright; it then pauses neither rule.
                 assert "excessive hub load" in str(paused.get("error", "")), paused
@@ -8654,7 +8700,7 @@ def updated() {}
             passed = True
         finally:
             # The fixture's default page clears its pending install state, so the next run starts clean.
-            reset = self._native_app("form", {"steps": [{"kind": "open"}]}, app_id)
+            reset = self._native_app("form", {"steps": [{"kind": "open"}]}, app_id, tolerant=True)
             if passed:
                 assert reset.get("success") is True, f"the fixture was not reset to its default page: {reset}"
             elif reset.get("success") is not True:
@@ -8988,8 +9034,8 @@ def updated() {}
             file_name, original = self._rm_recovery_file(key)
             self._rm_delete_device(gone_dni)
             before = self._rm_snapshot(app_id)
-            refused = self._rm_restore(key, preserveRuleId=True)
-            assert refused.get("success") is False and refused.get("partial") is False \
+            refused = self._rm_restore(key, refused=True, preserveRuleId=True)
+            assert refused.get("partial") is False \
                 and refused.get("failedStep") == "devicePreflight" and str(gone) in map(str, refused.get("missingDeviceIds", [])), refused
             assert self._rm_snapshot(app_id) == before, "a refused restore changed the rule"
             edited = self._rm_edited_snapshot(original, gone, labels[gone], replacement, labels[replacement])
@@ -9003,7 +9049,7 @@ def updated() {}
                     and restored.get("restoredVia") == "nativeStateReplay", restored
                 assert self._rm_read_file(file_name) == original, "restoring an edited copy changed the original recovery file"
             finally:
-                self.client.call_tool("hub_delete_file", {"fileName": copy_name, "confirm": True})
+                self.client.call_tool_result("hub_delete_file", {"fileName": copy_name, "confirm": True})
             doc = self._native_rule_document(app_id)
             assert [r["id"] for r in doc["actions"]] == [r["id"] for r in created["actions"]] and doc["variables"] == created["variables"], doc
             values = self._rm_values(app_id)
@@ -9123,8 +9169,8 @@ def updated() {}
             assert labels["Kitchen"] in json.dumps(self._native_rule_document(app_id)["conditions"])
             _, original = self._rm_recovery_file(keys["Kitchen"])
             self._rm_delete_device(switches["Gone"][1])
-            refused = self._rm_restore(keys["Kitchen"], preserveRuleId=True)
-            assert refused.get("success") is False and refused.get("failedStep") == "devicePreflight", refused
+            refused = self._rm_restore(keys["Kitchen"], refused=True, preserveRuleId=True)
+            assert refused.get("failedStep") == "devicePreflight", refused
             edited = self._rm_edited_snapshot(original, switches["Gone"][0], labels["Gone"], switches["Den"][0], labels["Den"])
             copy_name = f"{PREFIX}backup_edited_expr_{_run_artifact_suffix()}.json"
             assert self.client.call_tool("hub_write_file", {"fileName": copy_name, "content": edited, "confirm": True}).get("success") is True
@@ -9133,7 +9179,7 @@ def updated() {}
                                                                         "preserveRuleId": True, "confirm": True})
                 assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id), restored
             finally:
-                self.client.call_tool("hub_delete_file", {"fileName": copy_name, "confirm": True})
+                self.client.call_tool_result("hub_delete_file", {"fileName": copy_name, "confirm": True})
             doc = self._native_rule_document(app_id)
             assert doc["expressions"]["0"] == [condition] and doc["variables"] == created["variables"], doc
             assert self._rm_values(app_id)["rDev_" + condition] == [str(switches["Den"][0])]
@@ -9434,29 +9480,16 @@ def updated() {}
             return self.client.call_tool(tool, args)
         return self.client.call_tool(gateway, {"tool": tool, "args": args})
 
-    def _refusal_call(self, gateway: str, payload: dict) -> Any:
-        """call_tool for a write expected to be REFUSED pre-flight, with a 504 re-issue.
-
-        A pre-flight refusal mutates nothing -- these very tests assert the returned
-        restoreHint says RM was "not touched" -- so unlike a committing write, re-issuing
-        after a lost response cannot double-commit anything. Without this a relay 504 on a
-        call whose whole point is to be rejected fails the run, which is what happened to
-        test_set_rule_failloud_wrong_trigger_shape on the 2026-08-10 full lane."""
-        for attempt in (1, 2):
-            try:
-                result = self.client.call_tool(gateway, payload)
-                # The blind re-issue above is only safe while nothing commits. Fail loudly rather
-                # than let a future caller point this at a write that succeeds -- a 504 on one of
-                # those would double-apply it. Use _rm_call_soft(strict=True) for those instead.
-                assert result.get("success") is not True, (
-                    "_refusal_call is only for calls expected to be REFUSED pre-flight, but this "
-                    f"one succeeded -- it commits, so its 504 re-issue could double-apply: {result}")
-                return result
-            except (McpError, McpToolError, requests.HTTPError) as exc:
-                if "504" not in str(exc) or attempt == 2:
-                    raise
-                print("    [RECOVER-504] pre-flight refusal re-issued -- the refused call "
-                      "committed nothing, so a re-send cannot double-apply")
+    def _write_refused(self, gateway: str | None, tool: str, args: dict, label: str) -> tuple[bool, Any]:
+        """_write_once for a write expected to fail at runtime: (refused, result). refused is True
+        only for an isError [success:false] payload; any other raise propagates."""
+        try:
+            return False, self._write_once(gateway, tool, args, label)
+        except McpToolError as exc:
+            payload = _runtime_failure_payload(exc)
+            if payload is None:
+                raise
+            return True, payload
 
 
     def _assert_rule_renders(self, app_id: Any) -> None:
@@ -9770,10 +9803,12 @@ def updated() {}
         assert int(switch_id) in trigger_devices, \
             f"trigger device {switch_id} not on the {where}trigger node: {trigger_node}"
 
-    def _get_visual_rule(self, app_id: Any = None) -> Any:
-        """hub_get_visual_rule through the PURE-READ gateway (hub_read_rules cross-listing)."""
+    def _get_visual_rule(self, app_id: Any = None, *, refused: bool = False) -> Any:
+        """hub_get_visual_rule through the PURE-READ gateway (hub_read_rules cross-listing). A runtime
+        [success:false] read comes back as its payload; refused=True requires one."""
         args = {} if app_id is None else {"appId": app_id}
-        return self.client.call_tool("hub_read_rules", {"tool": "hub_get_visual_rule", "args": args})
+        call = self.client.call_tool_failure if refused else self.client.call_tool_result
+        return call("hub_read_rules", {"tool": "hub_get_visual_rule", "args": args})
 
     def _find_visual_rule_id_by_name(self, name: str) -> str | None:
         """Look up a VRB rule's appId by name via the list mode (create-verify on 504)."""
@@ -9868,12 +9903,12 @@ def updated() {}
             if fmt == "classic":
                 # FORMAT MISMATCH on EDIT: a 2.0 editor definition aimed at this 1.0 rule is
                 # refused per-rule (no `hubNativeFormat` -- the hub's builders were not measured).
-                mismatch = self.client.call_tool("hub_manage_rule_machine", {
+                mismatch = self.client.call_tool_failure("hub_manage_rule_machine", {
                     "tool": "hub_set_visual_rule",
                     "args": {"appId": app_id, "confirm": True, "definition": {
                         "triggers": [{"type": "switch", "config": {"switches": [switch_id], "switchEvent": "Turns off"}}],
                         "thenActions": [{"type": "turnOff", "config": {"switches": [switch_id]}}]}}})
-                assert mismatch.get("success") is False and mismatch.get("format") == "classic", \
+                assert mismatch.get("format") == "classic", \
                     f"an editor definition on a 1.0 rule must be refused as a format mismatch: {mismatch}"
                 assert str(mismatch.get("error", "")).startswith(f"Rule {app_id} is a Visual Rule Builder 1.0 rule"), \
                     f"the edit-path refusal must name the rule, not the hub: {mismatch}"
@@ -10029,8 +10064,7 @@ def updated() {}
                 assert deleted.get("verified") is True, f"delete not verified gone: {deleted}"
                 assert deleted.get("predeleteDefinition"), \
                     f"delete response missing the predeleteDefinition recovery aid: {deleted}"
-            gone = self._get_visual_rule(app_id)
-            assert gone.get("success") is False, f"rule {app_id} still readable after delete: {gone}"
+            self._get_visual_rule(app_id, refused=True)   # still readable after the delete fails here
             # Untrack only after the independent gone-read: a false-verified delete
             # leaves the id tracked so the cleanup sweep reaps it.
             self._untrack_native_app(app_id)
@@ -10099,8 +10133,7 @@ def updated() {}
         assert deleted.get("success") is True, f"hub_delete_native_app reported failure: {deleted}"
         backup_key = (deleted.get("backup") or {}).get("backupKey")
         assert backup_key, f"delete response carries no backup.backupKey to restore from: {deleted}"
-        gone = self._get_visual_rule(app_id)
-        assert gone.get("success") is False, f"rule {app_id} still readable after delete: {gone}"
+        self._get_visual_rule(app_id, refused=True)   # still readable after the delete fails here
         # Untrack only after the independent gone-read (lifecycle-test discipline).
         self._untrack_native_app(app_id)
 
@@ -10172,23 +10205,31 @@ def updated() {}
                 else:
                     assert dw["response"].get("success") is True, \
                         f"cleanup delete of restored rule {new_id} failed: {dw['response']}"
-                gone = self._get_visual_rule(new_id)
-                assert gone.get("success") is False, \
-                    f"restored rule {new_id} still readable after cleanup delete: {gone}"
+                self._get_visual_rule(new_id, refused=True)   # still readable after the cleanup delete fails here
                 self._untrack_native_app(new_id)
 
     @test("visual_rules")
     def test_visual_rule_error_contracts(self) -> None:
-        # (a) Nonexistent appId -> structured runtime error (success:false envelope,
-        # NOT a throw), enriched via /installedapp/json so the model can re-route.
-        res = self._get_visual_rule(99999999)
-        assert res.get("success") is False, f"nonexistent appId should report success:false: {res}"
+        # (a) Nonexistent appId -> structured runtime error, NOT a validation throw, enriched via
+        # /installedapp/json so the model can re-route. Read off the raw wire: a top-level
+        # success:false result sets isError on the tools/call envelope, payload unchanged.
+        args = {"tool": "hub_get_visual_rule", "args": {"appId": 99999999}}
+        raw = self.client._send("tools/call", {"name": "hub_read_rules", "arguments": args})
+        assert raw.get("resultType") == "complete" and raw.get("isError") is True, \
+            f"a success:false result must carry isError:true on the envelope: {raw}"
+        try:
+            self.client._decode_tool_result("hub_read_rules", args, raw)   # also books the hub's failure log line
+            raise AssertionError(f"an isError envelope decoded without raising: {raw}")
+        except McpToolError as exc:
+            res = _runtime_failure_payload(exc)
+        assert res is not None and res.get("success") is False, \
+            f"the isError content must be the tool's own success:false payload: {raw}"
         assert "no installed app" in str(res.get("error", "")).lower(), \
             f"not-found error should name the missing app: {res}"
 
         # (b) confirm safety gate on the write: same refusal contract as the rooms
-        # gates -- a missing REQUIRED confirm surfaces as an isError envelope
-        # (returned by call_tool as the parsed dict) or a raised McpError/-32602.
+        # gates -- a missing REQUIRED confirm surfaces as an isError result
+        # (raised by call_tool as McpToolError) or a raised McpError/-32602.
         switch_id = int(self.get_test_switch_id())
         no_confirm_name = f"{PREFIX}VisualNoConfirm"
         refused = False
@@ -10250,15 +10291,14 @@ def updated() {}
         # gate is all that stands between a wrong id and a destroyed RM rule).
         rm_id = self._create_native_rule("VrbTypeGate")
         try:
-            got = self._get_visual_rule(rm_id)
-            assert got.get("success") is False, f"hub_get_visual_rule must refuse an RM rule id: {got}"
+            got = self._get_visual_rule(rm_id, refused=True)
             assert str(got.get("appType", "")).startswith("Rule"), \
                 f"type-gate error should carry the real appType (Rule-5.1): {got}"
             assert "hub_set_rule" in str(got.get("note", "")), \
                 f"type-gate note should route to the RM tools: {got}"
 
             try:
-                deleted = self.client.call_tool("hub_manage_rule_machine", {
+                deleted = self.client.call_tool_failure("hub_manage_rule_machine", {
                     "tool": "hub_delete_visual_rule", "args": {"appId": rm_id, "confirm": True},
                 })
             except requests.HTTPError as exc:
@@ -10269,8 +10309,6 @@ def updated() {}
                 if "504" not in str(exc):
                     raise
                 raise SkipTest("type-gated delete-refusal contract lost to relay 504") from exc
-            assert deleted.get("success") is False, \
-                f"hub_delete_visual_rule must refuse (not delete) an RM rule: {deleted}"
             assert "not a visual rules builder rule" in str(deleted.get("error", "")).lower(), \
                 f"refused delete should explain the type gate: {deleted}"
 
@@ -10353,7 +10391,8 @@ def updated() {}
             "commonActions": [{"type": "turnOn", "config": {"switches": [switch_id]}}],
         }
         cw = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_rule_machine", {
+            # call_tool_result: the classic-only hub's format-mismatch refusal is read below.
+            lambda: self.client.call_tool_result("hub_manage_rule_machine", {
                 "tool": "hub_set_visual_rule",
                 "args": {"name": name, "confirm": True, "definition": editor}}),
             lambda: self._find_visual_rule_id_by_name(name),
@@ -10599,9 +10638,7 @@ def updated() {}
             else:
                 assert dw["response"].get("success") is True, \
                     f"hub_delete_visual_rule reported failure: {dw['response']}"
-            gone = self._get_visual_rule(app_id)
-            assert gone.get("success") is False, \
-                f"rule {app_id} still readable after delete: {gone}"
+            self._get_visual_rule(app_id, refused=True)   # still readable after the delete fails here
             self._untrack_native_app(app_id)
 
     # -----------------------------------------------------------------------
@@ -10635,8 +10672,8 @@ def updated() {}
         # The save response is the only verdict on a create, so broken Groovy must come back refused
         # with no id and the hub's own compiler text. A regression that saved it anyway would leave
         # a stray code class, so one that returns an id is deleted before the assertions fail.
-        result = self._write_once("hub_manage_code", tool, {"source": source, "confirm": True},
-                                  f"{tool} compile error")
+        refused, result = self._write_refused("hub_manage_code", tool, {"source": source, "confirm": True},
+                                              f"{tool} compile error")
         stray = result.get(id_field)
         if stray:
             item_type = "app" if tool == "hub_create_app" else "driver"
@@ -10645,7 +10682,7 @@ def updated() {}
                     "tool": "hub_delete_item", "args": {"type": item_type, "item_id": stray, "confirm": True}})
             except Exception as exc:
                 print(f"  [WARN] {tool} compile-error leg: delete stray {item_type} {stray} failed: {exc}")
-        assert result.get("success") is False and stray is None, \
+        assert refused and stray is None, \
             f"{tool} accepted broken Groovy or returned an id for it: {result}"
         err = str(result.get("error") or "")
         assert "unable to resolve" in err.lower() or marker in err, \
@@ -10720,11 +10757,10 @@ def updated() {}
                 "def updated() {}",
                 "def updated() { new ClassThatDoesNotExistBatE2e() }",
             )
-            failed = self.client.call_tool("hub_manage_code", {
+            failed = self.client.call_tool_failure("hub_manage_code", {
                 "tool": "hub_update_app",
                 "args": {"appId": code_app_id, "source": source_broken, "confirm": True},
             })
-            assert failed.get("success") is False, f"broken Groovy was accepted: {failed}"
             err = str(failed.get("error") or "")
             assert err and err != "Update failed - the hub returned an error", \
                 f"compile failure did not surface the hub's error text: {failed}"
@@ -10735,13 +10771,11 @@ def updated() {}
             # Leg 3: optimistic lock -- the pre-edit version is now stale. The save carries it
             # and the hub refuses it atomically: conflict:true, nothing written, no retry.
             source_v3 = source_v2.replace("UPDATE-LEG-MARKER-V2", "UPDATE-LEG-MARKER-V3")
-            conflicted = self.client.call_tool("hub_manage_code", {
+            conflicted = self.client.call_tool_failure("hub_manage_code", {
                 "tool": "hub_update_app",
                 "args": {"appId": code_app_id, "source": source_v3,
                          "expectedVersion": version_before, "confirm": True},
             })
-            assert conflicted.get("success") is False, \
-                f"stale expectedVersion was accepted: {conflicted}"
             assert conflicted.get("conflict") is True, \
                 f"conflict flag missing on optimistic-lock refusal: {conflicted}"
             assert conflicted.get("expectedVersion") == version_before, \
@@ -10812,18 +10846,18 @@ def updated() {}
                 "type": "app", "item_id": "2147483000", "id": "2147483000", "confirm": True}, "argument: id.")
             self._assert_code_call_refused("hub_delete_item", {
                 "type": "app", "item_id": "abc", "confirm": True}, "positive integer")
-            missing = self.client.call_tool("hub_manage_code", {
+            missing = self.client.call_tool_failure("hub_manage_code", {
                 "tool": "hub_delete_item",
                 "args": {"type": "app", "item_id": "2147483000", "confirm": True},
             })
-            assert missing.get("success") is False and "does not exist" in str(missing.get("error")), \
+            assert "does not exist" in str(missing.get("error")), \
                 f"deleting an app id that does not exist was not refused: {missing}"
 
             # Neither create writes anything: an Apps Code id the hub does not have comes back as a
-            # success:false result, and a File Manager file that does not exist is a validation error.
-            no_class = self.client.call_tool("hub_manage_code", {
+            # success:false (isError) result, and a File Manager file that does not exist is a validation error.
+            no_class = self.client.call_tool_failure("hub_manage_code", {
                 "tool": "hub_create_app", "args": {"codeAppId": 2147483000, "confirm": True}})
-            assert no_class.get("success") is False and "exist in Apps Code" in str(no_class.get("error")), \
+            assert "exist in Apps Code" in str(no_class.get("error")), \
                 f"creating an instance of an Apps Code id that does not exist was not refused: {no_class}"
             missing_file = f"BAT_E2E_missing_{time.time_ns()}.groovy"
             self._assert_code_call_refused("hub_create_app", {
@@ -11057,11 +11091,11 @@ def updated() {}
 
             # The hub refuses to delete app code that a running instance still uses, and only that
             # refusal carries the remove-instances note.
-            in_use = self.client.call_tool("hub_manage_code", {
+            in_use = self.client.call_tool_failure("hub_manage_code", {
                 "tool": "hub_delete_item",
                 "args": {"type": "app", "item_id": code_app_id, "confirm": True},
             })
-            assert in_use.get("success") is False and "in use" in str(in_use.get("error")).lower() \
+            assert "in use" in str(in_use.get("error")).lower() \
                 and "instances" in str(in_use.get("note")), \
                 f"deleting app code with a live instance was not refused as in use: {in_use}"
 
@@ -11237,11 +11271,10 @@ def updated() {}
                 "def updated() {}",
                 "def updated() { new ClassThatDoesNotExistBatE2eDrv() }",
             )
-            failed = self.client.call_tool("hub_manage_code", {
+            failed = self.client.call_tool_failure("hub_manage_code", {
                 "tool": "hub_update_driver",
                 "args": {"driverId": driver_id, "source": source_broken, "confirm": True},
             })
-            assert failed.get("success") is False, f"broken driver Groovy was accepted: {failed}"
             err = str(failed.get("error") or "")
             assert err and err != "Update failed - the hub returned an error", \
                 f"driver compile failure did not surface the hub's error text: {failed}"
@@ -11251,12 +11284,12 @@ def updated() {}
             # Leg 3: optimistic lock -- the pre-edit version is stale; the hub refuses the
             # save that carries it, writing nothing.
             source_v3 = source_v2.replace("DRIVER-LEG-MARKER-V2", "DRIVER-LEG-MARKER-V3")
-            conflicted = self.client.call_tool("hub_manage_code", {
+            conflicted = self.client.call_tool_failure("hub_manage_code", {
                 "tool": "hub_update_driver",
                 "args": {"driverId": driver_id, "source": source_v3,
                          "expectedVersion": version_before, "confirm": True},
             })
-            assert conflicted.get("success") is False and conflicted.get("conflict") is True, \
+            assert conflicted.get("conflict") is True, \
                 f"stale driver expectedVersion was not refused as a conflict: {conflicted}"
             assert conflicted.get("expectedVersion") == version_before, \
                 f"driver conflict does not echo the stale version: {conflicted}"
@@ -11274,24 +11307,24 @@ def updated() {}
                     f"unknown-argument refusal does not name the argument: {exc}"
 
             # Leg 5: a bulk entry with an unknown key is refused alone, and nothing is saved for it.
-            bulk = self.client.call_tool("hub_manage_code", {
+            bulk = self.client.call_tool_failure("hub_manage_code", {
                 "tool": "hub_update_driver",
                 "args": {"updates": [{"driverId": driver_id, "source": source_v3,
                                       "expectedVerison": version_before}], "confirm": True},
             })
             entry = (bulk.get("updates") or [{}])[0]
-            assert bulk.get("success") is False and entry.get("success") is False \
+            assert entry.get("success") is False \
                 and "expectedVerison" in str(entry.get("error")) and entry.get("note"), \
                 f"bulk unknown key was not refused with a note: {bulk}"
 
             # A bulk create entry with a misspelled key is refused alone, before anything is saved for
             # it. Its source would not compile either, so a regression cannot leave a driver behind.
-            installs = self._write_once(
+            refused, installs = self._write_refused(
                 "hub_manage_code", "hub_create_driver",
                 {"installs": [{"source": "metadata { definition(", "sourcefile": "x.groovy"}], "confirm": True},
                 "driver bulk create unknown key")
             install_entry = (installs.get("installs") or [{}])[0]
-            assert installs.get("success") is False and install_entry.get("success") is False \
+            assert refused and install_entry.get("success") is False \
                 and install_entry.get("driverId") is None \
                 and "sourcefile" in str(install_entry.get("error")) and install_entry.get("note"), \
                 f"bulk create unknown key was not refused with a note: {installs}"
@@ -11506,9 +11539,9 @@ def updated() {}
                 f"the mode input's value must be the configured list {want}, got: {value!r}"
             assert "modeInputs" not in cfg, f"modeInputs still returned: {cfg.get('modeInputs')}"
             # A page name the app does not have renders no sections; the note sends the caller to page.hrefs.
-            other = self.client.call_tool("hub_read_apps_code", {
+            other = self.client.call_tool_failure("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id, "pageName": "noSuchPage"}})
-            assert other.get("success") is False and other.get("fingerprint") == "sections not a list" \
+            assert other.get("fingerprint") == "sections not a list" \
                 and "page.hrefs" in str(other.get("note")) and "section='builtin_app_tools_apps'" in str(other.get("note")), \
                 f"an unknown page should fail with a note pointing at page.hrefs and the guide: {other}"
         finally:
@@ -11825,12 +11858,11 @@ def updated() {}
         try:
             swap_instances_before = self._swap_device_instance_ids()
 
-            result = self.client.call_tool("hub_manage_devices", {
+            # A success here means the hub's eligibility rules changed.
+            result = self.client.call_tool_failure("hub_manage_devices", {
                 "tool": "hub_call_device_swap",
                 "args": {"from_device_id": id_a, "to_device_id": id_b, "confirm": True},
             })
-            assert result.get("success") is False, \
-                f"swap of an MCP child device unexpectedly succeeded -- hub eligibility rules changed? {result}"
             blob = f"{result.get('error') or ''} {result.get('note') or ''}".lower()
             assert "does not offer" in blob or "child" in blob, \
                 f"ineligibility failure does not name the eligibility rule: {result}"
@@ -11867,7 +11899,7 @@ def updated() {}
         # array without mutating anything, so the persistent scaffold switch (an MCP child
         # device, like any fixture this suite can create) serves.
         dev_id = self.get_test_switch_id()
-        result = self.client.call_tool("hub_manage_devices", {
+        result = self.client.call_tool_result("hub_manage_devices", {
             "tool": "hub_call_device_replace",
             "args": {"old_device_id": dev_id, "list_options": True},
         })
@@ -11986,8 +12018,7 @@ def updated() {}
             except (McpToolError, McpError) as exc:
                 assert "requires a valid date and time" in str(exc), f"unexpected DateTime error: {exc}"
             else:
-                assert bad_dt.get("success") is False and "requires a valid date and time" in str(bad_dt), \
-                    f"malformed DateTime was not refused: {bad_dt}"
+                raise AssertionError(f"malformed DateTime was not refused with isError: {bad_dt}")
             assert not self._hub_variable_visible_in_bulk(bad_dt_name), "invalid DateTime created a variable"
         finally:
             self._delete_variable_safe(bad_dt_name)
@@ -12096,7 +12127,7 @@ def updated() {}
             # never add twice). A refused call is retried after the reset and then after two short
             # waits, which stay for runs whose reset fails (no watchdog): the busy budget grows with
             # uptime, so a call just over the limit can clear without one.
-            inc = self.client.call_tool("hub_manage_variables", {
+            inc = self.client.call_tool_result("hub_manage_variables", {
                 "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
             for wait_s in (0, 10, 20):
                 if "excessive hub load" not in str(inc.get("error", "")):
@@ -12110,7 +12141,7 @@ def updated() {}
                 if now_val != 1:
                     inc = {"success": now_val == 6, "previousValue": 1, "value": now_val}
                     break
-                inc = self.client.call_tool("hub_manage_variables", {
+                inc = self.client.call_tool_result("hub_manage_variables", {
                     "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
             assert inc.get("success") is True and inc.get("previousValue") == 1 and inc.get("value") == 6, \
                 f"increment did not add 5 to 1: {inc}"
@@ -12645,9 +12676,9 @@ def updated() {}
         for url, needle in ((missing_url, "404"),
                             ("http://0.backups.invalid/x.lzf", "size check of the URL failed"),
                             (f"http://127.0.0.1/local/{PREFIX}no%20such.lzf", f"no file named '{PREFIX}no such.lzf'")):
-            res = self.client.call_tool("hub_manage_backup", {"tool": "hub_restore_backup", "args": {
+            res = self.client.call_tool_failure("hub_manage_backup", {"tool": "hub_restore_backup", "args": {
                 "scope": "hub_uploaded", "backupUrl": url, "confirm": True}})
-            assert isinstance(res, dict) and res.get("success") is False and needle in str(res.get("error")), \
+            assert needle in str(res.get("error")), \
                 f"restore from {url} must be refused naming {needle!r}: {res}"
             assert "points at this hub" not in str(res.get("error")), f"{url} misread as an admin URL on this hub: {res}"
         # On this hub only its own web port serves File Manager files, and a name must be valid percent-encoding.
@@ -13231,7 +13262,7 @@ def updated() {}
         # NOT the Z-Wave/Zigbee radio mesh (that is hub_get_radio_details). READ-ONLY coverage: the
         # e2e hub is shared CI infrastructure, so nothing in this file ever enables/disables mesh,
         # retargets mode-following, or stores a peer token (see test_hub_mesh_update_validation).
-        res = self.client.call_tool("hub_get_hub_mesh")
+        res = self.client.call_tool_result("hub_get_hub_mesh")
         assert isinstance(res, dict), f"hub_get_hub_mesh returned {type(res).__name__}"
         assert isinstance(res.get("success"), bool), \
             f"hub_get_hub_mesh did not return a boolean success: {sorted(res)}"
@@ -13365,7 +13396,7 @@ def updated() {}
 
         # 3 -- the timeZone confirm gate: a tz change WITHOUT confirm must be refused (no reboot). The
         # refusal surfaces as a raised McpError/-32602 ("confirm"/"backup"/"safety check"), OR an
-        # isError envelope returned as a dict -- accept either. The tz value passed equals the CURRENT
+        # isError result raised as McpToolError -- accept either. The tz value passed equals the CURRENT
         # tz so that even if the gate were (wrongly) bypassed, nothing would actually change.
         refused = False
         detail = None
@@ -13392,17 +13423,17 @@ def updated() {}
         # (GET /hub/applyDarkMode/<bool>, HTTP 200 empty, no read-back -- /hub/details/json has no
         # dark/theme key). FIRMWARE-TOLERANT: /hub/applyDarkMode may not exist on older firmware
         # (it 404s there). The tool then returns a structured {success:false, error:"Failed to apply
-        # dark mode: ..."} envelope (NOT isError, so call_tool hands it back as a dict). Treat a genuine endpoint-absent failure as a CLEAN
-        # SKIP, distinct from a flaky relay 504 (which the runner retries). Sets dark then reverts to
-        # light so the hub theme is left as we found it.
+        # dark mode: ..."} result (isError on the envelope; call_tool_result hands it back as a dict). Treat a
+        # genuine endpoint-absent failure as a CLEAN SKIP, distinct from a flaky relay 504 (which the runner
+        # retries). Sets dark then reverts to light so the hub theme is left as we found it.
         def _dark_call(on: bool) -> Any:
             args = {"darkMode": on}
             try:
-                return self.client.call_tool("hub_set_system_settings", args)
+                return self.client.call_tool_result("hub_set_system_settings", args)
             except McpToolError as exc:
                 msg = str(exc)
                 if "excessive hub load" in msg and self._reset_app_runtime_stats(f"darkMode={on}: {exc}"):
-                    return self.client.call_tool("hub_set_system_settings", args)
+                    return self.client.call_tool_result("hub_set_system_settings", args)
                 # A darkMode failure can also surface as an isError-raised McpToolError; a
                 # firmware-absent endpoint is a clean skip, a relay 504 a retryable failure.
                 if "dark mode" in msg.lower():
@@ -14070,9 +14101,9 @@ def updated() {}
             # 2) confirm safety gate: hub_create_room without confirm -> refused, no room created.
             # `confirm` is a REQUIRED schema param (the convention for every destructive tool), so a
             # missing confirm is refused by the dispatch's required-param check. That surfaces as an
-            # isError envelope ("Missing required parameter: confirm") whose isError lives in the
-            # content, so call_tool RETURNS it as the parsed dict rather than raising; a raised
-            # McpError/-32602 is also acceptable. The load-bearing guarantee is refusal + no room.
+            # isError result ("Missing required parameter: confirm"), which call_tool raises as
+            # McpToolError; a raised McpError/-32602 is also acceptable. The load-bearing guarantee
+            # is refusal + no room.
             refused = False
             detail = None
             try:
@@ -14128,7 +14159,7 @@ def updated() {}
 
             # 5) confirm safety gate on delete: hub_delete_room without confirm -> refused, room survives.
             # Same refusal shape as the create gate above: a missing REQUIRED confirm comes back as an
-            # isError envelope (returned by call_tool) or a raise -- accept either; room must survive.
+            # isError result (raised by call_tool) or a -32602 -- accept either; room must survive.
             del_refused = False
             del_detail = None
             try:
@@ -14536,8 +14567,10 @@ def updated() {}
             except McpToolError as exc:
                 payload = _tool_error_payload(exc)
                 if payload.get("status") != "too_many_writes_in_flight":
-                    with probe_lock:
-                        probe_errors.append(exc)
+                    # A plain [success:false] probe result is not a cap refusal and never failed the test.
+                    if _runtime_failure_payload(exc) is None:
+                        with probe_lock:
+                            probe_errors.append(exc)
                 elif [a.get("tool") for a in payload.get("active") or []] == ["hub_create_variable"]:
                     with probe_lock:
                         holder_refusals.append(payload)
@@ -14598,7 +14631,7 @@ def updated() {}
                 if refusal is None and isinstance(holder_error, McpToolError) and attempt < 3:
                     payload = _tool_error_payload(holder_error)
                     if payload.get("status") == "too_many_writes_in_flight":
-                        inventory = self.client.call_tool("hub_read_variables", {
+                        inventory = self.client.call_tool_result("hub_read_variables", {
                             "tool": "hub_list_variables", "args": {}})
                         blocker = write_cap_holder_retry_blocker(payload, inventory, slow_names)
                         if blocker is None:
@@ -14704,8 +14737,7 @@ def updated() {}
             except (McpError, McpToolError) as exc:
                 message = str(exc)
             else:
-                assert result.get("success") is False, "generic edit of protected self was accepted"
-                message = str(result.get("error") or result.get("message") or result)
+                raise AssertionError(f"generic edit of protected self was accepted: {result}")
             if leaf == "hub_set_native_app":
                 assert "protected" in message.lower() and app_id in message, \
                     f"expected protected-app refusal, got: {message}"
@@ -15641,12 +15673,10 @@ def updated() {}
         ):
             try:
                 result = self.client.call_tool("hub_call_device_replace", args)
-                assert isinstance(result, dict) and result.get("success") is False, (
-                    f"Device replacement reached an unselected device with bypass OFF: {result}"
-                )
-                error = str(result.get("error", ""))
-            except McpError as exc:
+            except McpError as exc:   # the refusal: validation or a runtime isError result
                 error = str(exc)
+            else:
+                raise AssertionError(f"Device replacement reached an unselected device with bypass OFF: {result}")
             assert unauth in error and any(word in error.lower() for word in ("not found", "allowlist", "access")), (
                 f"Replacement must reject device access before lookup or confirmation: {error}"
             )
@@ -15676,12 +15706,10 @@ def updated() {}
         for tool, args in denied_calls:
             try:
                 result = self.client.call_tool(tool, args)
-                assert isinstance(result, dict) and result.get("success") is False, (
-                    f"{tool} reached unselected device {unauth} with bypass OFF: {result}"
-                )
-                error = str(result.get("error", ""))
-            except McpError as exc:
+            except McpError as exc:   # the refusal: validation or a runtime isError result
                 error = str(exc)
+            else:
+                raise AssertionError(f"{tool} reached unselected device {unauth} with bypass OFF: {result}")
             assert unauth in error and any(word in error.lower() for word in ("not found", "allowlist", "access")), (
                 f"{tool} failed for a reason other than the device-access boundary: {error}"
             )
@@ -15781,7 +15809,7 @@ def updated() {}
                                for c in (rr.get("changes") or [])), f"bypass room change not recorded: {rr}"
             finally:
                 if not orig_room:
-                    back = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": ""}})
+                    back = self.client.call_tool_result("hub_update_device", {"deviceId": unauth, "fields": {"room": ""}})
                     if not isinstance(back, dict) or back.get("success") is not True:
                         self._fixture_reset_failures.append(f"bypass leg (c): clearing the room on {unauth} failed: {back}")
 
@@ -16102,16 +16130,16 @@ def updated() {}
         """Sub-tool error routed THROUGH a gateway (hub_manage_rule_machine -> hub_delete_visual_rule) ->
         the reactive hint maps to the SUB-TOOL's section (visual_rule_reference). A bogus appId is passed
         so the call clears the gateway required-param pre-check (["appId","confirm"]) and the sub-tool
-        actually runs: it RETURNS [success:false] (bp_warning field) or, with no recent backup, THROWS
-        'BACKUP REQUIRED' -- both clean, both mapped to visual_rule_reference."""
+        actually runs: it RETURNS [success:false] (bp_warning field, isError envelope) or, with no recent
+        backup, THROWS 'BACKUP REQUIRED' -- both clean, both mapped to visual_rule_reference."""
         self._set_bps(enableMandatoryBPS=False)
         try:
             res = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_delete_visual_rule", "args": {"appId": "999999999", "confirm": True}})
-            assert isinstance(res, dict) and res.get("success") is False, f"expected a failure, got: {res}"
-            blob = json.dumps(res)
         except McpError as e:
             blob = str(e)
+        else:
+            raise AssertionError(f"expected a failure, got: {res}")
         assert "visual_rule_reference" in blob, f"gateway-routed hint missing visual_rule_reference: {blob[:300]}"
 
     @test("best_practice_gating")
@@ -16131,14 +16159,12 @@ def updated() {}
     @test("best_practice_gating")
     def test_reactive_bps_gateway_returned_map_carries_bp_warning_field(self) -> None:
         """Gateway-routed RETURNED-[success:false] path: hub_set_app_disabled via its gateway with a
-        numeric-but-nonexistent appId RETURNS a success:false Map (no throw); the bp_warning FIELD rides
-        the result and names the sub-tool's own sub-section (builtin_app_tools_rules). Proves the
-        returned-Map path."""
+        numeric-but-nonexistent appId RETURNS a success:false Map (no throw; isError on the envelope);
+        the bp_warning FIELD rides the result and names the sub-tool's own sub-section
+        (builtin_app_tools_rules). Proves the returned-Map path."""
         self._set_bps(enableMandatoryBPS=False)
-        res = self.client.call_tool("hub_manage_native_rules_and_apps", {
+        res = self.client.call_tool_failure("hub_manage_native_rules_and_apps", {
             "tool": "hub_set_app_disabled", "args": {"appId": "999999999", "disabled": True}})
-        assert isinstance(res, dict), f"expected a returned result map, got: {res!r}"
-        assert res.get("success") is False, f"expected success:false for a nonexistent appId, got: {res}"
         assert "bp_warning" in res, f"returned-error result missing the bp_warning field: {res}"
         assert 'section="builtin_app_tools_rules"' in res["bp_warning"], f"bp_warning wrong section: {res.get('bp_warning')}"
         assert "hub_set_app_disabled" in res["bp_warning"], f"bp_warning should name the sub-tool: {res.get('bp_warning')}"
@@ -16349,7 +16375,7 @@ def updated() {}
         assert len(second.get("content", "")) > 0, "cursor page carried no content"
 
         # The hub's own API documentation pages too: a ranked search, then one class page.
-        found = self.client.call_tool("hub_get_tool_guide", {"platform_api_search": "eventsBetween"})
+        found = self.client.call_tool_result("hub_get_tool_guide", {"platform_api_search": "eventsBetween"})
         if not self._hub_fw_at_least("2.5.2"):
             assert found.get("success") is False and "2.5.2" in str(found.get("note")), \
                 f"an API-docs miss must name the firmware it needs: {found}"
@@ -16420,18 +16446,17 @@ def updated() {}
         assert current in ("on", "off"), f"Switch baseline is unavailable: {current!r}"
         expected = "off" if current == "on" else "on"
         t0 = time.monotonic()
-        result = self.client.call_tool("hub_get_device_attribute", {
+        result = self.client.call_tool_failure("hub_get_device_attribute", {
             "deviceId": dev_id, "attribute": "switch", "expectedValue": expected, "timeoutMs": 2000,
         })
         elapsed_wall = (time.monotonic() - t0) * 1000
-        assert result.get("success") is False, f"Expected success=false, got: {result}"
         assert result.get("timedOut") is True, f"Expected timedOut=true, got: {result}"
         assert result.get("finalValue") == current, f"Switch changed during the timeout probe: {result}"
         # Wall clock should reflect roughly the timeout (within 1 second of variance)
         assert elapsed_wall >= 1800, f"Wall clock too short ({elapsed_wall:.0f}ms); poll may not have blocked"
         # A poll longer than the cloud relay keeps a request open waits only the budget left and
         # says so, instead of being dropped by the relay; on LAN (no budget) it is not shortened.
-        long_poll = self.client.call_tool("hub_get_device_attribute", {
+        long_poll = self.client.call_tool_failure("hub_get_device_attribute", {
             "deviceId": dev_id, "attribute": "switch", "expectedValue": expected, "timeoutMs": 25000,
         }) if self._client_source() == "cloud" else None
         if long_poll is not None:
@@ -16460,7 +16485,7 @@ def updated() {}
                 })
 
             # mode=all: both on -> converges, convergedCount == 2.
-            all_poll = self.client.call_tool("hub_get_device_attribute", {
+            all_poll = self.client.call_tool_result("hub_get_device_attribute", {
                 "deviceIds": [a_id, b_id], "attribute": "switch",
                 "expectedValue": "on", "mode": "all", "timeoutMs": 5000,
             })
@@ -16471,7 +16496,7 @@ def updated() {}
                     self._native_device_command({
                         "deviceId": did, "command": "on",
                         "waitFor": {"attribute": "switch", "expectedValue": "on", "timeoutMs": 5000}})
-                all_poll = self.client.call_tool("hub_get_device_attribute", {
+                all_poll = self.client.call_tool_result("hub_get_device_attribute", {
                     "deviceIds": [a_id, b_id], "attribute": "switch",
                     "expectedValue": "on", "mode": "all", "timeoutMs": 5000})
             assert all_poll.get("success") is True, f"all-mode should converge (both on): {all_poll}"
@@ -17153,12 +17178,18 @@ def updated() {}
         app_id = self._create_native_rule("LegacyStop")
         kept, skipped = "E2E legacy stop kept", "E2E legacy stop skipped"
         try:
-            result = legacy.call_tool("hub_set_rule", {"operation": "update", "rule_id": int(app_id),
-                "args": {"changes": [native_log(kept), native_change("action", type="messageActs", subtype="getLogMsg", fields=[
-                    native_field("logmsg.#", "textarea", "partial marker"),
-                    native_field("noSuchField.#", "number", 1)]),
-                                      native_log(skipped)]}, "confirm": True})
-            assert result.get("success") is False and result.get("partial") is True, result
+            # The legacy era gets the same isError envelope over the success:false document failure.
+            try:
+                result = legacy.call_tool("hub_set_rule", {"operation": "update", "rule_id": int(app_id),
+                    "args": {"changes": [native_log(kept), native_change("action", type="messageActs", subtype="getLogMsg", fields=[
+                        native_field("logmsg.#", "textarea", "partial marker"),
+                        native_field("noSuchField.#", "number", 1)]),
+                                          native_log(skipped)]}, "confirm": True})
+            except McpToolError as exc:
+                result = _runtime_failure_payload(exc)
+            else:
+                raise AssertionError(f"a stopped legacy batch must carry isError: {result}")
+            assert result is not None and result.get("partial") is True, result
             rows = result.get("results", [])
             assert len(rows) == 2 and rows[0]["result"].get("success") is True, result
             assert rows[1]["result"].get("success") is False, result
@@ -17474,7 +17505,7 @@ def updated() {}
                     aname, aid = str(a.get("name") or a.get("label") or ""), str(a.get("id"))
                     try:
                         print(f"  Sweep: deleting Button Controller '{aname}' (id={aid})")
-                        res = self.client.call_tool("hub_manage_rule_machine", {
+                        res = self.client.call_tool_result("hub_manage_rule_machine", {
                             "tool": "hub_delete_native_app",
                             "args": {"appId": aid, "force": True, "confirm": True},
                         })
@@ -18153,7 +18184,8 @@ def refuse_unless_leased_test_hub(client: HubitatMcpClient, *,
     # Three failure shapes, and only one of them is the hub speaking. The hub's own verdict for
     # an absent variable is toolGetVariable's IllegalArgumentException, which handleToolsCall
     # renders as an isError validation result whose text says "not found"; a lost response, an
-    # undecodable body, and any OTHER isError runtime fault leave the variable unknown and retry.
+    # undecodable body, and an isError tool fault (not a [success:false] answer) leave the
+    # variable unknown and retry.
     got = None
     last_exc: Exception | None = None
     last_kind = "the hub was not heard"
@@ -18168,6 +18200,10 @@ def refuse_unless_leased_test_hub(client: HubitatMcpClient, *,
             if "not found" in str(exc):
                 _refuse([f"the hub answered: variable not present -- {TEST_HUB_LEASE_VARIABLE!r} "
                          f"({str(exc)[:120]}); only the sacrificial test hub carries the e2e lease variable"])
+            # A [success:false] result is the tool's own answer, judged below as before it carried isError.
+            got = _runtime_failure_payload(exc)
+            if got is not None:
+                break
             last_exc, last_kind = exc, "the tool faulted at runtime (isError), which says nothing about the variable"
         except McpError as exc:
             if str(exc).startswith("JSON-RPC error:"):

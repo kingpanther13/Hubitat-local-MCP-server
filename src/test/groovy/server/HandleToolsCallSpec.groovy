@@ -117,6 +117,43 @@ class HandleToolsCallSpec extends ToolSpecBase {
         !response.result.containsKey('structuredContent')
     }
 
+    // Issue 584: MCP 2026-07-28 classes every API, validation and business-logic failure as a
+    // tool execution error, so the envelope follows a top-level success:false.
+    @spock.lang.Unroll
+    def "a #kind result is sent with isError=#flagged and its JSON text unchanged (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        script.metaClass.toolGetHubInfo = { a -> payload }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_info', [:])
+
+        then:
+        response.error == null
+        response.result.containsKey('isError') == flagged
+        (response.result.isError == true) == flagged
+        response.result.content[0].text == JsonOutput.toJson(payload)
+        !mcpDriver.parseInner(response).containsKey('isError')
+
+        where:
+        [kind, flagged, payload, useGateways] << [
+            [
+                ['success:false', true, [success: false, error: 'boom', note: GUIDE_NOTE]],
+                ['partial failure', true, [success: false, partial: true, error: '1 of 2 failed', note: GUIDE_NOTE]],
+                ['budget-paused', true, [success: false, stoppedEarly: true, remainingCommands: [[deviceId: '2', command: 'on']],
+                                         error: 'Stopped early', note: GUIDE_NOTE]],
+                ['poll timeout', true, [success: false, timedOut: true, finalValue: 'off', note: GUIDE_NOTE]],
+                ['success:true', false, [success: true, model: 'C-8']],
+                ['partialSuccess', false, [success: true, partialSuccess: true, warnings: ['namespace not verified']]],
+                ['no success key', false, [model: 'C-8']]
+            ],
+            [true, false]
+        ].combinations().collect { List pair -> (pair[0] as List) + [pair[1]] }
+    }
+
+    // A note that already cites the guide keeps the reactive bp_warning off, so the text compares exactly.
+    private static final String GUIDE_NOTE = "See hub_get_tool_guide(section='hub_admin_read')."
+
     def "an oversized result keeps the non-error too-large envelope with a saved publication toggle"() {
         given:
         settingsMap.useGateways = true
@@ -131,10 +168,11 @@ class HandleToolsCallSpec extends ToolSpecBase {
         response.result.content[0].text.contains('response_too_large')
     }
 
-    def "an oversized failing result preserves isError in the too-large envelope"() {
+    @spock.lang.Unroll
+    def "an oversized failing result preserves isError in the too-large envelope (#failure)"() {
         given:
         settingsMap.publishOutputSchemas = true
-        script.metaClass.toolGetHubInfo = { a -> [isError: true, error: 'x' * 130000] }
+        script.metaClass.toolGetHubInfo = { a -> flag + [error: 'x' * 130000] }
 
         when:
         def response = mcpDriver.callTool('hub_get_info', [:])
@@ -145,6 +183,11 @@ class HandleToolsCallSpec extends ToolSpecBase {
         !response.result.containsKey('structuredContent')
         response.result.content[0].type == 'text'
         mcpDriver.parseInner(response).response_too_large == true
+
+        where:
+        failure         | flag
+        'isError'       | [isError: true]
+        'success:false' | [success: false]
     }
 
     def "null tool result on a gateway-routed call blames the failing sub-tool, not the gateway"() {

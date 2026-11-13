@@ -807,7 +807,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('No such app')

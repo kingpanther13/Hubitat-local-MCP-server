@@ -1802,6 +1802,61 @@ class MrtrContinuationSpec extends ToolSpecBase {
         next.result.isError != true
     }
 
+    // Issue 584: a terminal whose top-level success is false is a tool execution error on
+    // every path that hands it back, and the record says so for recentWrites.
+    def "a success:false terminal is flagged isError on its first return and on replay"() {
+        given:
+        settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = { Map a ->
+            [success: false, ruleIds: a.ruleId, error: 'One or more rule operations failed; inspect results[].',
+             results: a.ruleId.collect { [success: false, ruleId: it, error: 'rule not found'] }]
+        }
+        def args = [ruleId: [81, 82], action: 'stop']
+
+        when:
+        def first = modernCall('hub_call_rule', args)
+        String stateId = onlyStateId()
+        def replay = modernCall('hub_call_rule', args, stateId)
+
+        then:
+        first.error == null
+        first.result.resultType == 'complete'
+        first.result.isError == true
+        !mcpDriver.parseInner(first).containsKey('isError')
+        (atomicStateMap.mrtrRequests as Map)[stateId].terminalIsError == true
+        script._mrtrRecentOperations()[0].status == 'finished_with_error'
+
+        and:
+        replay.error == null
+        replay.result.resultType == 'complete'
+        replay.result.isError == true
+        mcpDriver.parseInner(replay) == mcpDriver.parseInner(first)
+    }
+
+    def "a success:false terminal reached by the server-side continuation is logged and replayed as an error"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.mcpLogLevel = 'info'
+        script.metaClass.toolRunRmRule = pausingMultiRuleWrite()
+        def args = [ruleId: [91, 92], action: 'stop']
+
+        when: 'the first slice pauses; the server finishes the remainder, which fails'
+        String stateId = modernCall('hub_call_rule', args).result.requestState
+        script.metaClass.toolRunRmRule = { Map a ->
+            [success: false, ruleIds: a.ruleId, results: a.ruleId.collect { [success: false, ruleId: it, error: 'rule not found'] }]
+        }
+        script.runMrtrAutoContinue(new LinkedHashMap(autoContinueJobs()[0][2].data as Map))
+        def replay = modernCall('hub_call_rule', args, stateId)
+
+        then:
+        script.getDebugLogEntries().any {
+            it.message?.toString()?.contains('hub_call_rule: finished in the background (with an error)') }
+        (atomicStateMap.mrtrRequests as Map)[stateId].terminalIsError == true
+        replay.result.resultType == 'complete'
+        replay.result.isError == true
+        mcpDriver.parseInner(replay).success == false
+    }
+
     def "ordinary write-request leases share the same cap and release in finally"() {
         given:
         settingsMap.enableWrite = true
