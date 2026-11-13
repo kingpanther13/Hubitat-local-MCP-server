@@ -505,7 +505,7 @@ All routes require the Write master. Validation runs before mutation; runtime fa
 | Tool | Access Gate | Description |
 |------|------------|-------------|
 | `hub_list_rooms` | None | All rooms with IDs, names, device ids via `getRooms()` (cursor-pageable) |
-| `hub_get_room` | None | One room by `id`: its devices with labels and current states from the Devices page |
+| `hub_get_room` | None | One room by `roomId`: its devices with labels and current states from the Devices page |
 | `hub_create_room` | Write master + confirm | Creates room via `POST /room/save` with `roomId: 0`; the new id comes from the response's `roomId` |
 | `hub_delete_room` | Write master + confirm | Deletes room via `GET /room/delete/<id>` (POST answers 405). Devices become unassigned |
 | `hub_update_room` | Write master + confirm | `POST /room/save` with the existing `roomId`, the new or current `name`, and the new or current `deviceIds` (a wholesale device list) |

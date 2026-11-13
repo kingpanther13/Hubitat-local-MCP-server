@@ -85,7 +85,7 @@ class HandleGatewaySpec extends ToolSpecBase {
 
     def "missing required param throws isError validation result with the full param list (same shape as flat; #319)"() {
         when:
-        // hub_get_room requires `id`; omit it. The pre-check throws (not a soft return)
+        // hub_get_room requires `roomId`; omit it. The pre-check throws (not a soft return)
         // so a missing-arg error has the SAME shape gateway and flat (both -> isError validation result).
         script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
 
@@ -93,7 +93,7 @@ class HandleGatewaySpec extends ToolSpecBase {
         def e = thrown(IllegalArgumentException)
         // Singular form (W-missingRequired-singular): a regression dropping the count-aware
         // ternary would emit "parameters" for 1 missing arg.
-        e.message.contains('Missing required parameter for hub_get_room: id.')
+        e.message.contains('Missing required parameter for hub_get_room: roomId.')
         !e.message.contains('Missing required parameters')
         // The full param list rides in the message (no content lost vs the old field).
         e.message.contains('All parameters:')
@@ -117,7 +117,7 @@ class HandleGatewaySpec extends ToolSpecBase {
         gwEx instanceof IllegalArgumentException
 
         and: 'the gateway still names the missing param -- no information lost, plus the full list'
-        gwEx.message.contains('Missing required parameter for hub_get_room: id.')
+        gwEx.message.contains('Missing required parameter for hub_get_room: roomId.')
         gwEx.message.contains('All parameters:')
     }
 
@@ -245,10 +245,10 @@ class HandleGatewaySpec extends ToolSpecBase {
             [[id: 42, name: 'Office', deviceIds: []]]
         }
 
-        when: 'args is a JSON string encoding {"id":"42"}'
-        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', '{"id":"42"}')
+        when: 'args is a JSON string encoding {"roomId":"42"}'
+        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', '{"roomId":"42"}')
 
-        then: 'string was parsed; the id parameter reached the tool; correct room returned'
+        then: 'string was parsed; the roomId parameter reached the tool; correct room returned'
         !result.isError
         result.name == 'Office'
     }
@@ -309,16 +309,16 @@ class HandleGatewaySpec extends ToolSpecBase {
     // The class cache must preserve required-parameter validation without durable catalog metadata.
 
     def "memo stays outside persisted state after the first gateway call; a repeat call throws the identical missing-param error"() {
-        when: 'first call with a missing required param (hub_get_room requires id)'
+        when: 'first call with a missing required param (hub_get_room requires roomId)'
         def firstEx = null
         try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception e) { firstEx = e }
 
         then: 'thrown missing-param error AND the memo remains outside persisted state'
         firstEx instanceof IllegalArgumentException
-        firstEx.message.contains('Missing required parameter for hub_get_room: id.')
+        firstEx.message.contains('Missing required parameter for hub_get_room: roomId.')
         script.requiredParamsByTool() instanceof Map
         !atomicStateMap.containsKey('requiredParamsByTool')
-        script.requiredParamsByTool()['hub_get_room'] == ['id']
+        script.requiredParamsByTool()['hub_get_room'] == ['roomId']
         // omission contract: a no-required-param tool is absent from the map
         !script.requiredParamsByTool().containsKey('hub_list_rooms')
 
@@ -340,7 +340,7 @@ class HandleGatewaySpec extends ToolSpecBase {
 
         then: 'the thrown param list is fully intact -- no marker leakage'
         def e = thrown(IllegalArgumentException)
-        e.message.contains('Missing required parameter for hub_get_room: id.')
+        e.message.contains('Missing required parameter for hub_get_room: roomId.')
         !e.message.contains('FLAT_TRIM')
     }
 
@@ -371,29 +371,29 @@ class HandleGatewaySpec extends ToolSpecBase {
 
         then: 'the compiled catalog supersedes the persisted memo -- rejection names the LIVE required param, never the stale one'
         ex instanceof IllegalArgumentException
-        ex.message.contains('Missing required parameter for hub_get_room: id.')
+        ex.message.contains('Missing required parameter for hub_get_room: roomId.')
         !ex.message.contains('legacy_param')
 
         and: 'the live required parameters are used'
-        script.requiredParamsByTool()['hub_get_room'] == ['id']
+        script.requiredParamsByTool()['hub_get_room'] == ['roomId']
     }
 
     def "retired persisted requirements cannot reject a now-optional parameter"() {
         given: 'a stale memo lists an extra requirement removed from the compiled catalog'
         // Supplying the current requirements must reach dispatch without extra_param.
         script.metaClass.getRooms = { [[id: 7, name: 'Kitchen', deviceIds: []]] }
-        atomicStateMap.requiredParamsByTool = ['hub_get_room': ['id', 'extra_param']]
+        atomicStateMap.requiredParamsByTool = ['hub_get_room': ['roomId', 'extra_param']]
         atomicStateMap.requiredParamsByToolFingerprint = 'stale-fingerprint'
 
         when: 'supply only the live-required param, omitting the stale extra'
-        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [id: '7'])
+        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [roomId: '7'])
 
         then: 'the pre-check passes (no missing-param throw) -- dispatch reached the impl and returned the room'
         notThrown(IllegalArgumentException)
         result.name == 'Kitchen'
 
         and: 'the in-memory memo has the live shape'
-        script.requiredParamsByTool()['hub_get_room'] == ['id']
+        script.requiredParamsByTool()['hub_get_room'] == ['roomId']
     }
 
     def "retired persisted metadata is ignored even if it claims a matching fingerprint"() {
@@ -406,7 +406,7 @@ class HandleGatewaySpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Missing required parameter for hub_get_room: id.')
+        ex.message.contains('Missing required parameter for hub_get_room: roomId.')
         !ex.message.contains('sentinel_param')
     }
 
@@ -443,7 +443,7 @@ class HandleGatewaySpec extends ToolSpecBase {
         notThrown(IllegalArgumentException)
 
         when: 'a tool without additionalProperties:false is checked the same way'
-        script._rejectUnknownArgs('hub_get_room', [id: '1', whatever: true])
+        script._rejectUnknownArgs('hub_get_room', [roomId: '1', whatever: true])
 
         then:
         def lenient = thrown(IllegalArgumentException)

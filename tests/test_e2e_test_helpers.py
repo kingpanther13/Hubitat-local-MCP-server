@@ -216,7 +216,7 @@ def test_metadata_mode_switch_is_registered_and_restores_without_catalog(monkeyp
                 raise et.McpError("Gateway is disabled - useGateways is OFF")
             if args["tool"] == "hub_get_room":
                 missing += 1
-                raise et.McpError("Missing required parameter for hub_get_room: id")
+                raise et.McpError("Missing required parameter for hub_get_room: roomId")
             return _raw_tool_body({"rooms": []})
         assert tool == "hub_search_tools" and gateway
         searches += 1
