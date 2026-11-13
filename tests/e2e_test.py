@@ -5585,7 +5585,7 @@ class TestRunner:
         self._expect_tool_refusal("hub_manage_dashboards", {
             "tool": "hub_update_dashboard",
             "args": {"id": dash_id, "name": f"{dash_name} Bare", "deviceIds": upd_devices}},
-            "Unknown hub_update_dashboard argument: id.")
+            "Missing required parameter for hub_update_dashboard: dashboardId")
         assert (self._read_dashboard(dash_id) or {}).get("name") == dash_name, \
             "hub_update_dashboard(id=...) was refused but the dashboard was renamed anyway"
 
