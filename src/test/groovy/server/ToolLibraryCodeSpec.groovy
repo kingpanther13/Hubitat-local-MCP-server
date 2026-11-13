@@ -193,7 +193,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('999')
@@ -228,7 +228,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Empty response')
@@ -634,7 +634,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('installation failed')
@@ -675,7 +675,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('installation failed')
@@ -714,7 +714,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('unverified')
@@ -760,7 +760,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('unverified')
@@ -1139,7 +1139,7 @@ def helperMethod() { return "ok" }
         then:
         posts.isEmpty()
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.conflict == true
@@ -1460,7 +1460,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Compilation error')
@@ -1766,7 +1766,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.startsWith('Could not read the source of')
@@ -1813,7 +1813,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Library is in use')
@@ -1858,7 +1858,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('deletion failed')
@@ -1901,7 +1901,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Could not confirm')
@@ -1949,7 +1949,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Could not confirm')

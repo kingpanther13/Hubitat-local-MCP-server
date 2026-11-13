@@ -3068,7 +3068,7 @@ def handleToolsCall(msg) {
             }
             orphaned.note = ((orphaned.note ? orphaned.note + " " : "") + lostNote).toString()
             return _renderToolResult(msg.id, toolName, reactiveToolName, args,
-                _mrtrMarkRejoined(orphaned, rejoined), orphaned.isError == true)
+                _mrtrMarkRejoined(orphaned, rejoined), _isFailureResult(orphaned))
         }
         def failure = _mrtrFailureWithLedger(rec, reactiveToolName, "Tool error: ${e.message}".toString())
         if (rec instanceof Map && claim?.outcome == "claimed") {
@@ -3166,7 +3166,7 @@ def handleToolsCallLegacy(msg) {
         }
         if (audit != null && outcome == null) outcome = _writeOutcome(result)
         return _renderToolResult(msg.id, toolName, reactiveToolName, args, result,
-            result instanceof Map && result.isError == true)
+            _isFailureResult(result))
     } catch (IllegalArgumentException e) {
         if (audit != null && outcome == null) outcome = [outcome: "failed", error: "validation refused the call"]
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null, [
@@ -3284,7 +3284,7 @@ private Map _writeOutcome(result) {
                 : [outcome: "partial", error: "paused with remaining work in the result"]
         }
         if (r.partial == true) return [outcome: "partial", error: _writeOutcomeCode(r, "some items did not apply")]
-        if (r.isError == true || r.success == false) return [outcome: "failed", error: _writeOutcomeCode(r, "tool returned a failure result")]
+        if (_isFailureResult(r)) return [outcome: "failed", error: _writeOutcomeCode(r, "tool returned a failure result")]
         if (r.stateError instanceof CharSequence && r.stateError.toString().trim()) {
             return [outcome: "unknown", error: "the write ran but reading the resulting state failed"]
         }
@@ -4612,7 +4612,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
     }
 
     def terminal = _mrtrAggregateTerminal(rec, result)
-    boolean isError = terminal instanceof Map && terminal.isError == true
+    boolean isError = _isFailureResult(terminal)
     if (!_mrtrStoreTerminal(stateId, rec, claim, terminal, isError)) {
         throw new IllegalStateException("requestState ownership was lost before its terminal result could be stored")
     }
@@ -5249,6 +5249,12 @@ private def _renderValidationError(id, toolName, reactiveToolName, args, String 
         _mrtrMarkRejoined(failure, rejoined), true)
 }
 
+// MCP 2026-07-28 classes API, validation and business-logic failures as tool execution
+// errors, so any top-level success == false (partial, paused or timed out included) is one.
+private boolean _isFailureResult(result) {
+    return result instanceof Map && (result.isError == true || result.success == false)
+}
+
 private def _renderToolResult(id, toolName, reactiveToolName, args, result, boolean isErrorOverride = false) {
     if (result instanceof Map && result.__deviceValidation != null) {
         String detail = result.__deviceValidation.toString()
@@ -5266,7 +5272,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     // A validation refusal was already logged as "Validation error in <tool>" by its
     // catch; it is one refusal, so it gets one log line.
     boolean validation = rendered instanceof Map && rendered.remove("__validation") == true
-    boolean failureFlag = rendered instanceof Map && (rendered.isError == true || rendered.success == false)
+    boolean failureFlag = _isFailureResult(rendered)
     boolean stateReadbackFailed = rendered instanceof Map && rendered.stateError instanceof CharSequence &&
         rendered.stateError.toString().trim()
     if (!validation && (isErrorOverride || failureFlag || stateReadbackFailed)) {
@@ -5275,7 +5281,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
             details: _toolLogDetails(reactiveToolName, toolName, args, [failureKind: stateReadbackFailed ? "state_readback_failed" : "tool_failed"])
         ])
     }
-    if (rendered instanceof Map && (rendered.isError == true || rendered.success == false)) {
+    if (failureFlag) {
         try { _applyReactiveBpsWarning(reactiveToolName, args, rendered) }
         catch (Exception bpErr) {
             mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}")
@@ -5308,7 +5314,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
         ])
     }
     def envelopeBody = [content: [[type: "text", text: jsonText]]]
-    if (isErrorOverride || (rendered instanceof Map && rendered.isError == true)) {
+    if (isErrorOverride || failureFlag) {
         envelopeBody.isError = true
     }
     def candidateResponse = jsonRpcResult(id, envelopeBody)
@@ -12371,7 +12377,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - Firing the separate calls in parallel does NOT help -- the hub serialises them anyway (see "Make tool calls sequentially" below).
 - It does not make the devices move simultaneously; the hub still actuates one at a time. For a directly-attached device that costs almost nothing, but a device behind a bridge carries real per-device time that batching cannot remove: six Bond-bridged shades batched came back at ~2.75s, against ~5.0s sent separately (six Z-Wave switches batch at ~1.5s).
 - Entries are independent, so mixed devices and mixed commands go in one batch. Max 20. A partly-failed batch reports failedDeviceIds plus partial:true -- re-send only those ids; the rest already actuated.
-- The batch result always carries `count` (entries attempted), `sentCount`, `failedCount` and a per-entry `results[]`. Any failure adds `failedDeviceIds`, `error` and `note`. `isError: true` is set only when every attempted entry failed. An entry's `deviceId` may be a string or an integer.
+- The batch result always carries `count` (entries attempted), `sentCount`, `failedCount` and a per-entry `results[]`. Any failure adds `failedDeviceIds`, `error` and `note`, sets `success: false` and marks the result `isError: true`. An entry's `deviceId` may be a string or an integer.
 
 - Batch entries return NO state snapshot, and waitFor is not accepted with `commands`. To confirm, follow with hub_get_device_attribute using deviceIds (multi-device convergence): one batch to fire, one poll to confirm -- two round trips for the whole group.
 - A very large batch of slow bridged devices can stop early at the relay time budget: the result carries stoppedEarly:true with remainingCommands, the untried tail verbatim, to re-send in a new call.

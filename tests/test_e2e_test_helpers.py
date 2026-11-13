@@ -1037,7 +1037,7 @@ _LIMITED = "RMUtils.sendAction failed: App 38 generates excessive hub load"
     [
         pytest.param([{"success": True}], 1, True, 1, 0, False, id="clean-call-never-resets"),
         pytest.param([{"success": False, "error": _LIMITED}, {"success": True}], 1, True, 2, 1, False,
-                     id="envelope-trip-resets-and-retries"),
+                     id="failure-result-trip-resets-and-retries"),
         pytest.param([et.McpToolError("hub_manage_rule_machine", _LIMITED), {"success": True}], 1, True, 2, 1, False,
                      id="raised-trip-resets-and-retries"),
         pytest.param([{"success": False, "error": _LIMITED}] * 3, 2, True, 3, 2, True,
@@ -1055,11 +1055,15 @@ def test_call_with_limiter_reset_retries_only_limiter_trips(
     replies = iter(replies)
 
     class Client:
-        def call_tool(self, name, arguments):
+        call_tool_result = et.HubitatMcpClient.call_tool_result
+
+        def call_tool(self, name, arguments, *, flat=False):
             calls.append((name, arguments))
             reply = next(replies)
             if isinstance(reply, Exception):
                 raise reply
+            if reply.get("success") is False:   # the server flags it isError, so call_tool raises
+                raise et.McpToolError(name, json.dumps(reply))
             return reply
 
     runner = object.__new__(et.TestRunner)
@@ -1118,7 +1122,9 @@ def test_reset_app_runtime_stats_counts_every_failure_and_flags_an_unverified_re
 
 def test_call_with_limiter_reset_propagates_non_limiter_errors():
     class Client:
-        def call_tool(self, name, arguments):
+        call_tool_result = et.HubitatMcpClient.call_tool_result
+
+        def call_tool(self, name, arguments, *, flat=False):
             raise et.McpToolError("hub_manage_rule_machine", "rule 7 not found")
 
     runner = object.__new__(et.TestRunner)
@@ -2368,8 +2374,14 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
         {"success": True, "version": 2, "source": "DRIVER-LEG-MARKER-V2"},
     ])
 
+    def failed(tool, result):
+        # The server sets isError on every top-level success:false result.
+        return et.McpToolError(tool, json.dumps(result))
+
     class FakeClient:
-        def call_tool(self, name, arguments):
+        call_tool_failure = et.HubitatMcpClient.call_tool_failure
+
+        def call_tool(self, name, arguments, *, flat=False):
             direct_calls.append((name, arguments))
             tool = arguments.get("tool")
             if (name, tool) == ("hub_manage_code", "hub_create_driver"):
@@ -2381,18 +2393,18 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
             if (name, tool) == ("hub_manage_code", "hub_update_driver"):
                 args = arguments["args"]
                 if "updates" in args:
-                    return {"success": False, "updates": [{
+                    raise failed(tool, {"success": False, "updates": [{
                         "driverId": args["updates"][0]["driverId"], "success": False,
-                        "error": "Unknown updates[] argument: expectedVerison.", "note": "Correct the key."}]}
+                        "error": "Unknown updates[] argument: expectedVerison.", "note": "Correct the key."}]})
                 if "expectedVerison" in args:
                     raise et.McpToolError(tool, "Unknown hub_update_driver argument: expectedVerison")
                 if "expectedVersion" in args:
-                    return {"success": False, "conflict": True,
-                            "expectedVersion": args["expectedVersion"], "currentVersion": 2}
-                return {
+                    raise failed(tool, {"success": False, "conflict": True,
+                                        "expectedVersion": args["expectedVersion"], "currentVersion": 2})
+                raise failed(tool, {
                     "success": False,
                     "error": "unable to resolve class ClassThatDoesNotExistBatE2eDrv",
-                }
+                })
             if (name, tool) == ("hub_manage_code", "hub_delete_item"):
                 assert set(arguments["args"]) == {"type", "item_id", "confirm"}, arguments
                 return {"success": True}
@@ -2404,12 +2416,12 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
     def write_once(gateway, tool, args, label):
         write_calls.append((gateway, tool, args, label))
         if tool == "hub_create_driver" and "installs" in args:
-            return {"success": False, "installs": [{
+            raise failed(tool, {"success": False, "installs": [{
                 "driverId": None, "success": False,
-                "error": "Unknown installs[] argument: sourcefile.", "note": "Correct the key."}]}
+                "error": "Unknown installs[] argument: sourcefile.", "note": "Correct the key."}]})
         if tool == "hub_create_driver" and "ClassThatDoesNotExistBatE2eDrv" in args["source"]:
-            return {"success": False, "driverId": None,
-                    "error": "Driver installation failed: unable to resolve class ClassThatDoesNotExistBatE2eDrv"}
+            raise failed(tool, {"success": False, "driverId": None,
+                                "error": "Driver installation failed: unable to resolve class ClassThatDoesNotExistBatE2eDrv"})
         if tool == "hub_create_driver":
             return {"success": True, "driverId": 77, "version": 1}
         if tool == "hub_update_driver":
@@ -3068,11 +3080,19 @@ def test_poll_wall_clock_scenarios_use_observed_state_without_device_commands(mo
         assert arguments["expectedValue"] == expected
         if not matches:
             clock[0] += 2.0
-        return {"success": matches, "timedOut": not matches, "polledCount": 1 if matches else 11,
-                "finalValue": initial}
+            # A timed-out poll is success:false, so the server sets isError on its envelope.
+            raise et.McpToolError(name, json.dumps({"success": False, "timedOut": True, "polledCount": 11,
+                                                    "finalValue": initial}))
+        return {"success": True, "timedOut": False, "polledCount": 1, "finalValue": initial}
+
+    class Client:
+        call_tool_failure = et.HubitatMcpClient.call_tool_failure
+
+        def call_tool(self, name, arguments, *, flat=False):
+            return call_tool(name, arguments)
 
     runner = object.__new__(et.TestRunner)
-    runner.client = SimpleNamespace(call_tool=call_tool)
+    runner.client = Client()
     runner.get_test_switch_id = lambda: "owned-switch"
     if matches:
         runner.test_poll_immediate_match()

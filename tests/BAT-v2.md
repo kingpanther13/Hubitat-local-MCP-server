@@ -210,7 +210,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: The batch still fires the valid entry — one bad device does not abandon the rest. The response is `success: false, count: 2, sentCount: 1, failedCount: 1`, plus `failedDeviceIds: ["99999"]`, an `error` summarising the failure, an actionable `note`, and `partial: true` (only some entries failed). It is a NORMAL tool result, not an `isError` envelope — `isError` is reserved for the batch where every entry failed. `results[0].success` is `true` and `results[1]` carries `success: false`, its `deviceId`, and an `error` naming the missing device. The AI reports the specific device that failed rather than reporting the whole command as failed. (Contrast with a MALFORMED batch — an entry missing `deviceId`, a `parameters` value that is neither an array nor a string, or more than 20 entries — which is rejected with `-32602` BEFORE anything is sent, so no device is actuated.)
+**Expected**: The batch still fires the valid entry — one bad device does not abandon the rest. The response is `success: false, count: 2, sentCount: 1, failedCount: 1`, plus `failedDeviceIds: ["99999"]`, an `error` summarising the failure, an actionable `note`, and `partial: true` (only some entries failed). Like every `success: false` result it carries `isError: true`; `partial: true` is what tells it apart from the batch where every entry failed. `results[0].success` is `true` and `results[1]` carries `success: false`, its `deviceId`, and an `error` naming the missing device. The AI reports the specific device that failed rather than reporting the whole command as failed. (Contrast with a MALFORMED batch — an entry missing `deviceId`, a `parameters` value that is neither an array nor a string, or more than 20 entries — which is rejected as an `isError` validation result BEFORE anything is sent, so no device is actuated.)
 
 ### T06 — hub_call_device_command (setLevel)
 
@@ -486,7 +486,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Recognizes that changing the time zone REBOOTS the hub, so it warns the user and calls `hub_set_system_settings` with `timeZone: "America/Denver"` and `confirm: true` (after ensuring a recent backup). Without `confirm` the call is rejected with a `-32602` confirm-gate error and nothing changes.
+**Expected**: Recognizes that changing the time zone REBOOTS the hub, so it warns the user and calls `hub_set_system_settings` with `timeZone: "America/Denver"` and `confirm: true` (after ensuring a recent backup). Without `confirm` the call is rejected with an `isError: true` confirm-gate validation result and nothing changes.
 
 ### T14f — turn on the hub's dark mode
 
@@ -508,7 +508,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Recognizes a network change can disconnect the hub, so it warns the user, ensures a recent backup, and calls `hub_set_system_settings` with `network: {ipMode:"static", address:"192.168.1.50", netmask:"255.255.255.0", gateway:"192.168.1.1"}` and `confirm: true`. Without `confirm` the call is rejected by the destructive gate and nothing changes. On success `applied` includes `network.staticIp`. Other valid network shapes (each its own leg, applied in order, non-atomic): `{ipMode:"dhcp", useDNSFallover:true}` → `network.dhcp`; `{ethernetAutoneg:false}` → `network.ethernetAutoneg`; `{wifiSsid:"Net", wifiPassword:"…"}` → `network.wifi`. A static IP without address/netmask/gateway is rejected with `-32602` before any hub call.
+**Expected**: Recognizes a network change can disconnect the hub, so it warns the user, ensures a recent backup, and calls `hub_set_system_settings` with `network: {ipMode:"static", address:"192.168.1.50", netmask:"255.255.255.0", gateway:"192.168.1.1"}` and `confirm: true`. Without `confirm` the call is rejected by the destructive gate and nothing changes. On success `applied` includes `network.staticIp`. Other valid network shapes (each its own leg, applied in order, non-atomic): `{ipMode:"dhcp", useDNSFallover:true}` → `network.dhcp`; `{ethernetAutoneg:false}` → `network.ethernetAutoneg`; `{wifiSsid:"Net", wifiPassword:"…"}` → `network.wifi`. A static IP without address/netmask/gateway is rejected as an `isError: true` validation result before any hub call.
 
 ### T14h — destructive network/cloud ops (⚠️ MANUAL ONLY — disconnects / disables cloud)
 
@@ -670,7 +670,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_manage_virtual_device` with `action="create"` and `customDriver={namespace: "fake-namespace", name: "fake-driver"}`. Regardless of the hub's internal exception class, the tool surfaces `IllegalArgumentException` (JSON-RPC -32602) containing "hub_list_drivers". Agent reports the failure to the user and does NOT silently substitute a different device.
+**Expected**: Calls `hub_manage_virtual_device` with `action="create"` and `customDriver={namespace: "fake-namespace", name: "fake-driver"}`. Regardless of the hub's internal exception class, the tool surfaces `IllegalArgumentException` (an `isError: true` validation result) containing "hub_list_drivers". Agent reports the failure to the user and does NOT silently substitute a different device.
 
 ### T19e — hub_manage_virtual_device customDriver mutually exclusive
 
@@ -680,7 +680,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Tool surfaces `IllegalArgumentException` (JSON-RPC -32602) with "mutually exclusive" in the message. Agent reports the error.
+**Expected**: Tool surfaces `IllegalArgumentException` (an `isError: true` validation result) with "mutually exclusive" in the message. Agent reports the error.
 
 ### T19f — hub_manage_virtual_device customDriver success path (conditional)
 
@@ -714,7 +714,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected** (conditional): Calls `hub_create_device` with the chosen `deviceTypeId`, `label="BAT Create From Driver"`, and `confirm=true`. Returns the new `deviceId`. If the picked driver is radio-type, the response carries a radio orphan-shell `warning`. Without `confirm` the call is rejected (`-32602`). `hub_create_device` also LINKS a Hub Mesh device via `mesh_source_hub_id` + `mesh_source_device_id` instead of `deviceTypeId` (see T14l); passing both, or only one half of the pair, is rejected by validation.
+**Expected** (conditional): Calls `hub_create_device` with the chosen `deviceTypeId`, `label="BAT Create From Driver"`, and `confirm=true`. Returns the new `deviceId`. If the picked driver is radio-type, the response carries a radio orphan-shell `warning`. Without `confirm` the call is rejected (an `isError: true` validation result). `hub_create_device` also LINKS a Hub Mesh device via `mesh_source_hub_id` + `mesh_source_device_id` instead of `deviceTypeId` (see T14l); passing both, or only one half of the pair, is rejected by validation.
 
 ### T19i — hub_get_compatible_devices (pairing instructions lookup)
 
@@ -3230,7 +3230,7 @@ This scenario requires no room creation or device command.
 }
 ```
 
-**Expected**: Tool returns an MCP error (`-32602`) with a message naming the offending id, e.g. `Unknown device id(s): 999999999. Use hub_list_devices(scope='all') to see valid ids. Nothing was changed.` The authorized scope is unchanged. AI surfaces the message and offers to look up valid ids via `hub_list_devices(scope='all')`.
+**Expected**: Tool returns an `isError: true` validation result with a message naming the offending id, e.g. `Unknown device id(s): 999999999. Use hub_list_devices(scope='all') to see valid ids. Nothing was changed.` The authorized scope is unchanged. AI surfaces the message and offers to look up valid ids via `hub_list_devices(scope='all')`.
 
 ### T662 — hub_update_mcp_settings selectedDevices refuses to empty the scope without allowEmpty
 
@@ -3241,7 +3241,7 @@ This scenario requires no room creation or device command.
 }
 ```
 
-**Expected**: Tool returns an MCP error (`-32602`) explaining the self-lockout guard, e.g. `Refusing to empty the MCP device-access scope: ... Pass selectedDevices.allowEmpty:true to confirm you intend to clear the scope.` The scope is unchanged. AI explains that an empty scope blinds the server to every selected device and that `allowEmpty:true` is required to proceed.
+**Expected**: Tool returns an `isError: true` validation result explaining the self-lockout guard, e.g. `Refusing to empty the MCP device-access scope: ... Pass selectedDevices.allowEmpty:true to confirm you intend to clear the scope.` The scope is unchanged. AI explains that an empty scope blinds the server to every selected device and that `allowEmpty:true` is required to proceed.
 
 ### T663 — bypassDeviceAllowlist lets device tools reach a device OUTSIDE the allowlist
 
@@ -3253,7 +3253,7 @@ This scenario requires no room creation or device command.
 }
 ```
 
-**Expected**: With the toggle OFF the unlisted device is not reachable (`hub_get_device` → `-32602 Device not found`). The flip call is `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{bypassDeviceAllowlist:true}, confirm:true})` → `{success:true, updated:{bypassDeviceAllowlist:true}, ...}` with a WARN `[developer-mode]` audit line. With the bypass ON, `hub_get_device(deviceId='<id>')` now resolves the device through the hub's id-keyed `/device/fullJson` fallback (returns its id/label/room/capabilities). The AI notes that the bypass removes the device-selection security boundary and that the same parity applies to `hub_get_device_attribute`, `hub_call_device_command` (incl. `waitFor`), `hub_update_device`, and `hub_list_device_events` — but NOT to `hub_list_devices`, device swap/replace/delete, or device-health. Teardown restores `bypassDeviceAllowlist:false`, after which the device is unreachable again.
+**Expected**: With the toggle OFF the unlisted device is not reachable (`hub_get_device` → an `isError: true` validation result, `Device not found: <id>`). The flip call is `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{bypassDeviceAllowlist:true}, confirm:true})` → `{success:true, updated:{bypassDeviceAllowlist:true}, ...}` with a WARN `[developer-mode]` audit line. With the bypass ON, `hub_get_device(deviceId='<id>')` now resolves the device through the hub's id-keyed `/device/fullJson` fallback (returns its id/label/room/capabilities). The AI notes that the bypass removes the device-selection security boundary and that the same parity applies to `hub_get_device_attribute`, `hub_call_device_command` (incl. `waitFor`), `hub_update_device`, and `hub_list_device_events` — but NOT to `hub_list_devices`, device swap/replace/delete, or device-health. Teardown restores `bypassDeviceAllowlist:false`, after which the device is unreachable again.
 
 ---
 
@@ -3378,7 +3378,7 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 }
 ```
 
-**Expected**: Tool throws `IllegalArgumentException` (JSON-RPC -32602) with a message containing 'bulk mode' and 'driverId'. No update is performed.
+**Expected**: Tool throws `IllegalArgumentException` (an `isError: true` validation result) with a message containing 'bulk mode' and 'driverId'. No update is performed.
 
 ### T404 — hub_create_driver bulk mode (happy path)
 
@@ -3600,7 +3600,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `hub_list_hpm_packages` rejects the call on both the drift path (`includeDrift=true`) and the plain enumeration path. Internally, `_hpmAssertAppIsHpm` throws `IllegalArgumentException` with a message that includes both the supplied ID and the actual app type (e.g. `"hpmAppId <id> is not Hubitat Package Manager (actual type: MCP Rule Server) -- verify the ID or omit hpmAppId to use auto-discovery"`). The MCP protocol surfaces this as a JSON-RPC error response (`-32602` invalid params), not as a tool-result Map with `success=false` and not as a raw exception. The error message contains the supplied id and the `actual type:` string. AI explains the rejection and suggests either omitting `hpmAppId` (to let the tool auto-discover HPM) or supplying the correct HPM instance ID from `hub_list_apps` (scope=instances). The same validator runs on both paths, so the error shape is identical.
+**Expected**: `hub_list_hpm_packages` rejects the call on both the drift path (`includeDrift=true`) and the plain enumeration path. Internally, `_hpmAssertAppIsHpm` throws `IllegalArgumentException` with a message that includes both the supplied ID and the actual app type (e.g. `"hpmAppId <id> is not Hubitat Package Manager (actual type: MCP Rule Server) -- verify the ID or omit hpmAppId to use auto-discovery"`). The MCP protocol surfaces this as an `isError: true` validation result, not as a raw exception. The error message contains the supplied id and the `actual type:` string. AI explains the rejection and suggests either omitting `hpmAppId` (to let the tool auto-discover HPM) or supplying the correct HPM instance ID from `hub_list_apps` (scope=instances). The same validator runs on both paths, so the error shape is identical.
 
 **Failure modes**: AI passes the wrong ID silently and returns an empty result (would indicate missing validation). AI reports a generic "tool failed" without extracting the `actual type` field from the error message. AI only tests one of the two paths (drift vs plain enumeration) instead of both.
 
@@ -3614,7 +3614,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `hub_read_apps_code(tool='hub_list_hpm_packages', args={hpmAppId: '<non-hpm-id>'})` is rejected. Internally, the tool throws `IllegalArgumentException` containing the supplied id and `"actual type: <AppTypeName>"`. The MCP protocol surfaces this as a JSON-RPC error response (`-32602` invalid params), not as a tool-result Map with `success=false` and not as a raw exception. AI surfaces this as a clear rejection with guidance to omit `hpmAppId` for auto-discovery.
+**Expected**: `hub_read_apps_code(tool='hub_list_hpm_packages', args={hpmAppId: '<non-hpm-id>'})` is rejected. Internally, the tool throws `IllegalArgumentException` containing the supplied id and `"actual type: <AppTypeName>"`. The MCP protocol surfaces this as an `isError: true` validation result, not as a raw exception. AI surfaces this as a clear rejection with guidance to omit `hpmAppId` for auto-discovery.
 
 **Failure modes**: Tool returns an empty packages list without an error (validation skipped). Error message is present but missing the actual type name.
 
@@ -4328,7 +4328,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: appId mode returns `source='app'` with normalized rows from `/installedapp/eventsJson/<id>` (client-side hoursBack/attribute/limit filtering applies); `deviceId`+`appId` together is rejected with an invalid-params error (-32602) naming the conflict. The AI discovers the mode from the tool description ("events emitted by an app or rule").
+**Expected**: appId mode returns `source='app'` with normalized rows from `/installedapp/eventsJson/<id>` (client-side hoursBack/attribute/limit filtering applies); `deviceId`+`appId` together is rejected as an `isError: true` validation result naming the conflict. The AI discovers the mode from the tool description ("events emitted by an app or rule").
 
 **Failure modes**: app events silently treated as device events (wrong source); the mutual-exclusivity rejection missing (both params accepted); a row shape missing name/value/date; the AI failing to find the capability and claiming per-app events are unsupported (description/BM25 regression).
 
@@ -4344,7 +4344,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: with `since` supplied the result routes to history mode, `sinceMode='explicit'`, `since` is echoed, `hoursBack` is omitted, `sinceTimestamp` equals the supplied bookmark, and only post-bookmark events are returned. A future `since` yields `count: 0` with an empty list (valid, not an error). A returned `date` fed straight back as `since` parses cleanly (round-trip). An unparseable `since` would be rejected with -32602.
+**Expected**: with `since` supplied the result routes to history mode, `sinceMode='explicit'`, `since` is echoed, `hoursBack` is omitted, `sinceTimestamp` equals the supplied bookmark, and only post-bookmark events are returned. A future `since` yields `count: 0` with an empty list (valid, not an error). A returned `date` fed straight back as `since` parses cleanly (round-trip). An unparseable `since` would be rejected as an `isError: true` validation result.
 
 **Failure modes**: `since` ignored and recent-N or full-hoursBack events returned; `hoursBack` still echoed as if it bounded the window; future `since` throwing instead of returning empty; a returned `date` failing to parse when fed back as `since` (format drift); `sinceMode` missing.
 
@@ -4455,7 +4455,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 **Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_visual_rule)` with NO `appId`, `name='BAT VRB Create'`, the classic `definition`, and `confirm=true`. The response returns a new `appId`, `created=true`, `format='classic'`, `version='1.0'` (the classic shape is what selected the 1.0 builder), and `verified=true` (the tool's read-back confirmed the persisted name); the echoed `definition` contains the whenNode/thenNode pair. A follow-up `hub_get_visual_rule(appId=N)` returns `success=true`, `format='classic'`, `name='BAT VRB Create'`, `rulePaused=false`, and the same `whenNodes`/`thenNodes`. The rule also appears in list mode (`hub_get_visual_rule` with no `appId` — `rules[]` contains `{appId, name:'BAT VRB Create', disabled:false}`).
 
-**Failure modes**: the call is issued without `confirm=true` (rejected -32602 — the AI must include it after user approval, not retry blindly). `verified=false` (the save POST was sent but the read-back did not confirm — inspect with `hub_get_visual_rule`). A format-mismatch response (`success=false` + `hubNativeFormat='classic'`) — that only happens when an editor/graph definition meets a hub whose builder can create nothing but 1.0 children, so it should NOT appear for this classic definition; if it does, the AI should re-issue with a classic definition and the empty child app created during the attempt must have been cleaned up, not stranded. The AI routes to `hub_set_native_app(operation='create', args={app_type: 'visual_rule'})` instead — that path now throws with a redirect to `hub_set_visual_rule`.
+**Failure modes**: the call is issued without `confirm=true` (rejected as an `isError: true` validation result — the AI must include it after user approval, not retry blindly). `verified=false` (the save POST was sent but the read-back did not confirm — inspect with `hub_get_visual_rule`). A format-mismatch response (`success=false` + `hubNativeFormat='classic'`) — that only happens when an editor/graph definition meets a hub whose builder can create nothing but 1.0 children, so it should NOT appear for this classic definition; if it does, the AI should re-issue with a classic definition and the empty child app created during the attempt must have been cleaned up, not stranded. The AI routes to `hub_set_native_app(operation='create', args={app_type: 'visual_rule'})` instead — that path now throws with a redirect to `hub_set_visual_rule`.
 
 ### T701 — hub_set_visual_rule pause + rename without touching the definition
 
@@ -4469,7 +4469,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 **Expected**: the pause call returns `success=true` with `rulePaused=true` (pause state rides `GET /app/ruleBuilderPause/<id>/true` under the hood); `hub_get_visual_rule` confirms. The rename+resume call (with `appId`, `name`, `paused=false`, no `definition`) re-saves the EXISTING nodes under the new name — the read-back shows `name='BAT VRB Renamed'`, `rulePaused=false`, and the original whenNode/thenNode pair intact. No `definition` replacement happens.
 
-**Failure modes**: the rename wipes the nodes (empty `whenNodes`/`thenNodes` after the rename — the re-save dropped the existing definition). The pause flag is silently ignored (`rulePaused` stays `false` after `paused=true`). The AI re-sends the whole definition just to rename (works, but a Partial — `name`-only is the point). A no-op call (`appId` with no `definition`/`name`/`paused`) must reject -32602 "Nothing to change", not return `success=true`.
+**Failure modes**: the rename wipes the nodes (empty `whenNodes`/`thenNodes` after the rename — the re-save dropped the existing definition). The pause flag is silently ignored (`rulePaused` stays `false` after `paused=true`). The AI re-sends the whole definition just to rename (works, but a Partial — `name`-only is the point). A no-op call (`appId` with no `definition`/`name`/`paused`) must reject as an `isError: true` validation result "Nothing to change", not return `success=true`.
 
 ### T706 — A Visual Rule 2.0 create that succeeds with an advisory (unknown action type)
 
@@ -4558,7 +4558,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Expected**: the AI routes to `hub_manage_dashboards(tool=hub_create_dashboard)` with `name='BAT Dash Create'`, `deviceIds=[<id>]`, `showClockTile=true`, no `confirm` needed (create needs only the Write master). The response returns `success=true` and (when the hub provides it) the new dashboard `id`. A follow-up `hub_get_dashboard(id=N)` returns the dashboard with `showClockTile` truthy and the device present. The dashboard also appears in `hub_list_dashboards`.
 
-**Failure modes**: the AI sends `deviceIds` as an empty list (rejected -32602 — an Easy Dashboard needs ≥1 device). The booleans go over the wire as JSON booleans instead of the strings "true"/"false" (wire-format break — the dashboard's tile would not toggle). `hub_get_dashboard` called without an id (rejected -32602). The list comes back empty after a successful create (the read may be pinToken-gated — retry `hub_list_dashboards` with a pinToken).
+**Failure modes**: the AI sends `deviceIds` as an empty list (rejected as an `isError: true` validation result — an Easy Dashboard needs ≥1 device). The booleans go over the wire as JSON booleans instead of the strings "true"/"false" (wire-format break — the dashboard's tile would not toggle). `hub_get_dashboard` called without an id (rejected as an `isError: true` validation result). The list comes back empty after a successful create (the read may be pinToken-gated — retry `hub_list_dashboards` with a pinToken).
 
 ### T721 — Update replaces the config wholesale (read-first)
 
@@ -4572,7 +4572,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Expected**: because `hub_update_dashboard` replaces the config WHOLESALE (no server-side read-merge), the correct flow is `hub_get_dashboard` first to capture the full current config, then `hub_update_dashboard(id=N, name='BAT Dash Renamed', deviceIds=[<id>], theme='dark', showClockTile=true, ...)` carrying every field. The read-back shows the new name, `theme='dark'`, the device present, and the clock tile still on.
 
-**Failure modes**: the AI calls update with only `name` + `theme` and omits `deviceIds`/`showClockTile` (rejected -32602 for missing deviceIds; or, if a future caller bypassed the guard, the clock tile and devices would silently revert to defaults — the wholesale-replace trap the description warns about). update called without an `id` or without a `name` (both rejected -32602).
+**Failure modes**: the AI calls update with only `name` + `theme` and omits `deviceIds`/`showClockTile` (rejected as an `isError: true` validation result for missing deviceIds; or, if a future caller bypassed the guard, the clock tile and devices would silently revert to defaults — the wholesale-replace trap the description warns about). update called without an `id` or without a `name` (both rejected as `isError: true` validation results).
 
 ### T722 — Clone an Easy Dashboard
 
@@ -4586,7 +4586,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Expected**: the AI routes to `hub_manage_dashboards(tool=hub_clone_dashboard)` with the source `id`; the response returns `success=true`, `sourceId`, and (when the hub provides it) `newId`. `hub_list_dashboards` shows both the source and the clone.
 
-**Failure modes**: clone called without an `id` (rejected -32602). The clone is reported successful but never appears in the list (verify with `hub_list_dashboards` — the clone may need a pinToken to surface).
+**Failure modes**: clone called without an `id` (rejected as an `isError: true` validation result). The clone is reported successful but never appears in the list (verify with `hub_list_dashboards` — the clone may need a pinToken to surface).
 
 ### T723 — Create a legacy Hubitat® Dashboard, add a tile, read it back, then delete it
 
@@ -4600,7 +4600,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Expected**: the AI routes to `hub_manage_dashboards(tool=hub_create_dashboard)` with `name='BAT Legacy Dash'`, `type='legacy'`, `deviceIds=[<id>]` — a legacy dashboard starts with an EMPTY layout, so no `options`/tile toggles are passed. The response returns `success=true`, `type='legacy'`, and the new dashboard `id`. The AI then calls `hub_update_dashboard(id=N, addTiles=[{template:'clock', col:1, row:1}])`; the response has `success=true`, `type='legacy'`, `tileCount>=1`, and the saved `layout` echo. A follow-up `hub_get_dashboard(id=N)` returns `type='legacy'` with a nested `layout` object whose `tiles` array contains the clock tile.
 
-**Failure modes**: the AI passes `options` or Easy tile toggles like `showClockTile` on the legacy create (rejected -32602 — a legacy dashboard's look lives in its layout, not `options`). The built-in Hubitat® Dashboard parent app is not installed, so create returns `success=false` with an error naming the parent app (a hub-provisioning precondition, not a wire-format bug — install the app and retry). `hub_get_dashboard` called without an id (rejected -32602).
+**Failure modes**: the AI passes `options` or Easy tile toggles like `showClockTile` on the legacy create (rejected as an `isError: true` validation result — a legacy dashboard's look lives in its layout, not `options`). The built-in Hubitat® Dashboard parent app is not installed, so create returns `success=false` with an error naming the parent app (a hub-provisioning precondition, not a wire-format bug — install the app and retry). `hub_get_dashboard` called without an id (rejected as an `isError: true` validation result).
 
 ### T724 — Edit a legacy dashboard's layout granularly (add tile + set grid/color options)
 
@@ -4614,7 +4614,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Expected**: a legacy dashboard's design is edited GRANULARLY (not wholesale), so the AI calls `hub_update_dashboard(id=N, addTiles=[{template:<switch template>, device:<id>, col:.., row:..}], setOptions={bgColor:'#333333', cols:4})` — removals → updates → adds → options all apply in ONE save. The response returns `success=true`, `type='legacy'`, an updated `tileCount`, and the saved `layout` echo. The read-back's `layout` shows both tiles, the new `bgColor`, and `cols=4`.
 
-**Failure modes**: the AI passes `layout` (wholesale) AND granular ops (`addTiles`/`setOptions`) in the same call (rejected -32602 — pass one or the other). The device tile references a device the dashboard hasn't authorized (accepted, but the response carries a `warnings` entry that the tile will show no data until the device is authorized via `deviceIds`). The AI puts grid/color settings in `options` instead of `setOptions` (rejected -32602 — `options` is Easy-only).
+**Failure modes**: the AI passes `layout` (wholesale) AND granular ops (`addTiles`/`setOptions`) in the same call (rejected as an `isError: true` validation result — pass one or the other). The device tile references a device the dashboard hasn't authorized (accepted, but the response carries a `warnings` entry that the tile will show no data until the device is authorized via `deviceIds`). The AI puts grid/color settings in `options` instead of `setOptions` (rejected as an `isError: true` validation result — `options` is Easy-only).
 
 ### T725 — Clone a legacy Hubitat® Dashboard
 
@@ -4628,7 +4628,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 
 **Expected**: the AI routes to `hub_manage_dashboards(tool=hub_clone_dashboard)` with the source `id`; for a legacy source the clone is BY VALUE — a fresh legacy dashboard with the source's layout copied in, leaving the source untouched. The response returns `success=true`, `type='legacy'`, `sourceId`, and `newId`. `hub_list_dashboards` shows both, each with `type='legacy'`, and the copy's layout carries the source's tiles.
 
-**Failure modes**: clone called without an `id` (rejected -32602). The copy is created but its layout write fails (the response reports `success=false` WITH the `newId` and a note to re-apply the layout via `hub_update_dashboard`). The clone never appears in the list (verify with `hub_list_dashboards` — it may need a pinToken to surface).
+**Failure modes**: clone called without an `id` (rejected as an `isError: true` validation result). The copy is created but its layout write fails (the response reports `success=false` WITH the `newId` and a note to re-apply the layout via `hub_update_dashboard`). The clone never appears in the list (verify with `hub_list_dashboards` — it may need a pinToken to surface).
 
 ---
 

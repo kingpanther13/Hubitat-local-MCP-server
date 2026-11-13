@@ -1807,9 +1807,6 @@ private _sendCommandBatch(commands, reqT0 = null) {
         if (failed < results.size()) result.partial = true
         result.error = "${failed} of ${results.size()} device command(s) failed; ${sent} were sent. See results[] for the per-device cause.".toString()
         result.note = "The entries that succeeded ALREADY actuated -- do NOT re-send the whole batch. Before re-sending a failed entry, read its error/note: an outcome the hub did not CONFIRM may still have actuated, so verify with hub_get_device_attribute first. See hub_get_tool_guide(section='device_authorization') for what makes an entry fail."
-        // Only a batch where nothing landed is a tool-execution error. Flagging a partial one
-        // would tell the caller the call did nothing while devices had in fact moved.
-        if (failed == results.size() && !remaining) result.isError = true
     }
     if (remaining) {
         result.success = false

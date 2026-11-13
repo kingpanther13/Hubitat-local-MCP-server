@@ -260,9 +260,9 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         when:
         def response = mcpDriver.callTool('hub_list_device_dependents', [deviceId: '88'])
 
-        then: 'tool wraps the empty-body fallback into a success-envelope success=false'
+        then: 'tool wraps the empty-body fallback into a success=false tool error result'
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error?.toLowerCase()?.contains('empty') == true

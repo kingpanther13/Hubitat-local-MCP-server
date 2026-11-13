@@ -275,7 +275,7 @@ def toolMyNewTool(args) {
 
 Conventions:
 - **Validation errors**: Throw `IllegalArgumentException` with descriptive message (caught by `handleToolsCall` and returned as a tool result with `isError: true`, per the 2026-07-28 tools page; only protocol faults stay on JSON-RPC `-32602`)
-- **Runtime errors**: Return `[success: false, error: ..., note: ...]` maps (don't throw, so the AI gets useful error info)
+- **Runtime errors**: Return `[success: false, error: ..., note: ...]` maps (don't throw, so the AI gets useful error info); `_renderToolResult` sends any top-level `success: false` with `isError: true`, so tools never set it
 - **Device IDs**: Always compare and return as strings: `device.id.toString()`
 - **Logging**: Use `mcpLog(level, component, message)` for MCP-accessible logs
 - **Hub properties**: Wrap in individual try/catch with `"unavailable"` fallback (hub properties can throw depending on firmware)
@@ -485,7 +485,7 @@ Virtual devices are managed via the unified `hub_manage_virtual_device` tool (ac
 - **Response shape** (`hub_manage_virtual_device create`): `{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, attributes}}`. `typeName` is a deprecated alias for `driverType` **because** existing callers reading `result.device.typeName` after create must not silently break; prefer `driverType` in new code.
 - **Response shape** (`hub_manage_virtual_device delete`): `{success, deviceId, deviceNetworkId, deviceLabel, message}`.
 - **Response shape** (`hub_list_devices` with `scope='owned'`): the ordinary device record (`{id, label, name, driver, room, disabled, deviceNetworkId, lastActivity, protocol, mcpManaged, currentStates}`), plus `capabilities`, `attributes`, `commands` and `driverNamespace` with `format='detailed'`. `driverNamespace` is the namespace persisted as a device data value at create time, else the native device type namespace.
-- **Error contract (N.36)**: `customDriver` not-found throws `IllegalArgumentException` (an `isError: true` tool result) because the bad driver spec is caller-supplied and recoverable by fixing args. Built-in not-found throws `RuntimeException` (isError:true) because hub firmware not including a built-in driver is a platform condition, not a caller error. This is a deliberate exception to the general `return [success:false]` convention -- the two-class split reflects the distinction between caller-fixable vs platform-gap failures.
+- **Error contract (N.36)**: `customDriver` not-found throws `IllegalArgumentException` (an `isError: true` tool result) because the bad driver spec is caller-supplied and recoverable by fixing args. Built-in not-found throws `RuntimeException` (isError:true) because hub firmware not including a built-in driver is a platform condition, not a caller error. Both throw instead of following the general `return [success:false]` convention (which is also an `isError: true` result) -- the two-class split reflects the distinction between caller-fixable vs platform-gap failures.
 - Requires the Write master (with confirm + backup verification) for create/delete operations
 
 #### hub_update_device Tool
