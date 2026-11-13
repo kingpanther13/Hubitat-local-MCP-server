@@ -21,14 +21,17 @@ import support.ToolSpecBase
  * httpPost is intercepted via a permanent `_ *` stub in setupSpec() that dispatches to a
  * per-feature @Shared Closure handler (httpPostHandler); postJson() installs one that records
  * every POST and answers with a JSON body. getRooms / getHubSecurityCookie are purely dynamic,
- * stubbed per-test on script.metaClass. GETs (the Devices page, /room/delete/<id>) are
- * registered per feature on hubGet, which records every call, so each write's request count
- * is pinned: create and update make exactly one POST /room/save, delete exactly one GET.
+ * stubbed per-test on script.metaClass. GETs (the Devices page, /room/updateName, /room/delete/<id>)
+ * are registered per feature on hubGet, which records every call, so each write's request count
+ * is pinned: create and a device-list update make exactly one POST /room/save, a name-only update
+ * one GET /room/updateName, delete one GET /room/delete/<id>.
  *
  * Destructive tools require (the Write master gates centrally at executeTool and
  * defaults ON, so it needs no seed; requireDestructiveConfirm needs confirm + 24h backup):
  *   stateMap.lastBackupTimestamp    = current 'now' (1234567890000L)
  *   args.confirm                    = true
+ * enableWrite() also turns the device-allowlist bypass on, so the write features below use
+ * arbitrary device ids; the device-selection features turn it off and select devices themselves.
  *
  * Dispatch features fire the same tool through {@code mcpDriver.callTool}, @Unroll'd across
  * useGateways true/false, and through the gateways themselves, so the production envelope path
@@ -53,8 +56,20 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     private void enableWrite() {
         settingsMap.enableWrite = true
+        settingsMap.bypassDeviceAllowlist = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
         script.metaClass.getHubSecurityCookie = { -> null }
+    }
+
+    /** Answers GET /room/updateName with {@code reply} as JSON, as the hub does. */
+    private void registerUpdateName(Map reply) {
+        hubGet.register('/room/updateName') { JsonOutput.toJson(reply) }
+    }
+
+    /** Bypass off, with {@code ids} selected for MCP. */
+    private void selectOnly(List ids) {
+        settingsMap.bypassDeviceAllowlist = false
+        settingsMap.selectedDevices = ids.collect { new TestDevice(id: it, name: "dev${it}", label: "Dev ${it}") }
     }
 
     private void registerDevicesPage(List<Map> nodes) {
@@ -269,7 +284,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         result.success == false
         result.isError == true
         result.error.startsWith("The hub's device list (/hub2/devicesList) could not be read: ")
-        result.note == "Retry; if it persists check the hub's Devices page."
+        result.note == "Retry; if it persists check the hub's Devices page. See hub_get_tool_guide(section='rooms')."
     }
 
     def "hub_get_room on a room with no devices does not read the Devices page"() {
@@ -534,6 +549,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         label                       | args                                     | needle
         'a blank name'              | [name: '  ']                             | 'Room name is required'
         'a non-numeric device id'   | [name: 'Den', deviceIds: ['100', 'abc']] | "deviceIds must be numeric device ids; got 'abc'"
+        'a device id past int'      | [name: 'Den', deviceIds: ['99999999999']] | "deviceIds must be numeric device ids; got '99999999999'"
         'deviceIds that is no list' | [name: 'Den', deviceIds: '100']          | 'deviceIds must be an array'
         'a duplicate name'          | [name: 'GARAGE']                         | "A room named 'GARAGE' already exists."
     }
@@ -592,9 +608,9 @@ class ToolRoomsSpec extends ToolSpecBase {
         when:
         def result = script.toolCreateRoom([name: 'Garage', confirm: true])
 
-        then: 'a runtime failure: success=false with error and note, not an isError validation result'
+        then: 'a runtime failure: success=false with isError, error and note'
         result.success == false
-        !result.containsKey('isError')
+        result.isError == true
         result.error.contains(errorNeedle)
         result.note.contains(noteNeedle)
         result.note.contains("hub_get_tool_guide(section='rooms')")
@@ -607,7 +623,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "#tool via dispatch returns #label as success=false without flagging isError (useGateways=#useGateways)"() {
+    def "#tool via dispatch returns #label as success=false with isError (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -620,12 +636,12 @@ class ToolRoomsSpec extends ToolSpecBase {
             ? mcpDriver.callTool('hub_manage_rooms', [tool: tool, args: args])
             : mcpDriver.callTool(tool, args)
 
-        then: 'the JSON-RPC envelope and the tool result both carry no isError'
+        then: 'the JSON-RPC envelope and the tool result both carry isError'
         response.error == null
-        !response.result.containsKey('isError')
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
-        !inner.containsKey('isError')
+        inner.isError == true
         inner.error.contains(errorNeedle)
         inner.note.contains("hub_get_tool_guide(section='rooms')")
 
@@ -661,11 +677,226 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         where:
         label           | args                                   | sentName      | sentIds    | room
-        'a rename'      | [name: 'Home Office']                  | 'Home Office' | [600, 601] | [id: '8', name: 'Home Office', previousName: 'Office']
         'a device list' | [deviceIds: ['601', '700']]            | 'Office'      | [601, 700] | [id: '8', name: 'Office', deviceIds: ['601', '700'], deviceCount: 2, unassignedDeviceIds: ['600']]
         'both'          | [name: 'Study', deviceIds: [600, 601]] | 'Study'       | [600, 601] | [id: '8', name: 'Study', previousName: 'Office', deviceIds: ['600', '601'], deviceCount: 2]
         'an empty list' | [deviceIds: []]                        | 'Office'      | []         | [id: '8', name: 'Office', deviceIds: [], deviceCount: 0, unassignedDeviceIds: ['600', '601']]
-        'a case change' | [name: 'OFFICE']                       | 'OFFICE'      | [600, 601] | [id: '8', name: 'OFFICE', previousName: 'Office']
+    }
+
+    @Unroll
+    def "hub_update_room renames by name alone with one GET /room/updateName and no save (#label)"() {
+        given:
+        enableWrite()
+        installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [600, 601]], [id: 9, name: 'Den', deviceIds: []]])
+        def posts = postJson([roomId: 8])
+        registerUpdateName([success: true, message: null])
+
+        when:
+        def result = script.toolUpdateRoom([roomId: '8', name: name, confirm: true])
+
+        then: 'the name travels as a query parameter; no device list is sent'
+        hubGet.calls*.path == ['/room/updateName']
+        hubGet.calls[0].params == [id: '8', name: name]
+        posts.empty
+        getRoomsCalls == 1
+
+        and:
+        result == [success: true, room: [id: '8', name: name, previousName: 'Office'], message: "Room '${name}' updated."]
+
+        where:
+        label           | name
+        'a rename'      | "Bob's & Co"
+        'a case change' | 'OFFICE'
+    }
+
+    @Unroll
+    def "hub_update_room reports #label from /room/updateName as a structured failure"() {
+        given:
+        enableWrite()
+        installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [600]]])
+        def posts = postJson([roomId: 8])
+        hubGet.register('/room/updateName', handler)
+        def warnLogs = []
+        script.metaClass.mcpLog = { String level, String component, String message ->
+            warnLogs << [level, component, message.toString()]
+        }
+
+        when:
+        def result = script.toolUpdateRoom([roomId: '8', name: 'St', confirm: true])
+
+        then:
+        posts.empty
+        result.success == false
+        result.isError == true
+        result.error == error
+        result.note.startsWith(noteStart)
+        result.note.endsWith("See hub_get_tool_guide(section='rooms').")
+
+        and: 'the cause reaches the MCP log at warn'
+        warnLogs == [['warn', 'room', error]]
+
+        where:
+        label               | handler                                                                     | error                                                                             | noteStart
+        'a refusal'         | { JsonOutput.toJson([success: false, message: 'Room name is too short']) } | 'The hub refused to rename room 8: Room name is too short'                        | 'Nothing was saved.'
+        'an unknown room'   | { JsonOutput.toJson([success: false, message: 'Room not found']) }         | 'The hub refused to rename room 8: Room not found'                                | 'Nothing was saved.'
+        'an empty answer'   | { '' }                                                                      | "The hub's answer to rename room 8 carried no success flag (an empty body)."      | 'The rename may have landed'
+        'a failed request'  | { throw new RuntimeException('HTTP 500: boom') }                            | 'Could not rename room 8: HTTP 500: boom'                                         | 'The hub may still have renamed it'
+    }
+
+    @Unroll
+    def "#tool reports each device taken from another room"() {
+        given:
+        enableWrite()
+        installGetRoomsStub([[id: 3, name: 'Kitchen', deviceIds: [26, 27]], [id: 8, name: 'Office', deviceIds: [600]],
+                             [id: 9, name: 'Den', deviceIds: [40]]])
+        postJson([roomId: tool == 'hub_create_room' ? 77 : 8])
+
+        when:
+        def result = tool == 'hub_create_room'
+            ? script.toolCreateRoom([name: 'Garage', deviceIds: ['26', '40', '50'], confirm: true])
+            : script.toolUpdateRoom([roomId: '8', deviceIds: ['600', '26', '40', '50'], confirm: true])
+
+        then: 'a device already in this room or in no room is not reported'
+        result.success == true
+        result.room.movedDevices == [[deviceId: '26', fromRoomId: '3', fromRoom: 'Kitchen'],
+                                     [deviceId: '40', fromRoomId: '9', fromRoom: 'Den']]
+
+        where:
+        tool << ['hub_create_room', 'hub_update_room']
+    }
+
+    // -------- the MCP device selection --------
+
+    @Unroll
+    def "hub_create_room with the bypass off refuses #label before any request"() {
+        given: 'device 100 selected, 200 a child of this app, 300 neither'
+        enableWrite()
+        selectOnly([100])
+        childDevicesList << new TestDevice(id: 200, name: 'child', label: 'Child')
+        installGetRoomsStub([])
+        def posts = postJson([roomId: 77])
+
+        when:
+        script.toolCreateRoom([name: 'Garage', deviceIds: ids, confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.startsWith(needle)
+        ex.message.contains('Bypass Device Allowlist')
+        posts.empty
+
+        where:
+        label              | ids                         | needle
+        'an unselected id' | ['100', '200', '300']       | 'deviceIds 300 is outside the MCP device selection'
+        'two of them'      | ['301', '100', '300', '301'] | 'deviceIds 301, 300 are outside the MCP device selection'
+    }
+
+    @Unroll
+    def "hub_create_room saves selected and child devices with the bypass off, and any device with it on (bypass=#bypass)"() {
+        given:
+        enableWrite()
+        selectOnly([100])
+        settingsMap.bypassDeviceAllowlist = bypass
+        childDevicesList << new TestDevice(id: 200, name: 'child', label: 'Child')
+        installGetRoomsStub([])
+        def posts = postJson([roomId: 77])
+
+        when:
+        def result = script.toolCreateRoom([name: 'Garage', deviceIds: ids, confirm: true])
+
+        then:
+        result.success == true
+        posts*.body*.deviceIds == [ids.collect { it as Integer }]
+
+        where:
+        bypass | ids
+        false  | ['100', '200']
+        true   | ['100', '200', '300']
+    }
+
+    @Unroll
+    def "hub_update_room with the bypass off checks only the ids whose membership changes: #label"() {
+        given: 'room 8 holds 600 (not selected) and 100 (selected); 101 is selected, 700 is not'
+        enableWrite()
+        selectOnly([100, 101])
+        installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [600, 100]]])
+        def posts = postJson([roomId: 8])
+        registerUpdateName([success: true, message: null])
+
+        when:
+        def outcome
+        try {
+            outcome = script.toolUpdateRoom(args + [roomId: '8', confirm: true])
+        } catch (IllegalArgumentException e) {
+            outcome = e
+        }
+
+        then:
+        refused ? (outcome instanceof IllegalArgumentException && outcome.message.startsWith(refused)) : outcome.success == true
+        posts.size() == saves
+
+        where:
+        label                                    | args                                              | refused                                                  | saves
+        'a rename keeps the unselected device'   | [name: 'Study']                                   | null                                                     | 0
+        're-sending it with a selected addition' | [name: 'Study', deviceIds: ['600', '100', '101']] | null                                                     | 1
+        'dropping a selected device'             | [deviceIds: ['600']]                              | null                                                     | 1
+        'dropping the unselected device'         | [deviceIds: ['100']]                              | 'deviceIds 600 is outside the MCP device selection'      | 0
+        'adding an unselected device'            | [deviceIds: ['600', '100', '700']]                | 'deviceIds 700 is outside the MCP device selection'      | 0
+        'both at once'                           | [deviceIds: ['100', '700']]                       | 'deviceIds 700, 600 are outside the MCP device selection' | 0
+    }
+
+    def "hub_update_room with the bypass on moves any device"() {
+        given:
+        enableWrite()
+        selectOnly([100])
+        settingsMap.bypassDeviceAllowlist = true
+        installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [600, 100]]])
+        def posts = postJson([roomId: 8])
+
+        when:
+        def result = script.toolUpdateRoom([roomId: '8', deviceIds: ['100', '700'], confirm: true])
+
+        then:
+        result.success == true
+        result.room.unassignedDeviceIds == ['600']
+        posts*.body == [[roomId: 8, name: 'Office', deviceIds: [100, 700]]]
+    }
+
+    @Unroll
+    def "#tool via dispatch with bypass=#bypass #outcome an unselected device (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        selectOnly([100])
+        settingsMap.bypassDeviceAllowlist = bypass
+        installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [100]]])
+        def posts = postJson([roomId: tool == 'hub_create_room' ? 77 : 8])
+
+        when:
+        def response = dispatchRoomTool(tool, args, useGateways)
+
+        then:
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        if (bypass) {
+            assert !response.result.isError && inner.success == true && posts.size() == 1
+        } else {
+            assert response.result.isError == true
+            assert inner.error.contains('deviceIds 700 is outside the MCP device selection')
+            assert posts.empty
+        }
+
+        where:
+        [tool, args, bypass, useGateways] << [
+            ['hub_create_room', [name: 'Garage', deviceIds: ['700'], confirm: true]],
+            ['hub_update_room', [roomId: '8', deviceIds: ['100', '700'], confirm: true]]
+        ].collectMany { row -> [[false, true], [true, false]].combinations().collect { row + it } }
+        outcome = bypass ? 'saves' : 'refuses'
+    }
+
+    def "hub_update_room holds its own lock, not the write reservation lock"() {
+        expect:
+        script.ROOM_UPDATE_LOCK != null
+        !script.ROOM_UPDATE_LOCK.is(script.WRITE_RESERVATION_LOCK)
     }
 
     @Unroll
@@ -688,6 +919,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         'neither name nor devices'  | [roomId: '8']                    | 'Pass name, deviceIds, or both.'
         'a blank name'              | [roomId: '8', name: ' ']         | 'name must not be blank'
         'a non-numeric device id'   | [roomId: '8', deviceIds: ['x1']] | "deviceIds must be numeric device ids; got 'x1'"
+        'a device id past int'      | [roomId: '8', deviceIds: ['2147483648']] | "deviceIds must be numeric device ids; got '2147483648'"
         'deviceIds that is no list' | [roomId: '8', deviceIds: '600']  | 'deviceIds must be an array'
         'an unknown room id'        | [roomId: '999', name: 'Attic']   | "No room has id '999'"
         'a missing roomId'          | [name: 'Attic']                  | 'roomId is required'
@@ -718,7 +950,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         posts.size() == 1
         result.success == false
-        !result.containsKey('isError')
+        result.isError == true
         result.error == 'The hub refused to update room 8: Invalid room or device ids'
         result.note.startsWith('Nothing was saved.')
     }
@@ -845,7 +1077,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        !result.containsKey('isError')
+        result.isError == true
         result.error == "Could not delete room 'Old Room' (5): HTTP 500: boom"
         result.note.contains('hub_list_rooms')
         result.note.contains("hub_get_tool_guide(section='rooms')")

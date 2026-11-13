@@ -19,7 +19,7 @@ class OpenAiContentKeySpec extends ToolSpecBase {
         def meta = ['io.modelcontextprotocol/protocolVersion': '2026-07-28']
         if (clientInfo != null) meta['io.modelcontextprotocol/clientInfo'] = clientInfo
         mcpDriver.pushBody([jsonrpc: '2.0', id: 7, method: 'tools/call',
-                            params: [name: 'hub_get_tool_guide', arguments: [section: 'rooms'], _meta: meta]])
+                            params: [name: 'hub_get_tool_guide', arguments: [section: 'device_authorization'], _meta: meta]])
         script.handleMcpRequest()
         def response = mcpDriver.parseResponseJson()
         return new JsonSlurper().parseText(response.result.content[0].text) as Map
@@ -31,7 +31,7 @@ class OpenAiContentKeySpec extends ToolSpecBase {
 
         then:
         !result.containsKey('content')
-        result.contentText.startsWith('## Rooms')
+        result.contentText.startsWith('## Device Authorization')
         result.success == true
     }
 
@@ -40,7 +40,7 @@ class OpenAiContentKeySpec extends ToolSpecBase {
         def result = guideResult(clientInfo)
 
         then:
-        result.content.startsWith('## Rooms')
+        result.content.startsWith('## Device Authorization')
         !result.containsKey('contentText')
 
         where:
