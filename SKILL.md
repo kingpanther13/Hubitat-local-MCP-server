@@ -500,23 +500,25 @@ All routes require the Write master. Validation runs before mutation; runtime fa
 
 ### Room Management
 
-5 tools for full room CRUD, using `POST /room/save` (JSON) and `GET /room/delete/<id>` as the hub's Rooms page does. Every tool addresses a room by its `id`; `getRooms()` (the in-process SDK room list, not an HTTP call) is the existence and duplicate-name check before a write:
+5 tools for full room CRUD, using `POST /room/save` (JSON), `GET /room/updateName` and `GET /room/delete/<id>` as the hub's Rooms page does. `hub_get_room`, `hub_update_room` and `hub_delete_room` address a room by its id in the `roomId` parameter; `getRooms()` (the in-process SDK room list, not an HTTP call) is the existence and duplicate-name check before a write:
 
 | Tool | Access Gate | Description |
 |------|------------|-------------|
-| `hub_list_rooms` | None | All rooms with IDs, names, device ids via `getRooms()` (cursor-pageable) |
-| `hub_get_room` | None | One room by `roomId`: its devices with labels and current states from the Devices page |
-| `hub_create_room` | Write master + confirm | Creates room via `POST /room/save` with `roomId: 0`; the new id comes from the response's `roomId` |
+| `hub_list_rooms` | Read master | All rooms with IDs, names, device ids via `getRooms()` (cursor-pageable) |
+| `hub_get_room` | Read master | One room by `roomId`: its devices with labels and current states from the Devices page |
+| `hub_create_room` | Write master + confirm | Creates room via `POST /room/save` with `roomId: 0`; the new id comes from the response's `roomId`; devices taken from another room are reported in `movedDevices` |
 | `hub_delete_room` | Write master + confirm | Deletes room via `GET /room/delete/<id>` (POST answers 405). Devices become unassigned |
-| `hub_update_room` | Write master + confirm | `POST /room/save` with the existing `roomId`, the new or current `name`, and the new or current `deviceIds` (a wholesale device list) |
+| `hub_update_room` | Write master + confirm | A name-only update uses `GET /room/updateName?id=&name=`; with `deviceIds` it is `POST /room/save` with the existing `roomId`, the new or current `name`, and the new `deviceIds` (a wholesale device list). Updates are serialized in-process |
 
 **Key API details:**
-- All room mutations use `POST /room/save` at `http://127.0.0.1:8080` with `Content-Type: application/json`
+- Create and device-list updates use `POST /room/save` at `http://127.0.0.1:8080` with `Content-Type: application/json`; a name-only rename uses `GET /room/updateName`, delete uses `GET /room/delete/<id>`
 - The JSON body uses `roomId` (not `id`) — the API returns `{"roomId":null,"error":"Invalid room id"}` if `id` is used
 - Body format: `{"roomId": <int>, "name": "<string>", "deviceIds": [<int>, ...]}`
 - For room creation, `roomId: 0` triggers create behavior (Grails convention)
 - `getRooms()` is a built-in Hubitat SDK method returning `[[id:1, name:"Bedroom", deviceIds:[5, 6]], ...]`
-- The hub answers `{"roomId": <id>}` on success and `{"error": "Invalid room or device ids"}` (HTTP 200) for an unknown device id. It also answers success for a `roomId` that does not exist without changing anything, so update and delete check the id against `getRooms()` first; no write re-reads the room list afterwards
+- `/room/save` answers `{"roomId": <id>}` on success and `{"error": "Invalid room or device ids"}` (HTTP 200) for an unknown device id; an answer without `roomId` is reported as a failure. It also answers success for a `roomId` that does not exist without changing anything, and `GET /room/delete/<id>` answers 200 for an unknown id, so update and delete check the id against `getRooms()` first; no write re-reads the room list afterwards
+- `/room/updateName` answers `{"success":true,"message":null}`, or `success:false` with `"Room not found"` or `"Room name is too short"` (under 3 characters; `/room/save` accepts such a name)
+- While Bypass Device Allowlist is off, create refuses any device outside the MCP device selection and update refuses one whose membership changes, before any request
 - The hub allows duplicate room names; create and rename refuse them
 - Form-encoded bodies return 500 — the endpoint strictly requires JSON
 
