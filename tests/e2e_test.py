@@ -486,7 +486,6 @@ def _tool_error_payload(exc: McpError) -> dict:
 
 def _plain_failure_payload(exc: McpError) -> dict | None:
     """The payload of a raised isError, only when it is success:false WITHOUT its own isError key.
-
     Exactly the results call_tool used to return as plain dicts before the server flagged every
     success:false. A payload carrying its own isError (validation refusals, continuation faults,
     tools that set it themselves) gives None: those always raised."""
@@ -9825,12 +9824,14 @@ def updated() {}
         return False
 
     def _find_visual_rule_id_by_name(self, name: str) -> str | None:
-        """Look up a VRB rule's appId by name via the list mode (create-verify on 504). A failed
-        listing raises: it is not evidence that the rule is absent."""
-        listed = self._get_visual_rule()
-        for r in (listed.get("rules") or []):
-            if isinstance(r, dict) and r.get("name") == name:
-                return str(r.get("appId"))
+        """Look up a VRB rule's appId by name via the list mode (create-verify on 504)."""
+        try:
+            listed = self._get_visual_rule()
+            for r in (listed.get("rules") or []):
+                if isinstance(r, dict) and r.get("name") == name:
+                    return str(r.get("appId"))
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            print(f"    [WARN] visual-rule listing lookup for {name!r} failed: {exc}")
         return None
 
     def _check_visual_literal_pause_name(self, app_id: Any, name: str) -> None:

@@ -1806,6 +1806,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
     // every path that hands it back, and the record says so for recentWrites.
     def "a success:false terminal is flagged isError on its first return and on replay"() {
         given:
+        settingsMap.useGateways = useGateways
         settingsMap.enableWrite = true
         script.metaClass.toolRunRmRule = { Map a ->
             [success: false, ruleIds: a.ruleId, error: 'One or more rule operations failed; inspect results[].',
@@ -1831,10 +1832,14 @@ class MrtrContinuationSpec extends ToolSpecBase {
         replay.result.resultType == 'complete'
         replay.result.isError == true
         mcpDriver.parseInner(replay) == mcpDriver.parseInner(first)
+
+        where:
+        useGateways << [true, false]
     }
 
     def "a success:false terminal reached by the server-side continuation is logged and replayed as an error"() {
         given:
+        settingsMap.useGateways = useGateways
         settingsMap.enableWrite = true
         settingsMap.mcpLogLevel = 'info'
         script.metaClass.toolRunRmRule = pausingMultiRuleWrite()
@@ -1855,6 +1860,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
         replay.result.resultType == 'complete'
         replay.result.isError == true
         mcpDriver.parseInner(replay).success == false
+
+        where:
+        useGateways << [true, false]
     }
 
     def "ordinary write-request leases share the same cap and release in finally"() {
@@ -3055,6 +3063,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
     // Issue 584: success:false alone (no isError in the payload) decides the stored terminal.
     def "a slow read that ends success:false without isError is stored and replayed as that failure"() {
         given:
+        settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         settingsMap.relayBudgetMs = 6000
         script.metaClass._isCloudRequest = { -> true }
@@ -3083,10 +3092,14 @@ class MrtrContinuationSpec extends ToolSpecBase {
         replay.result.isError == true
         mcpDriver.parseInner(replay) == mcpDriver.parseInner(terminal)
         calls.get() == 2
+
+        where:
+        useGateways << [true, false]
     }
 
     def "a budgeted read answered in round zero with success:false is sent as isError"() {
         given:
+        settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         settingsMap.relayBudgetMs = 6000
         script.metaClass._isCloudRequest = { -> true }
@@ -3101,6 +3114,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
         only.result.isError == true
         mcpDriver.parseInner(only).error == 'hub info unavailable'
         !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
+
+        where:
+        useGateways << [true, false]
     }
 
     def "a read whose worker never lands ends with a read-specific timeout terminal, never the write cap text"() {
@@ -3594,6 +3610,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
     def "a final slice that fails and loses its record before the terminal store is still sent as isError"() {
         given: 'a write with no remainder whose leaf sweeps the durable record and reports failure'
+        settingsMap.useGateways = useGateways
         settingsMap.enableWrite = true
         script.metaClass.toolRunRmRule = { Map a ->
             atomicStateMap.mrtrRequests = [:]
@@ -3615,6 +3632,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
         inner.results*.ruleId == [63, 64]
         inner.note.contains('continuation record was lost')
         !inner.note.contains('Do not repeat the whole operation')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "a validation refusal on a later slice hands back the committed ledger"() {
