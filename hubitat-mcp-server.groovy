@@ -11519,6 +11519,7 @@ def _guideSectionForTool(toolName) {
     if (t in ['hub_get_device', 'hub_update_device']) return 'update_device'
     if (t == 'hub_manage_virtual_device') return 'virtual_devices'
     if (t in ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard']) return 'dashboards'
+    if (t in ['hub_create_room', 'hub_update_room']) return 'rooms'
     if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
     if (t in ['hub_write_file', 'hub_delete_file']) return 'file_manager'
     if (t in ['hub_call_zwave', 'hub_set_zwave', 'hub_call_zigbee', 'hub_set_zigbee',
@@ -11658,6 +11659,8 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_call_zwave -> hub_admin_write_radios
 - hub_set_zigbee -> hub_admin_write_radios
 - hub_set_zwave -> hub_admin_write_radios
+- hub_create_room -> rooms
+- hub_update_room -> rooms
 - hub_clone_custom_rule -> rules
 - hub_create_custom_rule -> rules
 - hub_delete_custom_rule -> rules
@@ -12923,7 +12926,7 @@ Room tools address a room by its id (a string from hub_list_rooms, passed as `ro
 
 ### hub_list_rooms
 
-Every room as `{id, name, deviceCount, deviceIds}`, sorted by name; `cursor` pages it (100 per page).
+Every room as `{id, name, deviceCount, deviceIds}`, sorted by name ignoring case; `cursor` pages it (100 per page).
 
 ### hub_get_room
 
@@ -12931,11 +12934,11 @@ Takes the room's `roomId` (from hub_list_rooms). Returns `{id, name, deviceCount
 
 ### hub_create_room
 
-Names must be unique (case-insensitive; the hub itself allows duplicates). A listed device moves out of its previous room. The result carries the new `id`. To move devices into an existing room use hub_update_room, or set one device's room with hub_update_device -- do NOT create a room for that.
+Names must be unique (case-insensitive; the hub itself allows duplicates). A listed device moves out of its previous room; the result carries the new `id`, and `movedDevices` (`[{deviceId, fromRoomId, fromRoom}]`) for each device taken from another room. While Bypass Device Allowlist is off, every listed device must be in the MCP device selection; any other id is refused before anything is saved. To move devices into an existing room use hub_update_room, or set one device's room with hub_update_device -- do NOT create a room for that.
 
 ### hub_update_room
 
-`deviceIds` replaces the room's device list, as the hub's Rooms page does: a device left out becomes unassigned, an added one leaves its previous room, `[]` empties the room. Start from hub_get_room(roomId). Send room updates one at a time, waiting for each to finish: an update saves the name and the full device list together, so two overlapping updates to one room can undo each other. The result reports `previousName` after a rename, and `deviceIds`, `deviceCount` and `unassignedDeviceIds` when the list was passed. A device id the hub does not know fails the save with nothing written. After a rename, automations or dashboards that name the room may need updating.
+`deviceIds` replaces the room's device list, as the hub's Rooms page does: a device left out becomes unassigned, an added one leaves its previous room, `[]` empties the room. Start from hub_get_room(roomId), and keep the ids it shows with `accessible=false` in the list you send: while Bypass Device Allowlist is off, adding or removing a device outside the MCP device selection is refused before anything is saved (one already in the room may stay). A name-only update renames the room without touching its devices. An update that sets `deviceIds` re-sends the name and the full device list, so any other change to that room landing in between (another update, a hub_update_device room move, an edit on the hub's Rooms page) can be undone: send room updates one at a time, waiting for each to finish. The result reports `previousName` after a rename, and `deviceIds`, `deviceCount`, `unassignedDeviceIds` and `movedDevices` (`[{deviceId, fromRoomId, fromRoom}]`, devices taken from another room) when the list was passed. The hub refuses a name-only update to a name shorter than 3 characters. A device id the hub does not know fails the save with nothing written. After a rename, automations or dashboards that name the room may need updating.
 
 ### hub_delete_room
 

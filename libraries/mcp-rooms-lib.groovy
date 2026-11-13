@@ -1,5 +1,10 @@
 library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room tools: hub_list_rooms, hub_get_room, hub_create_room, hub_update_room, hub_delete_room.")
 
+// A room update reads the room and then saves it; holding this across both keeps one update from
+// saving over another. It is not WRITE_RESERVATION_LOCK, which every write takes briefly to reserve
+// its slot and must not wait on a hub request.
+@groovy.transform.Field static final Object ROOM_UPDATE_LOCK = new Object()
+
 def toolListRooms(args = null) {
     return _listRoomSummaries(args?.cursor)
 }
@@ -14,7 +19,7 @@ def toolGetRoom(args) {
             for (pageRec in _readDevicesPage(roomIds as Set)) pageById.put(pageRec.id, pageRec)
         } catch (IllegalStateException e) {
             return [success: false, isError: true, error: "The hub's device list (/hub2/devicesList) could not be read: ${e.message}".toString(),
-                    note: "Retry; if it persists check the hub's Devices page."]
+                    note: "Retry; if it persists check the hub's Devices page. See hub_get_tool_guide(section='rooms')."]
         }
     }
     Set authorized = _mcpAuthorizedIds(getChildDevices() ?: [])
@@ -57,7 +62,7 @@ private Map _listRoomSummaries(cursor) {
             deviceCount: room.deviceIds?.size() ?: 0,
             deviceIds: room.deviceIds?.collect { it.toString() } ?: []
         ]
-    }.sort { it.name }
+    }.sort { (it.name ?: '').toLowerCase() }
     def paged = _paginateList(roomList, cursor, 100, "hub_list_rooms")
     def result = [rooms: paged.page, count: paged.page.size()]
     if (cursor != null) {
@@ -67,8 +72,9 @@ private Map _listRoomSummaries(cursor) {
     return result
 }
 
-// getRooms() is the in-process room list, not a hub request. The hub's /room/save answers success
-// for an unknown roomId without changing anything, so every write checks the id here first.
+// getRooms() is the in-process room list, not a hub request. Every tool that takes a roomId checks
+// it here first: GET /room/delete/<id> answers 200 for an unknown id, and /room/save answers success
+// for one without changing anything.
 private Map _requireRoom(roomId) {
     String rid = roomId?.toString()?.trim()
     if (!rid) throw new IllegalArgumentException("roomId is required: the room id from hub_list_rooms.")
@@ -84,11 +90,36 @@ private List _roomDeviceIds(deviceIds) {
     }
     return deviceIds.collect {
         String s = it?.toString()?.trim()
-        if (!(s ==~ /\d+/)) {
+        // The hub keys devices by int; a longer digit string would fail the conversion with a parser message.
+        if (!(s ==~ /\d{1,10}/) || (s as Long) > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("deviceIds must be numeric device ids; got '${it}'. Use hub_list_devices to find device ids.")
         }
         s as Integer
     }.unique()
+}
+
+// While the allowlist bypass is off, a room write may move only devices MCP may configure, the same
+// boundary hub_update_device keeps. On update only ids whose membership changes are checked, so a
+// rename or a re-send that keeps an unselected device in its room still works.
+private void _requireRoomDevicesSelected(Collection ids) {
+    if (!ids) return
+    Set authorized = _mcpAuthorizedIds(getChildDevices() ?: [])
+    if (authorized == null) return
+    List outside = ids.collect { it.toString() }.unique().findAll { !authorized.contains(it) }
+    if (outside) {
+        throw new IllegalArgumentException("deviceIds ${outside.join(', ')} ${outside.size() == 1 ? 'is' : 'are'} outside the MCP device selection, so this room write cannot add or remove ${outside.size() == 1 ? 'it' : 'them'}. Select ${outside.size() == 1 ? 'it' : 'them'} in the MCP app's device list, or turn on Bypass Device Allowlist. A device hub_get_room shows with accessible=false stays in the list you send.")
+    }
+}
+
+// Each listed device already in another room, with the room it leaves.
+private List _roomMovedDevices(List rooms, Collection ids, String exceptRoomId) {
+    List moved = []
+    for (id in ids) {
+        String did = id.toString()
+        def from = rooms.find { r -> r.id?.toString() != exceptRoomId && r.deviceIds?.any { it.toString() == did } }
+        if (from) moved << [deviceId: did, fromRoomId: from.id.toString(), fromRoom: from.name]
+    }
+    return moved
 }
 
 // The hub allows duplicate room names; the tools refuse them so a room name stays unambiguous.
@@ -99,7 +130,8 @@ private void _requireUniqueRoomName(List rooms, String name, exceptId) {
 }
 
 private Map _roomFailure(String error, String note) {
-    return [success: false, error: error,
+    mcpLog("warn", "room", error)
+    return [success: false, isError: true, error: error,
             note: "${note} See hub_get_tool_guide(section='rooms').".toString()]
 }
 
@@ -131,16 +163,43 @@ def toolCreateRoom(args) {
     String name = args.name?.toString()?.trim()
     if (!name) throw new IllegalArgumentException("Room name is required")
     List deviceIds = args.deviceIds == null ? [] : _roomDeviceIds(args.deviceIds)
-    _requireUniqueRoomName((getRooms() ?: []).findAll { it != null }, name, null)
+    List rooms = (getRooms() ?: []).findAll { it != null }
+    _requireUniqueRoomName(rooms, name, null)
+    _requireRoomDevicesSelected(deviceIds)
+    List moved = _roomMovedDevices(rooms, deviceIds, null)
 
     def saved = _saveRoom(0, name, deviceIds, "create room '${name}'")
     if (saved.failure) return saved.failure
     mcpLog("info", "room", "Created room '${name}' (ID: ${saved.roomId})")
-    return [
-        success: true,
-        room: [id: saved.roomId, name: name, deviceCount: deviceIds.size(), deviceIds: deviceIds.collect { it.toString() }],
-        message: "Room '${name}' created."
-    ]
+    Map created = [id: saved.roomId, name: name, deviceCount: deviceIds.size(), deviceIds: deviceIds.collect { it.toString() }]
+    if (moved) created.movedDevices = moved
+    return [success: true, room: created, message: "Room '${name}' created."]
+}
+
+// GET /room/updateName, the hub's rename that carries no device list, so it cannot undo a device
+// change made meanwhile. The hub answers {success, message}. Returns null or a structured failure.
+private Map _renameRoom(String roomId, String name) {
+    def raw
+    try {
+        raw = hubInternalGet("/room/updateName", [id: roomId, name: name])
+    } catch (Exception e) {
+        return _roomFailure("Could not rename room ${roomId}: ${e.message}".toString(),
+            "The hub may still have renamed it; check with hub_list_rooms before retrying.")
+    }
+    def parsed = null
+    try {
+        parsed = raw?.trim() ? new groovy.json.JsonSlurper().parseText(raw) : null
+    } catch (Exception ignored) {
+        parsed = null
+    }
+    if (parsed instanceof Map && parsed.success == true) return null
+    if (parsed instanceof Map && parsed.success == false) {
+        return _roomFailure("The hub refused to rename room ${roomId}: ${parsed.message ?: 'no reason given'}".toString(),
+            "Nothing was saved.")
+    }
+    String body = raw?.trim() ? raw.toString().take(200) : "an empty body"
+    return _roomFailure("The hub's answer to rename room ${roomId} carried no success flag (${body}).".toString(),
+        "The rename may have landed; check with hub_list_rooms before retrying.")
 }
 
 def toolUpdateRoom(args) {
@@ -151,27 +210,38 @@ def toolUpdateRoom(args) {
     String newName = hasName ? args.name.toString().trim() : null
     if (hasName && !newName) throw new IllegalArgumentException("name must not be blank.")
     List newIds = hasDevices ? _roomDeviceIds(args.deviceIds) : null
-    Map found = _requireRoom(args.roomId)
+    synchronized (ROOM_UPDATE_LOCK) {
+        return _updateRoomLocked(args.roomId, newName, newIds)
+    }
+}
+
+// newName or newIds is null when that field keeps its value.
+private Map _updateRoomLocked(roomIdArg, String newName, List newIds) {
+    Map found = _requireRoom(roomIdArg)
     def room = found.room
     String roomId = room.id.toString()
     String oldName = room.name
-    if (hasName) _requireUniqueRoomName(found.rooms, newName, roomId)
-
+    if (newName != null) _requireUniqueRoomName(found.rooms, newName, roomId)
     List currentIds = (room.deviceIds ?: []).collect { it as Integer }
-    String finalName = hasName ? newName : oldName
-    List finalIds = hasDevices ? newIds : currentIds
-    def saved = _saveRoom(roomId as Integer, finalName, finalIds, "update room ${roomId}")
-    if (saved.failure) return saved.failure
-
+    String finalName = newName ?: oldName
     Map updated = [id: roomId, name: finalName]
     if (finalName != oldName) updated.previousName = oldName
-    if (hasDevices) {
-        updated.deviceIds = finalIds.collect { it.toString() }
-        updated.deviceCount = finalIds.size()
-        List dropped = (currentIds - finalIds).collect { it.toString() }
-        if (dropped) updated.unassignedDeviceIds = dropped
+    if (newIds == null) {
+        Map failure = _renameRoom(roomId, finalName)
+        if (failure) return failure
+    } else {
+        List added = newIds - currentIds
+        List dropped = currentIds - newIds
+        _requireRoomDevicesSelected(added + dropped)
+        List moved = _roomMovedDevices(found.rooms, added, roomId)
+        def saved = _saveRoom(roomId as Integer, finalName, newIds, "update room ${roomId}")
+        if (saved.failure) return saved.failure
+        updated.deviceIds = newIds.collect { it.toString() }
+        updated.deviceCount = newIds.size()
+        if (dropped) updated.unassignedDeviceIds = dropped.collect { it.toString() }
+        if (moved) updated.movedDevices = moved
     }
-    mcpLog("info", "room", "Updated room ${roomId}: '${oldName}' -> '${finalName}'${hasDevices ? ", ${finalIds.size()} devices" : ''}")
+    mcpLog("info", "room", "Updated room ${roomId}: '${oldName}' -> '${finalName}'${newIds != null ? ", ${newIds.size()} devices" : ''}")
     return [success: true, room: updated, message: "Room '${finalName}' updated."]
 }
 
@@ -224,7 +294,7 @@ def _getAllToolDefinitions_partRooms() {
         ],
         [
             name: "hub_create_room",
-            description: "Create a room, optionally with devices (each moves out of its current room). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Returns the new room's id. Room names must be unique. To move devices into an existing room use hub_update_room instead. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
+            description: "Create a room, optionally with devices (each moves out of its current room). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Returns the new room's id, and movedDevices for devices taken from another room. Room names must be unique. Devices outside the MCP device selection are refused unless Bypass Device Allowlist is on. To move devices into an existing room use hub_update_room instead. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -237,7 +307,7 @@ def _getAllToolDefinitions_partRooms() {
         ],
         [
             name: "hub_update_room",
-            description: "Rename a room and/or replace its device list, by id; an omitted field keeps its value. deviceIds is the FULL list: a device left out becomes unassigned, an added one leaves its previous room. Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Send room updates one at a time, never in parallel. Start from hub_get_room(roomId). After a rename, automations or dashboards that name the room may need updating. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
+            description: "Rename a room and/or replace its device list, by id; an omitted field keeps its value. deviceIds is the FULL list: a device left out becomes unassigned, an added one leaves its previous room. Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Send room updates one at a time, never in parallel. Start from hub_get_room(roomId) and keep its accessible=false devices in the list: adding or removing a device outside the MCP device selection is refused unless Bypass Device Allowlist is on. After a rename, automations or dashboards that name the room may need updating. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
