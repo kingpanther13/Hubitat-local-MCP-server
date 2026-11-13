@@ -7,13 +7,12 @@ import support.ToolSpecBase
  * (hub_get_source) and hub_manage_code (create/update/delete) gateways:
  *
  * - toolGetLibrarySource   -> hub_get_source (type:library)
- * - toolInstallLibrary     -> hub_create_library
+ * - toolCreateLibrary -> hub_create_library
  * - toolUpdateLibraryCode  -> hub_update_library
- * - toolDeleteLibrary      -> hub_delete_item (type:library)
+ * - toolDeleteItem (type=library) -> hub_delete_item
  *
  * Hub API contracts verified here:
  *   GET  /library/list/single/data/<id>  -- returns [{id, version, source, name, namespace, ...}]
- *   GET  /hub2/userLibraries             -- returns [{id, name, namespace, ...}] (no source)
  *   POST /library/saveOrUpdateJson       -- JSON body {id, source, version}; returns {success, message, id, version}
  *   GET  /library/edit/deleteJson/<id>   -- returns {success: true, message: null}
  *
@@ -344,7 +343,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    // -------- toolInstallLibrary --------
+    // -------- toolCreateLibrary --------
 
     def "hub_create_library throws when Write tools are disabled"() {
         given:
@@ -381,7 +380,7 @@ def helperMethod() { return "ok" }
         enableWrite()
 
         when:
-        script.toolInstallLibrary([source: SAMPLE_SOURCE])
+        script.toolCreateLibrary([source: SAMPLE_SOURCE])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -410,7 +409,7 @@ def helperMethod() { return "ok" }
         enableWrite()
 
         when:
-        script.toolInstallLibrary([confirm: true])
+        script.toolCreateLibrary([confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -441,7 +440,7 @@ def helperMethod() { return "ok" }
         enableWrite()
 
         when:
-        script.toolInstallLibrary([source: SAMPLE_SOURCE, sourceFile: 'foo.groovy', confirm: true])
+        script.toolCreateLibrary([source: SAMPLE_SOURCE, sourceFile: 'foo.groovy', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -473,16 +472,13 @@ def helperMethod() { return "ok" }
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 100, version: 1]
         }
-        hubGet.register('/hub2/userLibraries') { params ->
-            groovy.json.JsonOutput.toJson([[id: 100, name: 'TestLib', namespace: 'level99']])
-        }
 
         when:
-        def result = script.toolInstallLibrary([source: SAMPLE_SOURCE, confirm: true])
+        def result = script.toolCreateLibrary([source: SAMPLE_SOURCE, confirm: true])
 
         then:
         capturedBody.id == null
-        capturedBody.version == null
+        capturedBody.version == 1
         capturedBody.source == SAMPLE_SOURCE
         result.success == true
         result.libraryId == '100'
@@ -502,16 +498,13 @@ def helperMethod() { return "ok" }
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 100, version: 1]
         }
-        hubGet.register('/hub2/userLibraries') { params ->
-            groovy.json.JsonOutput.toJson([[id: 100, name: 'TestLib', namespace: 'level99']])
-        }
 
         when:
         def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         capturedBody.id == null
-        capturedBody.version == null
+        capturedBody.version == 1
         capturedBody.source == SAMPLE_SOURCE
         response.error == null
         !response.result.isError
@@ -538,12 +531,9 @@ def helperMethod() { return "ok" }
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 101, version: 1]
         }
-        hubGet.register('/hub2/userLibraries') { params ->
-            groovy.json.JsonOutput.toJson([[id: 101, name: 'TestLib', namespace: 'level99']])
-        }
 
         when:
-        def result = script.toolInstallLibrary([sourceFile: 'mylib.groovy', confirm: true])
+        def result = script.toolCreateLibrary([sourceFile: 'mylib.groovy', confirm: true])
 
         then:
         capturedBody.source == SAMPLE_SOURCE
@@ -564,9 +554,6 @@ def helperMethod() { return "ok" }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 101, version: 1]
-        }
-        hubGet.register('/hub2/userLibraries') { params ->
-            groovy.json.JsonOutput.toJson([[id: 101, name: 'TestLib', namespace: 'level99']])
         }
 
         when:
@@ -591,7 +578,7 @@ def helperMethod() { return "ok" }
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        script.toolInstallLibrary([sourceFile: 'missing.groovy', confirm: true])
+        script.toolCreateLibrary([sourceFile: 'missing.groovy', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -624,13 +611,13 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def result = script.toolInstallLibrary([source: 'bad source', confirm: true])
+        def result = script.toolCreateLibrary([source: 'bad source', confirm: true])
 
         then:
         result.success == false
         result.error.contains('installation failed')
         result.error.contains('Cannot parse library definition')
-        result.note.contains('library() definition block')
+        result.note.contains('library() block')
     }
 
     @spock.lang.Unroll
@@ -652,7 +639,7 @@ def helperMethod() { return "ok" }
         inner.success == false
         inner.error.contains('installation failed')
         inner.error.contains('Cannot parse library definition')
-        inner.note.contains('library() definition block')
+        inner.note.contains('library() block')
 
         where:
         useGateways << [true, false]
@@ -666,7 +653,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def result = script.toolInstallLibrary([source: SAMPLE_SOURCE, confirm: true])
+        def result = script.toolCreateLibrary([source: SAMPLE_SOURCE, confirm: true])
 
         then:
         result.success == false
@@ -698,214 +685,20 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "hub_create_library fails closed when post-install verification finds the library absent from the list"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, message: '', id: 200, version: 1]
-        }
-        // Verification fetch returns non-empty list but does NOT include the new library
-        hubGet.register('/hub2/userLibraries') { params -> '[]' }
-
-        when:
-        def result = script.toolInstallLibrary([source: SAMPLE_SOURCE, confirm: true])
-
-        then: 'fail-closed: success=false with libraryId populated so caller can inspect'
-        result.success == false
-        result.libraryId == '200'
-        result.error.contains('unverified')
-        result.error.contains('200')
-        result.note.contains('Do NOT retry')
-        result.lastBackup != null
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_library via dispatch fails closed envelope when verification finds library absent (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, message: '', id: 200, version: 1]
-        }
-        hubGet.register('/hub2/userLibraries') { params -> '[]' }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.libraryId == '200'
-        inner.error.contains('unverified')
-        inner.error.contains('200')
-        inner.note.contains('Do NOT retry')
-        inner.lastBackup != null
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hub_create_library returns success with verified=true when post-install library list includes the new library"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, message: '', id: 201, version: 1]
-        }
-        hubGet.register('/hub2/userLibraries') { params ->
-            groovy.json.JsonOutput.toJson([[id: 201, name: 'TestLib', namespace: 'level99']])
-        }
-
-        when:
-        def result = script.toolInstallLibrary([source: SAMPLE_SOURCE, confirm: true])
-
-        then:
-        result.success == true
-        result.libraryId == '201'
-        result.verified == true
-        result.verifyError == null
-        result.message.contains('installed')
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_library via dispatch returns success envelope with verified=true when verify includes new library (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, message: '', id: 201, version: 1]
-        }
-        hubGet.register('/hub2/userLibraries') { params ->
-            groovy.json.JsonOutput.toJson([[id: 201, name: 'TestLib', namespace: 'level99']])
-        }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == true
-        inner.libraryId == '201'
-        inner.verified == true
-        inner.verifyError == null
-        inner.message.contains('installed')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hub_create_library returns success with verifyError when post-install verification fetch throws"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, message: '', id: 202, version: 1]
-        }
-        // Verification fetch throws (transient failure)
-        hubGet.register('/hub2/userLibraries') { params ->
-            throw new RuntimeException('verify endpoint unavailable')
-        }
-
-        when:
-        def result = script.toolInstallLibrary([source: SAMPLE_SOURCE, confirm: true])
-
-        then: 'transient verify failure keeps success=true but sets verified=false + verifyError'
-        result.success == true
-        result.libraryId == '202'
-        result.verified == false
-        result.verifyError != null
-        result.verifyError.contains('verify endpoint unavailable')
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_library via dispatch returns success envelope with verifyError when verify fetch throws (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, message: '', id: 202, version: 1]
-        }
-        hubGet.register('/hub2/userLibraries') { params ->
-            throw new RuntimeException('verify endpoint unavailable')
-        }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == true
-        inner.libraryId == '202'
-        inner.verified == false
-        inner.verifyError != null
-        inner.verifyError.contains('verify endpoint unavailable')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hub_create_library fails closed with anti-retry note when verify returns unparseable body"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, message: '', id: 203, version: 1]
-        }
-        hubGet.register('/hub2/userLibraries') { params -> '<html>login page</html>' }
-
-        when:
-        def result = script.toolInstallLibrary([source: SAMPLE_SOURCE, confirm: true])
-
-        then:
-        result.success == false
-        result.libraryId == '203'
-        result.error.contains('unverified')
-        result.note.contains('Do NOT retry')
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_library via dispatch fails closed envelope with anti-retry note when verify returns unparseable body (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, message: '', id: 203, version: 1]
-        }
-        hubGet.register('/hub2/userLibraries') { params -> '<html>login page</html>' }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.libraryId == '203'
-        inner.error.contains('unverified')
-        inner.note.contains('Do NOT retry')
-
-        where:
-        useGateways << [true, false]
-    }
-
     def "hub_create_library fails closed with anti-retry note when hub returns null/empty response"() {
         given:
         enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> null }
 
         when:
-        def result = script.toolInstallLibrary([source: SAMPLE_SOURCE, confirm: true])
+        def result = script.toolCreateLibrary([source: SAMPLE_SOURCE, confirm: true])
 
         then:
         result.success == false
         result.error.contains('unverified')
-        result.error.contains('empty/null response')
-        result.note.contains('FOR DEVELOPERS > Libraries code')
-        result.note.contains('Do NOT retry')
+        result.error.contains('an empty response')
+        result.note.contains('hub_list_libraries')
+        result.note.contains('before retrying')
         result.lastBackup != null
     }
 
@@ -925,9 +718,9 @@ def helperMethod() { return "ok" }
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('unverified')
-        inner.error.contains('empty/null response')
-        inner.note.contains('FOR DEVELOPERS > Libraries code')
-        inner.note.contains('Do NOT retry')
+        inner.error.contains('an empty response')
+        inner.note.contains('hub_list_libraries')
+        inner.note.contains('before retrying')
         inner.lastBackup != null
 
         where:
@@ -942,14 +735,14 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def result = script.toolInstallLibrary([source: SAMPLE_SOURCE, confirm: true])
+        def result = script.toolCreateLibrary([source: SAMPLE_SOURCE, confirm: true])
 
         then:
         result.success == false
         result.error.contains('unverified')
-        result.error.contains('missing id field')
-        result.note.contains('FOR DEVELOPERS > Libraries code')
-        result.note.contains('Do NOT retry')
+        result.error.contains('success with no id')
+        result.note.contains('hub_list_libraries')
+        result.note.contains('before retrying')
         result.lastBackup != null
     }
 
@@ -971,9 +764,9 @@ def helperMethod() { return "ok" }
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('unverified')
-        inner.error.contains('missing id field')
-        inner.note.contains('FOR DEVELOPERS > Libraries code')
-        inner.note.contains('Do NOT retry')
+        inner.error.contains('success with no id')
+        inner.note.contains('hub_list_libraries')
+        inner.note.contains('before retrying')
         inner.lastBackup != null
 
         where:
@@ -1712,7 +1505,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    // -------- toolDeleteLibrary --------
+    // -------- toolDeleteItem (library) --------
 
     def "delete_library throws when Write tools are disabled"() {
         given:
@@ -1749,7 +1542,7 @@ def helperMethod() { return "ok" }
         enableWrite()
 
         when:
-        script.toolDeleteLibrary([libraryId: '42'])
+        script.toolDeleteItem([type: 'library', item_id: '42'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -1773,20 +1566,20 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "delete_library throws when libraryId is missing"() {
+    def "delete_library throws when item_id is missing"() {
         given:
         enableWrite()
 
         when:
-        script.toolDeleteLibrary([confirm: true])
+        script.toolDeleteItem([type: 'library', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('libraryId is required')
+        ex.message.contains('item_id is required')
     }
 
     @spock.lang.Unroll
-    def "delete_library via dispatch returns isError validation result envelope when libraryId missing (useGateways=#useGateways)"() {
+    def "delete_library via dispatch returns isError validation result envelope when item_id missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1796,7 +1589,7 @@ def helperMethod() { return "ok" }
 
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('libraryId is required')
+        mcpDriver.parseInner(response).error.contains('item_id is required')
 
         where:
         useGateways << [true, false]
@@ -1815,11 +1608,11 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def result = script.toolDeleteLibrary([libraryId: '42', confirm: true])
+        def result = script.toolDeleteItem([type: 'library', item_id: '42', confirm: true])
 
         then:
         result.success == true
-        result.libraryId == '42'
+        result.id == '42'
         result.backupFile == 'mcp-backup-library-42.groovy'
         uploads == ['mcp-backup-library-42.groovy']
         result.restoreHint.contains('hub_create_library')
@@ -1848,7 +1641,7 @@ def helperMethod() { return "ok" }
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.libraryId == '42'
+        inner.id == '42'
         inner.backupFile == 'mcp-backup-library-42.groovy'
         uploads == ['mcp-backup-library-42.groovy']
         inner.restoreHint.contains('hub_create_library')
@@ -1880,7 +1673,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def result = script.toolDeleteLibrary([libraryId: '42', confirm: true])
+        def result = script.toolDeleteItem([type: 'library', item_id: '42', confirm: true])
 
         then: 'no new backup upload occurred (dedup window held)'
         uploads == []
@@ -1893,7 +1686,7 @@ def helperMethod() { return "ok" }
 
         and: 'response still references the existing backup file'
         result.success == true
-        result.libraryId == '42'
+        result.id == '42'
         result.backupFile == 'mcp-backup-library-42.groovy'
         result.restoreHint.contains('hub_create_library')
     }
@@ -1930,7 +1723,7 @@ def helperMethod() { return "ok" }
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.libraryId == '42'
+        inner.id == '42'
         inner.backupFile == 'mcp-backup-library-42.groovy'
         inner.restoreHint.contains('hub_create_library')
 
@@ -1938,7 +1731,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "delete_library proceeds with backupWarning when pre-delete backup fails"() {
+    def "delete_library sends no delete when the pre-delete backup fails"() {
         given:
         enableWrite()
         hubGet.register('/library/list/single/data/42') { params ->
@@ -1949,16 +1742,17 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def result = script.toolDeleteLibrary([libraryId: '42', confirm: true])
+        def result = script.toolDeleteItem([type: 'library', item_id: '42', confirm: true])
 
         then:
-        result.success == true
-        result.message.contains('backup failed')
-        result.backupWarning.contains('permanently lost')
+        result.success == false
+        result.error.startsWith('Could not read the source of')
+        result.note.startsWith('Nothing was deleted')
+        !hubGet.calls.any { it.path == '/library/edit/deleteJson/42' }
     }
 
     @spock.lang.Unroll
-    def "delete_library via dispatch proceeds with backupWarning envelope when pre-delete backup fails (useGateways=#useGateways)"() {
+    def "delete_library via dispatch sends no delete when the pre-delete backup fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1974,9 +1768,10 @@ def helperMethod() { return "ok" }
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.success == true
-        inner.message.contains('backup failed')
-        inner.backupWarning.contains('permanently lost')
+        inner.success == false
+        inner.error.startsWith('Could not read the source of')
+        inner.note.startsWith('Nothing was deleted')
+        !hubGet.calls.any { it.path == '/library/edit/deleteJson/42' }
 
         where:
         useGateways << [true, false]
@@ -1992,13 +1787,13 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def result = script.toolDeleteLibrary([libraryId: '42', confirm: true])
+        def result = script.toolDeleteItem([type: 'library', item_id: '42', confirm: true])
 
         then:
         result.success == false
         // Fail-closed path: hub message returned directly, not a generic "Delete may have failed" string
         result.error.contains('Library is in use')
-        result.libraryId == '42'
+        result.id == '42'
         result.note.contains('#include')
     }
 
@@ -2022,7 +1817,7 @@ def helperMethod() { return "ok" }
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Library is in use')
-        inner.libraryId == '42'
+        inner.id == '42'
         inner.note.contains('#include')
 
         where:
@@ -2039,7 +1834,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def result = script.toolDeleteLibrary([libraryId: '42', confirm: true])
+        def result = script.toolDeleteItem([type: 'library', item_id: '42', confirm: true])
 
         then:
         result.success == false
@@ -2083,12 +1878,12 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/edit/deleteJson/42') { params -> '' }
 
         when:
-        def result = script.toolDeleteLibrary([libraryId: '42', confirm: true])
+        def result = script.toolDeleteItem([type: 'library', item_id: '42', confirm: true])
 
         then:
         result.success == false
-        result.error.contains('Delete may have failed')
-        result.libraryId == '42'
+        result.error.contains('Could not confirm')
+        result.id == '42'
         result.response == ''
     }
 
@@ -2109,8 +1904,8 @@ def helperMethod() { return "ok" }
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == false
-        inner.error.contains('Delete may have failed')
-        inner.libraryId == '42'
+        inner.error.contains('Could not confirm')
+        inner.id == '42'
         inner.response == ''
 
         where:
@@ -2129,13 +1924,13 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def result = script.toolDeleteLibrary([libraryId: '42', confirm: true])
+        def result = script.toolDeleteItem([type: 'library', item_id: '42', confirm: true])
 
         then:
         result.success == false
-        result.error.contains('Delete response was not valid JSON')
-        result.libraryId == '42'
-        result.note.contains('verify whether the library was deleted')
+        result.error.contains('Could not confirm')
+        result.id == '42'
+        result.note.contains('hub_list_libraries')
     }
 
     @spock.lang.Unroll
@@ -2157,9 +1952,9 @@ def helperMethod() { return "ok" }
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == false
-        inner.error.contains('Delete response was not valid JSON')
-        inner.libraryId == '42'
-        inner.note.contains('verify whether the library was deleted')
+        inner.error.contains('Could not confirm')
+        inner.id == '42'
+        inner.note.contains('hub_list_libraries')
 
         where:
         useGateways << [true, false]
@@ -2262,12 +2057,12 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "delete_library rejects invalid libraryId: #description"() {
+    def "delete_library rejects invalid id: #description"() {
         given:
         enableWrite()
 
         when:
-        script.toolDeleteLibrary([libraryId: badId, confirm: true])
+        script.toolDeleteItem([type: 'library', item_id: badId, confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -2282,7 +2077,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "delete_library via dispatch returns isError validation result envelope for invalid libraryId '#badId' (useGateways=#useGateways)"() {
+    def "delete_library via dispatch returns isError validation result envelope for invalid id '#badId' (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()

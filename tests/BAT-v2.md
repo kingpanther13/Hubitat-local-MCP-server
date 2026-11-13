@@ -2753,7 +2753,7 @@ These operations are too destructive for automated testing. Test manually with e
 | 10. NL Discovery | T200-T301 | Conversational prompts — no tool names |
 | 12. Developer Mode | T219-T226, T660-T663, T667 | Self-administration: hub_update_mcp_settings (incl. selectedDevices device-access scope) + hub_delete_variable |
 | 13. Driver Code Lifecycle | T400-T406 | hub_create_driver (single + bulk), hub_update_driver (bulk), delete |
-| 14. Library Management | T500-T508 | Library CRUD: install, update, delete, hub_get_source |
+| 14. Library Management | T500, T505, T506, T508 | Library source read and refusals (library install, update and delete lifecycle is covered by the Spock specs, not BAT fixtures) |
 
 ### Architecture (post installed-apps + RM interop + Developer Mode + PR1B read/write split)
 
@@ -2778,7 +2778,7 @@ All 115 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 266 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 single-device condition authoring + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 9 periodic-frequency completeness + 5 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 3 device-state state-change / fail-loud authoring parity + 3 Required Expression in-place replacement + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 multi-rule call_rule aggregation + 1 rule-backup policy proof + 1 protected-app policy proof) plus 13 excluded destructive operations documented for manual testing
+**Total: 261 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 4 library management + 2 reveal-walker coverage + 3 single-device condition authoring + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 9 periodic-frequency completeness + 5 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 3 device-state state-change / fail-loud authoring parity + 3 Required Expression in-place replacement + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 multi-rule call_rule aggregation + 1 rule-backup policy proof + 1 protected-app policy proof) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -3344,9 +3344,9 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 }
 ```
 
-**Expected**: Tool resolves the file from File Manager, POSTs to `/driver/save`, fetches the new driver back to verify it compiled, and returns `success: true` with `driverId` set and `sourceMode: 'sourceFile'`. No inline source was sent in the install call -- the source came from File Manager.
+**Expected**: Tool resolves the file from File Manager, POSTs it once to `/driver/saveOrUpdateJson` with no read after the save, and returns `success: true` with `driverId`, `version` and `sourceMode: 'sourceFile'`. No inline source was sent in the install call -- the source came from File Manager.
 
-### T401 — hub_create_driver compile failure detected (post-install verification)
+### T401 — hub_create_driver compile failure reported from the save response
 
 ```json
 {
@@ -3356,7 +3356,7 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 }
 ```
 
-**Expected**: Tool returns `success: false` with the hub's compile error message. On current firmware no driver is created; where an older firmware leaves an error-state stub, the response carries its ID. AI reports the error and does not claim success.
+**Expected**: Tool returns `success: false`, a null `driverId` and the hub's compile error message without markup. AI reports the error and does not claim success.
 
 ### T402 — hub_update_driver bulk mode (happy path)
 
@@ -3408,82 +3408,34 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 
 ```json
 {
-  "test_prompt": "Call hub_create_driver with both sourceFile='x.groovy' AND installs=[{sourceFile: 'f.groovy'}] and confirm=true."
+  "test_prompt": "In one request, install a single driver from the File Manager file x.groovy and also a batch containing the driver from f.groovy, confirming the install. Report what the hub says."
 }
 ```
 
-**Expected**: Tool throws `IllegalArgumentException` (JSON-RPC -32602) with a message containing 'bulk mode' and 'source'. No install is attempted.
+**Expected**: AI calls `hub_create_driver` with both `sourceFile='x.groovy'` and `installs=[{sourceFile: 'f.groovy'}]` (`confirm=true`). Tool refuses with a validation error whose message contains 'bulk mode' and 'source'. No install is attempted.
 
 ---
 
 ## Section 14: Library Management Tests
 
-Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with type=library) live in the `hub_manage_code` gateway and require the Write master + confirm + a hub backup within the last 24 hours. `hub_get_source` with type=library (read-only) lives in the `hub_read_apps_code` gateway and requires the Read master only. Tests use the `BAT_` prefix and clean up after themselves.
+Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with type=library) live in the `hub_manage_code` gateway and require the Write master + confirm + a hub backup within the last 24 hours. `hub_get_source` with type=library (read-only) lives in the `hub_read_apps_code` gateway and requires the Read master only. These scenarios never install, update or delete a library as a fixture; the library lifecycle is covered by the Spock specs (`ToolLibraryCodeSpec`).
 
 **Pre-flight (manual one-time):**
 1. Enable **the Read master** and **the Write master** in MCP Rule Server settings.
 2. Create a hub backup via `hub_create_backup`.
 
-**Safety note:** Tests only create/modify/delete test-prefixed libraries. They do not touch any library with `usedByDeviceTypes` or `usedByAppTypes` populated.
+**Safety note:** No scenario here writes to a library. T505 is refused before anything is installed, and T508 is a manual check.
 
 ### T500 — hub_get_source (type=library) reads library source
 
 ```json
 {
-  "setup_prompt": "Check Hubitat web UI (FOR DEVELOPERS > Libraries code) for an installed library ID, or install a test library first using hub_create_library.",
+  "setup_prompt": "Check Hubitat web UI (FOR DEVELOPERS > Libraries code) for an installed library ID. Use a library that is already installed; never install one as a fixture.",
   "test_prompt": "Show me the source code of the first Groovy library installed on the hub."
 }
 ```
 
 **Expected**: AI calls `hub_read_apps_code(tool='hub_get_source', args={type:'library', id:'<id>'})`. Result includes `success: true`, `source` (non-empty string), `version`, `name`, `namespace`, `totalLength`. If total length exceeds 64KB, `sourceFile` and `sourceFileHint` fields are present.
-
-### T501 — hub_create_library installs new library from inline source
-
-```json
-{
-  "setup_prompt": "the Write master enabled, recent backup exists.",
-  "test_prompt": "Install a new Groovy library with name='BATTestLibInstall', namespace='bat_test', description='BAT test library for install scenario'. The library should define a single method `batHelper()` that returns 'bat_ok'.",
-  "teardown_prompt": "Delete the BATTestLibInstall library (find it by name in the library list)."
-}
-```
-
-**Expected**: AI calls `hub_manage_code(tool='hub_create_library', args={source:'library(...) { } def batHelper() { return "bat_ok" }', confirm:true})`. Result: `{success:true, libraryId:'<id>', version:<positive integer>, sourceMode:'source', message:'Library installed successfully'}`. No `verifyWarning` or `verifyError` field if verification succeeds. `verified: true`.
-
-### T502 — hub_update_library updates existing library source
-
-```json
-{
-  "setup_prompt": "the Write master enabled, recent backup exists. Use hub_create_library to create a library named 'BATTestLibUpdate', namespace='bat_test', with method `v1Method()` returning 'v1'.",
-  "test_prompt": "Update the BATTestLibUpdate library to add a `v2Method()` that returns 'v2', supplying the full updated source inline.",
-  "teardown_prompt": "Delete BATTestLibUpdate library."
-}
-```
-
-**Expected**: AI finds the library ID, calls `hub_manage_code(tool='hub_update_library', args={libraryId:'<id>', source:'<updated source with v2Method>', confirm:true})`. Result: `{success:true, previousVersion:<N>, newVersion:<N+1>, sourceMode:'source'}` where `newVersion > previousVersion` (both positive integers). Pre-update backup appears in `hub_list_backups` as a `library_<id>` key.
-
-### T503 — hub_update_library resave mode recompiles without external source
-
-```json
-{
-  "setup_prompt": "the Write master enabled, recent backup exists. A library named 'BATTestLibResave' exists (install it if not).",
-  "test_prompt": "Recompile the BATTestLibResave library in place, without changing or re-supplying its source.",
-  "teardown_prompt": "Delete BATTestLibResave library."
-}
-```
-
-**Expected**: AI calls `hub_manage_code(tool='hub_update_library', args={libraryId:'<id>', resave:true, confirm:true})`. Result: `{success:true, sourceMode:'resave', note:'...no cloud round-trip...'}`. `newVersion` is a positive integer greater than `previousVersion`.
-
-### T504 — hub_delete_item (type=library) deletes and auto-backs up source
-
-```json
-{
-  "setup_prompt": "the Write master enabled, recent backup exists. Install a library named 'BATTestLibDelete', namespace='bat_test'.",
-  "test_prompt": "Delete the BATTestLibDelete library. Confirm it no longer appears in the hub library list.",
-  "teardown_prompt": "(Library is already deleted — no teardown needed.)"
-}
-```
-
-**Expected**: AI calls `hub_manage_code(tool='hub_delete_item', args={type:'library', id:'<id>', confirm:true})`. Result: `{success:true, backupFile:'mcp-backup-library-<id>[-<uuid>].groovy', restoreHint:...}`. Backup file appears in `hub_list_backups`. Subsequent `hub_get_source` (type=library) for the same ID returns `success:false` with "not found".
 
 ### T505 — hub_create_library refuses without confirm flag
 
@@ -3506,23 +3458,11 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 **Expected**: AI calls `hub_read_apps_code(tool='hub_get_source', args={type:'library', id:'999999'})`. Result: `{success:false, error:'...not found...'}` or similar. AI reports the error clearly and suggests using hub2/userLibraries or the Hubitat web UI (FOR DEVELOPERS > Libraries code) to find valid library IDs.
 
-### T507 — hub_update_library sourceFile mode reads from File Manager
-
-```json
-{
-  "setup_prompt": "the Write master enabled, recent backup exists. Install 'BATTestLibSourceFile' library. Upload a file named 'bat-lib-update.groovy' to File Manager via hub_write_file with updated library source.",
-  "test_prompt": "Update the BATTestLibSourceFile library from the File Manager file 'bat-lib-update.groovy'.",
-  "teardown_prompt": "Delete BATTestLibSourceFile library. Delete bat-lib-update.groovy from File Manager."
-}
-```
-
-**Expected**: AI calls `hub_manage_code(tool='hub_update_library', args={libraryId:'<id>', sourceFile:'bat-lib-update.groovy', confirm:true})`. Result: `{success:true, sourceMode:'sourceFile', note:'...File Manager...'}`.
-
-### T508 — hub_delete_item (type=library) proceeds with warning when backup fails
+### T508 — hub_delete_item (type=library) refuses when the pre-delete backup fails
 
 (Manual test -- not automatable without simulating File Manager failure.)
 
-**Expected behavior**: If `uploadHubFile` fails during pre-delete backup, `hub_delete_item` (type=library) still proceeds and sets `backupWarning` in the response. The deletion is not blocked by a backup failure. The response message contains "WARNING: Pre-delete backup failed".
+**Expected behavior**: If `uploadHubFile` fails during pre-delete backup, `hub_delete_item` (type=library) sends no delete and returns `success: false` with an error starting "Pre-delete backup failed" and a note saying nothing was deleted. The library is still on the hub.
 
 ### T509 — hub_install_bundle installs a code bundle the HPM way
 

@@ -6365,8 +6365,7 @@ def updated() {}
         code_id = instance_id = None
         leftover_ids: list = []
         try:
-            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
-                "source": self.PASSWORD_SNAPSHOT_APP.replace("SECRET_VALUE", secret), "confirm": True}})
+            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"source": self.PASSWORD_SNAPSHOT_APP.replace("SECRET_VALUE", secret), "confirm": True}})
             code_id = created.get("appId")
             assert code_id, f"creating the password app code failed: {created}"
             inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": code_id, "confirm": True}})
@@ -10626,6 +10625,41 @@ def updated() {}
     # instance's configured settings instead of re-applying the code's defaults.
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _assert_create_response_shape(created: dict) -> None:
+        assert created.get("version") is not None, f"code create carries no version: {created}"
+        assert "verified" not in created and "verifyError" not in created, \
+            f"code create still reports the removed verification fields: {created}"
+
+    def _assert_create_compile_error(self, tool: str, source: str, id_field: str, marker: str) -> None:
+        # The save response is the only verdict on a create, so broken Groovy must come back refused
+        # with no id and the hub's own compiler text. A regression that saved it anyway would leave
+        # a stray code class, so one that returns an id is deleted before the assertions fail.
+        result = self._write_once("hub_manage_code", tool, {"source": source, "confirm": True},
+                                  f"{tool} compile error")
+        stray = result.get(id_field)
+        if stray:
+            item_type = "app" if tool == "hub_create_app" else "driver"
+            try:
+                self.client.call_tool("hub_manage_code", {
+                    "tool": "hub_delete_item", "args": {"type": item_type, "item_id": stray, "confirm": True}})
+            except Exception as exc:
+                print(f"  [WARN] {tool} compile-error leg: delete stray {item_type} {stray} failed: {exc}")
+        assert result.get("success") is False and stray is None, \
+            f"{tool} accepted broken Groovy or returned an id for it: {result}"
+        err = str(result.get("error") or "")
+        assert "unable to resolve" in err.lower() or marker in err, \
+            f"{tool} compile error is not the hub's compiler text: {err!r}"
+        assert "<span" not in err, f"{tool} compile error still carries the hub's markup: {err!r}"
+
+    def _assert_code_call_refused(self, tool: str, args: dict, named: str) -> None:
+        try:
+            result = self.client.call_tool("hub_manage_code", {"tool": tool, "args": args})
+        except (McpToolError, McpError) as exc:
+            assert named in str(exc), f"{tool} refusal does not name {named}: {exc}"
+            return
+        raise AssertionError(f"{tool} accepted {named} and returned: {result}")
+
     @test("app_code_update")
     def test_update_app_code_lifecycle(self) -> None:
         # Throwaway Apps Code class (code only, never installed as an instance). The name
@@ -10642,6 +10676,11 @@ def updated() {}
             })
             code_app_id = created.get("appId")
             assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created}"
+            self._assert_create_response_shape(created)
+            self._assert_create_compile_error(
+                "hub_create_app",
+                source_v1.replace("def updated() {}", "def updated() { new ClassThatDoesNotExistBatE2eCreate() }"),
+                "appId", "ClassThatDoesNotExistBatE2eCreate")
 
             before = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_source",
@@ -10763,7 +10802,34 @@ def updated() {}
             assert ob.get("enabled") is True, "OAuth reported success but not enabled"
             assert ob.get("clientId"), "OAuth enabled but no clientId returned"
 
-            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error, lock conflict and unknown argument all refused with no write; OAuth leg checked")
+            # Create and delete refuse a misspelled or misplaced argument before any write, and
+            # the app delete does not report success for an id that does not exist.
+            self._assert_code_call_refused("hub_create_app", {
+                "source": source_v1, "sourcefile": "x.groovy", "confirm": True}, "sourcefile")
+            self._assert_code_call_refused("hub_create_app", {
+                "installs": [{"source": source_v1}], "confirm": True}, "installs")
+            self._assert_code_call_refused("hub_delete_item", {
+                "type": "app", "item_id": "2147483000", "id": "2147483000", "confirm": True}, "argument: id.")
+            self._assert_code_call_refused("hub_delete_item", {
+                "type": "app", "item_id": "abc", "confirm": True}, "positive integer")
+            missing = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_delete_item",
+                "args": {"type": "app", "item_id": "2147483000", "confirm": True},
+            })
+            assert missing.get("success") is False and "does not exist" in str(missing.get("error")), \
+                f"deleting an app id that does not exist was not refused: {missing}"
+
+            # Neither create writes anything: an Apps Code id the hub does not have comes back as a
+            # success:false result, and a File Manager file that does not exist is a validation error.
+            no_class = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_app", "args": {"codeAppId": 2147483000, "confirm": True}})
+            assert no_class.get("success") is False and "exist in Apps Code" in str(no_class.get("error")), \
+                f"creating an instance of an Apps Code id that does not exist was not refused: {no_class}"
+            missing_file = f"BAT_E2E_missing_{time.time_ns()}.groovy"
+            self._assert_code_call_refused("hub_create_app", {
+                "sourceFile": missing_file, "confirm": True}, f"Source file '{missing_file}' not found in File Manager")
+
+            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error, lock conflict, unknown argument, unknown codeAppId and missing sourceFile all refused with no write; OAuth leg checked")
         finally:
             if code_app_id:
                 try:
@@ -10989,6 +11055,16 @@ def updated() {}
             assert ((fresh_cfg.get("app") or {}) if isinstance(fresh_cfg, dict) else {}).get("installed") is True, \
                 f"installAsUserApp committed but the instance is an inert shell (app.installed is not true): {fresh_cfg}"
 
+            # The hub refuses to delete app code that a running instance still uses, and only that
+            # refusal carries the remove-instances note.
+            in_use = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_delete_item",
+                "args": {"type": "app", "item_id": code_app_id, "confirm": True},
+            })
+            assert in_use.get("success") is False and "in use" in str(in_use.get("error")).lower() \
+                and "instances" in str(in_use.get("note")), \
+                f"deleting app code with a live instance was not refused as in use: {in_use}"
+
             # Cross-page password redaction, live: installed() stored linkPhrase as a password-typed
             # setting that no page declares, under a name no credential pattern matches. Only the
             # hub's own setting type (statusJson appSettings) can mark it secret, so a plain value
@@ -11117,6 +11193,11 @@ def updated() {}
             driver_id = created.get("driverId")
             assert created.get("success") is True and driver_id, \
                 f"hub_create_driver(source) failed or returned no driverId: {created}"
+            self._assert_create_response_shape(created)
+            self._assert_create_compile_error(
+                "hub_create_driver",
+                source_v1.replace("def updated() {}", "def updated() { new ClassThatDoesNotExistBatE2eDrv() }"),
+                "driverId", "ClassThatDoesNotExistBatE2eDrv")
 
             before = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_source",
@@ -11202,6 +11283,22 @@ def updated() {}
             assert bulk.get("success") is False and entry.get("success") is False \
                 and "expectedVerison" in str(entry.get("error")) and entry.get("note"), \
                 f"bulk unknown key was not refused with a note: {bulk}"
+
+            # A bulk create entry with a misspelled key is refused alone, before anything is saved for
+            # it. Its source would not compile either, so a regression cannot leave a driver behind.
+            installs = self._write_once(
+                "hub_manage_code", "hub_create_driver",
+                {"installs": [{"source": "metadata { definition(", "sourcefile": "x.groovy"}], "confirm": True},
+                "driver bulk create unknown key")
+            install_entry = (installs.get("installs") or [{}])[0]
+            assert installs.get("success") is False and install_entry.get("success") is False \
+                and install_entry.get("driverId") is None \
+                and "sourcefile" in str(install_entry.get("error")) and install_entry.get("note"), \
+                f"bulk create unknown key was not refused with a note: {installs}"
+
+            # codeAppId belongs to hub_create_app; the driver create refuses it before any side effect.
+            self._assert_code_call_refused("hub_create_driver", {
+                "codeAppId": 1, "confirm": True}, "codeAppId")
 
             # One re-read proves the refused legs wrote nothing: still V2, no broken or
             # V3 marker, version unchanged since the round-trip edit.

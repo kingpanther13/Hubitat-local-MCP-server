@@ -251,7 +251,7 @@ class BackupRetentionSpec extends ToolSpecBase {
             it.success == false && it.error.startsWith('Backup index unavailable') && it.note.contains('Nothing was changed')
         }
         listing.backups == []
-        deleted.appId == '33'
+        deleted.id == '33'
         !hubGet.calls.any { it.path.contains('delete') }
     }
 

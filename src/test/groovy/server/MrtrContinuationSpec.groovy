@@ -1192,7 +1192,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         settingsMap.useGateways = true
         def dispatched = []
-        script.metaClass.toolInstallDriver = { Map actual ->
+        script.metaClass.toolCreateDriver = { Map actual ->
             dispatched << [leaf: 'hub_create_driver', arguments: new LinkedHashMap(actual)]
             [success: true]
         }

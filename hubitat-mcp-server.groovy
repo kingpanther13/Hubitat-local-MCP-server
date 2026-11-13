@@ -3440,9 +3440,8 @@ def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     if (!(leafArgs instanceof Map)) return false
     if (_isRuleReadCall(leaf, leafArgs)) return false
     if (leaf == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(leafArgs)) return false
-    // hub_delete_item also deletes app/library code. Only the driver branch has
-    // live relay-failure evidence and detached-worker coverage; app deletion can
-    // target this server and library deletion has different verification semantics.
+    // Only a driver delete has live relay-failure evidence and detached-worker coverage;
+    // an app delete can target this server.
     if (leaf == "hub_delete_item") return leafArgs.type?.toString() == "driver"
     // Only a rule snapshot restore: a hub DB restore reboots the hub, and an app code restore can
     // recompile this server under its own worker.
@@ -6846,6 +6845,7 @@ private Map _toolCatalogIndexes() {
     def required = [:]
     def argNames = [:]
     def updateEntryArgs = [:]
+    def installEntryArgs = [:]
     def names = [] as Set
     getAllToolDefinitions().each { tool ->
         String name = tool.name as String
@@ -6855,8 +6855,11 @@ private Map _toolCatalogIndexes() {
         if (!_argCheckFrozen(name)) argNames.put(name, ((tool?.inputSchema?.properties ?: [:]) as Map).keySet().collect { it as String })
         def entryProps = tool?.inputSchema?.properties?.updates?.items?.properties
         if (entryProps instanceof Map) updateEntryArgs.put(name, entryProps.keySet().collect { it as String })
+        def installProps = tool?.inputSchema?.properties?.installs?.items?.properties
+        if (installProps instanceof Map) installEntryArgs.put(name, installProps.keySet().collect { it as String })
     }
-    return _toolMetadataPut("catalogIndexes", [required: required, argNames: argNames, updateEntryArgs: updateEntryArgs, names: names]) as Map
+    return _toolMetadataPut("catalogIndexes", [required: required, argNames: argNames, updateEntryArgs: updateEntryArgs,
+                                               installEntryArgs: installEntryArgs, names: names]) as Map
 }
 
 def requiredParamsByTool() {
@@ -7145,14 +7148,14 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
 
         // Hub Admin App/Driver Management
         case "hub_get_source": return toolGetSource(args)
-        case "hub_create_app": return toolInstallApp(args)
-        case "hub_create_driver": return toolInstallDriver(args)
+        case "hub_create_app": return toolCreateApp(args)
+        case "hub_create_driver": return toolCreateDriver(args)
         case "hub_update_app": return toolUpdateAppCode(args)
         case "hub_update_driver": return toolUpdateDriverCode(args)
         case "hub_delete_item": return toolDeleteItem(args)
 
         // Hub Admin Library Management
-        case "hub_create_library": return toolInstallLibrary(args)
+        case "hub_create_library": return toolCreateLibrary(args)
         case "hub_update_library": return toolUpdateLibraryCode(args)
         case "hub_install_bundle": return toolInstallBundle(args)
         case "hub_list_bundles": return toolListBundles(args)
@@ -11516,7 +11519,8 @@ def _guideSectionForTool(toolName) {
               'hub_create_device']) return 'hub_admin_write_devices'
     if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
               'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
-    if (t in ['hub_update_app', 'hub_update_driver', 'hub_update_library', 'hub_create_app', 'hub_update_package']) return 'hub_admin_write_code'
+    if (t in ['hub_update_app', 'hub_update_driver', 'hub_update_library', 'hub_create_app', 'hub_create_driver',
+              'hub_create_library', 'hub_update_package']) return 'hub_admin_write_code'
     if (t == 'hub_get_device_attribute') return 'device_authorization'
     if (t == 'hub_report_issue') return 'performance_diagnostics'
     return null
@@ -11624,6 +11628,8 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_delete_file -> file_manager
 - hub_write_file -> file_manager
 - hub_create_app -> hub_admin_write_code
+- hub_create_driver -> hub_admin_write_code
+- hub_create_library -> hub_admin_write_code
 - hub_update_app -> hub_admin_write_code
 - hub_update_driver -> hub_admin_write_code
 - hub_update_library -> hub_admin_write_code
@@ -11715,7 +11721,7 @@ Only run Z-Wave radio operations when the user explicitly asks for them.
 **hub_delete_room** - Devices become unassigned (not deleted). List affected devices first.
 Dashboards or automations that reference the room may need updating.
 
-**hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Auto-backs up before deletion.
+**hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Backs up the source to File Manager before deleting, and sends no delete when that backup fails: a missing app or library returns `<Type> N does not exist`, a source the hub cannot read (a missing driver reads this way) says the item may not exist, and a backup file that cannot be written says to retry once File Manager accepts writes. `item_id` is the code id (digits only). A backup of that id under an hour old is reused without a read, so a missing app then reaches the hub, which accepts the delete of a missing app, and the call reports success. A refusal whose message says the item is in use carries a note on what to remove first; a refusal with no message means the item may not exist, so check the list tool. A reply the hub does not clearly confirm returns `success:false` with `response`; check the list tool.
 
 ### hub_call_zwave (Z-Wave lifecycle action grouping + routing)
 
@@ -11784,19 +11790,22 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 - **`oauth` param shape:** `{enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}`. Omit `client_id`/`client_secret` to preserve current values; if they are unreadable the tool refuses (`success:false`) rather than blanking them. Resulting credentials return under `result.oauth`.
 - **OAuth leg:** works alone (no source mode needed) or together with a source update. If the source saved but the OAuth leg failed, the result is `success:false, partial:true`. The app's source must declare OAuth (an `oauth` block in `definition` plus `mappings`) before OAuth can be enabled.
 
-### hub_create_app (install new app code, then instantiate a running instance)
+### hub_create_app / hub_create_driver / hub_create_library (install new code; instantiate installed app code)
 
-**codeAppId second-step mode** (pass the `codeAppId` from a prior code-install `hub_create_app` call to instantiate already-installed code AND commit the install; mutually exclusive with the code-install args):
+**hub_create_app codeAppId second-step mode** (pass the `appId` from a prior code-install `hub_create_app` call as `codeAppId` to instantiate already-installed code AND commit the install; mutually exclusive with the code-install args):
 - Submits the config page's Done, firing `installed()`/`initialize()` so the instance's schedules and event subscriptions register.
 - Works for apps whose first page installs with defaults.
 - A required first-page input with no default blocks the auto-Done (same behavior as the Hubitat UI) -- in that case the install cannot be auto-committed.
 
-**Code-install mode (hub_create_app and hub_create_driver):**
+**Code-install mode (all three tools):**
 - Supply exactly one of `source`, `sourceFile` or `importUrl`. For large source, write it once with hub_write_file and pass the filename as `sourceFile`, so a retry does not re-send the whole source.
-- `success:false` with a null id: the hub rejected the source on create (for example a compile error). Fix it and retry.
-- `success:false` with the id set: the hub created an item, but it is in an error state or the verification read was empty or unparseable. Inspect it with hub_get_source before retrying, because a retry can create a duplicate.
-- `success:true, verified:false` plus `verifyError`: the verification fetch failed. Confirm the item with hub_get_source.
-- hub_create_driver bulk mode: `installs=[{source|sourceFile|importUrl}, ...]`, which cannot be combined with the single-item fields. Items run in order and continue past failures. Each item reports its own `driverId`, `success` and `error`, and the top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `installsRemaining`; send only those again.
+- Library source needs a `library()` block with name, namespace, author and description. The hub compiles apps and drivers on save; it does not compile-check a library until an app or driver #includes it.
+- `success:true` carries the new `appId`, `driverId` or `libraryId` and `version`.
+- `success:false` with the hub's error (for example a compile error) means nothing was saved. Fix the source and retry.
+- hub_create_driver: send driver creates one at a time, waiting for one to finish before sending the next. To create several, use `installs[]`, which runs its entries in order.
+- `success:false` saying the install is unverified, or that the request failed: the outcome is unknown. Check hub_list_apps(scope='types'), hub_list_drivers or hub_list_libraries before retrying, because saving the same definition again creates a duplicate at a new id.
+- hub_create_driver bulk mode: `installs=[{source|sourceFile|importUrl}, ...]`, which cannot be combined with the single-item fields. Items run in order and continue past failures. Each item reports its own `driverId`, `success`, `version` and `error`, and the top-level `success` is true only when every item succeeded. An entry with an unknown key is refused alone, before anything is saved for it. If the call stops at the time budget, it returns `status:"in_progress"` with `installsRemaining`; send only those again.
+- Slow writes: MCP 2026-07-28 clients automatically continue hub_create_driver and can replay its retained terminal response. hub_create_app, hub_create_library and older clients can lose the response on a transport drop while the hub still commits the write, so check the list tool before retrying. See the slow_ops section.
 
 
 ### hub_update_app / hub_update_driver / hub_update_library — expectedVersion (optimistic lock)
