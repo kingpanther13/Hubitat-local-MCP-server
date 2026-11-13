@@ -185,7 +185,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_manage_native_rules_and_apps', // create/update/delete/run native rules
             'hub_manage_rule_machine',       // hub_call_rule, set_rule_paused, set_rule_private_boolean
             'hub_manage_mcp',           // hub_update_mcp_settings
-            'hub_manage_dashboards'      // create/update/delete/clone dashboards
+            'hub_manage_dashboards'      // create (or copy)/update/delete dashboards
         ]
         writeGateways.each { gwName ->
             def gw = tools.find { it.name == gwName }
@@ -359,7 +359,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_call_rule', 'hub_set_rule', 'hub_set_native_app',
             'hub_clone_native_app', 'hub_import_native_app', 'hub_delete_native_app',
             'hub_set_visual_rule',
-            'hub_create_dashboard', 'hub_clone_dashboard'
+            'hub_create_dashboard'
         ] as Set
 
         then:
@@ -541,7 +541,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_set_rule', 'hub_set_native_app', 'hub_set_app_disabled', 'hub_clone_native_app',
             'hub_import_native_app', 'hub_delete_native_app', 'hub_export_native_app',
             'hub_set_visual_rule', 'hub_delete_visual_rule',
-            'hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard'
+            'hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard'
         ] as Set
 
         then:
@@ -568,7 +568,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 115
+        names.size() == 114
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

@@ -29,14 +29,22 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
     def cleanup() { rmUtils?.uninstall() }
 
+    // statusJson for an installed dashboard app in the hub's shape: 'Easy Dashboard' (appTypeId 139)
+    // or a legacy 'Dashboard' (140); both kinds are system app types.
+    private static String dashboardStatusJson(int id, String type) {
+        boolean legacy = type == 'Dashboard'
+        JsonOutput.toJson([installedApp: [id: id, name: type, systemAppType: true, label: "${type} ${id}".toString(),
+                trueLabel: "${type} ${id}".toString(), installed: true, disabled: false, parentAppId: 21,
+                appTypeId: legacy ? 140 : 139],
+            appSettings: [], appState: legacy ? [[name: 'accessToken', value: 'tok']] : [], childDevices: []])
+    }
+
     @Unroll
     def '#method rejects protected target before mutation with Developer Mode #developerMode'() {
         given:
         settingsMap.enableDeveloperMode = developerMode
         atomicStateMap.parentAppIds = [notifier: 42]
-        hubGet.register('/installedapp/statusJson/42') {
-            '{"installedApp":{"id":42,"name":"Dashboard","systemAppType":true}}'
-        }
+        hubGet.register('/installedapp/statusJson/42') { dashboardStatusJson(42, 'Dashboard') }
 
         when:
         script."$method"(arguments + [confirm: true])
@@ -222,11 +230,9 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         given:
         settingsMap.enableMandatoryBPS = false
         settingsMap.useGateways = gateway
-        hubGet.register('/installedapp/statusJson/42') {
-            JsonOutput.toJson([installedApp: [id: 42, name: type, systemAppType: true]])
-        }
-        hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true}' }
-        hubGet.register('/dashboard/delete') { writes << '/dashboard/delete'; '{"success":true}' }
+        hubGet.register('/installedapp/statusJson/42') { dashboardStatusJson(42, type) }
+        hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true,"message":null,"id":42}' }
+        hubGet.register('/dashboard/delete') { writes << '/dashboard/delete'; '{"success":false,"message":null}' }
         def leaf = "hub_${operation}_dashboard".toString()
         def args = operation == 'update' ? [dashboardId: '42', name: 'Changed', deviceIds: ['1']] : [dashboardId: '42', confirm: true]
 
@@ -253,18 +259,21 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             JsonOutput.toJson([apps: [[data: [id: 42, type: 'MCP Rule Server']],
                 [data: [id: 21, type: parentType], children: present ? [[data: [id: 43, type: type]]] : []]]])
         }
+        // statusJson answers {} for a removed app, which is how the delete confirms itself.
         hubGet.register('/installedapp/statusJson/43') {
-            JsonOutput.toJson([installedApp: [id: 43, name: type, systemAppType: true]])
+            present ? dashboardStatusJson(43, type) : '{}'
         }
+        // Both delete paths answer as the hub does even when they removed the app: /dashboard/delete
+        // with success:false, the legacy forcedelete with HTTP 500.
         hubGet.register('/dashboard/delete') {
             writes << '/dashboard/delete'
             present = false
-            '{"success":true}'
+            '{"success":false,"message":null}'
         }
         script.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
             writes << path
             present = false
-            [status: 302]
+            [status: 500, location: null, data: '<html><body>Error 500</body></html>']
         }
         def delete = {
             def args = [dashboardId: '43', confirm: true]
@@ -277,6 +286,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
         then:
         first.success == true
+        !first.containsKey('isError')
         first.alreadyAbsent != true
         !present
         writes.size() == 1
@@ -288,6 +298,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
         then:
         retry.success == true
+        !retry.containsKey('isError')
         retry.alreadyAbsent == true
         retry.id == '43'
         retry.message.contains('already absent')
@@ -344,7 +355,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') {
             '{"apps":[{"data":{"id":42,"type":"Easy Dashboard Parent"},"children":[]}]}'
         }
-        hubGet.register('/dashboard/create') { writes << '/dashboard/create'; '{"success":true}' }
+        hubGet.register('/dashboard/create') { writes << '/dashboard/create'; '{"success":true,"message":null,"id":73}' }
         settingsMap.bypassDeviceAllowlist = true
 
         when:
@@ -359,14 +370,14 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
     @Unroll
     def 'unprotected Easy Dashboard still allows #operation with unrelated protection'() {
         given:
-        hubGet.register('/installedapp/statusJson/43') {
-            '{"installedApp":{"id":43,"name":"Easy Dashboard","systemAppType":true}}'
-        }
+        boolean deleted = false
+        hubGet.register('/installedapp/statusJson/43') { deleted ? '{}' : dashboardStatusJson(43, 'Easy Dashboard') }
         hubGet.register('/hub2/appsList') {
             '{"apps":[{"data":{"id":42,"type":"MCP Rule Server"}},{"data":{"id":43,"type":"Easy Dashboard"}}]}'
         }
-        hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true,"installedAppId":43}' }
-        hubGet.register('/dashboard/delete') { writes << '/dashboard/delete'; '{"success":true}' }
+        hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true,"message":null,"id":43}' }
+        // /dashboard/delete answers success:false even when it deleted; statusJson {} is the proof.
+        hubGet.register('/dashboard/delete') { writes << '/dashboard/delete'; deleted = true; '{"success":false,"message":null}' }
         settingsMap.bypassDeviceAllowlist = true
         def method = operation == 'update' ? 'toolUpdateDashboard' : 'toolDeleteDashboard'
 
@@ -387,7 +398,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         given:
         hubGet.register('/hub2/appsList') { inventory }
         hubGet.register('/dashboard/create') {
-            writes << '/dashboard/create'; '{"success":true,"installedAppId":73}'
+            writes << '/dashboard/create'; '{"success":true,"message":null,"id":73}'
         }
         settingsMap.bypassDeviceAllowlist = true
 
@@ -413,7 +424,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             if (inventory == null) throw new IOException('offline')
             inventory
         }
-        hubGet.register('/dashboard/create') { writes << '/dashboard/create'; '{"success":true}' }
+        hubGet.register('/dashboard/create') { writes << '/dashboard/create'; '{"success":true,"message":null,"id":73}' }
         settingsMap.bypassDeviceAllowlist = true
 
         when:
@@ -431,6 +442,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         'non-list children'    | '{"apps":[{"data":{"id":42,"type":"Easy Dashboard Parent"},"children":{}}]}'
         'missing app type'     | '{"apps":[{"data":{"id":42}}]}'
         'blank protected type' | '{"apps":[{"data":{"id":42,"type":""}}]}'
+        'whitespace protected type' | '{"apps":[{"data":{"id":42,"type":"   "}}]}'
         'empty app data'       | '{"apps":[{"data":{}}]}'
         'invalid app ID'       | '{"apps":[{"id":"bad","type":"Easy Dashboard Parent"}]}'
     }

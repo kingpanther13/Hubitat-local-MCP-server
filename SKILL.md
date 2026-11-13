@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 115 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 114 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -32,7 +32,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 115 tools (36 on tools/list + gateways)│  │
+│  │  - 114 tools (36 on tools/list + gateways)│  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -93,12 +93,12 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 115 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 114 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
 
 **Architecture:**
 - `getGatewayConfig()` — defines 23 gateways, each with a description, tools list, and summaries map
 - `getToolDefinitions()` — returns 13 core tools + 23 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 115 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getAllToolDefinitions()` — returns all 114 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
@@ -117,7 +117,7 @@ Read gateways (`hub_read_*`, every sub-tool read-only):
 | `hub_read_rooms` | 2 | Room list + get (read-only) |
 | `hub_read_rules` | 6 | Custom-engine rule get/test, native rule list, rule health, Visual Rules Builder rule list/read (read-only) |
 | `hub_read_variables` | 3 | Hub connector and rule engine variable list/get (+ opt-in dependents) + change history (read-only) |
-| `hub_read_dashboards` | 2 | Dashboard list + get config by id, covering both Easy and legacy Hubitat® Dashboards (read-only) |
+| `hub_read_dashboards` | 2 | Dashboard list + one dashboard's full config by id, covering both Easy and legacy Hubitat® Dashboards (read-only) |
 
 Manage gateways (`hub_manage_*`, contain at least one write):
 | Gateway | Tools | Domain |
@@ -136,7 +136,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 | `hub_manage_native_rules_and_apps` | 12 | Rule Machine read/create/update/forms through `hub_set_rule`; create, field updates and native forms for every other classic app through `hub_set_native_app`; runtime control, disable/delete/clone/export/import and rule health. |
 | `hub_manage_rule_machine` | 11 | Native Rule Machine read/create/update/forms through `hub_set_rule` + RMUtils list/run/set-paused/boolean + rule health + native-app deletion + Visual Rules Builder get/set/delete. |
 | `hub_manage_mcp` | 1 | Developer Mode self-administration — update MCP rule app's own settings, including the device-access scope `selectedDevices` (allowlist-gated; requires `enableDeveloperMode`) |
-| `hub_manage_dashboards` | 6 | Dashboard CRUD for both Easy and legacy Hubitat® Dashboards — list/get + create/update/delete/clone touch-friendly device dashboards; Easy update replaces the config wholesale, legacy update edits the nested layout wholesale or via granular tile ops (write) |
+| `hub_manage_dashboards` | 5 | Dashboard management for both Easy and legacy Hubitat® Dashboards — list/get + create (or copy with `sourceId`)/update/delete touch-friendly device dashboards; Easy update replaces the config wholesale, legacy update edits the nested layout wholesale or via granular tile ops (write) |
 
 
 **Flat (top-level) tools (13):** `hub_manage_virtual_device` (action enum: "create", "delete"), `hub_get_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — included whenever the Read master is ON, which is the default, and excluded only when Read is explicitly OFF), `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings` (hub name, time zone, location, zip, temperature scale, admin-UI dark mode, network config; a time-zone change reboots the hub and any network change can disconnect it, so both need `confirm`), `hub_create_backup`, `hub_update_firmware` (install the hub's pending platform/firmware update; app/firmware version reads fold into `hub_get_info` via `includeAppUpdate`), `hub_report_issue`, `hub_get_tool_guide`, `hub_search_tools` (BM25 natural language search across all tools).
