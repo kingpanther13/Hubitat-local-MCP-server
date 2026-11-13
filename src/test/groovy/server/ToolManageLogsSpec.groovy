@@ -382,6 +382,22 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.modes.locationEvents.count == 3
     }
 
+    // Issue 584: a tab's success:false marks it failed even without an isError key.
+    def "hub_get_logs with a list of modes counts a tab that returns success:false as failed"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params -> LOCATION_ROWS }
+        script.metaClass.toolGetLoggingStatus = { a -> [success: false, error: 'status unavailable'] }
+
+        when:
+        def result = script.toolGetHubLogs([mode: ['locationEvents', 'status']])
+
+        then:
+        result.failedModes == ['status']
+        !result.modes.status.containsKey('isError')
+        !result.containsKey('success')
+        result.modes.locationEvents.count == 3
+    }
+
     def "hub_get_logs with a list of modes returns each tab's first page with its own cursor"() {
         given:
         hubGet.register('/logs/json') { params -> logsJsonWithJobs(150) }

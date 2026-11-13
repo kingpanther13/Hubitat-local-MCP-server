@@ -1287,13 +1287,17 @@ def test_tool_error_payload_recovers_a_structured_refusal_and_tolerates_prose():
     assert et._tool_error_payload(et.McpToolError("hub_get_variable", "[1, 2]")) == {}
 
 
-def test_runtime_failure_helpers_separate_a_success_false_result_from_other_raises():
-    runtime = {"success": False, "error": "App 9 does not exist"}
+def test_plain_failure_helpers_return_only_a_success_false_payload_without_its_own_iserror():
+    plain = {"success": False, "error": "App 9 does not exist"}
     validation = {"success": False, "isError": True, "tool": "hub_delete_item", "error": "item_id is required"}
-    replies = {"runtime": et.McpToolError("t", json.dumps(runtime)),
+    # A runtime failure whose tool sets isError itself always raised, and still does.
+    self_flagged = {"success": False, "isError": True, "error": "Device metadata fetch failed (/device/fullJson/9)"}
+    replies = {"runtime": et.McpToolError("t", json.dumps(plain)),
                "validation": et.McpToolError("t", json.dumps(validation)),
+               "self_flagged": et.McpToolError("t", json.dumps(self_flagged)),
                "prose": et.McpToolError("t", "not found"),
                "ok": {"success": True}}
+    runtime = plain
 
     class Client:
         call_tool_result = et.HubitatMcpClient.call_tool_result
@@ -1306,15 +1310,16 @@ def test_runtime_failure_helpers_separate_a_success_false_result_from_other_rais
             return reply
 
     client = Client()
-    assert et._runtime_failure_payload(replies["runtime"]) == runtime
-    assert et._runtime_failure_payload(replies["validation"]) is None
+    assert et._plain_failure_payload(replies["runtime"]) == runtime
+    assert et._plain_failure_payload(replies["validation"]) is None
+    assert et._plain_failure_payload(replies["self_flagged"]) is None
     assert client.call_tool_result("t", "runtime") == runtime
     assert client.call_tool_result("t", "ok") == {"success": True}
     assert client.call_tool_failure("t", "runtime") == runtime
-    for other in ("validation", "prose"):
+    for other in ("validation", "self_flagged", "prose"):
         with pytest.raises(et.McpToolError):
             client.call_tool_result("t", other)
-        with pytest.raises(AssertionError, match="expected a runtime"):
+        with pytest.raises(AssertionError, match="expected a success:false payload without its own isError key"):
             client.call_tool_failure("t", other)
     with pytest.raises(AssertionError, match="expected an isError failure result"):
         client.call_tool_failure("t", "ok")

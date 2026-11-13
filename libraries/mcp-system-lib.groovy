@@ -698,7 +698,7 @@ def toolGetHubMesh(args = null) {
     }
     boolean includeToken = (args.include_token == true)
 
-    // A degraded Hub Mesh read is not a hard tool failure -- it returns the structured success:false
+    // A degraded Hub Mesh read does not throw -- it returns the structured success:false
     // contract below -- and it also logs WHY it degraded at warn: the codebase's level for a handled
     // degradation, visible once the log level is set to warn or lower (the default error threshold
     // drops it). The three failure modes get distinct diagnoses instead of one catch conflating them.

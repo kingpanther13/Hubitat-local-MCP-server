@@ -275,7 +275,7 @@ def toolMyNewTool(args) {
 
 Conventions:
 - **Validation errors**: Throw `IllegalArgumentException` with descriptive message (caught by `handleToolsCall` and returned as a tool result with `isError: true`, per the 2026-07-28 tools page; only protocol faults stay on JSON-RPC `-32602`)
-- **Runtime errors**: Return `[success: false, error: ..., note: ...]` maps (don't throw, so the AI gets useful error info); `_renderToolResult` sends any top-level `success: false` with `isError: true`, so tools never set it
+- **Runtime errors**: Return `[success: false, error: ..., note: ...]` maps (don't throw, so the AI gets useful error info); `_renderToolResult` sends any top-level `success: false` with `isError: true`, so a tool need not set it
 - **Device IDs**: Always compare and return as strings: `device.id.toString()`
 - **Logging**: Use `mcpLog(level, component, message)` for MCP-accessible logs
 - **Hub properties**: Wrap in individual try/catch with `"unavailable"` fallback (hub properties can throw depending on firmware)
@@ -521,7 +521,7 @@ All routes require the Write master. Validation runs before mutation; runtime fa
 
 ### Version Management
 
-As of v0.7.6, most version references in `hubitat-mcp-server.groovy` are **centralized** via the `currentVersion()` function. Runtime code (handleInitialize, toolExportRule, toolGetLoggingStatus, toolGenerateBugReport, toolGetHubInfo, mainPage display) all call `currentVersion()` instead of hardcoding the version string. As of v0.7.7, tool execution errors use `isError: true` in the MCP result per protocol spec instead of JSON-RPC errors.
+As of v0.7.6, most version references in `hubitat-mcp-server.groovy` are **centralized** via the `currentVersion()` function. Runtime code (handleInitialize, toolExportRule, toolGetLoggingStatus, toolGenerateBugReport, toolGetHubInfo, mainPage display) all call `currentVersion()` instead of hardcoding the version string. As of v0.7.7, thrown tool errors use `isError: true` in the MCP result per protocol spec instead of JSON-RPC errors.
 
 When bumping the version, update these locations:
 - `currentVersion()` return value — **single source of truth** for runtime version

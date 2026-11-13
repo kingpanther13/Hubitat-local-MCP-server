@@ -484,11 +484,12 @@ def _tool_error_payload(exc: McpError) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _runtime_failure_payload(exc: McpError) -> dict | None:
-    """The [success:false] runtime result a raised isError carries, else None.
+def _plain_failure_payload(exc: McpError) -> dict | None:
+    """The payload of a raised isError, only when it is success:false WITHOUT its own isError key.
 
-    A validation refusal or MRTR failure marks isError inside its payload too; a plain
-    runtime failure does not, which is what separates the two."""
+    Exactly the results call_tool used to return as plain dicts before the server flagged every
+    success:false. A payload carrying its own isError (validation refusals, continuation faults,
+    tools that set it themselves) gives None: those always raised."""
     payload = _tool_error_payload(exc)
     if payload.get("success") is False and payload.get("isError") is not True:
         return payload
@@ -1100,10 +1101,6 @@ class HubitatMcpClient:
                     parsed = json.loads(c["text"])
                 except (json.JSONDecodeError, TypeError):
                     return c["text"]
-                # A success:false result is logged hub-side as a failure result too.
-                expectation = _tool_failure_log_expectation(name, parsed, arguments)
-                if expectation is not None:
-                    self._expected_validation_logs.append(expectation)
                 # Bank the token of every op that answered, so recovery can never mistake
                 # an earlier op's row for the lost one.
                 return parsed
@@ -1111,28 +1108,28 @@ class HubitatMcpClient:
         return result
 
     def call_tool_result(self, name: str, arguments: dict | None = None, *, flat: bool = False) -> Any:
-        """call_tool, but a runtime failure comes back as its [success:false] payload.
-
-        The server flags every top-level success:false result isError, so call_tool raises it.
-        For a call that may legitimately succeed or fail. A validation refusal (isError inside
-        the payload) and any other raise propagate."""
+        """call_tool for a call that may legitimately succeed or fail: a success:false payload
+        WITHOUT its own isError key comes back as a dict, as before the server flagged every
+        success:false. A payload carrying its own isError (validation refusals, continuation
+        faults, tools that set it themselves) and any other raise propagate, as they always did."""
         try:
             return self.call_tool(name, arguments, flat=flat)
         except McpToolError as exc:
-            payload = _runtime_failure_payload(exc)
+            payload = _plain_failure_payload(exc)
             if payload is None:
                 raise
             return payload
 
     def call_tool_failure(self, name: str, arguments: dict | None = None, *, flat: bool = False) -> dict:
-        """A call that MUST fail at runtime: requires the isError envelope over a
-        [success:false] payload (not a validation refusal) and returns that payload."""
+        """A call that MUST fail: requires the isError envelope over a success:false payload that
+        does NOT carry its own isError key, and returns that payload. A payload carrying its own
+        isError (validation refusal, continuation fault, tool-set flag) fails the assertion."""
         try:
             result = self.call_tool(name, arguments, flat=flat)
         except McpToolError as exc:
-            payload = _runtime_failure_payload(exc)
-            assert payload is not None, \
-                f"{name}: expected a runtime [success:false] failure, got: {exc.content_text[:500]}"
+            payload = _plain_failure_payload(exc)
+            assert payload is not None, (f"{name}: expected a success:false payload without its own isError key, "
+                                         f"got: {exc.content_text[:500]}")
             return payload
         raise AssertionError(f"{name}: expected an isError failure result, got: {str(result)[:500]}")
 
@@ -3837,7 +3834,7 @@ class TestRunner:
 
     def _configuration_dashboard_ids(self, fallback: list) -> list:
         """This hub's own configuration dashboard id; the manifest's id only when none is listed."""
-        listed = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})
+        listed = self.client.call_tool_result("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})
         rows = listed.get("dashboards") if isinstance(listed, dict) else None
         assert isinstance(rows, list), f"Dashboard list is unreadable: {listed}"
         ids = [int(row["id"]) for row in rows if isinstance(row, dict) and row.get("type") == "legacy"
@@ -4185,10 +4182,11 @@ class TestRunner:
                     refused = self._write_once("hub_manage_devices", "hub_update_device",
                                                device_update_args(device_id, patch), "invalid configuration fixture write")
                 except (McpToolError, McpError) as exc:
-                    # A runtime [success:false] refusal was all the old returned-dict leg proved.
-                    if not (isinstance(exc, McpToolError) and _runtime_failure_payload(exc)):
-                        affected = next(iter(patch.get("preferences", patch)))
-                        assert affected in str(exc), f"Refusal did not identify {affected}: {exc}"
+                    # A plain success:false refusal must name the field in its own error text.
+                    plain = _plain_failure_payload(exc) if isinstance(exc, McpToolError) else None
+                    affected = next(iter(patch.get("preferences", patch)))
+                    assert affected in (str(plain.get("error")) if plain else str(exc)), \
+                        f"Refusal did not identify {affected}: {exc}"
                 else:
                     raise AssertionError(f"Invalid write succeeded: {refused}")
             native, unchanged, current = capture(with_configuration=True)
@@ -4245,8 +4243,9 @@ class TestRunner:
                         "preferences": {"probeBool": {"value": False}, "probeMultiple": {"value": []}},
                     }, "empty multiple must refuse the entire preference patch")
                 except (McpToolError, McpError) as exc:
-                    if not (isinstance(exc, McpToolError) and _runtime_failure_payload(exc)):
-                        assert "probeMultiple" in str(exc), f"Refusal did not identify the empty preference: {exc}"
+                    plain = _plain_failure_payload(exc) if isinstance(exc, McpToolError) else None
+                    assert "probeMultiple" in (str(plain.get("error")) if plain else str(exc)), \
+                        f"Refusal did not identify the empty preference: {exc}"
                 else:
                     raise AssertionError(f"Implicit empty-list clear succeeded: {refused}")
                 native, changed, current = capture(with_configuration=True)
@@ -5605,15 +5604,15 @@ class TestRunner:
         assert stored.get("dashboardPin") == "4321", f"the update with the masked PIN changed the stored PIN: {stored}"
 
         # CLONE (clone-by-value: copies the source config into a new dashboard named "<name> (copy)")
-        clone = self.client.call_tool_result("hub_manage_dashboards", {
+        clone = self.client.call_tool("hub_manage_dashboards", {
             "tool": "hub_clone_dashboard", "args": {"dashboardId": dash_id}})
-        if isinstance(clone, dict) and clone.get("success"):
-            clone_id = clone.get("newId")
-            if not clone_id:
-                # newId dropped on the relay -- recover by the copy's name.
-                clone_id = self._find_dashboard_id_by_name(f"{dash_name} (copy)")
-            if clone_id and str(clone_id) != dash_id:
-                self.created_dashboard_ids.append(str(clone_id))
+        assert isinstance(clone, dict) and clone.get("success") is True, f"hub_clone_dashboard failed: {clone}"
+        clone_id = clone.get("newId")
+        if not clone_id:
+            # newId dropped on the relay -- recover by the copy's name.
+            clone_id = self._find_dashboard_id_by_name(f"{dash_name} (copy)")
+        if clone_id and str(clone_id) != dash_id:
+            self.created_dashboard_ids.append(str(clone_id))
 
         # DELETE the original (confirm-gated -- the suite ensured a recent backup at startup).
         # Verify absence by the SPECIFIC dash_id, not by name: a same-named clone created just
@@ -7134,7 +7133,7 @@ def updated() {}
             args["cursor"] = result["nextCursor"]
 
     def _rm_restore(self, key: str, *, refused: bool = False, **options: Any) -> dict:
-        """refused=True requires a runtime [success:false] failure (isError) and returns its payload."""
+        """refused=True requires a success:false payload without its own isError key and returns it."""
         call = self.client.call_tool_failure if refused else self.client.call_tool
         return call("hub_restore_backup", {"scope": "source", "backupKey": key, "confirm": True, **options})
 
@@ -9049,7 +9048,9 @@ def updated() {}
                     and restored.get("restoredVia") == "nativeStateReplay", restored
                 assert self._rm_read_file(file_name) == original, "restoring an edited copy changed the original recovery file"
             finally:
-                self.client.call_tool_result("hub_delete_file", {"fileName": copy_name, "confirm": True})
+                gone = self.client.call_tool_result("hub_delete_file", {"fileName": copy_name, "confirm": True})
+                if isinstance(gone, dict) and gone.get("success") is False:
+                    print(f"  [WARN] edited recovery copy cleanup: delete {copy_name} refused: {gone.get('error')}")
             doc = self._native_rule_document(app_id)
             assert [r["id"] for r in doc["actions"]] == [r["id"] for r in created["actions"]] and doc["variables"] == created["variables"], doc
             values = self._rm_values(app_id)
@@ -9179,7 +9180,9 @@ def updated() {}
                                                                         "preserveRuleId": True, "confirm": True})
                 assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id), restored
             finally:
-                self.client.call_tool_result("hub_delete_file", {"fileName": copy_name, "confirm": True})
+                gone = self.client.call_tool_result("hub_delete_file", {"fileName": copy_name, "confirm": True})
+                if isinstance(gone, dict) and gone.get("success") is False:
+                    print(f"  [WARN] edited recovery copy cleanup: delete {copy_name} refused: {gone.get('error')}")
             doc = self._native_rule_document(app_id)
             assert doc["expressions"]["0"] == [condition] and doc["variables"] == created["variables"], doc
             assert self._rm_values(app_id)["rDev_" + condition] == [str(switches["Den"][0])]
@@ -9481,12 +9484,13 @@ def updated() {}
         return self.client.call_tool(gateway, {"tool": tool, "args": args})
 
     def _write_refused(self, gateway: str | None, tool: str, args: dict, label: str) -> tuple[bool, Any]:
-        """_write_once for a write expected to fail at runtime: (refused, result). refused is True
-        only for an isError [success:false] payload; any other raise propagates."""
+        """_write_once for a write expected to fail: (refused, result). refused is True only for a
+        success:false payload WITHOUT its own isError key; a payload carrying its own isError
+        (validation refusal, continuation fault, tool-set flag) and any other raise propagate."""
         try:
             return False, self._write_once(gateway, tool, args, label)
         except McpToolError as exc:
-            payload = _runtime_failure_payload(exc)
+            payload = _plain_failure_payload(exc)
             if payload is None:
                 raise
             return True, payload
@@ -9804,21 +9808,29 @@ def updated() {}
             f"trigger device {switch_id} not on the {where}trigger node: {trigger_node}"
 
     def _get_visual_rule(self, app_id: Any = None, *, refused: bool = False) -> Any:
-        """hub_get_visual_rule through the PURE-READ gateway (hub_read_rules cross-listing). A runtime
-        [success:false] read comes back as its payload; refused=True requires one."""
+        """hub_get_visual_rule through the PURE-READ gateway (hub_read_rules cross-listing). A failed
+        read raises; refused=True requires a success:false payload and returns it."""
         args = {} if app_id is None else {"appId": app_id}
-        call = self.client.call_tool_failure if refused else self.client.call_tool_result
+        call = self.client.call_tool_failure if refused else self.client.call_tool
         return call("hub_read_rules", {"tool": "hub_get_visual_rule", "args": args})
 
-    def _find_visual_rule_id_by_name(self, name: str) -> str | None:
-        """Look up a VRB rule's appId by name via the list mode (create-verify on 504)."""
+    def _visual_rule_gone(self, app_id: Any) -> bool:
+        """True only when the read of app_id fails as not found; any other failure raises."""
         try:
-            listed = self._get_visual_rule()
-            for r in (listed.get("rules") or []):
-                if isinstance(r, dict) and r.get("name") == name:
-                    return str(r.get("appId"))
-        except (McpError, McpToolError, requests.HTTPError) as exc:
-            print(f"    [WARN] visual-rule listing lookup for {name!r} failed: {exc}")
+            self._get_visual_rule(app_id)
+        except McpToolError as exc:
+            if "no installed app" in str(_tool_error_payload(exc).get("error", "")).lower():
+                return True
+            raise
+        return False
+
+    def _find_visual_rule_id_by_name(self, name: str) -> str | None:
+        """Look up a VRB rule's appId by name via the list mode (create-verify on 504). A failed
+        listing raises: it is not evidence that the rule is absent."""
+        listed = self._get_visual_rule()
+        for r in (listed.get("rules") or []):
+            if isinstance(r, dict) and r.get("name") == name:
+                return str(r.get("appId"))
         return None
 
     def _check_visual_literal_pause_name(self, app_id: Any, name: str) -> None:
@@ -10051,7 +10063,7 @@ def updated() {}
             dw = self._soft_write(
                 lambda: self.client.call_tool("hub_manage_rule_machine", {
                     "tool": "hub_delete_visual_rule", "args": {"appId": app_id, "confirm": True}}),
-                lambda: self._get_visual_rule(app_id).get("success") is False,
+                lambda: self._visual_rule_gone(app_id),
                 "hub_delete_visual_rule",
             )
             if dw["relayDropped"]:
@@ -10064,7 +10076,7 @@ def updated() {}
                 assert deleted.get("verified") is True, f"delete not verified gone: {deleted}"
                 assert deleted.get("predeleteDefinition"), \
                     f"delete response missing the predeleteDefinition recovery aid: {deleted}"
-            self._get_visual_rule(app_id, refused=True)   # still readable after the delete fails here
+            assert self._visual_rule_gone(app_id), f"rule {app_id} still readable after the delete"
             # Untrack only after the independent gone-read: a false-verified delete
             # leaves the id tracked so the cleanup sweep reaps it.
             self._untrack_native_app(app_id)
@@ -10126,14 +10138,14 @@ def updated() {}
             if "504" not in str(exc):
                 raise
             time.sleep(3.0)
-            if self._get_visual_rule(app_id).get("success") is False:
+            if self._visual_rule_gone(app_id):
                 self._untrack_native_app(app_id)
             raise SkipTest("VRB snapshot-delete response (backup.backupKey) lost to relay 504 -- "
                            "no backup key to drive the restore contract this run") from exc
         assert deleted.get("success") is True, f"hub_delete_native_app reported failure: {deleted}"
         backup_key = (deleted.get("backup") or {}).get("backupKey")
         assert backup_key, f"delete response carries no backup.backupKey to restore from: {deleted}"
-        self._get_visual_rule(app_id, refused=True)   # still readable after the delete fails here
+        assert self._visual_rule_gone(app_id), f"rule {app_id} still readable after the delete"
         # Untrack only after the independent gone-read (lifecycle-test discipline).
         self._untrack_native_app(app_id)
 
@@ -10196,7 +10208,7 @@ def updated() {}
                 dw = self._soft_write(
                     lambda: self.client.call_tool("hub_manage_rule_machine", {
                         "tool": "hub_delete_visual_rule", "args": {"appId": new_id, "confirm": True}}),
-                    lambda: self._get_visual_rule(new_id).get("success") is False,
+                    lambda: self._visual_rule_gone(new_id),
                     "hub_delete_visual_rule (restored-rule cleanup)",
                 )
                 if dw["relayDropped"]:
@@ -10205,7 +10217,7 @@ def updated() {}
                 else:
                     assert dw["response"].get("success") is True, \
                         f"cleanup delete of restored rule {new_id} failed: {dw['response']}"
-                self._get_visual_rule(new_id, refused=True)   # still readable after the cleanup delete fails here
+                assert self._visual_rule_gone(new_id), f"rule {new_id} still readable after the cleanup delete"
                 self._untrack_native_app(new_id)
 
     @test("visual_rules")
@@ -10221,7 +10233,7 @@ def updated() {}
             self.client._decode_tool_result("hub_read_rules", args, raw)   # also books the hub's failure log line
             raise AssertionError(f"an isError envelope decoded without raising: {raw}")
         except McpToolError as exc:
-            res = _runtime_failure_payload(exc)
+            res = _plain_failure_payload(exc)
         assert res is not None and res.get("success") is False, \
             f"the isError content must be the tool's own success:false payload: {raw}"
         assert "no installed app" in str(res.get("error", "")).lower(), \
@@ -10615,10 +10627,10 @@ def updated() {}
                 self._soft_write(
                     lambda: self.client.call_tool("hub_manage_rule_machine", {
                         "tool": "hub_delete_visual_rule", "args": {"appId": warn_id, "confirm": True}}),
-                    lambda: self._get_visual_rule(warn_id).get("success") is False,
+                    lambda: self._visual_rule_gone(warn_id),
                     "hub_delete_visual_rule (advisory fixture)",
                 )
-                if self._get_visual_rule(warn_id).get("success") is False:
+                if self._visual_rule_gone(warn_id):
                     self._untrack_native_app(warn_id)
             self._check_visual_literal_pause_name(app_id, f"{PREFIX}VisualGraphLiteral (Paused)")
 
@@ -10629,7 +10641,7 @@ def updated() {}
             dw = self._soft_write(
                 lambda: self.client.call_tool("hub_manage_rule_machine", {
                     "tool": "hub_delete_visual_rule", "args": {"appId": app_id, "confirm": True}}),
-                lambda: self._get_visual_rule(app_id).get("success") is False,
+                lambda: self._visual_rule_gone(app_id),
                 "hub_delete_visual_rule (editor form)",
             )
             if dw["relayDropped"]:
@@ -10638,7 +10650,7 @@ def updated() {}
             else:
                 assert dw["response"].get("success") is True, \
                     f"hub_delete_visual_rule reported failure: {dw['response']}"
-            self._get_visual_rule(app_id, refused=True)   # still readable after the delete fails here
+            assert self._visual_rule_gone(app_id), f"rule {app_id} still readable after the delete"
             self._untrack_native_app(app_id)
 
     # -----------------------------------------------------------------------
@@ -14555,6 +14567,7 @@ def updated() {}
         probe_lock = threading.Lock()
         holder_refusals: list[dict[str, Any]] = []
         probe_errors: list[Exception] = []
+        probe_failures: list[str] = []   # plain success:false probe results, reported if nothing was refused
         refused = threading.Event()
 
         def _probe(number: int) -> None:
@@ -14567,10 +14580,13 @@ def updated() {}
             except McpToolError as exc:
                 payload = _tool_error_payload(exc)
                 if payload.get("status") != "too_many_writes_in_flight":
-                    # A plain [success:false] probe result is not a cap refusal and never failed the test.
-                    if _runtime_failure_payload(exc) is None:
-                        with probe_lock:
+                    # A plain success:false probe result is not a cap refusal and never failed the test.
+                    plain = _plain_failure_payload(exc)
+                    with probe_lock:
+                        if plain is None:
                             probe_errors.append(exc)
+                        else:
+                            probe_failures.append(str(plain.get("error")))
                 elif [a.get("tool") for a in payload.get("active") or []] == ["hub_create_variable"]:
                     with probe_lock:
                         holder_refusals.append(payload)
@@ -14652,7 +14668,8 @@ def updated() {}
                     f"the write holding the slot did not create every variable: {created}"
             assert refusal is not None, (
                 f"no write was refused in {probes} probe(s) while a bulk create of "
-                f"{len(slow_names)} variables was in flight -- the cap did not hold the slot")
+                f"{len(slow_names)} variables was in flight -- the cap did not hold the slot"
+                f"; {len(probe_failures)} probe(s) failed for another reason, first: {probe_failures[:5]}")
             assert refusal.get("success") is False, f"refusal is not a structured failure: {refusal}"
             assert refusal.get("limit") == 1, f"refusal did not report the active cap: {refusal}"
             active = refusal.get("active") or []
@@ -17186,7 +17203,7 @@ def updated() {}
                         native_field("noSuchField.#", "number", 1)]),
                                           native_log(skipped)]}, "confirm": True})
             except McpToolError as exc:
-                result = _runtime_failure_payload(exc)
+                result = _plain_failure_payload(exc)
             else:
                 raise AssertionError(f"a stopped legacy batch must carry isError: {result}")
             assert result is not None and result.get("partial") is True, result
@@ -17739,7 +17756,9 @@ def updated() {}
         for attempt in range(1, 4):
             try:
                 nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
-                rlist = nrules if isinstance(nrules, list) else nrules.get("rules", [])
+                rlist = nrules if isinstance(nrules, list) else nrules.get("rules")
+                if not isinstance(rlist, list):
+                    raise ValueError(f"RM rule listing carried no rules list: {str(nrules)[:200]}")
                 leftovers = [
                     f"{r.get('name') or r.get('label')} (id={r.get('id', r.get('appId'))})"
                     for r in rlist
@@ -17753,10 +17772,14 @@ def updated() {}
             return None
         for attempt in range(1, 4):
             try:
+                # A failed read raises; a listing without a rules list is never an empty inventory.
                 vlisted = self._get_visual_rule()
+                vrows = vlisted.get("rules") if isinstance(vlisted, dict) else None
+                if not isinstance(vrows, list):
+                    raise ValueError(f"Visual Rules listing carried no rules list: {str(vlisted)[:200]}")
                 leftovers += [
                     f"{r.get('name')} (visual, id={r.get('appId')})"
-                    for r in (vlisted.get("rules", []) if isinstance(vlisted, dict) else [])
+                    for r in vrows
                     if str(r.get("name") or "").startswith(PREFIX)
                 ]
                 return leftovers
@@ -18201,7 +18224,7 @@ def refuse_unless_leased_test_hub(client: HubitatMcpClient, *,
                 _refuse([f"the hub answered: variable not present -- {TEST_HUB_LEASE_VARIABLE!r} "
                          f"({str(exc)[:120]}); only the sacrificial test hub carries the e2e lease variable"])
             # A [success:false] result is the tool's own answer, judged below as before it carried isError.
-            got = _runtime_failure_payload(exc)
+            got = _plain_failure_payload(exc)
             if got is not None:
                 break
             last_exc, last_kind = exc, "the tool faulted at runtime (isError), which says nothing about the variable"

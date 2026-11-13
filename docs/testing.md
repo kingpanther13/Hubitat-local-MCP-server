@@ -201,7 +201,7 @@ The CI matrix (see "CI" below) runs the full suite under both default modes, but
 
 ### Error-path envelope shapes
 
-Three distinct production paths produce different envelope shapes — assert the right one:
+Three production paths share one envelope (`error == null`, `isError == true`) and differ in the payload — assert the right one:
 
 - **`IllegalArgumentException` from a tool → success envelope with `isError: true`.** The 2026-07-28 tools page classes input validation as a tool execution error that clients SHOULD show the model, so a leaf validation refusal rides the result, with the reactive guide pointer appended to its `error` text:
 
