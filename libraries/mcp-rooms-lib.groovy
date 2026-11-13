@@ -18,7 +18,7 @@ def toolGetRoom(args) {
         try {
             for (pageRec in _readDevicesPage(roomIds as Set)) pageById.put(pageRec.id, pageRec)
         } catch (IllegalStateException e) {
-            return [success: false, isError: true, error: "The hub's device list (/hub2/devicesList) could not be read: ${e.message}".toString(),
+            return [success: false, error: "The hub's device list (/hub2/devicesList) could not be read: ${e.message}".toString(),
                     note: "Retry; if it persists check the hub's Devices page. See hub_get_tool_guide(section='rooms')."]
         }
     }
@@ -131,7 +131,7 @@ private void _requireUniqueRoomName(List rooms, String name, exceptId) {
 
 private Map _roomFailure(String error, String note) {
     mcpLog("warn", "room", error)
-    return [success: false, isError: true, error: error,
+    return [success: false, error: error,
             note: "${note} See hub_get_tool_guide(section='rooms').".toString()]
 }
 

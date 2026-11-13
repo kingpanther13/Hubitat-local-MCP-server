@@ -282,7 +282,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        result.isError == true
+        !result.containsKey('isError')
         result.error.startsWith("The hub's device list (/hub2/devicesList) could not be read: ")
         result.note == "Retry; if it persists check the hub's Devices page. See hub_get_tool_guide(section='rooms')."
     }
@@ -608,9 +608,9 @@ class ToolRoomsSpec extends ToolSpecBase {
         when:
         def result = script.toolCreateRoom([name: 'Garage', confirm: true])
 
-        then: 'a runtime failure: success=false with isError, error and note'
+        then: 'a runtime failure: success=false with error and note (dispatch adds isError)'
         result.success == false
-        result.isError == true
+        !result.containsKey('isError')
         result.error.contains(errorNeedle)
         result.note.contains(noteNeedle)
         result.note.contains("hub_get_tool_guide(section='rooms')")
@@ -623,7 +623,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "#tool via dispatch returns #label as success=false with isError (useGateways=#useGateways)"() {
+    def "#tool via dispatch returns #label as an isError success=false result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -636,12 +636,12 @@ class ToolRoomsSpec extends ToolSpecBase {
             ? mcpDriver.callTool('hub_manage_rooms', [tool: tool, args: args])
             : mcpDriver.callTool(tool, args)
 
-        then: 'the JSON-RPC envelope and the tool result both carry isError'
+        then: 'the envelope carries isError; the payload does not repeat it'
         response.error == null
         response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
-        inner.isError == true
+        !inner.containsKey('isError')
         inner.error.contains(errorNeedle)
         inner.note.contains("hub_get_tool_guide(section='rooms')")
 
@@ -726,7 +726,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         posts.empty
         result.success == false
-        result.isError == true
+        !result.containsKey('isError')
         result.error == error
         result.note.startsWith(noteStart)
         result.note.endsWith("See hub_get_tool_guide(section='rooms').")
@@ -950,7 +950,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         posts.size() == 1
         result.success == false
-        result.isError == true
+        !result.containsKey('isError')
         result.error == 'The hub refused to update room 8: Invalid room or device ids'
         result.note.startsWith('Nothing was saved.')
     }
@@ -1077,7 +1077,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        result.isError == true
+        !result.containsKey('isError')
         result.error == "Could not delete room 'Old Room' (5): HTTP 500: boom"
         result.note.contains('hub_list_rooms')
         result.note.contains("hub_get_tool_guide(section='rooms')")

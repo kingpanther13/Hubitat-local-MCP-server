@@ -14252,16 +14252,17 @@ def updated() {}
                     assert False, f"hub_update_room({args}) should have raised"
                 except McpError as e:
                     assert needle in str(e).lower(), f"hub_update_room({args}) error unexpected: {e}"
-            # Hub refusals are runtime failures carrying isError, so call_tool raises them: a numeric
-            # device id the hub does not know (refused by /room/save), and a name-only rename to a
-            # name under 3 characters (refused by /room/updateName, which /room/save would accept).
+            # Hub refusals are runtime failures, not validation refusals: a numeric device id the hub
+            # does not know (refused by /room/save), and a name-only rename to a name under 3
+            # characters (refused by /room/updateName, which /room/save would accept).
             for args, needle in (
                 ({"roomId": id_b, "deviceIds": ["999999999"], "confirm": True},
                  f"The hub refused to update room {id_b}"),
                 ({"roomId": id_b, "name": "ab", "confirm": True},
                  f"The hub refused to rename room {id_b}: Room name is too short"),
             ):
-                self._expect_tool_refusal("hub_manage_rooms", {"tool": "hub_update_room", "args": args}, needle)
+                failed = self.client.call_tool_failure("hub_manage_rooms", {"tool": "hub_update_room", "args": args})
+                assert needle in str(failed.get("error")), f"hub_update_room({args}) failed, but not with {needle!r}: {failed}"
             try:
                 self.client.call_tool("hub_manage_rooms", {"tool": "hub_get_room", "args": {"roomId": id_b, "cursor": ""}})
                 assert False, "hub_get_room(roomId, cursor) should have raised"
