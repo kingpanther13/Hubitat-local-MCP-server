@@ -29,14 +29,22 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
     def cleanup() { rmUtils?.uninstall() }
 
+    // statusJson for an installed dashboard app in the hub's shape: 'Easy Dashboard' (appTypeId 139)
+    // or a legacy 'Dashboard' (140); both kinds are system app types.
+    private static String dashboardStatusJson(int id, String type) {
+        boolean legacy = type == 'Dashboard'
+        JsonOutput.toJson([installedApp: [id: id, name: type, systemAppType: true, label: "${type} ${id}".toString(),
+                trueLabel: "${type} ${id}".toString(), installed: true, disabled: false, parentAppId: 21,
+                appTypeId: legacy ? 140 : 139],
+            appSettings: [], appState: legacy ? [[name: 'accessToken', value: 'tok']] : [], childDevices: []])
+    }
+
     @Unroll
     def '#method rejects protected target before mutation with Developer Mode #developerMode'() {
         given:
         settingsMap.enableDeveloperMode = developerMode
         atomicStateMap.parentAppIds = [notifier: 42]
-        hubGet.register('/installedapp/statusJson/42') {
-            '{"installedApp":{"id":42,"name":"Dashboard","systemAppType":true}}'
-        }
+        hubGet.register('/installedapp/statusJson/42') { dashboardStatusJson(42, 'Dashboard') }
 
         when:
         script."$method"(arguments + [confirm: true])
@@ -62,8 +70,8 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             ['toolDeleteNativeApp', [appId: ' 42 ', force: true]],
             ['toolSetVisualRule', [appId: 42, paused: true]],
             ['toolDeleteVisualRule', [appId: 42]],
-            ['toolUpdateDashboard', [id: '42', name: 'Changed']],
-            ['toolDeleteDashboard', [id: '42']],
+            ['toolUpdateDashboard', [dashboardId: '42', name: 'Changed']],
+            ['toolDeleteDashboard', [dashboardId: '42']],
             ['toolRunRmRule', [ruleId: 42, action: 'stop']],
             ['toolSetRulePaused', [ruleId: 42, paused: true]],
             ['toolSetRmRuleBoolean', [ruleId: 42, value: true]]
@@ -222,13 +230,11 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         given:
         settingsMap.enableMandatoryBPS = false
         settingsMap.useGateways = gateway
-        hubGet.register('/installedapp/statusJson/42') {
-            JsonOutput.toJson([installedApp: [id: 42, name: type, systemAppType: true]])
-        }
-        hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true}' }
-        hubGet.register('/dashboard/delete') { writes << '/dashboard/delete'; '{"success":true}' }
+        hubGet.register('/installedapp/statusJson/42') { dashboardStatusJson(42, type) }
+        hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true,"message":null,"id":42}' }
+        hubGet.register('/dashboard/delete') { writes << '/dashboard/delete'; '{"success":false,"message":null}' }
         def leaf = "hub_${operation}_dashboard".toString()
-        def args = operation == 'update' ? [id: '42', name: 'Changed', deviceIds: ['1']] : [id: '42', confirm: true]
+        def args = operation == 'update' ? [dashboardId: '42', name: 'Changed', deviceIds: ['1']] : [dashboardId: '42', confirm: true]
 
         when:
         script.executeTool(gateway ? 'hub_manage_dashboards' : leaf,
@@ -255,20 +261,22 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         }
         // statusJson answers {} for a removed app, which is how the delete confirms itself.
         hubGet.register('/installedapp/statusJson/43') {
-            present ? JsonOutput.toJson([installedApp: [id: 43, name: type, systemAppType: true]]) : '{}'
+            present ? dashboardStatusJson(43, type) : '{}'
         }
+        // Both delete paths answer as the hub does even when they removed the app: /dashboard/delete
+        // with success:false, the legacy forcedelete with HTTP 500.
         hubGet.register('/dashboard/delete') {
             writes << '/dashboard/delete'
             present = false
-            '{"success":true}'
+            '{"success":false,"message":null}'
         }
         script.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
             writes << path
             present = false
-            [status: 302]
+            [status: 500, location: null, data: '<html><body>Error 500</body></html>']
         }
         def delete = {
-            def args = [id: '43', confirm: true]
+            def args = [dashboardId: '43', confirm: true]
             script.executeTool(gateway ? 'hub_manage_dashboards' : 'hub_delete_dashboard',
                 gateway ? [tool: 'hub_delete_dashboard', args: args] : args)
         }
@@ -307,7 +315,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteDashboard([id: '999', confirm: true])
+        def result = script.toolDeleteDashboard([dashboardId: '999', confirm: true])
 
         then:
         result.success == true
@@ -323,7 +331,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { inventory }
 
         when:
-        script.toolDeleteDashboard([id: '43', confirm: true])
+        script.toolDeleteDashboard([dashboardId: '43', confirm: true])
 
         then:
         def error = thrown(IllegalArgumentException)
@@ -345,7 +353,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') {
             '{"apps":[{"data":{"id":42,"type":"Easy Dashboard Parent"},"children":[]}]}'
         }
-        hubGet.register('/dashboard/create') { writes << '/dashboard/create'; '{"success":true}' }
+        hubGet.register('/dashboard/create') { writes << '/dashboard/create'; '{"success":true,"message":null,"id":73}' }
         settingsMap.bypassDeviceAllowlist = true
 
         when:
@@ -360,19 +368,19 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
     @Unroll
     def 'unprotected Easy Dashboard still allows #operation with unrelated protection'() {
         given:
-        hubGet.register('/installedapp/statusJson/43') {
-            '{"installedApp":{"id":43,"name":"Easy Dashboard","systemAppType":true}}'
-        }
+        boolean deleted = false
+        hubGet.register('/installedapp/statusJson/43') { deleted ? '{}' : dashboardStatusJson(43, 'Easy Dashboard') }
         hubGet.register('/hub2/appsList') {
             '{"apps":[{"data":{"id":42,"type":"MCP Rule Server"}},{"data":{"id":43,"type":"Easy Dashboard"}}]}'
         }
-        hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true,"installedAppId":43}' }
-        hubGet.register('/dashboard/delete') { writes << '/dashboard/delete'; '{"success":true}' }
+        hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true,"message":null,"id":43}' }
+        // /dashboard/delete answers success:false even when it deleted; statusJson {} is the proof.
+        hubGet.register('/dashboard/delete') { writes << '/dashboard/delete'; deleted = true; '{"success":false,"message":null}' }
         settingsMap.bypassDeviceAllowlist = true
         def method = operation == 'update' ? 'toolUpdateDashboard' : 'toolDeleteDashboard'
 
         when:
-        def result = script."$method"([id: '43', name: 'Easy', deviceIds: ['1'], confirm: true,
+        def result = script."$method"([dashboardId: '43', name: 'Easy', deviceIds: ['1'], confirm: true,
             options: [dashboardPin: '', hsmPin: '']])
 
         then:
@@ -388,7 +396,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         given:
         hubGet.register('/hub2/appsList') { inventory }
         hubGet.register('/dashboard/create') {
-            writes << '/dashboard/create'; '{"success":true,"installedAppId":73}'
+            writes << '/dashboard/create'; '{"success":true,"message":null,"id":73}'
         }
         settingsMap.bypassDeviceAllowlist = true
 
@@ -414,7 +422,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             if (inventory == null) throw new IOException('offline')
             inventory
         }
-        hubGet.register('/dashboard/create') { writes << '/dashboard/create'; '{"success":true}' }
+        hubGet.register('/dashboard/create') { writes << '/dashboard/create'; '{"success":true,"message":null,"id":73}' }
         settingsMap.bypassDeviceAllowlist = true
 
         when:

@@ -5476,7 +5476,7 @@ class TestRunner:
 
     def _read_dashboard(self, dash_id: str, gateway: str = "hub_manage_dashboards"):
         """One dashboard in full: hub_get_dashboard."""
-        return self.client.call_tool(gateway, {"tool": "hub_get_dashboard", "args": {"id": dash_id}})
+        return self.client.call_tool(gateway, {"tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
 
     def _dashboard_id_present(self, dash_id: str) -> bool:
         """True iff a dashboard with this specific installedAppId is on the hub.
@@ -5554,7 +5554,7 @@ class TestRunner:
         uw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_update_dashboard",
-                "args": {"id": dash_id, "name": dash_name, "deviceIds": upd_devices, "options": upd_options}}),
+                "args": {"dashboardId": dash_id, "name": dash_name, "deviceIds": upd_devices, "options": upd_options}}),
             lambda: bool((self._read_dashboard(dash_id) or {}).get("showClockTile")) == new_clock,
             "update dashboard",
         )
@@ -5574,8 +5574,22 @@ class TestRunner:
             self._mcp_settings({"redactCredentials": True})
         assert stored.get("dashboardPin") == "4321", f"the update with the masked PIN changed the stored PIN: {stored}"
 
-        # COPY (hub_create_dashboard with sourceId: copy-by-value into "<name> (copy)").
+        # REFUSALS before any write: sourceId takes only a name beside it, and the single-dashboard
+        # tools take dashboardId, never a bare id.
         copy_name = f"{dash_name} (copy)"
+        self._expect_tool_refusal("hub_manage_dashboards", {
+            "tool": "hub_create_dashboard", "args": {"sourceId": dash_id, "deviceIds": [str(switch_id)]}},
+            "cannot be combined with sourceId")
+        assert self._find_dashboard_id_by_name(copy_name) is None, \
+            "hub_create_dashboard(sourceId, deviceIds) was refused but a copy was created anyway"
+        self._expect_tool_refusal("hub_manage_dashboards", {
+            "tool": "hub_update_dashboard",
+            "args": {"id": dash_id, "name": f"{dash_name} Bare", "deviceIds": upd_devices}},
+            "Unknown hub_update_dashboard argument: id.")
+        assert (self._read_dashboard(dash_id) or {}).get("name") == dash_name, \
+            "hub_update_dashboard(id=...) was refused but the dashboard was renamed anyway"
+
+        # COPY (hub_create_dashboard with sourceId: copy-by-value into "<name> (copy)").
         pw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_create_dashboard", "args": {"sourceId": dash_id}}),
@@ -5603,7 +5617,7 @@ class TestRunner:
         dw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_delete_dashboard",
-                "args": {"id": dash_id, "confirm": True}}),
+                "args": {"dashboardId": dash_id, "confirm": True}}),
             lambda: not self._dashboard_id_present(dash_id),
             "delete dashboard",
         )
@@ -5616,6 +5630,23 @@ class TestRunner:
                 f"hub_delete_dashboard reported success but dashboard id {dash_id} is still on the hub"
         if dash_id in self.created_dashboard_ids:
             self.created_dashboard_ids.remove(dash_id)
+
+        # The deleted id: an update is a runtime failure (success:false, not isError) that sends no
+        # write, and a read reports it missing.
+        gone_upd = self.client.call_tool("hub_manage_dashboards", {
+            "tool": "hub_update_dashboard",
+            "args": {"dashboardId": dash_id, "name": dash_name, "deviceIds": upd_devices}})
+        assert isinstance(gone_upd, dict) and gone_upd.get("success") is False, \
+            f"hub_update_dashboard on deleted id {dash_id} did not fail: {gone_upd}"
+        assert not gone_upd.get("isError"), f"a runtime failure must not carry isError: {gone_upd}"
+        assert "No dashboard found" in str(gone_upd.get("error")) and "no update was attempted" in str(gone_upd.get("error")), \
+            f"hub_update_dashboard on deleted id {dash_id} gave the wrong failure: {gone_upd}"
+        assert not self._dashboard_id_present(dash_id), \
+            f"hub_update_dashboard on deleted id {dash_id} brought a dashboard back"
+        gone_get = self._read_dashboard(dash_id)
+        assert isinstance(gone_get, dict) and gone_get.get("success") is False, \
+            f"hub_get_dashboard on deleted id {dash_id} did not fail: {gone_get}"
+        assert not gone_get.get("isError"), f"a runtime failure must not carry isError: {gone_get}"
 
     @test("dashboards")
     def test_dashboard_legacy_lifecycle(self) -> None:
@@ -5675,7 +5706,7 @@ class TestRunner:
         uw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_update_dashboard",
-                "args": {"id": dash_id,
+                "args": {"dashboardId": dash_id,
                          "addTiles": [{"template": "clock", "col": 1, "row": 1}],
                          "setOptions": {"bgColor": "#222222", "cols": 4}}}),
             lambda: bool(((self._read_dashboard(dash_id) or {}).get("layout") or {}).get("tiles")),
@@ -5695,6 +5726,15 @@ class TestRunner:
         assert any((t or {}).get("template") == "clock" for t in (rlayout.get("tiles") or [])), \
             f"clock tile not present after addTiles: {rlayout}"
         assert rlayout.get("bgColor") == "#222222", f"bgColor option didn't take: {rlayout}"
+
+        # An addTiles key outside the tile fields is refused, named, before the save.
+        self._expect_tool_refusal("hub_manage_dashboards", {
+            "tool": "hub_update_dashboard",
+            "args": {"dashboardId": dash_id, "addTiles": [{"template": "clock", "colum": 2, "row": 1}]}},
+            "addTiles: unknown tile key colum")
+        after_typo = ((self._read_dashboard(dash_id) or {}).get("layout") or {}).get("tiles") or []
+        assert len(after_typo) == len(rlayout.get("tiles") or []), \
+            f"the refused addTiles changed the layout: {after_typo}"
 
         # COPY (hub_create_dashboard with sourceId): a new legacy dashboard with the source's layout.
         copy_name = f"{dash_name} (copy)"
@@ -5729,7 +5769,7 @@ class TestRunner:
         rw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_update_dashboard",
-                "args": {"id": dash_id, "name": dash_name2}}),
+                "args": {"dashboardId": dash_id, "name": dash_name2}}),
             lambda: (self._read_dashboard(dash_id) or {}).get("name") == dash_name2,
             "rename legacy dashboard",
         )
@@ -5746,7 +5786,7 @@ class TestRunner:
         dw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_delete_dashboard",
-                "args": {"id": dash_id, "confirm": True}}),
+                "args": {"dashboardId": dash_id, "confirm": True}}),
             lambda: not self._dashboard_id_present(dash_id),
             "delete legacy dashboard",
         )
@@ -17526,13 +17566,13 @@ def updated() {}
             print(f"  [WARN] throwaway bundle sweep failed: {exc}")
 
         # Layer 8: Easy Dashboards with the BAT_E2E_ prefix (issue #259; dashboards impls in McpDashboardsLib).
-        # The create/clone/delete test deletes the original inline; this reclaims the clone
+        # The create/copy/delete test deletes the original inline; this reclaims the copy
         # and any dashboard a crashed run stranded. Skips silently if the endpoint is gated.
         for dash_id in list(self.created_dashboard_ids):
             try:
                 print(f"  Deleting tracked dashboard {dash_id}")
                 self.client.call_tool("hub_manage_dashboards", {
-                    "tool": "hub_delete_dashboard", "args": {"id": dash_id, "confirm": True}})
+                    "tool": "hub_delete_dashboard", "args": {"dashboardId": dash_id, "confirm": True}})
             except Exception as exc:
                 print(f"  [WARN] Failed to delete dashboard {dash_id}: {exc}")
         self.created_dashboard_ids.clear()
@@ -17544,7 +17584,7 @@ def updated() {}
                     try:
                         print(f"  Sweep: deleting dashboard '{dname}' (id={d.get('id')})")
                         self.client.call_tool("hub_manage_dashboards", {
-                            "tool": "hub_delete_dashboard", "args": {"id": str(d["id"]), "confirm": True}})
+                            "tool": "hub_delete_dashboard", "args": {"dashboardId": str(d["id"]), "confirm": True}})
                     except Exception as exc:
                         print(f"  [WARN] Dashboard sweep delete failed for '{dname}': {exc}")
         except Exception as exc:
