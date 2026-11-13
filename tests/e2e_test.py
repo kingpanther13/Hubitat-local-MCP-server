@@ -4567,9 +4567,12 @@ class TestRunner:
             # Restore prior membership; if it had none, the unassign above already left it correct.
             if original_room:
                 try:
-                    self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": str(original_room)}})
+                    restored = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": str(original_room)}})
                 except Exception as exc:
-                    print(f"  [WARN] room-assign cleanup: restoring device {dev_id} to '{original_room}' failed: {exc}")
+                    restored = exc
+                if not isinstance(restored, dict) or restored.get("success") is not True:
+                    self._fixture_reset_failures.append(
+                        f"room-assign: restoring device {dev_id} to {original_room!r} failed: {restored}")
 
     @test("devices")
     def test_update_device_default_current_state(self) -> None:
@@ -14087,9 +14090,12 @@ def updated() {}
                     print(f"  [WARN] rooms flow cleanup: delete {room_id} failed: {exc}")
             if original_room:
                 try:
-                    self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": str(original_room)}})
+                    restored = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": str(original_room)}})
                 except Exception as exc:
-                    print(f"  [WARN] rooms flow cleanup: restoring device {dev_id} to '{original_room}' failed: {exc}")
+                    restored = exc
+                if not isinstance(restored, dict) or restored.get("success") is not True:
+                    self._fixture_reset_failures.append(
+                        f"rooms flow: restoring device {dev_id} to {original_room!r} failed: {restored}")
 
     @test("system_tools")
     def test_manage_rooms_error_contracts(self) -> None:
