@@ -245,7 +245,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         then: "the genuine error survives; no generic envelope replaced it"
         inner.success == false
         inner.error == "Device not found: 7"
-        response.result?.isError != true
+        response.result?.isError == true
     }
 
     // ---- _guideSectionForTool: the tool -> section map -------------------------

@@ -201,7 +201,7 @@ The CI matrix (see "CI" below) runs the full suite under both default modes, but
 
 ### Error-path envelope shapes
 
-Two distinct production paths produce different envelope shapes — assert the right one:
+Three production paths share one envelope (`error == null`, `isError == true`) and differ in the payload — assert the right one:
 
 - **`IllegalArgumentException` from a tool → success envelope with `isError: true`.** The 2026-07-28 tools page classes input validation as a tool execution error that clients SHOULD show the model, so a leaf validation refusal rides the result, with the reactive guide pointer appended to its `error` text:
 
@@ -222,7 +222,15 @@ Two distinct production paths produce different envelope shapes — assert the r
   response.result.content[0].text.startsWith('Tool error:')
   ```
 
-`HandleToolsCallSpec` is the canonical reference for both shapes.
+- **A tool that RETURNS `[success: false, ...]` → success envelope with `isError: true`.** `_renderToolResult` flags every top-level `success == false` (partial, budget-paused and timed-out results included), since the 2026-07-28 tools page classes API failures and business-logic errors as tool execution errors; the map itself is the inner payload:
+
+  ```groovy
+  response.error == null
+  response.result.isError == true
+  mcpDriver.parseInner(response).success == false
+  ```
+
+`HandleToolsCallSpec` is the canonical reference for these shapes.
 
 ## Adding a new server tool spec
 

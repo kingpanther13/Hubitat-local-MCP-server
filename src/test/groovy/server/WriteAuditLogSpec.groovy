@@ -101,6 +101,8 @@ class WriteAuditLogSpec extends ToolSpecBase {
         'partial flag'         | 'partial'   | { Map a -> [success: false, partial: true] }                           | { it != null }
         'isError'              | 'failed'    | { Map a -> [isError: true, error: 'token=abc leaked text'] }           | { it == 'tool returned a failure result' }
         'success false'        | 'failed'    | { Map a -> [success: false, status: 'not_found', error: 'x'] }         | { it == 'not_found' }
+        'failed after applying' | 'partial'  | { Map a -> [success: false, error: 'x', applied: ['darkMode']] }       | { it == 'tool returned a failure result' }
+        'failed, none applied' | 'failed'    | { Map a -> [success: false, error: 'x', applied: []] }                 | { it == 'tool returned a failure result' }
         'validation throw'     | 'failed'    | { Map a -> throw new IllegalArgumentException('name is required') }    | { it == 'validation refused the call' }
         'runtime throw'        | 'unknown'   | { Map a -> throw new IllegalStateException('hub said no') }            | { it == 'tool threw IllegalStateException' }
         'state readback error' | 'unknown'   | { Map a -> [success: true, stateError: 'readback timed out'] }         | { it?.contains('resulting state failed') }

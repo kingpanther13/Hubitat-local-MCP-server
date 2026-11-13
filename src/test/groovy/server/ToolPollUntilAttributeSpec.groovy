@@ -1447,7 +1447,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
         then:
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.timedOut == true
@@ -1536,7 +1536,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_device_attribute poll-mode via dispatch returns success envelope with interrupted=true when pauseExecution throws InterruptedException (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute poll-mode via dispatch returns an isError result with interrupted=true when pauseExecution throws InterruptedException (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def device = new TestDevice(
@@ -1560,9 +1560,9 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             pollIntervalMs: 200
         ])
 
-        then: 'InterruptedException is caught inside the tool and surfaced as a normal tool result'
+        then: 'InterruptedException is caught inside the tool and surfaced as a tool error result'
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.interrupted == true

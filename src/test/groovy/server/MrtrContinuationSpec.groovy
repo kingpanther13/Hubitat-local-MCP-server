@@ -1802,6 +1802,69 @@ class MrtrContinuationSpec extends ToolSpecBase {
         next.result.isError != true
     }
 
+    // Issue 584: a terminal whose top-level success is false is a tool execution error on
+    // every path that hands it back, and the record says so for recentWrites.
+    def "a success:false terminal is flagged isError on its first return and on replay"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = { Map a ->
+            [success: false, ruleIds: a.ruleId, error: 'One or more rule operations failed; inspect results[].',
+             results: a.ruleId.collect { [success: false, ruleId: it, error: 'rule not found'] }]
+        }
+        def args = [ruleId: [81, 82], action: 'stop']
+
+        when:
+        def first = modernCall('hub_call_rule', args)
+        String stateId = onlyStateId()
+        def replay = modernCall('hub_call_rule', args, stateId)
+
+        then:
+        first.error == null
+        first.result.resultType == 'complete'
+        first.result.isError == true
+        !mcpDriver.parseInner(first).containsKey('isError')
+        (atomicStateMap.mrtrRequests as Map)[stateId].terminalIsError == true
+        script._mrtrRecentOperations()[0].status == 'finished_with_error'
+
+        and:
+        replay.error == null
+        replay.result.resultType == 'complete'
+        replay.result.isError == true
+        mcpDriver.parseInner(replay) == mcpDriver.parseInner(first)
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "a success:false terminal reached by the server-side continuation is logged and replayed as an error"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = true
+        settingsMap.mcpLogLevel = 'info'
+        script.metaClass.toolRunRmRule = pausingMultiRuleWrite()
+        def args = [ruleId: [91, 92], action: 'stop']
+
+        when: 'the first slice pauses; the server finishes the remainder, which fails'
+        String stateId = modernCall('hub_call_rule', args).result.requestState
+        script.metaClass.toolRunRmRule = { Map a ->
+            [success: false, ruleIds: a.ruleId, results: a.ruleId.collect { [success: false, ruleId: it, error: 'rule not found'] }]
+        }
+        script.runMrtrAutoContinue(new LinkedHashMap(autoContinueJobs()[0][2].data as Map))
+        def replay = modernCall('hub_call_rule', args, stateId)
+
+        then:
+        script.getDebugLogEntries().any {
+            it.message?.toString()?.contains('hub_call_rule: finished in the background (with an error)') }
+        (atomicStateMap.mrtrRequests as Map)[stateId].terminalIsError == true
+        replay.result.resultType == 'complete'
+        replay.result.isError == true
+        mcpDriver.parseInner(replay).success == false
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "ordinary write-request leases share the same cap and release in finally"() {
         given:
         settingsMap.enableWrite = true
@@ -2997,6 +3060,65 @@ class MrtrContinuationSpec extends ToolSpecBase {
         rec.terminalResult.isError == true
     }
 
+    // Issue 584: success:false alone (no isError in the payload) decides the stored terminal.
+    def "a slow read that ends success:false without isError is stored and replayed as that failure"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def calls = new AtomicInteger(0)
+        script.metaClass.toolGetHubInfo = { a ->
+            calls.incrementAndGet() == 1 ? [status: 'in_progress', tool: 'hub_get_info', retryable: true]
+                : [success: false, error: 'hub info unavailable']
+        }
+
+        when:
+        String stateId = modernCall('hub_get_info', [:]).result.requestState
+        def terminal = modernCall('hub_get_info', [:], stateId)
+        def rec = (atomicStateMap.mrtrRequests as Map)[stateId] as Map
+        def replay = modernCall('hub_get_info', [:], stateId)
+
+        then: 'the failure itself is retained, not the re-run marker'
+        stateId != null
+        terminal.result.resultType == 'complete'
+        terminal.result.isError == true
+        rec.terminalIsError == true
+        rec.terminalResult.success == false
+        !rec.terminalResult.containsKey('__slowReadReplay')
+        !rec.terminalResult.containsKey('isError')
+
+        and: 'the replay returns it without running the read again'
+        replay.result.isError == true
+        mcpDriver.parseInner(replay) == mcpDriver.parseInner(terminal)
+        calls.get() == 2
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "a budgeted read answered in round zero with success:false is sent as isError"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        script.metaClass.toolGetHubInfo = { a -> [success: false, error: 'hub info unavailable'] }
+
+        when:
+        def only = modernCall('hub_get_info', [:])
+
+        then:
+        only.error == null
+        only.result.resultType == 'complete'
+        only.result.isError == true
+        mcpDriver.parseInner(only).error == 'hub info unavailable'
+        !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "a read whose worker never lands ends with a read-specific timeout terminal, never the write cap text"() {
         given:
         settingsMap.enableRead = true
@@ -3484,6 +3606,35 @@ class MrtrContinuationSpec extends ToolSpecBase {
         inner.success == false
         inner.remainingRuleIds == [62]
         inner.note.contains('Do not repeat the whole operation')
+    }
+
+    def "a final slice that fails and loses its record before the terminal store is still sent as isError"() {
+        given: 'a write with no remainder whose leaf sweeps the durable record and reports failure'
+        settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = { Map a ->
+            atomicStateMap.mrtrRequests = [:]
+            script._writeStateCacheInvalidate()
+            [success: false, ruleIds: a.ruleId, results: a.ruleId.collect { [success: false, ruleId: it, error: 'rule not found'] }]
+        }
+
+        when:
+        def response = modernCall('hub_call_rule', [ruleId: [63, 64], action: 'stop'])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        response.error == null
+        response.result.resultType == 'complete'
+        response.result.isError == true
+        inner.success == false
+        !inner.containsKey('isError')
+        !inner.containsKey('remainingRuleIds')
+        inner.results*.ruleId == [63, 64]
+        inner.note.contains('continuation record was lost')
+        !inner.note.contains('Do not repeat the whole operation')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "a validation refusal on a later slice hands back the committed ledger"() {

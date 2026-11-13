@@ -240,17 +240,26 @@ def test_configuration_dashboard_resolves_by_name_before_manifest_fallback(rows,
         calls.append((name, args))
         return {"dashboards": rows, "count": len(rows)}
 
-    runner = et.TestRunner(SimpleNamespace(call_tool=call_tool, app_id="38"))
+    runner = et.TestRunner(SimpleNamespace(call_tool_result=call_tool, app_id="38"))
     assert runner._configuration_dashboard_ids([36461]) == expected
     assert calls == [("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})]
 
 
-@pytest.mark.parametrize("listed", [
-    {"success": False, "error": "Could not list dashboards"},
-    {"dashboards": [{"id": "1", "name": et.CONFIGURATION_DASHBOARD, "type": "legacy"},
-                    {"id": "2", "name": et.CONFIGURATION_DASHBOARD, "type": "legacy"}]},
+@pytest.mark.parametrize("listed,message", [
+    ({"success": False, "error": "Could not list dashboards"}, "Dashboard list is unreadable"),
+    ({"dashboards": [{"id": "1", "name": et.CONFIGURATION_DASHBOARD, "type": "legacy"},
+                     {"id": "2", "name": et.CONFIGURATION_DASHBOARD, "type": "legacy"}]}, "Provision exactly one"),
 ])
-def test_configuration_dashboard_refuses_unreadable_or_ambiguous_list(listed):
-    runner = et.TestRunner(SimpleNamespace(call_tool=lambda name, args=None: listed, app_id="38"))
-    with pytest.raises(AssertionError):
+def test_configuration_dashboard_refuses_unreadable_or_ambiguous_list(listed, message):
+    class Client:
+        app_id = "38"
+        call_tool_result = et.HubitatMcpClient.call_tool_result
+
+        def call_tool(self, name, args=None, *, flat=False):
+            if listed.get("success") is False:   # a failure result carries isError, so call_tool raises
+                raise et.McpToolError(name, json.dumps(listed))
+            return listed
+
+    runner = et.TestRunner(Client())
+    with pytest.raises(AssertionError, match=message):
         runner._configuration_dashboard_ids([36461])

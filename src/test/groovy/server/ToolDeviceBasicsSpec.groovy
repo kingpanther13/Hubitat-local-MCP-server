@@ -1637,7 +1637,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.results[1].command == 'on'
     }
 
-    def "a batch where EVERY entry failed is a tool error, listing every device"() {
+    def "a batch where EVERY entry failed reports success false, listing every device"() {
         given: 'neither device exists'
         childDevicesList.clear()
 
@@ -1647,9 +1647,9 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             [deviceId: '999', command: 'off']
         ])
 
-        then: 'nothing landed, so the call genuinely did nothing and says so'
+        then: 'nothing landed, so the call genuinely did nothing and says so; the envelope flag comes from success:false'
         result.success == false
-        result.isError == true
+        !result.containsKey('isError')
         result.count == 2
         result.sentCount == 0
         result.failedCount == 2
@@ -1661,7 +1661,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         !result.containsKey('partial')
     }
 
-    def "a partially failed batch is NOT a tool error -- some devices already moved"() {
+    def "a partially failed batch is marked partial -- some devices already moved"() {
         given:
         def a = switchDevice(10, 'Lamp A')
         childDevicesList << a
@@ -1677,7 +1677,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 1
         0 * a.on()
 
-        and: 'isError would tell the caller the call did nothing, while Lamp A is already on'
+        and: 'partial and the note tell the caller Lamp A is already on'
         result.success == false
         result.partial == true
         !result.containsKey('isError')
@@ -1955,7 +1955,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: a partial batch renders a normal envelope, an all-failed batch renders isError (useGateways=#useGateways)"() {
+    def "via dispatch: a partial batch and an all-failed batch both render isError (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def a = switchDevice(10, 'Lamp A')
@@ -1968,12 +1968,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             [deviceId: '999', command: 'on']
         ]])
 
-        then: 'Lamp A is already on, so an isError envelope would misreport the call as a no-op'
+        then: 'a failed entry is a tool execution error; partial says Lamp A is already on'
         nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 1
         0 * a.on()
         partialResponse.error == null
-        partialResponse.result.isError != true
-        mcpDriver.parseInner(partialResponse).partial == true
+        partialResponse.result.isError == true
+        def partialInner = mcpDriver.parseInner(partialResponse)
+        partialInner.partial == true
+        !partialInner.containsKey('isError')
 
         when: 'nothing lands at all'
         def allFailedResponse = mcpDriver.callTool('hub_call_device_command', [commands: [
@@ -1981,7 +1983,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             [deviceId: '999', command: 'on']
         ]])
 
-        then: 'that IS a tool-execution error, and the envelope says so'
+        then: 'the envelope says so too'
         allFailedResponse.error == null
         allFailedResponse.result.isError == true
         mcpDriver.parseInner(allFailedResponse).failedDeviceIds == ['998', '999']
