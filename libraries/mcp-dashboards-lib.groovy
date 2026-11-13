@@ -700,7 +700,8 @@ private Map _updateLegacyDashboard(String id, Map status, Map args) {
             return failed("Layout save failed: ${e.message}", "The layout may be unchanged; verify with hub_get_dashboard.")
         }
         if (saved == null) return failed("The layout endpoint did not echo a saved layout; outcome unconfirmed.", "Verify with hub_get_dashboard.")
-        applied << (hasWholesale ? "layout" : granular.join(", "))
+        // One entry per op, in the order they are applied within the single save.
+        applied.addAll(hasWholesale ? ["layout"] : ["removeTileIds", "updateTiles", "addTiles", "setOptions"].findAll { it in granular })
         out.tileCount = saved.tiles.size()
         out.layout = saved
     }
