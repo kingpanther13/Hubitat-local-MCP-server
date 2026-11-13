@@ -1949,7 +1949,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         tiles.find { it.id == 2 }.template == 'mode'
 
         and: 'applied names the granular ops in the canonical (source-list) order, in one save'
-        r.applied == ['addTiles, updateTiles, removeTileIds']
+        r.applied == ['removeTileIds', 'updateTiles', 'addTiles']
         posts.size() == 1
     }
 
