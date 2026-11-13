@@ -413,7 +413,7 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 | Tool | Description |
 |------|-------------|
 | `hub_list_dashboards` | List Easy and legacy Hubitat® Dashboards (id, name, type) |
-| `hub_get_dashboard` | Get one dashboard in full by `id` (Easy config, or a legacy dashboard's devices and tile layout) |
+| `hub_get_dashboard` | Get one dashboard in full by `dashboardId` (Easy config, or a legacy dashboard's devices and tile layout) |
 
 </details>
 
@@ -649,10 +649,10 @@ The **Developer Mode** pattern — for LLM-agent and CI/CD pipelines that need t
 | Tool | Description |
 |------|-------------|
 | `hub_list_dashboards` | List Easy and legacy Hubitat® Dashboards (also in `hub_read_dashboards`) |
-| `hub_get_dashboard` | Get one dashboard in full by `id` (also in `hub_read_dashboards`) |
+| `hub_get_dashboard` | Get one dashboard in full by `dashboardId` (also in `hub_read_dashboards`) |
 | `hub_create_dashboard` | Create an Easy Dashboard from `name` + `deviceIds` (≥1) plus tile toggles, navigation, theme, and PINs, or an empty legacy one (`type='legacy'`); `sourceId` copies an existing dashboard by value |
-| `hub_update_dashboard` | Update by `id`: an Easy Dashboard's config is replaced WHOLESALE (read it first with `hub_get_dashboard`); a legacy dashboard's name, authorized devices, or tile layout (wholesale or granular tile ops) |
-| `hub_delete_dashboard` | Permanently delete an Easy or legacy dashboard by `id` (devices are not deleted; `confirm=true` + recent backup) |
+| `hub_update_dashboard` | Update by `dashboardId`: an Easy Dashboard's config is replaced WHOLESALE (read it first with `hub_get_dashboard`); a legacy dashboard's name, authorized devices, or tile layout (wholesale or granular tile ops) |
+| `hub_delete_dashboard` | Permanently delete an Easy or legacy dashboard by `dashboardId` (devices are not deleted; `confirm=true` + recent backup) |
 
 Easy Dashboards are the hub's touch-friendly device dashboards (classic child apps of the Easy Dashboard Parent); legacy Hubitat® Dashboards are the classic tile-grid dashboards.
 
