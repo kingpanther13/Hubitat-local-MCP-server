@@ -26,8 +26,8 @@ class TestHub implements Hub {
     // --- INTERFACE (declared abstract on Hub — auto-generated getters satisfy the contract) ---
     String zigbeeId
     BigInteger uptime
-    // location.hub.firmwareVersionString — read by _installBundleFromUrl to pick the
-    // bundle endpoint (>= 2.3.8.108 -> /bundle2/uploadZipFromUrl, else /bundle/...).
+    // location.hub.firmwareVersionString — the firmware under test, which picks the bundle
+    // install endpoint (>= 2.3.8.108 -> /bundle2/uploadZipFromUrl, else /bundle/...).
     // (Declared on Hub in v0.28.6; it sat under RUNTIME-ONLY until this was checked.)
     String firmwareVersionString
     // location.hub.localIP — hub_get_info reports it, and the transport's Origin check

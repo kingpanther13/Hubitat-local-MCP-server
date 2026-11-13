@@ -5748,7 +5748,7 @@ def getGatewayConfig() {
                 hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), each id usable with hub_create_device. Args: include?, nameFilter?, cursor?",
                 hub_get_source: "Get app/driver/library Groovy source with chunked reading. Args: type (app|driver|library), id, offset?, length?",
                 hub_list_libraries: "List installed Groovy libraries (id, name, namespace, version). Pair with hub_get_source(type='library', id) to read source. Args: cursor?",
-                hub_list_bundles: "List installed code bundles (the Bundle-Manager containers HPM delivers code in; distinct from Libraries Code). Returns id, name, namespace, private, and a contains summary. Find a bundle id for hub_delete_bundle/hub_export_bundle. Args: cursor?",
+                hub_list_bundles: "List installed code bundles (the Bundle-Manager containers HPM delivers code in; distinct from Libraries Code). Returns id, name, namespace, sourceUrl, the code ids it stored (codeIds) and a contains summary of their names. Find a bundle id for hub_delete_bundle/hub_export_bundle. Args: cursor?",
                 hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all (hub scopes also return the automatic-backup schedule and network-share settings). Args: scope?, cursor?",
                 hub_get_backup: "Get source from a backup. Args: backupKey",
                 hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
@@ -8927,31 +8927,32 @@ def _latestLocalHubBackupEpoch(String kind = "any") {
  * or the manifest cannot be published.
  */
 def backupItemSource(String type, String id) {
-    return _withBackupLock("backup ${type} ${id}") { _backupItemSourceLocked(type, id) }
+    return _backupCodeItem(type, id, null, null)
 }
 
-private Map _backupItemSourceLocked(String type, String id) {
+Map backupLibrarySource(String libraryId) {
+    return _backupCodeItem("library", libraryId, null, null)
+}
+
+// protectedKeys are backup keys retention must not evict while this one is published (backups an
+// operation still depends on); fetched is the [source, version] _readItemBackupSource already read.
+Map _backupCodeItem(String type, String id, Collection protectedKeys, Map fetched) {
+    return _withBackupLock("backup ${type} ${id}") { _backupItemSourceLocked(type, id, protectedKeys, fetched) }
+}
+
+private Map _backupItemSourceLocked(String type, String id, Collection protectedKeys, Map fetched) {
     def manifest = _itemBackupManifest()
 
     String key = "${type}_${id}"
-    def existing = _reusableItemBackup(manifest, key, "Item")
+    def existing = _reusableItemBackup(manifest, key, type == "library" ? "Library" : "Item", protectedKeys)
     if (existing != null) return existing
 
-    // Fetch the current source
-    def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
-    def responseText = hubInternalGet(ajaxPath, [id: id])
-    if (!responseText) {
-        throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: empty response from hub")
-    }
-
-    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-    if (parsed.status == "error" || !parsed.source) {
-        throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: ${parsed.errorMessage ?: 'no source code returned'}")
-    }
+    Map src = fetched ?: _readItemBackupSource(type, id)
+    String source = src.source
 
     // Save full source code to hub's local File Manager (no cloud, no size limit)
-    def fileName = _itemBackupFileName("mcp-backup-${type}-${id}.groovy")
-    byte[] sourceBytes = parsed.source.getBytes("UTF-8")
+    String fileName = _itemBackupFileName("mcp-backup-${type}-${id}.groovy")
+    byte[] sourceBytes = source.getBytes("UTF-8")
     try {
         uploadHubFile(fileName, sourceBytes)
     } catch (Exception e) {
@@ -8963,15 +8964,43 @@ private Map _backupItemSourceLocked(String type, String id) {
         type: type,
         id: id,
         fileName: fileName,
-        version: parsed.version,
+        version: src.version,
         timestamp: now(),
-        sourceLength: parsed.source.length(),
+        sourceLength: source.length(),
         sizeBytes: sourceBytes.length
     ]
-    _publishUploadedItemBackup(key.toString(), entry)
-    mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code to File Manager: ${fileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
+    _publishUploadedItemBackup(key, entry, protectedKeys)
+    mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code to File Manager: ${fileName} (version ${src.version}, ${source.length()} chars)")
     // fresh marks a backup read by this call, so its version is current; a reused one is not.
     return entry + [fresh: true]
+}
+
+// The [source, version] a backup of an app, driver or library stores, read from the hub. Throws
+// IllegalArgumentException when the hub returns no source.
+Map _readItemBackupSource(String type, String id) {
+    boolean library = type == "library"
+    String responseText = library ? hubInternalGet("/library/list/single/data/${id}") : hubInternalGet("/${type}/ajax/code", [id: id])
+    if (!responseText) {
+        throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: empty response from hub")
+    }
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(responseText)
+    } catch (Exception parseEx) {
+        if (!library) throw parseEx
+        throw new IllegalArgumentException("Cannot back up library ID ${id}: failed to parse hub response: ${parseEx.message}")
+    }
+    if (library) {
+        if (!(parsed instanceof List) || parsed.isEmpty()) {
+            throw new IllegalArgumentException("Cannot back up library ID ${id}: library not found")
+        }
+        parsed = parsed[0]
+        return [source: (parsed.source ?: "").toString(), version: parsed.version]
+    }
+    if (parsed.status == "error" || !parsed.source) {
+        throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: ${parsed.errorMessage ?: 'no source code returned'}")
+    }
+    return [source: parsed.source.toString(), version: parsed.version]
 }
 
 String _stateOwnerKey() { app?.id?.toString() ?: "unidentified" }
@@ -9194,12 +9223,18 @@ private void _commitItemBackupManifest(Map manifest) {
 
 // The reusable within-the-hour baseline for key, or null when a fresh backup is
 // needed. The caller holds the monitor; manifest is its committed view.
-Map _reusableItemBackup(Map manifest, String key, String label) {
+Map _reusableItemBackup(Map manifest, String key, String label, Collection protectedKeys) {
     def existing = manifest[key]
-    if (existing?.deletePending || !existing?.timestamp || (now() - existing.timestamp) >= 3600000) return null
+    if (!_isReusableItemBackup(existing)) return null
     mcpLog("debug", "hub-admin", "${label} backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
-    _repairItemBackupRetention(manifest, key, existing as Map)
+    _repairItemBackupRetention(manifest, key, existing as Map, protectedKeys)
     return existing
+}
+
+// A backup taken within the last hour stands in for a new one, keeping the pre-edit original.
+boolean _isReusableItemBackup(entry) {
+    return entry instanceof Map && !entry.deletePending && entry.timestamp instanceof Number &&
+        (now() - (entry.timestamp as Long)) < 3600000
 }
 
 private String _itemBackupFileName(String preferred) {
@@ -9214,10 +9249,10 @@ private String _itemBackupFileName(String preferred) {
 // limits (an older version's entries, adopted files) is repaired by republishing the
 // unchanged entry. The repair is best-effort: the reused baseline is valid whether or
 // not the trim persists.
-void _repairItemBackupRetention(Map manifest, String key, Map entry) {
-    if (!_itemBackupRetentionVictims(manifest, [key])) return
+void _repairItemBackupRetention(Map manifest, String key, Map entry, Collection protectedKeys) {
+    if (!_itemBackupRetentionVictims(manifest, [key] + (protectedKeys ?: []))) return
     try {
-        _publishItemBackup(key, entry)
+        _publishItemBackup(key, entry, protectedKeys)
         mcpLog("info", "hub-admin", "Trimmed the backup index to its retention limits while reusing the baseline for ${key}; the evicted files were deleted best-effort")
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "Backup retention repair failed for ${key} (${e.message}); reusing the existing baseline and leaving the index over its limits until a later publication succeeds")
@@ -9226,7 +9261,7 @@ void _repairItemBackupRetention(Map manifest, String key, Map entry) {
 
 // The file was uploaded under a name no committed entry references, so a failed
 // publication would leave it unreferenced in File Manager. Reclaim it, then rethrow.
-void _publishUploadedItemBackup(String key, Map entry, String protectedKey = null) {
+void _publishUploadedItemBackup(String key, Map entry, protectedKey = null) {
     try {
         _publishItemBackup(key, entry, protectedKey)
     } catch (Exception publishError) {
@@ -9240,8 +9275,10 @@ void _publishUploadedItemBackup(String key, Map entry, String protectedKey = nul
 
 // Backups are evicted only when the byte budget is exceeded; an app, driver or library key
 // is otherwise replaced in place by that item's next baseline. Only the published key and
-// protectedKey (an active restore target) are never evicted.
-void _publishItemBackup(String key, Map entry, String protectedKey = null) {
+// protectedKey are never evicted: an active restore target, or (a collection) every backup an
+// operation has taken and still depends on.
+void _publishItemBackup(String key, Map entry, protectedKey = null) {
+    Collection keep = (protectedKey instanceof Collection) ? (protectedKey as Collection) : [protectedKey]
     synchronized (ITEM_BACKUP_MANIFESTS) {
         // previous must survive the removals below: it is what finds the files no entry references any more.
         Map previous = _itemBackupManifest()
@@ -9249,8 +9286,8 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
         manifest.put(key, entry)
         // An unrecovered pending-deletion marker cannot authorize reuse; publication
         // purges the leftovers; their files are removed best-effort below.
-        manifest.keySet().findAll { it != key && it != protectedKey && manifest[it]?.deletePending }.each { manifest.remove(it) }
-        List victims = _itemBackupRetentionVictims(manifest, [key, protectedKey])
+        manifest.keySet().findAll { it != key && !keep.contains(it) && manifest[it]?.deletePending }.each { manifest.remove(it) }
+        List victims = _itemBackupRetentionVictims(manifest, [key] + keep)
         victims.each { manifest.remove(it) }
         if (victims) mcpLog("info", "hub-admin", "Backup retention evicted ${victims.size()} backup(s) while publishing ${key}: ${victims.join(', ')}")
         _commitItemBackupManifest(manifest)
@@ -12913,22 +12950,24 @@ Reference for the bundle tools (hub_install_bundle, hub_list_bundles, hub_delete
 
 - `importUrl` is the bundle .zip the hub fetches and unpacks into Apps/Drivers/Libraries Code, the way Hubitat Package Manager installs a bundle. `installer:true` sets HPM's installer (private) flag; default false. The hub does not deep-validate the zip.
 - **Endpoint routing:** uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else the legacy /bundle/uploadZipFromUrl (the chosen path is also surfaced in the result's `endpoint` field).
-- **Returned id:** the hub's reply carries no id, so the call reads the bundle list before and after and returns the new bundle as `bundle` (id, name, namespace, private, contains) and its id as `bundleId`. When no single new id appears (a reinstall keeps its id) or a list cannot be read, the install still reports success with a `note`; find the bundle with hub_list_bundles. Send bundle installs one at a time.
+- **Returned id:** the hub's reply carries no id, so the call reads the bundle list before and after and returns the new bundle as `bundle` (the hub_list_bundles entry) and its id as `bundleId`. When several new bundles appear, the one whose `sourceUrl` is `importUrl` is it; a reinstall keeps its id and is found the same way, with a `note`. When no single bundle matches or a list cannot be read, the install still reports success with a `note`; find the bundle with hub_list_bundles. Send bundle installs one at a time.
+- **Failed install:** the result is `success:false` with the hub's own reason in `error` (and its reply in `rawResponse`). The hub can add part of a bundle's code to Code before it refuses the rest; the call compares the code lists read before and after, and lists that code in `codeAdded` (type, id, name). Check it, and delete what you do not want with hub_delete_item, before retrying. With no reply at all, whether the bundle was installed is unknown: check hub_list_bundles before retrying.
 
 ### hub_delete_bundle
 
-- `bundleId` is the bundle id from hub_list_bundles. The bundle must appear on a clean bundle list before the delete is sent, because the hub reports success for any id: a missing id returns `success:false` ("No bundle with id N") and an unreadable list returns `success:false`, both with nothing deleted.
+- `bundleId` is the bundle id from hub_list_bundles. The hub's record of the bundle is read before the delete is sent, because the hub reports success for any id: an unknown id returns `success:false` ("No bundle with id N") and an unreadable record returns `success:false`, both with nothing deleted.
 - Without `deleteCode` only the bundle is removed; the apps, drivers and libraries it delivered stay in Code. Delete those with hub_delete_item(type, item_id) per item.
-- `deleteCode:true` also deletes the delivered code. Each name in the bundle's `contains` is matched to one code id (same name and the bundle's namespace first, else the name alone if only one item has it); if any name matches none or several, nothing is deleted and the names come back in `unresolved`. Every matched item is backed up first (`backupFiles`); if a backup cannot be taken, nothing is deleted.
+- `deleteCode:true` also deletes the code ids the hub stored for the bundle (the bundle's `codeIds`). Each id is first looked up in its code list: an id with no code behind it (deleted since the install) is refused up front, naming it in `missingCode`, because the hub's delete fails part-way on it; delete the bundle without `deleteCode`, then each remaining item with hub_delete_item. Every item is backed up first (`backupFiles`), and the backups are kept until the delete has run. If a backup cannot be taken, or the bundle's backups alone would exceed the backup storage budget (`backupBudgetMb`), nothing is backed up or deleted.
 - The hub keeps delivered code that is still in use (an installed app, a device, or code that #includes a library) and still reports success. The result lists `codeDeleted` and `codeKept` (type, id, name), and `codeUnverified` when a code list could not be read afterwards. For `codeKept`, remove the app instances or switch the devices to another driver, then delete each item with hub_delete_item. Deleting a library may break apps and drivers that #include it.
+- **Unconfirmed delete:** when the hub refuses the delete, answers something unrecognized, or the request fails, the result is `success:false` and the bundle is read again: `bundleExists` says whether it is still there (null when unknown) and, with `deleteCode`, `codeDeleted` / `codeKept` / `codeUnverified` say where each item stands, since the hub can delete part of the code before it reports failure. Check hub_list_bundles before retrying.
 
 ### hub_list_bundles
 
-Each entry: id, name, namespace, a private flag, and a `contains` summary of the apps/drivers/libraries the bundle delivers.
+Each entry: id, name, namespace, `sourceUrl` (where it was installed from), `codeIds` (the app, driver and library ids the hub stored for the bundle; what `deleteCode` acts on), and a `contains` summary of the names it delivered. When the hub's summary text cannot be split into names that match `codeIds` (a name containing `]`, or code deleted since the install), the text is given as `content` instead. The bundles' zip passwords are never returned.
 
 ### hub_export_bundle
 
-`saveAs` filename sanitization: `.zip` is appended if missing, and non-filename characters are replaced with `_`. The result returns the final `fileName`.
+`saveAs` filename sanitization: `.zip` is appended if missing, and non-filename characters are replaced with `_`. The result returns the final `fileName`. Without `saveAs` the bundle's record supplies the name, and an unknown id is refused. With `saveAs` an unknown id surfaces as the hub's failed export (often HTTP 500): check the id with hub_list_bundles.
 '''
     ,
         rooms: '''## Rooms

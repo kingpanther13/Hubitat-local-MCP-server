@@ -2873,7 +2873,7 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
     if (recent != null) {
         // Repair only a validated handle: trimming to protect a handle that is then
         // discarded would evict one live rollback point for nothing.
-        _repairItemBackupRetention(mfst, recent.key.toString(), recent.value as Map)
+        _repairItemBackupRetention(mfst, recent.key.toString(), recent.value as Map, null)
         mcpLog("info", "rm-native", "Reusing recent backup ${recent.key} for rule ${ruleId} (${reason}); restoring it reverts every edit since ${formatTimestamp(recent.value.timestamp as Long)}")
         return [backupKey: recent.key,
                 baselineReused: true,

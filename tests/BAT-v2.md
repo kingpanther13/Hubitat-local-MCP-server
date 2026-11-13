@@ -3474,7 +3474,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 }
 ```
 
-**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../<bundle>.zip', confirm:true})`. Result: `{success:true, bundleId:'<new id>', bundle:{id, name, namespace:'mcptest', private:false, contains:{apps:['Deadman Test Target Bundle'], ...}}, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_apps` shows the bundle's app. This exercises the hub's bundle fetch + unpack for app code (the fixture carries no libraries), the same server-side path Hubitat Package Manager uses for a bundle, no UI.
+**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../<bundle>.zip', confirm:true})`. Result: `{success:true, bundleId:'<new id>', bundle:{id, name, namespace:'mcptest', sourceUrl:'<the importUrl>', codeIds:{apps:['<app id>'], drivers:[], libraries:[]}, contains:{apps:['Deadman Test Target Bundle'], ...}}, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_apps` shows the bundle's app. This exercises the hub's bundle fetch + unpack for app code (the fixture carries no libraries), the same server-side path Hubitat Package Manager uses for a bundle, no UI.
 
 ### T510 — hub_install_bundle refuses without confirm flag
 
@@ -3507,7 +3507,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 }
 ```
 
-**Expected**: AI calls `hub_read_apps_code(tool='hub_list_bundles')` (or the flat tool). Result lists each installed bundle with its `contains` apps/drivers/libraries, each entry carrying an `id`. AI explains bundles are the Bundle-Manager containers HPM delivers code in — distinct from the Libraries Code entries (`hub_list_libraries`).
+**Expected**: AI calls `hub_read_apps_code(tool='hub_list_bundles')` (or the flat tool). Result lists each installed bundle with its `contains` apps/drivers/libraries and the `codeIds` the hub stored for it, each entry carrying an `id` and none carrying a zip password field. AI explains bundles are the Bundle-Manager containers HPM delivers code in — distinct from the Libraries Code entries (`hub_list_libraries`).
 
 ### T513 — hub_export_bundle saves a bundle .zip to the File Manager
 
@@ -3530,7 +3530,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 }
 ```
 
-**Expected**: AI calls `hub_manage_code(tool='hub_delete_bundle', args={bundleId:<id>, deleteCode:true, confirm:true})`. Result `{success:true, bundleId:'<id>', codeDeleted:[{type:'app', id, name:'Deadman Test Target Bundle'}], codeKept:[], backupFiles:[...]}`; follow-up `hub_list_bundles` and `hub_list_apps(scope='types')` show neither the bundle nor its app. AI notes that without `deleteCode` only the bundle is removed and its code stays in Code, and that code still in use would come back in `codeKept`. Without `confirm=true` the tool refuses with "SAFETY CHECK FAILED"; an id not on the bundle list returns `success:false` "No bundle with id N" with nothing deleted.
+**Expected**: AI calls `hub_manage_code(tool='hub_delete_bundle', args={bundleId:<id>, deleteCode:true, confirm:true})`. Result `{success:true, bundleId:'<id>', codeDeleted:[{type:'app', id, name:'Deadman Test Target Bundle'}], codeKept:[], backupFiles:[...]}`; follow-up `hub_list_bundles` and `hub_list_apps(scope='types')` show neither the bundle nor its app. AI notes that without `deleteCode` only the bundle is removed and its code stays in Code, and that code still in use would come back in `codeKept`. Without `confirm=true` the tool refuses with "SAFETY CHECK FAILED"; an id the hub does not have returns `success:false` (an `isError` result) "No bundle with id N" with nothing deleted. If the bundle's app code was deleted by hand first, `deleteCode` is refused up front naming it in `missingCode`.
 
 ---
 

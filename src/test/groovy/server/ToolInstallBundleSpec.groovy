@@ -7,13 +7,19 @@ import support.ToolSpecBase
 import support.TestHub
 import support.TestLocation
 
+import static support.BundleRecords.SECRET
+import static support.BundleRecords.listJson
+import static support.BundleRecords.record
+
 /**
  * Spec for hub_install_bundle (toolInstallBundle) -- the HPM-style bundle install in the
  * hub_manage_code gateway -- and the _installBundleFromUrl helper it shares with
  * hub_update_package's bundle leg.
  *
- * Hub API contracts verified here:
- *   GET  /hub2/userBundles                              -- read before and after the install
+ * Hub API contracts verified here (record shapes in support.BundleRecords):
+ *   GET  /bundle/list/json                              -- read before and after the install
+ *   GET  /hub2/userAppTypes, /hub2/userDeviceTypes, /hub2/userLibraries -- read before the install
+ *        and, when it fails, after it, to report code a refused install still added
  *   GET  /bundle2/uploadZipFromUrl?url=&pwd=&private=  -- firmware >= 2.3.8.108; {"success":true}, no id
  *   POST /bundle/uploadZipFromUrl  (JSON {url, installer, pwd}) -- older firmware
  *
@@ -39,15 +45,29 @@ class ToolInstallBundleSpec extends ToolSpecBase {
     private void modernHub() { sharedLocation.hub = new TestHub(firmwareVersionString: '2.4.0.100') }
     private void oldHub()    { sharedLocation.hub = new TestHub(firmwareVersionString: '2.3.7.140') }
 
-    private static Map bundleRow(int id, String name = 'Throwaway') {
-        [id: id, name: name, namespace: 'mcptest', 'private': false, content: 'apps [Target], drivers [], libraries []']
+    private static Map bundleRow(int id, String name = 'Throwaway', String url = BUNDLE_URL) {
+        record(id: id, name: name, 'private': false, appTypeIds: [id * 10], sourceUrl: url,
+               contentReadable: 'apps [Target], drivers [], libraries []')
+    }
+
+    private static final List CODE_LISTS = ['/hub2/userAppTypes', '/hub2/userDeviceTypes', '/hub2/userLibraries']
+
+    // Empty code lists, unless a test registers its own.
+    private void stubCodeLists() {
+        CODE_LISTS.each { path -> hubGet.register(path) { params -> '[]' } }
     }
 
     // The list answers `before` until the install runs, then `after`.
     private void stubBundleLists(List before, List after) {
         boolean installed = false
-        hubGet.register('/hub2/userBundles') { params -> JsonOutput.toJson(installed ? after : before) }
+        stubCodeLists()
+        hubGet.register('/bundle/list/json') { params -> listJson(installed ? after : before) }
         hubGet.register('/bundle2/uploadZipFromUrl') { params -> installed = true; '{"success":true,"message":null}' }
+    }
+
+    private void stubEmptyList() {
+        stubCodeLists()
+        hubGet.register('/bundle/list/json') { params -> '[]' }
     }
 
     private Map createBundle(Map extra = [:]) {
@@ -162,10 +182,42 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         result.bundle.namespace == 'mcptest'
         result.bundle['private'] == false
         result.bundle.contains.apps == ['Target']
+        result.bundle.codeIds.apps == ['50']
         result.endpoint == '/bundle2/uploadZipFromUrl'
         result.installer == false
         result.note == null
-        hubGet.calls*.path == ['/hub2/userBundles', '/bundle2/uploadZipFromUrl', '/hub2/userBundles']
+        hubGet.calls*.path == ['/bundle/list/json'] + CODE_LISTS + ['/bundle2/uploadZipFromUrl', '/bundle/list/json']
+        !JsonOutput.toJson(result).contains(SECRET)
+    }
+
+    def "when several bundles appear the one installed from this URL is the new one"() {
+        given:
+        enableWrite()
+        modernHub()
+        stubBundleLists([], [bundleRow(5, 'Other', 'https://example.com/other.zip'), bundleRow(6)])
+
+        when:
+        def result = createBundle()
+
+        then:
+        result.success == true
+        result.bundleId == '6'
+        result.note == null
+    }
+
+    def "several new bundles none of which came from this URL leave the id unknown"() {
+        given:
+        enableWrite()
+        modernHub()
+        stubBundleLists([], [bundleRow(5, 'A', 'https://example.com/a.zip'), bundleRow(6, 'B', 'https://example.com/b.zip')])
+
+        when:
+        def result = createBundle()
+
+        then:
+        result.success == true
+        result.bundleId == null
+        result.note.contains('No single new bundle appeared')
     }
 
     @Unroll
@@ -191,11 +243,27 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "a reinstall that keeps its id still succeeds, with a note and no id"() {
+    def "a reinstall keeps its id and is found by the URL it was installed from"() {
         given:
         enableWrite()
         modernHub()
-        stubBundleLists([bundleRow(5)], [bundleRow(5)])
+        stubBundleLists([bundleRow(3, 'Other', 'https://example.com/other.zip'), bundleRow(5)],
+                        [bundleRow(3, 'Other', 'https://example.com/other.zip'), bundleRow(5)])
+
+        when:
+        def result = createBundle()
+
+        then:
+        result.success == true
+        result.bundleId == '5'
+        result.note.contains('kept its id')
+    }
+
+    def "a reinstall of a URL no bundle records still succeeds, with a note and no id"() {
+        given:
+        enableWrite()
+        modernHub()
+        stubBundleLists([bundleRow(5, 'T', 'https://example.com/other.zip')], [bundleRow(5, 'T', 'https://example.com/other.zip')])
 
         when:
         def result = createBundle()
@@ -203,7 +271,6 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         then:
         result.success == true
         result.bundleId == null
-        result.note.contains('No single new bundle id appeared')
         result.note.contains('hub_list_bundles')
     }
 
@@ -211,7 +278,8 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         given:
         enableWrite()
         modernHub()
-        hubGet.register('/hub2/userBundles') { params -> '<html>login</html>' }
+        stubCodeLists()
+        hubGet.register('/bundle/list/json') { params -> '<html>login</html>' }
         hubGet.register('/bundle2/uploadZipFromUrl') { params -> '{"success":true}' }
 
         when:
@@ -221,7 +289,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         result.success == true
         result.bundleId == null
         result.note.contains('could not be read before the install')
-        hubGet.calls*.path == ['/hub2/userBundles', '/bundle2/uploadZipFromUrl']
+        hubGet.calls*.path == ['/bundle/list/json'] + CODE_LISTS + ['/bundle2/uploadZipFromUrl']
     }
 
     def "an unreadable list after the install keeps the success"() {
@@ -229,7 +297,8 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         enableWrite()
         modernHub()
         int reads = 0
-        hubGet.register('/hub2/userBundles') { params -> reads++ == 0 ? '[]' : { throw new RuntimeException('timeout') }() }
+        stubCodeLists()
+        hubGet.register('/bundle/list/json') { params -> reads++ == 0 ? '[]' : { throw new RuntimeException('timeout') }() }
         hubGet.register('/bundle2/uploadZipFromUrl') { params -> '{"success":true}' }
 
         when:
@@ -248,7 +317,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         enableWrite()
         modernHub()
         Map captured = null
-        hubGet.register('/hub2/userBundles') { params -> '[]' }
+        stubEmptyList()
         hubGet.register('/bundle2/uploadZipFromUrl') { params -> captured = params; '{"success":true}' }
 
         when:
@@ -285,7 +354,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         given:
         enableWrite()
         oldHub()
-        hubGet.register('/hub2/userBundles') { params -> '[]' }
+        stubEmptyList()
         String capturedPath = null
         def capturedBody = null
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
@@ -308,7 +377,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         given:
         enableWrite()
         modernHub()
-        hubGet.register('/hub2/userBundles') { params -> '[]' }
+        stubEmptyList()
         // The hub's reply for a zip it cannot fetch, as captured live.
         hubGet.register('/bundle2/uploadZipFromUrl') { params -> '{"success":false,"message":"Cannot retrieve zip file from https://example.com/missing.zip"}' }
 
@@ -320,16 +389,62 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         result.error == 'Bundle install failed: Cannot retrieve zip file from https://example.com/missing.zip'
         result.rawResponse.contains('Cannot retrieve zip file')
         result.endpoint == '/bundle2/uploadZipFromUrl'
-        hubGet.calls*.path == ['/hub2/userBundles', '/bundle2/uploadZipFromUrl']
+        !result.containsKey('codeAdded')
+        result.note.contains("hub_get_tool_guide(section='bundles')")
+        hubGet.calls*.path == ['/bundle/list/json'] + CODE_LISTS + ['/bundle2/uploadZipFromUrl'] + CODE_LISTS
+    }
+
+    def "a refused install reports the code the hub still added"() {
+        given: 'the hub installs the zip\'s app, then refuses its library name'
+        enableWrite()
+        modernHub()
+        boolean installed = false
+        hubGet.register('/bundle/list/json') { params -> '[]' }
+        hubGet.register('/hub2/userAppTypes') { params ->
+            JsonOutput.toJson([[id: 1, name: 'Old App']] + (installed ? [[id: 846, name: 'PR Review App']] : []))
+        }
+        hubGet.register('/hub2/userDeviceTypes') { params -> '[]' }
+        hubGet.register('/hub2/userLibraries') { params -> '[]' }
+        hubGet.register('/bundle2/uploadZipFromUrl') { params ->
+            installed = true
+            '{"success":false,"message":"name must consist of letters, numbers, underscores, dashes and dots"}'
+        }
+
+        when:
+        def result = createBundle()
+
+        then:
+        result.success == false
+        result.error.contains('name must consist of letters')
+        result.codeAdded == [[type: 'app', id: '846', name: 'PR Review App']]
+        result.note.contains('codeAdded')
+        result.note.contains('hub_delete_item')
+    }
+
+    def "a code list that cannot be read after a refused install is named"() {
+        given:
+        enableWrite()
+        modernHub()
+        int libReads = 0
+        stubEmptyList()
+        hubGet.register('/hub2/userLibraries') { params -> if (libReads++ > 0) throw new RuntimeException('busy'); '[]' }
+        hubGet.register('/bundle2/uploadZipFromUrl') { params -> '{"success":false}' }
+
+        when:
+        def result = createBundle()
+
+        then:
+        result.success == false
+        result.note.contains('library code list could not be read')
     }
 
     @Unroll
-    def "a failed install via dispatch is a success=false result, not a protocol error (useGateways=#useGateways)"() {
+    def "a failed install via dispatch is an isError result, not a protocol error (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
         modernHub()
-        hubGet.register('/hub2/userBundles') { params -> '[]' }
+        stubEmptyList()
         hubGet.register('/bundle2/uploadZipFromUrl') { params -> '{"success":false}' }
 
         when:
@@ -350,7 +465,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         given:
         enableWrite()
         modernHub()
-        hubGet.register('/hub2/userBundles') { params -> '[]' }
+        stubEmptyList()
         hubGet.register('/bundle2/uploadZipFromUrl') { params -> throw new RuntimeException('connection refused') }
 
         when:

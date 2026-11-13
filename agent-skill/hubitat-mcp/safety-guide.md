@@ -103,11 +103,12 @@ ALL destructive write tools (`confirm`+backup tier) require these steps in order
 
 #### hub_install_bundle / hub_delete_bundle
 - `hub_install_bundle` unpacks the .zip into Apps/Drivers/Libraries Code the way HPM does and returns the new bundle's `bundleId`; confirm the URL with the user first
-- `hub_delete_bundle` takes the `bundleId` from `hub_list_bundles`; an id not on the list is refused with nothing deleted
+- A failed install can still leave part of the bundle's code in Code; it comes back in `codeAdded`. Tell the user before retrying
+- `hub_delete_bundle` takes the `bundleId` from `hub_list_bundles`; an id the hub does not have is refused with nothing deleted
 - Without `deleteCode` only the bundle goes; the apps, drivers and libraries it delivered stay in Code
-- `deleteCode=true` backs up each delivered item first (any failed backup deletes nothing), then deletes the bundle with its code. The hub keeps code still in use (an installed app, a device on the driver, code that `#include`s the library) and lists it in `codeKept`; tell the user what was kept and why
-- If a delivered name matches no code item or several, nothing is deleted and the names come back in `unresolved`; delete the bundle without `deleteCode` and then each item with `hub_delete_item`
-- Deleting a library may break apps and drivers that `#include` it
+- `deleteCode=true` backs up each item the hub stored for the bundle (its `codeIds`) first (any failed backup, or backups that would exceed the backup storage budget, deletes nothing), then deletes the bundle with its code. The hub keeps code still in use (an installed app, a device on the driver, code that `#include`s the library) and lists it in `codeKept`; tell the user what was kept and why
+- If the bundle lists code that is no longer in Code, nothing is deleted and the ids come back in `missingCode`; delete the bundle without `deleteCode` and then each remaining item with `hub_delete_item`
+- If the delete is not confirmed (`success:false`), read `bundleExists`, `codeDeleted` and `codeKept` before retrying: the hub can delete part of the code before it reports failure
 
 #### hub_delete_room
 - Devices become unassigned (not deleted)

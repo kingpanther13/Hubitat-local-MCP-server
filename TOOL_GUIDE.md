@@ -1577,22 +1577,24 @@ Reference for the bundle tools (hub_install_bundle, hub_list_bundles, hub_delete
 
 - `importUrl` is the bundle .zip the hub fetches and unpacks into Apps/Drivers/Libraries Code, the way Hubitat Package Manager installs a bundle. `installer:true` sets HPM's installer (private) flag; default false. The hub does not deep-validate the zip.
 - **Endpoint routing:** uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else the legacy /bundle/uploadZipFromUrl (the chosen path is also surfaced in the result's `endpoint` field).
-- **Returned id:** the hub's reply carries no id, so the call reads the bundle list before and after and returns the new bundle as `bundle` (id, name, namespace, private, contains) and its id as `bundleId`. When no single new id appears (a reinstall keeps its id) or a list cannot be read, the install still reports success with a `note`; find the bundle with hub_list_bundles. Send bundle installs one at a time.
+- **Returned id:** the hub's reply carries no id, so the call reads the bundle list before and after and returns the new bundle as `bundle` (the hub_list_bundles entry) and its id as `bundleId`. When several new bundles appear, the one whose `sourceUrl` is `importUrl` is it; a reinstall keeps its id and is found the same way, with a `note`. When no single bundle matches or a list cannot be read, the install still reports success with a `note`; find the bundle with hub_list_bundles. Send bundle installs one at a time.
+- **Failed install:** the result is `success:false` with the hub's own reason in `error` (and its reply in `rawResponse`). The hub can add part of a bundle's code to Code before it refuses the rest; the call compares the code lists read before and after, and lists that code in `codeAdded` (type, id, name). Check it, and delete what you do not want with hub_delete_item, before retrying. With no reply at all, whether the bundle was installed is unknown: check hub_list_bundles before retrying.
 
 ### hub_delete_bundle
 
-- `bundleId` is the bundle id from hub_list_bundles. The bundle must appear on a clean bundle list before the delete is sent, because the hub reports success for any id: a missing id returns `success:false` ("No bundle with id N") and an unreadable list returns `success:false`, both with nothing deleted.
+- `bundleId` is the bundle id from hub_list_bundles. The hub's record of the bundle is read before the delete is sent, because the hub reports success for any id: an unknown id returns `success:false` ("No bundle with id N") and an unreadable record returns `success:false`, both with nothing deleted.
 - Without `deleteCode` only the bundle is removed; the apps, drivers and libraries it delivered stay in Code. Delete those with hub_delete_item(type, item_id) per item.
-- `deleteCode:true` also deletes the delivered code. Each name in the bundle's `contains` is matched to one code id (same name and the bundle's namespace first, else the name alone if only one item has it); if any name matches none or several, nothing is deleted and the names come back in `unresolved`. Every matched item is backed up first (`backupFiles`); if a backup cannot be taken, nothing is deleted.
+- `deleteCode:true` also deletes the code ids the hub stored for the bundle (the bundle's `codeIds`). Each id is first looked up in its code list: an id with no code behind it (deleted since the install) is refused up front, naming it in `missingCode`, because the hub's delete fails part-way on it; delete the bundle without `deleteCode`, then each remaining item with hub_delete_item. Every item is backed up first (`backupFiles`), and the backups are kept until the delete has run. If a backup cannot be taken, or the bundle's backups alone would exceed the backup storage budget (`backupBudgetMb`), nothing is backed up or deleted.
 - The hub keeps delivered code that is still in use (an installed app, a device, or code that #includes a library) and still reports success. The result lists `codeDeleted` and `codeKept` (type, id, name), and `codeUnverified` when a code list could not be read afterwards. For `codeKept`, remove the app instances or switch the devices to another driver, then delete each item with hub_delete_item. Deleting a library may break apps and drivers that #include it.
+- **Unconfirmed delete:** when the hub refuses the delete, answers something unrecognized, or the request fails, the result is `success:false` and the bundle is read again: `bundleExists` says whether it is still there (null when unknown) and, with `deleteCode`, `codeDeleted` / `codeKept` / `codeUnverified` say where each item stands, since the hub can delete part of the code before it reports failure. Check hub_list_bundles before retrying.
 
 ### hub_list_bundles
 
-Each entry: id, name, namespace, a private flag, and a `contains` summary of the apps/drivers/libraries the bundle delivers.
+Each entry: id, name, namespace, `sourceUrl` (where it was installed from), `codeIds` (the app, driver and library ids the hub stored for the bundle; what `deleteCode` acts on), and a `contains` summary of the names it delivered. When the hub's summary text cannot be split into names that match `codeIds` (a name containing `]`, or code deleted since the install), the text is given as `content` instead. The bundles' zip passwords are never returned.
 
 ### hub_export_bundle
 
-`saveAs` filename sanitization: `.zip` is appended if missing, and non-filename characters are replaced with `_`. The result returns the final `fileName`.
+`saveAs` filename sanitization: `.zip` is appended if missing, and non-filename characters are replaced with `_`. The result returns the final `fileName`. Without `saveAs` the bundle's record supplies the name, and an unknown id is refused. With `saveAs` an unknown id surfaces as the hub's failed export (often HTTP 500): check the id with hub_list_bundles.
 
 ## Rooms
 
