@@ -851,10 +851,10 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - Firing the separate calls in parallel does NOT help -- the hub serialises them anyway (see "Make tool calls sequentially" below).
 - It does not make the devices move simultaneously; the hub still actuates one at a time. For a directly-attached device that costs almost nothing, but a device behind a bridge carries real per-device time that batching cannot remove: six Bond-bridged shades batched came back at ~2.75s, against ~5.0s sent separately (six Z-Wave switches batch at ~1.5s).
 - Entries are independent, so mixed devices and mixed commands go in one batch. Max 20. A partly-failed batch reports failedDeviceIds plus partial:true -- re-send only those ids; the rest already actuated.
-- The batch result always carries `count` (entries attempted), `sentCount`, `failedCount` and a per-entry `results[]`. Any failure adds `failedDeviceIds`, `error` and `note`, sets `success: false` and marks the result `isError: true`. An entry's `deviceId` may be a string or an integer.
+- The batch result always carries `count` (entries attempted), `sentCount`, `failedCount` and a per-entry `results[]`. Any failure adds `failedDeviceIds`, `error` and `note`. A result with `success: false` (a failed entry or an early stop) is sent with `isError: true`. An entry's `deviceId` may be a string or an integer.
 
 - Batch entries return NO state snapshot, and waitFor is not accepted with `commands`. To confirm, follow with hub_get_device_attribute using deviceIds (multi-device convergence): one batch to fire, one poll to confirm -- two round trips for the whole group.
-- A very large batch of slow bridged devices can stop early at the relay time budget: the result carries stoppedEarly:true with remainingCommands, the untried tail verbatim, to re-send in a new call.
+- A very large batch of slow bridged devices can stop early at the relay time budget: the result carries stoppedEarly:true with remainingCommands, the untried tail verbatim, to re-send in a new call; it is `success: false` and flagged `isError: true` even when no entry failed.
 - For a set commanded repeatedly, a group or scene beats both: one device to command and the hub fans out. `commands` is for the ad-hoc set that was never defined in advance.
 
 **hub_list_devices:**

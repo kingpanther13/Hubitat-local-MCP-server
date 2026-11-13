@@ -169,8 +169,9 @@ class HandleToolsCallSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "an oversized failing result preserves isError in the too-large envelope (#failure)"() {
+    def "an oversized failing result preserves isError in the too-large envelope (#failure, useGateways=#useGateways)"() {
         given:
+        settingsMap.useGateways = useGateways
         settingsMap.publishOutputSchemas = true
         script.metaClass.toolGetHubInfo = { a -> flag + [error: 'x' * 130000] }
 
@@ -185,9 +186,11 @@ class HandleToolsCallSpec extends ToolSpecBase {
         mcpDriver.parseInner(response).response_too_large == true
 
         where:
-        failure         | flag
-        'isError'       | [isError: true]
-        'success:false' | [success: false]
+        failure         | flag             | useGateways
+        'isError'       | [isError: true]  | true
+        'isError'       | [isError: true]  | false
+        'success:false' | [success: false] | true
+        'success:false' | [success: false] | false
     }
 
     def "null tool result on a gateway-routed call blames the failing sub-tool, not the gateway"() {
