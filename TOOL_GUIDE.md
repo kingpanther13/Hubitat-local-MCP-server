@@ -1587,7 +1587,7 @@ Each entry: id, name, namespace, a private flag, and a `contains` summary of the
 
 ## Rooms
 
-Room tools address a room by its id (a string from hub_list_rooms, passed as `roomId`), never by name. A device is in at most one room. hub_delete_room is also under "Destructive Write Tools".
+Room tools address a room by its id (a string from hub_list_rooms, passed as `roomId`), never by name. A device is in at most one room. The acknowledgment key above covers hub_create_room and hub_update_room. hub_delete_room is also under "Destructive Write Tools" and takes the key from hub_get_tool_guide(section='hub_admin_write_destructive') instead.
 
 ### hub_list_rooms
 
