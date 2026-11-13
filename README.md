@@ -1676,6 +1676,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v5.1.9** - fix: return success:false tool results with isError: true. PRs: [#585](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/585)
 - **v5.1.8** - docs: support current stable firmware only; feat: one save path and one delete path for code create and delete. PRs: [#583](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/583), [#579](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/579)
 - **v5.1.7** - feat: send expectedVersion with code saves and reject unknown tool arguments. PRs: [#574](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/574)
 - **v5.1.6** - ci: add manual JVM and OS beta lanes; fix: read Rule Machine status from its state instead of its status-span markup. PRs: [#577](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/577), [#578](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/578)
