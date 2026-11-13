@@ -1,14 +1,23 @@
 library(name: "McpDashboardsLib", namespace: "mcp", author: "kingpanther13", description: "Dashboard tools (list, get, create/copy, update, delete) covering Easy Dashboards and legacy Hubitat® Dashboards for the MCP Rule Server.")
 
 def toolListDashboards(args = null) {
-    return _readDashboards().out
+    return _dashboardFlagged(_readDashboards().out)
 }
 
 def toolGetDashboard(args) {
     args = args ?: [:]
     String wantId = _requireDashboardId(args.dashboardId, "dashboardId", " to read")
     def read = _readDashboards()
-    return read.out.success == false ? read.out : _getDashboard(wantId, read)
+    return _dashboardFlagged(read.out.success == false ? read.out : _getDashboard(wantId, read))
+}
+
+// The MCP envelope reads isError, not success, so every failure (success:false) also carries
+// isError:true, and its note points at the guide section for recovery.
+private Map _dashboardFlagged(Map result) {
+    if (result?.success != false) return result
+    String guide = "See hub_get_tool_guide(section='dashboards')."
+    String note = result.note?.toString()
+    return result + [isError: true, note: !note ? guide : (note.contains(guide) ? note : note + " " + guide)]
 }
 
 // One read of the hub's dashboard list: [out: <the public list result>, records: <the raw rows>].
@@ -295,7 +304,7 @@ private Map _dashboardConfigFromApp(String id) {
 }
 
 def toolCreateDashboard(args) {
-    return _createDashboard(args ?: [:])
+    return _dashboardFlagged(_createDashboard(args ?: [:]))
 }
 
 private Map _createDashboard(Map args) {
@@ -564,7 +573,7 @@ private Map _copyLegacyDashboard(String sourceId, Map src, String name) {
 }
 
 def toolUpdateDashboard(args) {
-    return _updateDashboard(args ?: [:])
+    return _dashboardFlagged(_updateDashboard(args ?: [:]))
 }
 
 private Map _updateDashboard(Map args) {
@@ -827,7 +836,7 @@ private void _warnUnauthorizedTileDevice(Map tile, Map status, List warnings) {
 }
 
 def toolDeleteDashboard(args) {
-    return _deleteDashboard(args ?: [:])
+    return _dashboardFlagged(_deleteDashboard(args ?: [:]))
 }
 
 private Map _deleteDashboard(Map args) {
