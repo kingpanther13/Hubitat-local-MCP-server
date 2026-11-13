@@ -5518,6 +5518,13 @@ class TestRunner:
         """One dashboard in full: hub_get_dashboard."""
         return self.client.call_tool(gateway, {"tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
 
+    def _dashboard_ids(self) -> set[str]:
+        """Every dashboard id on the hub; fails the test when the list cannot be read."""
+        listed = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_list_dashboards", "args": {}})
+        assert isinstance(listed, dict) and listed.get("success") is not False, \
+            f"hub_list_dashboards failed: {listed}"
+        return {str(d["id"]) for d in (listed.get("dashboards", []) or []) if d.get("id")}
+
     def _dashboard_id_present(self, dash_id: str) -> bool:
         """True iff a dashboard with this specific installedAppId is on the hub.
 
@@ -5616,12 +5623,15 @@ class TestRunner:
 
         # REFUSALS before any write: sourceId takes only a name beside it, and the single-dashboard
         # tools take dashboardId, never a bare id.
+        # Compare id sets, not a name lookup: a rerun after a relay 504 can find a copy that an
+        # earlier attempt made.
         copy_name = f"{dash_name} (copy)"
+        ids_before = self._dashboard_ids()
         self._expect_tool_refusal("hub_manage_dashboards", {
             "tool": "hub_create_dashboard", "args": {"sourceId": dash_id, "deviceIds": [str(switch_id)]}},
             "cannot be combined with sourceId")
-        assert self._find_dashboard_id_by_name(copy_name) is None, \
-            "hub_create_dashboard(sourceId, deviceIds) was refused but a copy was created anyway"
+        assert self._dashboard_ids() == ids_before, \
+            "hub_create_dashboard(sourceId, deviceIds) was refused but a dashboard was created anyway"
         self._expect_tool_refusal("hub_manage_dashboards", {
             "tool": "hub_update_dashboard",
             "args": {"id": dash_id, "name": f"{dash_name} Bare", "deviceIds": upd_devices}},

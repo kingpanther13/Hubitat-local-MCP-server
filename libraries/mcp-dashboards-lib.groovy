@@ -543,7 +543,13 @@ private Map _copyLegacyDashboard(String sourceId, Map src, String name) {
                 error: "Could read the legacy dashboard but not its layout, so it can't be copied.",
                 note: "Retry; if it persists, inspect it with hub_get_dashboard(dashboardId=${sourceId})."]
     }
-    def created = _createLegacyDashboard([name: name, deviceIds: (src.deviceIds ?: [])])
+    // An absent deviceIds means the device list was unreadable; an empty list is a real, valid answer.
+    if (src.deviceIds == null) {
+        return [success: false, sourceId: sourceId,
+                error: "Could read the legacy dashboard's layout but not its authorized device list, so a copy would show no device data. Nothing was created.",
+                note: "Retry; if it persists, open the dashboard's app page once, or read it with hub_get_dashboard(dashboardId=${sourceId}) and recreate it with hub_create_dashboard(type='legacy', deviceIds=[...]) plus hub_update_dashboard(layout=...)."]
+    }
+    def created = _createLegacyDashboard([name: name, deviceIds: src.deviceIds])
     if (created.success != true) {
         return created + [sourceId: sourceId]
     }
@@ -659,10 +665,33 @@ private Map _updateLegacyDashboard(String id, Map status, Map args) {
         throw new IllegalArgumentException("layout must be an object -- the full layout JSON, as returned by hub_get_dashboard.")
     }
     def deviceCsv = hasDevices ? _dashboardDeviceCsv(args.deviceIds, false) : null
+    List newDeviceIds = hasDevices ? (deviceCsv ? (deviceCsv.split(",") as List) : []) : null
     def out = [success: true, id: id, type: "legacy"]
     def applied = []
     def warnings = []
     def failed = { String error, String note -> [success: false, id: id, type: "legacy", applied: applied, error: error, note: note] }
+    // Build the new layout before any write, so a bad granular op throws while nothing has changed.
+    Map newLayout = null
+    if (hasWholesale || granular) {
+        if (!status.accessToken) {
+            return failed("The dashboard's access token could not be read from its app state, so its layout endpoint is unreachable. Nothing was changed.",
+                "Open the dashboard app page once (or reset its token) and retry.")
+        }
+        if (hasWholesale) {
+            newLayout = new LinkedHashMap(args.layout as Map)
+        } else {
+            Map current = null
+            try { current = _legacyLayoutFetch(id, status.accessToken) } catch (Exception e) {
+                mcpLogError("dashboard", "legacy layout read-before-edit failed", e)
+            }
+            if (current == null) {
+                return failed("Could not read the current layout to apply the edits. Nothing was changed.", "Retry; if it persists, check hub connectivity." + _lanAccessHint(status))
+            }
+            // Warn against the device list as it will stand after this call.
+            def planStatus = hasDevices ? (status + [deviceIds: newDeviceIds]) : status
+            newLayout = _applyLegacyLayoutOps(current, args, planStatus, warnings)
+        }
+    }
     if (hasName) {
         def newName = args.name.toString().trim()
         try {
@@ -681,28 +710,11 @@ private Map _updateLegacyDashboard(String id, Map status, Map args) {
             mcpLogError("dashboard", "legacy dashboard device authorization failed", e)
             return failed("Device authorization write failed: ${e.message}", "The layout was not touched; retry deviceIds (and any layout ops) once the hub responds.")
         }
-        status.deviceIds = deviceCsv ? (deviceCsv.split(",") as List) : []
-        out.deviceIds = status.deviceIds
+        status.deviceIds = newDeviceIds
+        out.deviceIds = newDeviceIds
         applied << "deviceIds"
     }
-    if (hasWholesale || granular) {
-        if (!status.accessToken) {
-            return failed("The dashboard's access token could not be read from its app state, so its layout endpoint is unreachable.",
-                "Open the dashboard app page once (or reset its token) and retry.")
-        }
-        Map newLayout
-        if (hasWholesale) {
-            newLayout = new LinkedHashMap(args.layout as Map)
-        } else {
-            Map current = null
-            try { current = _legacyLayoutFetch(id, status.accessToken) } catch (Exception e) {
-                mcpLogError("dashboard", "legacy layout read-before-edit failed", e)
-            }
-            if (current == null) {
-                return failed("Could not read the current layout to apply the edits.", "Retry; if it persists, check hub connectivity." + _lanAccessHint(status))
-            }
-            newLayout = _applyLegacyLayoutOps(current, args, status, warnings)
-        }
+    if (newLayout != null) {
         Map saved
         try { saved = _legacyLayoutPost(id, status.accessToken, newLayout) } catch (Exception e) {
             mcpLogError("dashboard", "legacy layout save failed", e)
@@ -720,7 +732,7 @@ private Map _updateLegacyDashboard(String id, Map status, Map args) {
 }
 
 // Apply the granular ops to a copy of the current layout: removals, then updates, then adds, then
-// options. All validation throws BEFORE the single save, so a bad op leaves the layout untouched.
+// options. Pure: it writes nothing, so every validation throw lands before the caller's first write.
 private Map _applyLegacyLayoutOps(Map current, Map args, Map status, List warnings) {
     def layout = new LinkedHashMap(current)
     def tiles = (layout.tiles instanceof List) ? layout.tiles.findAll { it instanceof Map }.collect { new LinkedHashMap(it as Map) } : []
@@ -1087,7 +1099,7 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_create_dashboard",
-            description: "Create a dashboard, or copy one with sourceId. type='easy' (default) builds an Easy Dashboard from devices + options; type='legacy' creates an empty legacy Hubitat® Dashboard.[[FLAT_TRIM]] A copy duplicates an Easy config, or a legacy dashboard's devices and layout; the source is never changed. A legacy dashboard starts empty -- add tiles with hub_update_dashboard. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
+            description: "Create a dashboard, or copy one with sourceId. type='easy' (default) builds an Easy Dashboard from devices + options; type='legacy' creates an empty legacy Hubitat® Dashboard. PRE-FLIGHT: 1) verify deviceIds with hub_list_devices (or sourceId with hub_list_dashboards) 2) tell the user what will be created.[[FLAT_TRIM]] A copy duplicates an Easy config, or a legacy dashboard's devices and layout; the source is never changed. A legacy dashboard starts empty -- add tiles with hub_update_dashboard. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1101,7 +1113,7 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_update_dashboard",
-            description: "Update a dashboard by id. Easy Dashboard: wholesale config replace -- read it with hub_get_dashboard and pass the FULL config back (name + deviceIds required; omitted fields revert to default). Legacy Hubitat® Dashboard: edit its name, deviceIds (authorized devices) and/or layout.[[FLAT_TRIM]] Legacy layout edits are EITHER `layout` (wholesale) OR the granular ops removeTileIds / updateTiles / addTiles / setOptions, applied in that order in one save; an already-gone removal and an identical add are skipped with a warning. Args for the other kind are rejected. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
+            description: "Update a dashboard by id. Easy Dashboard: wholesale config replace -- read it with hub_get_dashboard and pass the FULL config back (name + deviceIds required; omitted fields revert to default). Legacy Hubitat® Dashboard: edit its name, deviceIds (authorized devices) and/or layout. PRE-FLIGHT: 1) hub_get_dashboard to confirm the id and read the current config 2) tell the user what will change.[[FLAT_TRIM]] Legacy layout edits are EITHER `layout` (wholesale) OR the granular ops removeTileIds / updateTiles / addTiles / setOptions, applied in that order in one save; an already-gone removal and an identical add are skipped with a warning. Args for the other kind are rejected. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1120,7 +1132,7 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_delete_dashboard",
-            description: "⚠️ Permanently delete a dashboard by id (irreversible), Easy or legacy Hubitat®. Tell the user first.[[FLAT_TRIM]] Removal is confirmed by effect. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
+            description: "⚠️ Permanently delete a dashboard by id (irreversible), Easy or legacy Hubitat®. PRE-FLIGHT: 1) verify the id with hub_list_dashboards/hub_get_dashboard 2) backup <24h 3) explicit user approval naming the dashboard 4) confirm=true.[[FLAT_TRIM]] Removal is confirmed by effect. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [

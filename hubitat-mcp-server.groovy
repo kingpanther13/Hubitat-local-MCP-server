@@ -12880,6 +12880,8 @@ Read-only. For an Easy Dashboard: tiles, navigation, theme, devices, and PINs. F
 
 Write op. `type` selects the kind: `easy` (default) or `legacy`.
 
+**Pre-flight:** 1) verify the `deviceIds` exist with `hub_list_devices` (for a copy, verify `sourceId` with `hub_list_dashboards`); 2) tell the user what will be created.
+
 - **Easy** — needs >=1 device. Tiles default off; theme defaults to `legacy` (the theme name, unrelated to the dashboard kind).
 
   **`options` (optional config object):**
@@ -12895,6 +12897,8 @@ Write op. `type` selects the kind: `easy` (default) or `legacy`.
 ### hub_update_dashboard
 
 Update by id; the behavior depends on the dashboard's kind.
+
+**Pre-flight:** 1) read the dashboard with `hub_get_dashboard` to confirm the target id and its current config (an Easy update is wholesale); 2) tell the user what will change.
 
 **Easy Dashboard** — wholesale config replace:
 - **Read `hub_get_dashboard` first** and pass the FULL config back; this is a wholesale replace, not a partial patch. `name` and `deviceIds` (>=1) are required; any omitted field reverts to its default, except an omitted PIN, which is read and re-sent (the result flags `pinPreserveFailed` when it could not be read).
@@ -12921,6 +12925,8 @@ Update by id; the behavior depends on the dashboard's kind.
 ### hub_delete_dashboard
 
 Devices are NOT deleted. Write op; needs `confirm=true` + a backup within 24h.
+
+**Pre-flight:** 1) verify the id with `hub_list_dashboards` / `hub_get_dashboard`; 2) a hub backup within 24h; 3) explicit user approval naming the dashboard; 4) `confirm=true`.
 
 - `confirm` (param) — Confirms a recent backup + user approval.
 - A legacy dashboard is removed through the classic force-delete (the Easy `/dashboard/delete` endpoint is a no-op for it); the result carries its `type`.

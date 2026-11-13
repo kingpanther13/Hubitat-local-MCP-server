@@ -115,21 +115,25 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     // ---------- legacy Hubitat® Dashboard stub helpers ----------
 
-    // Set by stubForceDelete once the force-delete fires; registerLegacyStatus(afterDelete: ...) reads it.
-    private boolean forceDeleted = false
+    // Force-delete paths stubForceDelete saw, and the app id the last one named;
+    // registerLegacyStatus(afterDelete: ...) changes only the status of that id.
+    private List<String> forceDeletePaths = []
+    private String forceDeletedId = null
 
     // Register /installedapp/statusJson/<id> in the hub's legacy-dashboard shape. opts: accessToken
-    // (String, or key present + null to OMIT it), deviceIds (a List), label, localAccess (bool; the
-    // hub only lists it when set).
+    // (String, or key present + null to OMIT it), deviceIds (a List, or key present + null for a
+    // devicesPicked setting without its device list), label, localAccess (bool; the hub only lists it when set).
     private void registerLegacyStatus(String id, Map opts = [:]) {
         String token = opts.containsKey('accessToken') ? opts.accessToken : ('tok-' + id)
         def appState = [[name: 'layout', value: '{}'], [name: 'hsm', value: null]]
         if (token) appState << [name: 'accessToken', value: token]
         List deviceIds = opts.containsKey('deviceIds') ? opts.deviceIds : [16, 4]
-        def appSettings = [[name: 'allowGoBack', type: 'bool', value: 'true'],
-                           [name: 'devicesPicked', type: 'capability.*', value: null, multiple: true,
-                            deviceIdsForDeviceList: deviceIds,
-                            deviceList: deviceIds.collectEntries { [(it.toString()): "Device ${it}".toString()] }]]
+        def picked = [name: 'devicesPicked', type: 'capability.*', value: null, multiple: true]
+        if (deviceIds != null) {
+            picked.deviceIdsForDeviceList = deviceIds
+            picked.deviceList = deviceIds.collectEntries { [(it.toString()): "Device ${it}".toString()] }
+        }
+        def appSettings = [[name: 'allowGoBack', type: 'bool', value: 'true'], picked]
         if (opts.containsKey('localAccess')) appSettings << [name: 'localAccess', type: 'bool', value: opts.localAccess.toString()]
         String label = opts.label ?: 'Kitchen'
         def json = JsonOutput.toJson([installedApp: [id: id as Integer, name: 'Dashboard', systemAppType: true, label: label,
@@ -140,8 +144,8 @@ class ToolDashboardSpec extends ToolSpecBase {
         // afterDelete: 'gone' answers {} (the hub's shape for a removed app) and 'fail' throws, once
         // the force-delete has fired; omitted, the dashboard stays present.
         hubGet.register("/installedapp/statusJson/${id}".toString()) { params ->
-            if (forceDeleted && opts.afterDelete == 'gone') return '{}'
-            if (forceDeleted && opts.afterDelete == 'fail') throw new RuntimeException('status read down')
+            if (forceDeletedId == id && opts.afterDelete == 'gone') return '{}'
+            if (forceDeletedId == id && opts.afterDelete == 'fail') throw new RuntimeException('status read down')
             json
         }
     }
@@ -194,8 +198,10 @@ class ToolDashboardSpec extends ToolSpecBase {
     // when the delete committed; dropConnection makes the request throw instead.
     private void stubForceDelete(boolean dropConnection = false) {
         script.metaClass.hubInternalGetRaw = { String p, Map q = null, int t = 30, boolean r = false ->
+            def m = (p =~ '^/installedapp/forcedelete/(\\d+)/quiet$')
             if (p.contains('/installedapp/forcedelete/')) {
-                forceDeleted = true
+                forceDeletePaths << p
+                forceDeletedId = m.find() ? m.group(1) : null
                 if (dropConnection) throw new RuntimeException('connection reset')
                 return [status: 500, location: null, data: '<html><body>Error 500</body></html>']
             }
@@ -1857,6 +1863,52 @@ class ToolDashboardSpec extends ToolSpecBase {
         posts[0].body.tiles.any { it.device == '99' }
     }
 
+    def "update legacy: a tile for a device authorized in the same call is not warned about"() {
+        given:
+        enableWrite()
+        registerLegacyStatus('700')                 // authorized devices [16, 4]
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+        captureFormPosts()
+        def posts = captureLayoutPosts()
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700', deviceIds: ['16', '99'],
+            addTiles: [[template: 'attribute', device: '99', col: 4, row: 4]]])
+
+        then:
+        r.success == true
+        r.applied == ['deviceIds', 'addTiles']
+        !r.warnings
+        posts[0].body.tiles.any { it.device == '99' }
+    }
+
+    def "update legacy: a bad tile op beside #writes throws before any label, device or layout write"() {
+        given:
+        enableWrite()
+        registerLegacyStatus('700')
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+        def forms = captureFormPosts()
+        def posts = captureLayoutPosts()
+
+        when:
+        script.toolUpdateDashboard([dashboardId: '700'] + extra + [(op): value])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains(msg)
+        forms.isEmpty()
+        posts.isEmpty()
+
+        where:
+        writes          | extra                              | op            | value                                      | msg
+        'deviceIds'     | [deviceIds: ['5']]                 | 'addTiles'    | [[template: 'clock', colum: 1, row: 1]]    | 'unknown tile key'
+        'name'          | [name: 'X']                        | 'addTiles'    | [[template: 'clock', colum: 1, row: 1]]    | 'unknown tile key'
+        'name+deviceIds'| [name: 'X', deviceIds: ['5']]      | 'addTiles'    | [[template: 'clock', col: 1]]              | 'row'
+        'name+deviceIds'| [name: 'X', deviceIds: ['5']]      | 'updateTiles' | [[id: 99, col: 1]]                         | '99'
+        'name+deviceIds'| [name: 'X', deviceIds: ['5']]      | 'setOptions'  | [tiles: []]                                | 'setOptions cannot replace tiles'
+        'name+deviceIds'| [name: 'X', deviceIds: ['5']]      | 'addTiles'    | 'not-an-array'                             | 'addTiles must be an array'
+    }
+
     def "update legacy: addTiles missing template/col/row throws"() {
         given:
         enableWrite()
@@ -2067,6 +2119,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         given:
         enableWrite()
         registerLegacyStatus('700')
+        registerLegacyLayout('700', LEGACY_LAYOUT)
         script.metaClass.hubInternalPostForm = { String p, Map b, int t = 420, boolean r = false ->
             [status: 500, location: null, data: '']
         }
@@ -2223,6 +2276,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         then: 'a destructive op never claims success it cannot verify'
         r.success == false
         r.error.toLowerCase().contains('could not be confirmed')
+        forceDeletePaths == ['/installedapp/forcedelete/700/quiet']
     }
 
     // ---------- update legacy: name / deviceIds / validation ----------
@@ -2353,6 +2407,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.success == true
         r.type == 'legacy'
         r.id == '700'
+        forceDeletePaths == ['/installedapp/forcedelete/700/quiet']
     }
 
     def "delete legacy: a forcedelete whose connection drops still confirms deletion by effect"() {
@@ -2367,6 +2422,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         then:
         r.success == true
         r.id == '700'
+        forceDeletePaths == ['/installedapp/forcedelete/700/quiet']
     }
 
     def "delete legacy: reports success:false when the dashboard is still present after force-delete"() {
@@ -2383,6 +2439,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.isError == true
         r.type == 'legacy'
         r.error.toLowerCase().contains('still present')
+        forceDeletePaths == ['/installedapp/forcedelete/700/quiet']
     }
 
     // ---------- copy legacy ----------
@@ -2442,6 +2499,56 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.type == 'legacy'
         r.error.toLowerCase().contains('layout could not be written')
         r.note != null
+    }
+
+    def "copy legacy: an unreadable source device list fails before the copy is created"() {
+        given: 'listed from the child apps (no device list) and statusJson carries devicesPicked without its ids'
+        enableWrite()
+        registerLegacyChildAppList('700', 'Studio')
+        registerLegacyStatus('700', [label: 'Studio', deviceIds: null])
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+        def rawPaths = stubCreateChild('882')
+        def forms = captureFormPosts()
+        def posts = captureLayoutPosts()
+
+        when:
+        def r = script.toolCreateDashboard([sourceId: '700'])
+
+        then:
+        r.success == false
+        r.isError == true
+        r.sourceId == '700'
+        r.error.contains('authorized device list')
+        r.note.contains('hub_get_dashboard')
+        !rawPaths.any { it.startsWith('/installedapp/createchild') }
+        forms.isEmpty()
+        posts.isEmpty()
+    }
+
+    def "copy legacy: an explicitly empty source device list is copied as empty"() {
+        given:
+        enableWrite()
+        hubGet.register('/dashboard/all') { params ->
+            JsonOutput.toJson([legacyRow(700, 'Studio', [deviceIds: []])])
+        }
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+        registerLegacyParent(21)
+        def rawPaths = stubCreateChild('883')
+        def forms = captureFormPosts()
+        registerLegacyStatus('883', [accessToken: 'tok-883', label: 'Studio (copy)', deviceIds: []])
+        registerLegacyMint('883')
+        def posts = captureLayoutPosts()
+
+        when:
+        def r = script.toolCreateDashboard([sourceId: '700'])
+
+        then:
+        r.success == true
+        r.id == '883'
+        rawPaths.any { it.startsWith('/installedapp/createchild') }
+        !forms.any { it.body.containsKey('settings[devicesPicked]') }
+        posts.size() == 1
+        posts[0].body.tiles.size() == 2
     }
 
     // ---------- legacy through the gateway / dispatch envelope ----------
