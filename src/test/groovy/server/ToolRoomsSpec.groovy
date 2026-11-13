@@ -44,6 +44,13 @@ class ToolRoomsSpec extends ToolSpecBase {
         script.metaClass.getRooms = { -> getRoomsCalls++; roomsList }
     }
 
+    /** Calls a room tool through its gateway in gateway mode, and by its own name in flat mode. */
+    private Map dispatchRoomTool(String tool, Map args, boolean viaGateway) {
+        if (!viaGateway) return mcpDriver.callTool(tool, args)
+        String gateway = tool in ['hub_list_rooms', 'hub_get_room'] ? 'hub_read_rooms' : 'hub_manage_rooms'
+        return mcpDriver.callTool(gateway, [tool: tool, args: args])
+    }
+
     private void enableWrite() {
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
@@ -104,7 +111,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('hub_list_rooms', [:])
+        def response = dispatchRoomTool('hub_list_rooms', [:], useGateways)
 
         then:
         response.error == null
@@ -310,7 +317,9 @@ class ToolRoomsSpec extends ToolSpecBase {
         childDevicesList << new TestDevice(id: 100, name: 'den_light', label: 'Den Light')
 
         when:
-        def response = mcpDriver.callTool('hub_get_room', [roomId: '7'])
+        def response = useGateways
+            ? mcpDriver.callTool('hub_read_rooms', [tool: 'hub_get_room', args: [roomId: '7']])
+            : mcpDriver.callTool('hub_get_room', [roomId: '7'])
 
         then:
         response.result.isError == true
@@ -360,22 +369,24 @@ class ToolRoomsSpec extends ToolSpecBase {
         installGetRoomsStub([[id: 1, name: 'Kitchen', deviceIds: []]])
 
         when:
-        def response = mcpDriver.callTool(tool, args)
+        def response = dispatchRoomTool(tool, args, useGateways)
 
         then:
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains(needle)
         hubGet.calls.empty
 
+        // Through a gateway the required-parameter check runs first, so a call without roomId is
+        // answered with that message rather than the tool's own.
         where:
         tool             | label               | args                      | needle                                  | useGateways
         'hub_get_room'   | 'an unknown roomId' | [roomId: '42']            | "No room has id '42'"                   | true
         'hub_get_room'   | 'an unknown roomId' | [roomId: '42']            | "No room has id '42'"                   | false
-        'hub_get_room'   | 'a missing roomId'  | [:]                       | 'roomId is required'                    | true
+        'hub_get_room'   | 'a missing roomId'  | [:]                       | 'Missing required parameter for hub_get_room: roomId' | true
         'hub_get_room'   | 'a missing roomId'  | [:]                       | 'roomId is required'                    | false
-        'hub_get_room'   | 'a stale id'        | [id: '1']                 | 'Unknown hub_get_room argument: id'     | true
+        'hub_get_room'   | 'a stale id'        | [id: '1']                 | 'Missing required parameter for hub_get_room: roomId' | true
         'hub_get_room'   | 'a stale id'        | [id: '1']                 | 'Unknown hub_get_room argument: id'     | false
-        'hub_get_room'   | 'a stale name'      | [room: 'Kitchen']         | 'Unknown hub_get_room argument: room'   | true
+        'hub_get_room'   | 'a stale name'      | [room: 'Kitchen']         | 'Missing required parameter for hub_get_room: roomId' | true
         'hub_get_room'   | 'a stale name'      | [room: 'Kitchen']         | 'Unknown hub_get_room argument: room'   | false
         'hub_get_room'   | 'a cursor'          | [roomId: '1', cursor: ''] | 'Unknown hub_get_room argument: cursor' | true
         'hub_get_room'   | 'a cursor'          | [roomId: '1', cursor: ''] | 'Unknown hub_get_room argument: cursor' | false
@@ -463,7 +474,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def response = mcpDriver.callTool('hub_create_room', [name: 'Garage'])
+        def response = dispatchRoomTool('hub_create_room', [name: 'Garage'], useGateways)
 
         then:
         response.result.isError == true
@@ -493,7 +504,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when:
-        def response = mcpDriver.callTool('hub_create_room', [name: 'Garage', confirm: true])
+        def response = dispatchRoomTool('hub_create_room', [name: 'Garage', confirm: true], useGateways)
 
         then:
         response.error == null
@@ -745,7 +756,10 @@ class ToolRoomsSpec extends ToolSpecBase {
         def posts = postJson([roomId: 999])
 
         when:
-        def response = mcpDriver.callTool('hub_update_room', [roomId: '999', name: 'Attic', confirm: true])
+        def args = [roomId: '999', name: 'Attic', confirm: true]
+        def response = useGateways
+            ? mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_update_room', args: args])
+            : mcpDriver.callTool('hub_update_room', args)
 
         then:
         response.result.isError == true
@@ -871,7 +885,10 @@ class ToolRoomsSpec extends ToolSpecBase {
         installGetRoomsStub([[id: 1, name: 'Kitchen', deviceIds: []]])
 
         when:
-        def response = mcpDriver.callTool('hub_delete_room', [roomId: '5', confirm: true])
+        def args = [roomId: '5', confirm: true]
+        def response = useGateways
+            ? mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_delete_room', args: args])
+            : mcpDriver.callTool('hub_delete_room', args)
 
         then:
         response.result.isError == true

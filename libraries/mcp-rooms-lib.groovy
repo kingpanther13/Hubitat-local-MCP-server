@@ -237,7 +237,7 @@ def _getAllToolDefinitions_partRooms() {
         ],
         [
             name: "hub_update_room",
-            description: "Rename a room and/or replace its device list, by id; an omitted field keeps its value. deviceIds is the FULL list: a device left out becomes unassigned, an added one leaves its previous room. Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Start from hub_get_room(roomId). After a rename, automations or dashboards that name the room may need updating. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
+            description: "Rename a room and/or replace its device list, by id; an omitted field keeps its value. deviceIds is the FULL list: a device left out becomes unassigned, an added one leaves its previous room. Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Send room updates one at a time, never in parallel. Start from hub_get_room(roomId). After a rename, automations or dashboards that name the room may need updating. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
