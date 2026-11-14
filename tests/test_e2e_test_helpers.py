@@ -3154,6 +3154,21 @@ def test_delete_bundle_uses_logical_write_helper(monkeypatch):
     assert not hub.bundles and not hub.app_codes
 
 
+def test_install_bundle_unfetchable_zip_expects_the_hubs_reason(monkeypatch):
+    _bundle_env(monkeypatch)
+    hub = _BundleHub()
+
+    et.TestRunner.test_install_bundle_unfetchable_zip(hub.runner())
+
+    assert hub.installs == 0 and not hub.write_calls
+
+
+def test_install_bundle_unfetchable_zip_runs_only_on_the_ephemeral_lane():
+    registered = {name for _, name, _ in et.TEST_REGISTRY}
+    assert "test_delete_bundle" in registered
+    assert ("test_install_bundle_unfetchable_zip" in registered) == (os.environ.get("E2E_LANE") == "ephemeral")
+
+
 def test_delete_bundle_requires_the_id_on_a_clean_install(monkeypatch):
     _bundle_env(monkeypatch)
     hub = _BundleHub(report_id=False)

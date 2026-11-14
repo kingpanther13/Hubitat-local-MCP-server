@@ -14545,14 +14545,6 @@ def updated() {}
             if not bid:
                 print("    SKIP test_delete_bundle: PR_RAW_BASE/PR_HEAD_SHA_RESOLVED not set (local run)")
                 return
-            # A zip the hub cannot fetch installs nothing and returns the hub's own reason.
-            missing_url = (f"{os.environ['PR_RAW_BASE']}/{os.environ['PR_HEAD_SHA_RESOLVED']}"
-                           "/tests/fixtures/does-not-exist.zip")
-            refused = self.client.call_tool_failure("hub_manage_code", {
-                "tool": "hub_install_bundle", "args": {"importUrl": missing_url, "confirm": True}})
-            assert "Cannot retrieve zip file" in str(refused.get("error")) and not refused.get("codeAdded") \
-                and "section='bundles'" in str(refused.get("note")), \
-                f"a zip the hub cannot fetch did not return the hub's reason: {refused}"
             deleted = self._write_once(
                 "hub_manage_code", "hub_delete_bundle",
                 {"bundleId": bid, "deleteCode": True, "confirm": True},
@@ -14601,6 +14593,23 @@ def updated() {}
         finally:
             if bid:
                 self._delete_bundle_quietly(bid, "throwaway bundle cleanup")
+
+    @test("system_tools", ephemeral_only=True)
+    def test_install_bundle_unfetchable_zip(self) -> None:
+        """A zip the hub cannot fetch installs nothing and returns the hub's own reason.
+        Ephemeral lane only: the shared test hub takes about 22 s to give up on the missing
+        zip, longer than the cloud relay waits, so the reply is lost there as a 504."""
+        if not (os.environ.get("PR_RAW_BASE") and os.environ.get("PR_HEAD_SHA_RESOLVED")):
+            print("    SKIP test_install_bundle_unfetchable_zip: PR_RAW_BASE/PR_HEAD_SHA_RESOLVED not set (local run)")
+            return
+        missing_url = (f"{os.environ['PR_RAW_BASE']}/{os.environ['PR_HEAD_SHA_RESOLVED']}"
+                       "/tests/fixtures/does-not-exist.zip")
+        refused = self.client.call_tool_failure("hub_manage_code", {
+            "tool": "hub_install_bundle", "args": {"importUrl": missing_url, "confirm": True}})
+        assert "Cannot retrieve zip file" in str(refused.get("error")) and not refused.get("codeAdded") \
+            and "section='bundles'" in str(refused.get("note")), \
+            f"a zip the hub cannot fetch did not return the hub's reason: {refused}"
+        print("    BUNDLE_INSTALL unfetchable zip refused with the hub's reason")
 
     def _listed_bundles(self) -> list:
         """hub_list_bundles' entries, asserting the listing itself succeeded so an absence
