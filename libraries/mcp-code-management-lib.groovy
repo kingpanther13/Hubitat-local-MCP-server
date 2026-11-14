@@ -2212,57 +2212,6 @@ def toolDeleteItem(args) {
     }
 }
 
-private Map backupLibrarySource(String libraryId) {
-    return _withBackupLock("backup library ${libraryId}") { _backupLibrarySourceLocked(libraryId) }
-}
-
-private Map _backupLibrarySourceLocked(String libraryId) {
-    def manifest = _itemBackupManifest()
-    String key = "library_${libraryId}"
-    def existing = _reusableItemBackup(manifest, key, "Library")
-    if (existing != null) return existing
-
-    def responseText = hubInternalGet("/library/list/single/data/${libraryId}")
-    if (!responseText) {
-        throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: empty response from hub")
-    }
-
-    def parsed
-    try {
-        parsed = new groovy.json.JsonSlurper().parseText(responseText)
-    } catch (Exception parseEx) {
-        throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: failed to parse hub response: ${parseEx.message}")
-    }
-
-    if (!(parsed instanceof List) || parsed.isEmpty()) {
-        throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: library not found")
-    }
-
-    def libData = parsed[0]
-    def backupSource = libData.source ?: ""
-    def fileName = _itemBackupFileName("mcp-backup-library-${libraryId}.groovy")
-    byte[] backupBytes = backupSource.getBytes("UTF-8")
-    try {
-        uploadHubFile(fileName, backupBytes)
-    } catch (Exception e) {
-        mcpLogError("hub-admin", "Failed to save library backup file '${fileName}'", e)
-        throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: file upload failed -- ${e.message}")
-    }
-
-    def entry = [
-        type: "library",
-        id: libraryId.toString(),
-        fileName: fileName,
-        version: libData.version,
-        timestamp: now(),
-        sourceLength: backupSource.length(),
-        sizeBytes: backupBytes.length
-    ]
-    _publishUploadedItemBackup(key, entry)
-    mcpLog("info", "hub-admin", "Backed up library ID ${libraryId} source to File Manager: ${fileName} (version ${libData.version}, ${backupSource.length()} chars)")
-    return entry + [fresh: true]
-}
-
 def toolGetLibrarySource(args) {
     def libraryId = args.libraryId
     if (!libraryId) throw new IllegalArgumentException("libraryId is required")

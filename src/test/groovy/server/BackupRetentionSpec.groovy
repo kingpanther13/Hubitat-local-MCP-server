@@ -458,7 +458,7 @@ class BackupRetentionSpec extends ToolSpecBase {
         script.metaClass._writeItemBackupIndexStore = { String json -> writes++; storeRef.json = json }
 
         when:
-        script._repairItemBackupRetention(view, 'app_1', view.app_1)
+        script._repairItemBackupRetention(view, 'app_1', view.app_1, null)
 
         then:
         writes == 0

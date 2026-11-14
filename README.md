@@ -509,8 +509,8 @@ All operations are disruptive. These tools are gated by the Write master (ON by 
 | `hub_delete_item` | Permanently delete an app, driver, or library (`type`: "app", "driver", "library"; auto-backs up first) |
 | `hub_create_library` | Install new Groovy library (#include namespace.Name) |
 | `hub_update_library` | Modify existing library code |
-| `hub_install_bundle` | Install a code bundle (.zip) from a URL the HPM way — unpacks into Libraries/Apps/Drivers Code |
-| `hub_delete_bundle` | Delete an installed code bundle by id (the container; delivered code may remain in Code) |
+| `hub_install_bundle` | Install a code bundle (.zip) from a URL the HPM way — unpacks into Libraries/Apps/Drivers Code and returns the new bundle's id |
+| `hub_delete_bundle` | Delete an installed code bundle by id; its code stays in Code unless `deleteCode=true`, which backs up and deletes the delivered apps/drivers/libraries (code still in use is kept and reported) |
 | `hub_export_bundle` | Export an installed bundle's .zip to the hub File Manager (downloadable at `/local/<fileName>`) |
 
 Source code is automatically backed up before any modify/delete operation.

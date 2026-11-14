@@ -2919,7 +2919,9 @@ def _bundle_export_runner(bundles_after_install, write_calls):
     state = {"installed": False}
 
     class Client:
-        def call_tool(self, name, arguments=None):
+        call_tool_failure = et.HubitatMcpClient.call_tool_failure
+
+        def call_tool(self, name, arguments=None, *, flat=False):
             tool = (arguments or {}).get("tool")
             if name == "hub_read_files" and tool == "hub_list_files":
                 return {"files": [], "freeSpaceBytes": 1}
@@ -2928,8 +2930,15 @@ def _bundle_export_runner(bundles_after_install, write_calls):
             if name == "hub_read_apps_code" and tool == "hub_list_bundles":
                 return {"source": "hub_api", "bundles": bundles_after_install if state["installed"] else []}
             if name == "hub_manage_code" and tool == "hub_install_bundle":
+                assert "type" not in arguments["args"]
                 state["installed"] = True
-                return {"success": True}
+                new = bundles_after_install[0]
+                return {"success": True, "bundleId": str(new["id"]), "bundle": dict(new, id=str(new["id"]))}
+            if name == "hub_manage_code" and tool == "hub_export_bundle" and arguments["args"]["bundleId"] == "2147483646":
+                note = "Nothing was saved. hub_list_bundles lists the bundle ids." if "saveAs" not in arguments["args"] \
+                    else "The bundle id may not exist on the hub: hub_list_bundles lists the bundle ids."
+                raise et.McpToolError(name, json.dumps({"success": False, "error": "No bundle with id 2147483646 found",
+                                                        "note": note}))
             raise AssertionError(f"unexpected direct call: {name} {arguments}")
 
     def write_once(gateway, tool, args, label):
@@ -2956,7 +2965,7 @@ def test_export_bundle_installs_and_removes_the_throwaway_fixture_when_the_hub_h
     et.TestRunner.test_export_bundle(runner)
     assert state["installed"]
     assert write_calls[0] == ("hub_export_bundle", {"bundleId": "9", "saveAs": f"{et.PREFIX}bundle_export_9.zip"})
-    assert write_calls[-1] == ("hub_delete_bundle", {"bundleId": "9", "confirm": True})
+    assert write_calls[-1] == ("hub_delete_bundle", {"bundleId": "9", "deleteCode": True, "confirm": True})
 
 
 def test_export_bundle_skips_without_a_bundle_or_the_pr_raw_url(monkeypatch):
@@ -2978,12 +2987,18 @@ def test_export_bundle_uses_logical_writes_filtered_verification_and_exact_backu
     list_filters = []
 
     class NoDirectWritesClient:
+        call_tool_failure = et.HubitatMcpClient.call_tool_failure
+
         # Only the File Manager listing reads (the 2.5.2 listing-shape check) go direct.
-        def call_tool(self, name, arguments=None):
+        def call_tool(self, name, arguments=None, *, flat=False):
             if name == "hub_read_files" and (arguments or {}).get("tool") == "hub_list_files":
                 return {"files": [{"name": "a.txt", "type": "file"}], "freeSpaceBytes": 1}
             if name == "hub_list_files" and (arguments or {}).get("folder") == "../etc":
                 raise et.McpToolError(name, "folder must be a relative File Manager folder path such as 'webcore'")
+            if (arguments or {}).get("tool") == "hub_export_bundle" and arguments["args"]["bundleId"] == "2147483646":
+                # Refused before anything is written: the unknown-id legs.
+                raise et.McpToolError(name, json.dumps({"success": False, "error": "No bundle with id 2147483646 found",
+                                                        "note": "The bundle id may not exist: hub_list_bundles lists the ids."}))
             raise AssertionError(f"unexpected direct call: {name} {arguments}")
 
     runner = object.__new__(et.TestRunner)
@@ -3035,44 +3050,179 @@ def test_bundle_fixture_contains_only_unused_app_code():
         assert 'namespace: "mcptest"' in source
 
 
-def test_delete_bundle_uses_logical_write_helper(monkeypatch):
+def _tool_error(payload):
+    """What call_tool raises for a success:false result (the server sends it with isError)."""
+    return et.McpToolError("hub_manage_code", json.dumps(payload))
+
+
+class _BundleHub:
+    """A fake hub for test_delete_bundle: installs add a bundle listing one app id, deletes
+    follow the server's contract (deleteCode refuses a bundle that lists deleted code)."""
+
+    def __init__(self, report_id=True, drops_deleted_id=False, keeps_app=False, refuses_missing_code=True):
+        self.report_id = report_id
+        self.drops_deleted_id = drops_deleted_id
+        self.keeps_app = keeps_app
+        self.refuses_missing_code = refuses_missing_code
+        self.bundles = {}
+        self.app_codes = set()
+        self.installs = 0
+        self.write_calls = []
+        self.refusals = []
+
+    call_tool_failure = et.HubitatMcpClient.call_tool_failure
+
+    def call_tool(self, name, arguments=None, *, flat=False):
+        tool = (arguments or {}).get("tool")
+        args = (arguments or {}).get("args") or {}
+        if tool == "hub_install_bundle" and args["importUrl"].endswith("/does-not-exist.zip"):
+            raise _tool_error({"success": False, "error": "Bundle install failed: Cannot retrieve zip file from x",
+                               "note": "See hub_get_tool_guide(section='bundles')."})
+        if tool == "hub_install_bundle":
+            assert "type" not in args
+            self.installs += 1
+            bid, app_id = str(self.installs), str(100 + self.installs)
+            self.bundles[bid] = {"id": bid, "namespace": "mcptest", "name": "throwaway",
+                                 "codeIds": {"apps": [app_id], "drivers": [], "libraries": []}}
+            self.app_codes.add(app_id)
+            if not self.report_id:
+                return {"success": True}
+            return {"success": True, "bundleId": bid, "bundle": dict(self.bundles[bid])}
+        if tool == "hub_list_bundles":
+            return {"source": "hub_api", "bundles": [dict(b) for b in self.bundles.values()]}
+        if tool == "hub_list_apps":
+            assert args["scope"] == "types"
+            return {"apps": [{"id": a, "name": et.THROWAWAY_BUNDLE_APP, "namespace": "mcptest"} for a in self.app_codes]}
+        if tool == "hub_delete_bundle" and args.get("bundleId") == "2147483646":
+            raise _tool_error({"success": False, "error": "No bundle with id 2147483646",
+                               "note": "Nothing was deleted. See hub_get_tool_guide(section='bundles')."})
+        if tool == "hub_delete_bundle" and args.get("deleteCode"):
+            gone = [a for a in self.bundles[args["bundleId"]]["codeIds"]["apps"] if a not in self.app_codes]
+            if gone and self.refuses_missing_code:
+                raise _tool_error({"success": False, "error": f"lists code that is no longer in Code: app {gone[0]}",
+                                   "missingCode": [{"type": "app", "id": gone[0]}], "note": "Nothing was deleted."})
+            if gone:
+                return {"success": True, "bundleId": args["bundleId"], "codeDeleted": []}
+        if tool == "hub_delete_bundle":
+            raise AssertionError("a bundle delete that goes through must use the logical write helper")
+        raise AssertionError(f"unexpected direct call: {name} {arguments}")
+
+    def write_once(self, gateway, tool, args, label):
+        self.write_calls.append((tool, dict(args)))
+        if tool == "hub_delete_item":
+            self.app_codes.discard(args["item_id"])
+            if self.drops_deleted_id:
+                for b in self.bundles.values():
+                    b["codeIds"]["apps"] = [a for a in b["codeIds"]["apps"] if a != args["item_id"]]
+            return {"success": True}
+        assert tool == "hub_delete_bundle", tool
+        bundle = self.bundles.pop(args["bundleId"])
+        deleted = []
+        if args.get("deleteCode") and not self.keeps_app:
+            deleted = [{"type": "app", "id": a, "name": et.THROWAWAY_BUNDLE_APP} for a in bundle["codeIds"]["apps"]]
+            self.app_codes.difference_update(bundle["codeIds"]["apps"])
+        out = {"success": True, "bundleId": args["bundleId"]}
+        if args.get("deleteCode"):
+            out.update(codeDeleted=deleted, codeKept=[], backupFiles=[f"mcp-backup-app-{d['id']}.groovy" for d in deleted])
+        return out
+
+    def runner(self):
+        runner = object.__new__(et.TestRunner)
+        runner.client = self
+        runner._expect_tool_refusal = lambda name, args, needle: self.refusals.append((name, needle))
+        runner._write_once = self.write_once
+        return runner
+
+
+def _bundle_env(monkeypatch):
     monkeypatch.setenv("PR_RAW_BASE", "https://raw.invalid/repo")
     monkeypatch.setenv("PR_HEAD_SHA_RESOLVED", "abc123")
-    write_calls = []
-    # Snapshot before the install, readback after it, re-list after the delete.
-    list_results = iter([
-        {"bundles": []},
-        {"bundles": [{"id": "44", "namespace": "mcptest", "name": "throwaway"}]},
-        {"bundles": []},
-    ])
 
-    class FakeClient:
+
+def test_delete_bundle_uses_logical_write_helper(monkeypatch):
+    _bundle_env(monkeypatch)
+    hub = _BundleHub()
+
+    et.TestRunner.test_delete_bundle(hub.runner())
+
+    assert hub.write_calls == [
+        ("hub_delete_bundle", {"bundleId": "1", "deleteCode": True, "confirm": True}),
+        ("hub_delete_item", {"type": "app", "item_id": "102", "confirm": True}),
+        ("hub_delete_bundle", {"bundleId": "2", "confirm": True}),
+    ]
+    assert {name for name, _ in hub.refusals} == {"hub_delete_bundle", "hub_export_bundle", "hub_install_bundle"}
+    assert not hub.bundles and not hub.app_codes
+
+
+def test_install_bundle_unfetchable_zip_expects_the_hubs_reason(monkeypatch):
+    _bundle_env(monkeypatch)
+    hub = _BundleHub()
+
+    et.TestRunner.test_install_bundle_unfetchable_zip(hub.runner())
+
+    assert hub.installs == 0 and not hub.write_calls
+
+
+def test_install_bundle_unfetchable_zip_runs_only_on_the_ephemeral_lane():
+    registered = {name for _, name, _ in et.TEST_REGISTRY}
+    assert "test_delete_bundle" in registered
+    assert ("test_install_bundle_unfetchable_zip" in registered) == (os.environ.get("E2E_LANE") == "ephemeral")
+
+
+def test_delete_bundle_requires_the_id_on_a_clean_install(monkeypatch):
+    _bundle_env(monkeypatch)
+    hub = _BundleHub(report_id=False)
+
+    with pytest.raises(AssertionError, match="did not return the fixture bundle's id"):
+        et.TestRunner.test_delete_bundle(hub.runner())
+
+
+def test_delete_bundle_fails_when_the_app_code_survives(monkeypatch):
+    _bundle_env(monkeypatch)
+    hub = _BundleHub(keeps_app=True)
+
+    with pytest.raises(AssertionError, match="did not report its app code deleted"):
+        et.TestRunner.test_delete_bundle(hub.runner())
+
+
+def test_delete_bundle_fails_when_a_bundle_listing_deleted_code_is_not_refused(monkeypatch):
+    _bundle_env(monkeypatch)
+    hub = _BundleHub(refuses_missing_code=False)
+
+    with pytest.raises(AssertionError, match="hub_manage_code: expected an isError failure result"):
+        et.TestRunner.test_delete_bundle(hub.runner())
+
+
+def test_delete_bundle_accepts_a_hub_that_drops_the_deleted_app_id(monkeypatch):
+    _bundle_env(monkeypatch)
+    hub = _BundleHub(drops_deleted_id=True)
+
+    et.TestRunner.test_delete_bundle(hub.runner())
+
+    assert hub.write_calls[-1] == ("hub_delete_bundle", {"bundleId": "2", "deleteCode": True, "confirm": True})
+    assert not hub.bundles
+
+
+def test_listed_bundles_refuses_a_failed_listing():
+    class Client:
         def call_tool(self, name, arguments=None):
-            tool = (arguments or {}).get("tool")
-            if tool == "hub_install_bundle":
-                return {"success": True}
-            if tool == "hub_list_bundles":
-                return next(list_results)
-            if tool == "hub_delete_bundle":
-                raise AssertionError("bundle deletion must use the logical write helper")
-            raise AssertionError(f"unexpected direct call: {name} {arguments}")
+            return {"source": "unavailable", "bundles": [], "note": "Hub internal API unavailable"}
 
     runner = object.__new__(et.TestRunner)
-    runner.client = FakeClient()
-    def write_once(gateway, tool, args, label):
-        write_calls.append((gateway, tool, args, label))
-        return {"success": True, "verified": True, "bundleId": args["bundleId"]}
+    runner.client = Client()
+    with pytest.raises(AssertionError, match="did not list the bundles"):
+        runner._listed_bundle_ids()
 
-    runner._write_once = write_once
 
-    et.TestRunner.test_delete_bundle(runner)
+def test_throwaway_app_codes_refuses_a_failed_listing():
+    class Client:
+        def call_tool(self, name, arguments=None):
+            return {"success": False, "error": "hub busy"}
 
-    assert write_calls == [(
-        "hub_manage_code",
-        "hub_delete_bundle",
-        {"bundleId": "44", "confirm": True},
-        "throwaway bundle delete",
-    )]
+    runner = object.__new__(et.TestRunner)
+    runner.client = Client()
+    with pytest.raises(AssertionError, match="did not list the app code"):
+        runner._throwaway_app_codes()
 
 
 def test_build_capacity_recovery_is_the_conformance_reset_seam(monkeypatch):

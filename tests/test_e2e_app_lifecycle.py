@@ -95,7 +95,9 @@ class AppCodeClient:
             if unknown:
                 raise et.McpToolError(tool, f"Unknown hub_delete_item argument: {', '.join(unknown)}. Nothing was changed. "
                                             "Valid arguments: type, item_id, confirm.")
-            app_id = str(args["item_id"])
+            if args.get("type") != "app":
+                raise et.McpToolError(tool, f"this fake deletes app code only (got type={args.get('type')!r})")
+            app_id = str(args.get("item_id", ""))
             if not app_id.isdigit():
                 raise et.McpToolError(tool, f"item_id is required and must be a positive integer (got: '{app_id}')")
             if app_id not in self.apps:
@@ -143,6 +145,12 @@ def test_update_scenario_refuses_unknown_code_id_missing_file_and_unknown_delete
     deletes = [args for tool, args in client.calls if tool == "hub_delete_item"]
     assert any("id" in a and "item_id" in a for a in deletes)
     assert all("item_id" in a for a in deletes)
+
+
+def test_fake_delete_refuses_a_missing_item_id_like_the_server():
+    with pytest.raises(et.McpToolError, match="item_id is required"):
+        AppCodeClient().call_tool("hub_manage_code", {"tool": "hub_delete_item",
+                                                      "args": {"type": "app", "confirm": True}})
 
 
 def test_update_scenario_fails_when_unknown_code_id_is_accepted():

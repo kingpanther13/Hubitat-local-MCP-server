@@ -3474,7 +3474,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 }
 ```
 
-**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../<bundle>.zip', confirm:true})`. Result: `{success:true, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_apps` shows the bundle's app. This exercises the hub's bundle fetch + unpack for app code (the fixture carries no libraries), the same server-side path Hubitat Package Manager uses for a bundle, no UI.
+**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../<bundle>.zip', confirm:true})`. Result: `{success:true, bundleId:'<new id>', bundle:{id, name, namespace:'mcptest', sourceUrl:'<the importUrl>', codeIds:{apps:['<app id>'], drivers:[], libraries:[]}, contains:{apps:['Deadman Test Target Bundle'], ...}}, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_apps` shows the bundle's app. This exercises the hub's bundle fetch + unpack for app code (the fixture carries no libraries), the same server-side path Hubitat Package Manager uses for a bundle, no UI.
 
 ### T510 — hub_install_bundle refuses without confirm flag
 
@@ -3507,7 +3507,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 }
 ```
 
-**Expected**: AI calls `hub_read_apps_code(tool='hub_list_bundles')` (or the flat tool). Result lists each installed bundle with its `contains` apps/drivers/libraries, each entry carrying an `id`. AI explains bundles are the Bundle-Manager containers HPM delivers code in — distinct from the Libraries Code entries (`hub_list_libraries`).
+**Expected**: AI calls `hub_read_apps_code(tool='hub_list_bundles')` (or the flat tool). Result lists each installed bundle with its `contains` apps/drivers/libraries and the `codeIds` the hub stored for it, each entry carrying an `id` and none carrying a zip password field. AI explains bundles are the Bundle-Manager containers HPM delivers code in — distinct from the Libraries Code entries (`hub_list_libraries`).
 
 ### T513 — hub_export_bundle saves a bundle .zip to the File Manager
 
@@ -3521,16 +3521,16 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 **Expected**: AI calls `hub_manage_code(tool='hub_export_bundle', args={bundleId:<id>})`. Result `{success:true, fileName:'<name>.zip', bytes:>0, directDownload:'/local/<name>.zip'}`; a follow-up `hub_list_files` shows `<name>.zip` present, confirming the write landed (a complete export round-trip); AI points the user at the `/local/...` URL. No `confirm` is required — export is a non-destructive write (it only creates a File Manager file). This is the standing manual proof that `hub_export_bundle` works end-to-end: the e2e `test_export_bundle` asserts the same success envelope programmatically and only soft-passes when a late-run relay 504 makes the File Manager listing unverifiable (never on any other failure).
 
-### T514 — hub_delete_bundle removes a bundle container (DESTRUCTIVE)
+### T514 — hub_delete_bundle removes a bundle and its code (DESTRUCTIVE)
 
 ```json
 {
   "setup_prompt": "the Write master enabled, recent backup exists. Identify the DISPOSABLE T509 fixture bundle's id with hub_list_bundles -- never a bundle another package installed.",
-  "test_prompt": "Delete that disposable bundle by id and confirm it's gone."
+  "test_prompt": "Delete that disposable bundle by id together with the code it installed, and confirm both are gone."
 }
 ```
 
-**Expected**: AI calls `hub_manage_code(tool='hub_delete_bundle', args={bundleId:<id>, confirm:true})`. Result `{success:true, verified:true, bundleId:'<id>'}`. AI notes that deleting the bundle CONTAINER may leave the libraries/apps/drivers it delivered in Code (remove those separately with `hub_delete_item`). Without `confirm=true` the tool refuses with "SAFETY CHECK FAILED".
+**Expected**: AI calls `hub_manage_code(tool='hub_delete_bundle', args={bundleId:<id>, deleteCode:true, confirm:true})`. Result `{success:true, bundleId:'<id>', codeDeleted:[{type:'app', id, name:'Deadman Test Target Bundle'}], codeKept:[], backupFiles:[...]}`; follow-up `hub_list_bundles` and `hub_list_apps(scope='types')` show neither the bundle nor its app. AI notes that without `deleteCode` only the bundle is removed and its code stays in Code, and that code still in use would come back in `codeKept`. Without `confirm=true` the tool refuses with "SAFETY CHECK FAILED"; an id the hub does not have returns `success:false` (an `isError` result) "No bundle with id N" with nothing deleted. If the bundle's app code was deleted by hand first, `deleteCode` is refused up front naming it in `missingCode`.
 
 ---
 

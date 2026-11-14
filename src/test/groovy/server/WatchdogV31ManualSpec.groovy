@@ -4,6 +4,7 @@ import me.biocomp.hubitat_ci.api.app_api.AppExecutor
 import me.biocomp.hubitat_ci.app.HubitatAppScript
 import spock.lang.Unroll
 import support.WatchdogSpec
+import support.BundleRecords
 import support.PermissiveLog
 import support.TestHub
 import support.TestLocation
@@ -1229,52 +1230,209 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         'missing'     | null
     }
 
-    // ---- bundle tools mirrored into the watchdog ----
+    // ---- bundle tools mirrored into the watchdog (record shapes: support.BundleRecords) ----
+
+    /** Route each hubGet path to a closure; an unrouted path fails the test. */
+    private void routeHubGet(Map<String, Closure> routes, List calls = []) {
+        script.metaClass.hubGet = { String p, Map q, int t = 30 ->
+            calls << (q ? "${p}?${q.collect { k, v -> "${k}=${v}" }.join('&')}".toString() : p)
+            Closure c = routes[p]
+            if (c == null) throw new AssertionError("unrouted hubGet ${p}")
+            c.call(q)
+        }
+    }
 
     @Unroll
-    def "adminListBundles parses the hub bundle list (#scenario)"() {
+    def "adminListBundles reads the hub's bundle records without the zip passwords (#scenario)"() {
         given:
-        script.metaClass.hubGet = { String p, Map q -> body }
+        routeHubGet(['/bundle/list/json': { q -> body }])
 
         expect:
         def r = script.adminListBundles([:])
         r.source == src
         r.bundles*.name == names
+        !groovy.json.JsonOutput.toJson(r).contains(BundleRecords.SECRET)
 
         where:
-        scenario    | body                                                    || src           | names
-        'json list' | '[{"id":1,"name":"mcp_libraries","namespace":"mcp"}]'   || 'hub_api'     | ['mcp_libraries']
-        'not array' | '{"oops":true}'                                         || 'hub_api_raw' | []
-        'not json'  | '<html>error</html>'                                    || 'hub_api_raw' | []
+        scenario    | body                                                                         || src           | names
+        'json list' | BundleRecords.listJson([BundleRecords.record(name: 'mcp_libraries')])         || 'hub_api'     | ['mcp_libraries']
+        'wrapped'   | groovy.json.JsonOutput.toJson([bundles: [BundleRecords.record(name: 'w')]])   || 'hub_api'     | ['w']
+        'not array' | '{"oops":true}'                                                               || 'hub_api_raw' | []
+        'not json'  | '<html>error</html>'                                                         || 'hub_api_raw' | []
+    }
+
+    def "adminListBundles gives the stored code ids and the names"() {
+        given:
+        routeHubGet(['/bundle/list/json': { q -> BundleRecords.listJson([BundleRecords.record(appTypeIds: [11], contentReadable: 'apps [A], drivers [], libraries []')]) }])
+
+        when:
+        def b = script.adminListBundles([:]).bundles[0]
+
+        then:
+        b.codeIds == [apps: ['11'], drivers: [], libraries: []]
+        b.contains.apps == ['A']
+        b.sourceUrl == 'https://example.com/throwaway.zip'
+    }
+
+    def "adminDeleteBundle reads the record, then deletes without code"() {
+        given:
+        List calls = []
+        routeHubGet(['/bundle/json/5': { q -> BundleRecords.recordJson(BundleRecords.record(id: 5, appTypeIds: [11])) },
+                     '/bundle/deleteJson/5': { q -> '{"success":true,"message":null}' }], calls)
+
+        when:
+        def r = script.adminDeleteBundle([bundleId: '05', confirm: true])
+
+        then:
+        r.success == true
+        r.bundleId == '5'
+        calls == ['/bundle/json/5', '/bundle/deleteJson/5']
+    }
+
+    def "adminDeleteBundle refuses an id the hub does not have without sending a delete"() {
+        given:
+        List calls = []
+        routeHubGet(['/bundle/json/99': { q -> BundleRecords.unknownJson() }], calls)
+
+        when:
+        def r = script.adminDeleteBundle([bundleId: '99', confirm: true])
+
+        then:
+        r.success == false
+        r.error == 'No bundle with id 99'
+        calls == ['/bundle/json/99']
+    }
+
+    def "adminDeleteBundle refuses when the record cannot be read"() {
+        given:
+        routeHubGet(['/bundle/json/5': { q -> null }])
+
+        expect:
+        def r = script.adminDeleteBundle([bundleId: '5', confirm: true])
+        r.success == false
+        r.error.contains('was not deleted')
+    }
+
+    def "adminDeleteBundle reports where the bundle stands when the hub does not confirm the delete"() {
+        given:
+        routeHubGet(['/bundle/json/5': { q -> BundleRecords.recordJson(BundleRecords.record(id: 5)) },
+                     '/bundle/deleteJson/5': { q -> '{"success":false,"message":"locked"}' }])
+
+        when:
+        def r = script.adminDeleteBundle([bundleId: '5', confirm: true])
+
+        then:
+        r.success == false
+        r.error == 'locked'
+        r.bundleExists == true
+        r.note.contains('bundleExists')
+    }
+
+    def "adminDeleteBundle with deleteCode deletes the stored ids and reports the code the hub kept"() {
+        given:
+        boolean deleted = false
+        List calls = []
+        routeHubGet(['/bundle/json/5': { q -> deleted ? BundleRecords.unknownJson() : BundleRecords.recordJson(BundleRecords.record(id: 5, appTypeIds: [11], libraryIds: [21])) },
+                     '/hub2/userAppTypes': { q -> deleted ? '[]' : '[{"id":11,"name":"A"},{"id":12,"name":"A"}]' },
+                     '/hub2/userLibraries': { q -> '[{"id":21,"name":"L"}]' },
+                     '/app/ajax/code': { q -> '{"source":"definition(name: \\"Other\\")"}' },
+                     '/bundle/deleteJson/5': { q -> deleted = true; '{"success":true,"message":null}' }], calls)
+
+        when:
+        def r = script.adminDeleteBundle([bundleId: '5', deleteCode: true, confirm: true])
+
+        then:
+        r.success == true
+        r.codeDeleted == [[type: 'app', id: '11', name: 'A']]
+        r.codeKept == [[type: 'library', id: '21', name: 'L']]
+        calls.contains('/bundle/deleteJson/5?full=true')
+        !calls.contains('/app/ajax/code?id=12')
     }
 
     @Unroll
-    def "adminDeleteBundle confirms removal by re-list (#scenario)"() {
+    def "adminDeleteBundle with deleteCode refuses before any delete when #why"() {
         given:
-        int calls = 0
-        script.metaClass.adminListBundles = { Map a ->
-            calls++
-            (calls == 1)
-                ? [source: 'hub_api', bundles: [[id: '5', name: 'mcp_libraries', namespace: 'mcp']]]
-                : [source: 'hub_api', bundles: afterList]
-        }
-        script.metaClass.hubGet = { String p, Map q -> "" }   // the /bundle/delete GET
+        List calls = []
+        routeHubGet(['/bundle/json/5': { q -> BundleRecords.recordJson(BundleRecords.record(id: 5, appTypeIds: [11])) },
+                     '/hub2/userAppTypes': { q -> apps },
+                     '/app/ajax/code': { q -> groovy.json.JsonOutput.toJson([source: source]) }], calls)
 
-        expect:
-        script.adminDeleteBundle([bundleId: '5', confirm: true]).success == expected
+        when:
+        def r = script.adminDeleteBundle([bundleId: '5', deleteCode: true, confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains(message)
+        !calls.any { it.startsWith('/bundle/deleteJson') }
 
         where:
-        scenario               | afterList                                              || expected
-        'gone after delete'    | []                                                     || true
-        'still present -> fail' | [[id: '5', name: 'mcp_libraries', namespace: 'mcp']]   || false
+        why                          | apps                          | source        || message
+        'a stored id has no code'    | '[]'                          | 'x'           || 'app 11'
+        'the app list is unreadable' | '<html/>'                     | 'x'           || 'code list could not be read'
+        'it is the watchdog itself'  | '[{"id":11,"name":"W"}]'      | V31_SOURCE    || "this watchdog's own code"
     }
 
-    def "adminDeleteBundle refuses a missing id without sending a delete"() {
+    def "adminInstallBundle returns the new bundle id from the list diff"() {
         given:
-        script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: [[id: '5', name: 'x', namespace: 'mcp']]] }
+        boolean installed = false
+        String url = 'https://example.com/throwaway.zip'
+        routeHubGet(['/bundle/list/json': { q -> BundleRecords.listJson(installed ? [BundleRecords.record(id: 3, sourceUrl: 'https://example.com/o.zip'), BundleRecords.record(id: 7)] : [BundleRecords.record(id: 3, sourceUrl: 'https://example.com/o.zip')]) },
+                     '/hub2/userAppTypes': { q -> '[]' }, '/hub2/userDeviceTypes': { q -> '[]' }, '/hub2/userLibraries': { q -> '[]' },
+                     '/bundle2/uploadZipFromUrl': { q -> installed = true; '{"success":true,"message":null}' }])
 
-        expect:
-        script.adminDeleteBundle([bundleId: '99', confirm: true]).success == false
+        when:
+        def r = script.adminInstallBundle([importUrl: url, confirm: true])
+
+        then:
+        r.success == true
+        r.bundleId == '7'
+        r.bundle.namespace == 'mcptest'
+        !groovy.json.JsonOutput.toJson(r).contains(BundleRecords.SECRET)
+    }
+
+    def "adminInstallBundle returns the hub's reason and the code a refused install still added"() {
+        given:
+        boolean installed = false
+        routeHubGet(['/bundle/list/json': { q -> '[]' },
+                     '/hub2/userAppTypes': { q -> installed ? '[{"id":846,"name":"A"}]' : '[]' },
+                     '/hub2/userDeviceTypes': { q -> '[]' }, '/hub2/userLibraries': { q -> '[]' },
+                     '/bundle2/uploadZipFromUrl': { q -> installed = true; '{"success":false,"message":"name must consist of letters"}' }])
+
+        when:
+        def r = script.adminInstallBundle([importUrl: 'https://example.com/b.zip', confirm: true])
+
+        then:
+        r.success == false
+        r.error == 'Bundle install failed: name must consist of letters'
+        r.rawResponse.contains('name must consist')
+        r.codeAdded == [[type: 'app', id: '846', name: 'A']]
+    }
+
+    @Unroll
+    def "adminInstallBundle reads the bundle list again when the install reply is lost (#why)"() {
+        given:
+        boolean installed = false
+        String url = 'https://example.com/throwaway.zip'
+        routeHubGet(['/bundle/list/json': { q -> BundleRecords.listJson(installed ? after : []) },
+                     '/hub2/userAppTypes': { q -> installed ? '[{"id":70,"name":"A"}]' : '[]' },
+                     '/hub2/userDeviceTypes': { q -> '[]' }, '/hub2/userLibraries': { q -> '[]' },
+                     '/bundle2/uploadZipFromUrl': { q -> installed = true; throw new RuntimeException('read timed out') }])
+
+        when:
+        def r = script.adminInstallBundle([importUrl: url, confirm: true])
+
+        then:
+        r.success == false
+        r.bundleId == bundleId
+        r.codeAdded == [[type: 'app', id: '70', name: 'A']]
+        r.note.contains(message)
+        r.note.contains('added to Code during the install')
+        !r.note.contains('no bundle lists it')
+
+        where:
+        why            | after                                | bundleId || message
+        'bundle found' | [BundleRecords.record(id: 7)]        | '7'      || 'appears to have completed'
+        'none found'   | []                                   | null     || 'Check hub_list_bundles before retrying or deleting anything'
     }
 
     def "adminGetHubLogs parses tab-delimited rows newest-first with a level filter"() {
@@ -1346,25 +1504,6 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         r.summary.totalEntries == 3
         r.summary.minMemoryKB == 200      // min over the RETURNED window
         r.summary.currentMemoryKB == 300
-    }
-
-    def "adminDeleteBundle reports verified=false when the post-delete re-list is degraded"() {
-        given:
-        int calls = 0
-        script.metaClass.adminListBundles = { Map a ->
-            calls++
-            (calls == 1)
-                ? [source: 'hub_api', bundles: [[id: '5', name: 'mcp_libraries', namespace: 'mcp']]]   // before: present
-                : [source: 'hub_api_raw', bundles: []]                                                   // after: degraded shape
-        }
-        script.metaClass.hubGet = { String p, Map q -> "" }
-
-        when:
-        def r = script.adminDeleteBundle([bundleId: '5', confirm: true])
-
-        then:
-        r.success == false      // a destructive op must NOT claim success it couldn't verify
-        r.verified == false
     }
 
     // ---- hub_update_platform: apply the pending platform update (test-hub maintenance) ----

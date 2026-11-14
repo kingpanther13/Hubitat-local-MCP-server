@@ -690,7 +690,7 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
     def base = (args?.baseUrl instanceof String && args.baseUrl.trim())
         ? args.baseUrl.trim().replaceAll('/+$', '')
         : getPackageSourceBase()
-    // .toString() throughout: _fetchSourceFromUrl / hub_install_bundle / hub_update_app
+    // .toString() throughout: _fetchSourceFromUrl / hub_update_app
     // reject a GString importUrl (instanceof String is false for GStringImpl).
     def appUrl = "${base}/${ref}/hubitat-mcp-server.groovy".toString()
 
@@ -832,7 +832,7 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
     for (b in plannedBundles) {
         def r
         try {
-            r = toolInstallBundle([importUrl: b.url, confirm: true])
+            r = _installBundleFromUrl(b.url?.toString(), false)
         } catch (Exception e) {
             mcpLog("warn", "developer-mode", "hub_update_package: bundle ${b.url} install threw: ${e.toString()}")
             return [
@@ -840,12 +840,12 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
                 error: "Bundle ${b.name ?: b.url} failed to install: ${e.message ?: e.toString()}. Apps NOT touched -- they remain as-is and updatable via hub_update_app."
             ]
         }
-        def ok = (r?.success == true)
-        bundleResults << [name: b.name, url: b.url, source: b.source, success: ok, error: (ok ? null : (r?.error ?: r?.message))]
+        def ok = (r?.ok == true)
+        bundleResults << [name: b.name, url: b.url, source: b.source, success: ok, error: (ok ? null : r?.error)]
         if (!ok) {
             return [
                 success: false, aborted: true, abortReason: "bundle_install_failed", ref: ref, bundles: bundleResults,
-                error: "Bundle ${b.name ?: b.url} install reported failure: ${r?.error ?: r?.message ?: 'unknown'}. Apps NOT touched -- they remain as-is and updatable via hub_update_app."
+                error: "Bundle ${b.name ?: b.url} install reported failure: ${r?.error ?: 'unknown'}. Apps NOT touched -- they remain as-is and updatable via hub_update_app."
             ]
         }
     }

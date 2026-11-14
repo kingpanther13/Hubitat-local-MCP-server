@@ -2267,9 +2267,11 @@ def adminListAppInstances(args) {
     return [apps: flat, count: flat.size()]
 }
 
-// hub_install_bundle: copied from toolInstallBundle + _firmwareAtLeast + _bundleResponseSucceeded
-// (hubitat-mcp-server.groovy), incl. the NUMERIC firmware gate at 2.3.8.108 and the
-// /bundle2 vs /bundle/uploadZipFromUrl split. Adapted to hubGet/hubPostJson.
+// hub_install_bundle: mirror of McpBundlesLib.toolInstallBundle + _installBundleFromUrl, incl. the
+// NUMERIC firmware gate at 2.3.8.108, the /bundle2 vs /bundle/uploadZipFromUrl split, the hub's own
+// reason on a refusal, the code a refused install still added (codeAdded), and the new bundle's id
+// from the bundle list read before and after (sourceUrl breaking a tie). Adapted to hubGet/hubPostJson,
+// which return null instead of throwing.
 def adminInstallBundle(args) {
     requireConfirm(args)
     def importUrl = args.importUrl
@@ -2281,37 +2283,90 @@ def adminInstallBundle(args) {
     if (!(lower.startsWith("http://") || lower.startsWith("https://"))) {
         throw new IllegalArgumentException("importUrl scheme must be http or https (got '${importUrl.take(40)}')")
     }
-    boolean primary = (args.primary == true)
+    if (args.installer != null && !(args.installer instanceof Boolean)) {
+        throw new IllegalArgumentException("installer must be true or false (got '${args.installer.toString().take(40)}').")
+    }
+    boolean installer = (args.installer == true)
 
     String fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception ignored) { }
     boolean modern = _firmwareAtLeast(fw, "2.3.8.108")
     String endpoint = modern ? "/bundle2/uploadZipFromUrl" : "/bundle/uploadZipFromUrl"
 
-    mcpAdminLog "Installing bundle (endpoint ${endpoint}, fw ${fw}, primary ${primary}, url ${importUrl})"
+    List before = _wdBundleRecords()
+    Map codeBefore = _wdCodeSnapshot(["app", "driver", "library"])
+    mcpAdminLog "Installing bundle (endpoint ${endpoint}, fw ${fw}, installer ${installer}, url ${importUrl})"
+    def respBody = null
+    String thrown = null
     try {
-        def respBody
         if (modern) {
             // bundle2 is a GET with the url/pwd/private query. `private` quoted (keyword).
-            respBody = hubGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": primary.toString()], 300)
+            respBody = hubGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": installer.toString()], 300)
         } else {
-            def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: primary, pwd: ""])
+            def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: installer, pwd: ""])
             def resp = hubPostJson("/bundle/uploadZipFromUrl", body)
             respBody = resp?.data
         }
-        boolean ok = _bundleResponseSucceeded(respBody)
-        if (!ok) {
-            return [success: false,
-                    error: "Bundle install failed: the hub returned no success signal. The zip may be malformed/unreachable, or the firmware endpoint unavailable.",
-                    endpoint: endpoint, rawResponse: respBody?.toString()?.take(500)]
-        }
-        mcpAdminLog "Bundle installed successfully from ${importUrl}"
-        return [success: true, message: "Bundle installed from ${importUrl}. Its libraries/apps/drivers are now in Code.",
-                endpoint: endpoint, primary: primary]
     } catch (Exception e) {
         log.error "adminInstallBundle: ${e.message}"
-        return [success: false, error: "Bundle install failed: ${e.message ?: e.toString()}", endpoint: endpoint]
+        thrown = e.message ?: e.toString()
     }
+    if (thrown != null || !_bundleResponseSucceeded(respBody)) {
+        String hubMessage = _bundleResponseMessage(respBody)
+        def failure = [success: false, endpoint: endpoint,
+                       error: thrown != null ? "Bundle install failed: ${thrown}".toString()
+                           : hubMessage ? "Bundle install failed: ${hubMessage}".toString()
+                           : "Bundle install failed: the hub returned no success signal. The zip may be malformed or unreachable, or the firmware endpoint unavailable."]
+        if (respBody != null) failure.rawResponse = respBody.toString().take(500)
+        List notes = []
+        if (respBody == null) {
+            // No reply does not mean the hub stopped: it may have finished, so the list is read again.
+            Map found = _wdInstalledBundle(before, importUrl)
+            if (found.fresh) {
+                failure.bundle = found.bundle
+                failure.bundleId = found.bundle.id
+                notes << "No reply came, but the bundle list read again shows the new bundle from this install (in bundle), so the install appears to have completed."
+            } else {
+                notes << "No reply came, and ${found.read ? 'the bundle list read again shows no new bundle it can tie to this install' : 'the bundle list could not be read'}, so whether the bundle was installed is unknown. Check hub_list_bundles before retrying or deleting anything with hub_delete_item.".toString()
+            }
+        }
+        Map added = _wdCodeAdded(codeBefore)
+        if (added.items) {
+            failure.codeAdded = added.items
+            notes << (respBody != null ? "The hub added the code in codeAdded to Code before the install failed, and no bundle lists it. Check it before retrying; delete what you do not want with hub_delete_item."
+                : "The code in codeAdded was added to Code during the install.")
+        }
+        if (added.unverified) notes << "The ${added.unverified.join(' and ')} code list could not be read, so code the install added there is not listed.".toString()
+        failure.note = notes.join(" ")
+        return failure
+    }
+    mcpAdminLog "Bundle installed successfully from ${importUrl}"
+    def out = [success: true, bundleId: null, endpoint: endpoint, installer: installer,
+               message: "Bundle installed from ${importUrl}. Its apps, drivers and libraries are in Code.".toString()]
+    Map found = _wdInstalledBundle(before, importUrl)
+    if (found.bundle) {
+        out.bundle = found.bundle
+        out.bundleId = found.bundle.id
+    }
+    if (found.note) out.note = found.note
+    return out
+}
+
+// The bundle an install added, from the bundle list read before it and again now: [read, bundle,
+// fresh (a new id, not a reinstall), note].
+Map _wdInstalledBundle(List before, String importUrl) {
+    List after = before == null ? null : _wdBundleRecords()
+    if (after == null) {
+        return [read: false, note: "The bundle list could not be read ${before == null ? 'before' : 'after'} the install, so the new bundle's id is unknown. hub_list_bundles shows it.".toString()]
+    }
+    Set beforeIds = before.collect { it.id?.toString() }.findAll { it } as Set
+    List fresh = after.findAll { it.id != null && !beforeIds.contains(it.id.toString()) }
+    List pick = fresh.size() > 1 ? fresh.findAll { it.sourceUrl?.toString() == importUrl } : fresh
+    // Reinstalling a bundle keeps its id: with nothing new, the bundle installed from this URL is the one.
+    if (fresh.isEmpty()) pick = after.findAll { it.id != null && it.sourceUrl?.toString() == importUrl }
+    if (pick.size() != 1) return [read: true, note: "No single new bundle appeared, and no single bundle was installed from this URL. hub_list_bundles shows it."]
+    return [read: true, bundle: _wdBundleView(pick[0] as Map), fresh: !fresh.isEmpty(),
+            note: fresh ? null : "The bundle installed from this URL was already on the hub; the install updated it and it kept its id."]
 }
 
 // _firmwareAtLeast: copied VERBATIM from hubitat-mcp-server.groovy (numeric
@@ -2331,7 +2386,7 @@ def _firmwareAtLeast(fw, String target) {
     return true
 }
 
-// _bundleResponseSucceeded: copied from hubitat-mcp-server.groovy.
+// _bundleResponseSucceeded: copied from McpBundlesLib.
 def _bundleResponseSucceeded(resp) {
     if (resp == null) return false
     if (resp instanceof Map) return resp.success == true || resp.success?.toString() == "true"
@@ -2344,89 +2399,215 @@ def _bundleResponseSucceeded(resp) {
     return text.equalsIgnoreCase("true")
 }
 
-// hub_list_bundles: mirror of McpBundlesLib.toolListBundles (PR #247), adapted to hubGet. Lists the
-// installed bundle CONTAINERS (id/name/namespace), distinct from Libraries Code. Read-only. No
-// pagination -- the test hub never has enough bundles to need paging.
-def adminListBundles(args) {
-    def result = [:]
-    try {
-        def responseText = hubGet("/hub2/userBundles", [:])
-        if (responseText) {
-            try {
-                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-                if (parsed instanceof List) {
-                    result.bundles = parsed.findAll { it instanceof Map }.collect { b ->
-                        [id: b.id?.toString(), name: b.name, namespace: b.namespace, "private": (b["private"] == true)]
-                    }
-                    result.count = result.bundles.size()
-                    result.source = "hub_api"
-                } else {
-                    result.bundles = []
-                    result.count = 0
-                    result.rawResponse = responseText?.take(2000)
-                    result.source = "hub_api_raw"
-                    result.note = "Response was not a JSON array."
-                }
-            } catch (Exception parseErr) {
-                result.bundles = []
-                result.count = 0
-                result.rawResponse = responseText?.take(2000)
-                result.source = "hub_api_raw"
-                result.note = "Response was not JSON."
-            }
-        } else {
-            result.bundles = []
-            result.count = 0
-            result.source = "unavailable"
-            result.note = "Empty response from hub API"
-        }
-    } catch (Exception e) {
-        log.warn "adminListBundles: ${e.message}"
-        result.bundles = []
-        result.count = 0
-        result.source = "unavailable"
-        result.note = "Hub internal API unavailable (${e.message})."
+// _bundleResponseMessage: copied from McpBundlesLib.
+String _bundleResponseMessage(resp) {
+    def parsed = resp
+    if (!(resp instanceof Map)) {
+        try { parsed = new groovy.json.JsonSlurper().parseText(resp?.toString() ?: "") } catch (Exception ignored) { return null }
     }
-    return result
+    String msg = (parsed instanceof Map) ? parsed.message?.toString()?.trim() : null
+    return msg ?: null
 }
 
-// hub_delete_bundle: mirror of McpBundlesLib.toolDeleteBundle (PR #247), adapted to hubGet. Deletes a
-// bundle CONTAINER by id (GET /bundle/delete/<id>, 302 on success), then re-lists to confirm it is
-// gone (the 302 alone is not proof). confirm:true required.
+// The hub's bundle records, as McpBundlesLib reads them: /bundle/list/json answers every record
+// (a JSON array, or a map holding it under `bundles`); /bundle/json/<id> answers one under
+// `bundle`, or {"success":false} for an unknown id. A record's sourcePassword/encryptedPassword are
+// never copied out (_wdBundleView), and the raw replies are never returned or logged.
+List _wdBundleRecords() {
+    def parsed = null
+    try { parsed = new groovy.json.JsonSlurper().parseText(hubGet("/bundle/list/json", [:]) ?: "") } catch (Exception ignored) { }
+    def rows = (parsed instanceof Map) ? parsed.bundles : parsed
+    return (rows instanceof List) ? rows.findAll { it instanceof Map } : null
+}
+
+// [bundle: record], [bundle: null] for an unknown id, or [error] when the reply is unreadable.
+Map _wdBundleRecord(String id) {
+    def parsed = null
+    try { parsed = new groovy.json.JsonSlurper().parseText(hubGet("/bundle/json/${id}".toString(), [:]) ?: "") } catch (Exception ignored) { }
+    if (parsed instanceof Map && parsed.bundle instanceof Map) return [bundle: parsed.bundle]
+    if (parsed instanceof Map && parsed.success == false) return [bundle: null]
+    return [error: "the hub's reply to /bundle/json/${id} is not a recognized answer".toString()]
+}
+
+// _parseBundleContent + _bundleView: copied from McpBundlesLib.
+Map _parseBundleContent(String content) {
+    if (!content) return null
+    def out = [apps: [], drivers: [], libraries: []]
+    int found = 0
+    ["apps", "drivers", "libraries"].each { key ->
+        def token = "${key} ["
+        int s = content.indexOf(token)
+        if (s >= 0) {
+            int open = s + token.length() - 1
+            int close = content.indexOf("]", open)
+            if (close > open) {
+                found++
+                def inner = content.substring(open + 1, close).trim()
+                out[key] = inner ? inner.split(/\s*,\s*/).collect { it.trim() }.findAll { it } : []
+            }
+        }
+    }
+    return found == 3 ? out : null
+}
+
+Map _wdBundleView(Map rec) {
+    Map codeIds = [:]
+    [apps: "appTypeIds", drivers: "deviceTypeIds", libraries: "libraryIds"].each { key, field ->
+        def ids = rec.get(field)
+        codeIds.put(key, (ids instanceof List) ? ids.findAll { it != null }.collect { it.toString() } : [])
+    }
+    def entry = [id: rec.id?.toString(), name: rec.name, namespace: rec.namespace, "private": (rec["private"] == true)]
+    if (rec.sourceUrl) entry.sourceUrl = rec.sourceUrl.toString()
+    entry.codeIds = codeIds
+    String text = rec.contentReadable?.toString()
+    def contains = _parseBundleContent(text)
+    if (contains != null && codeIds.every { k, ids -> (contains.get(k) as List).size() == (ids as List).size() }) entry.contains = contains
+    else if (text != null) entry.content = text
+    return entry
+}
+
+// type -> [id: name] for each code list read, or type -> null when that list cannot be read.
+Map _wdCodeSnapshot(List types) {
+    Map out = [:]
+    types.each { String type ->
+        def parsed = null
+        try {
+            parsed = new groovy.json.JsonSlurper().parseText(hubGet([app: "/hub2/userAppTypes", driver: "/hub2/userDeviceTypes", library: "/hub2/userLibraries"][type], [:]) ?: "")
+        } catch (Exception ignored) { }
+        if (!(parsed instanceof List)) { out.put(type, null); return }
+        Map byId = [:]
+        parsed.each { row -> if (row instanceof Map && row.id != null) byId.put(row.id.toString(), row.name) }
+        out.put(type, byId)
+    }
+    return out
+}
+
+Map _wdCodeAdded(Map before) {
+    List items = []
+    List unverified = []
+    Map after = _wdCodeSnapshot(before.findAll { k, v -> v != null }.keySet() as List)
+    before.each { String type, Map ids ->
+        Map current = after.get(type)
+        if (ids == null || current == null) { unverified << type; return }
+        current.each { id, name -> if (!ids.containsKey(id)) items << [type: type, id: id, name: name] }
+    }
+    return [items: items, unverified: unverified]
+}
+
+// [codeDeleted, codeKept] plus codeUnverified, each item looked up in its code list again.
+Map _wdCodeOutcome(List items) {
+    Map after = _wdCodeSnapshot(items.collect { it.type }.unique())
+    List deleted = []
+    List kept = []
+    List unverified = []
+    items.each { item ->
+        Map ids = after.get(item.type)
+        if (ids == null) unverified << item
+        else if (ids.containsKey(item.id)) kept << item
+        else deleted << item
+    }
+    Map out = [codeDeleted: deleted, codeKept: kept]
+    if (unverified) out.codeUnverified = unverified
+    return out
+}
+
+// hub_list_bundles: mirror of McpBundlesLib.toolListBundles, adapted to hubGet. No pagination --
+// the test hub never has enough bundles to need paging.
+def adminListBundles(args) {
+    List records = _wdBundleRecords()
+    if (records == null) {
+        return [bundles: [], count: 0, source: "hub_api_raw",
+                note: "The hub's bundle list (/bundle/list/json) could not be read or is not in a recognized shape."]
+    }
+    def bundles = records.collect { _wdBundleView(it as Map) }
+    return [bundles: bundles, count: bundles.size(), source: "hub_api"]
+}
+
+// hub_delete_bundle: mirror of McpBundlesLib.toolDeleteBundle, adapted to hubGet. /bundle/deleteJson/<id>
+// answers success for any id, so the bundle's record is read first; deleteCode deletes the code ids
+// stored on it, refused up front when one has no code behind it or one is this watchdog's own app.
+// One deviation: the watchdog keeps no code backups, so deleteCode deletes without one.
 def adminDeleteBundle(args) {
     requireConfirm(args)
-    def rawId = args?.bundleId
-    if (rawId == null || !rawId.toString().trim()) {
-        throw new IllegalArgumentException("bundleId is required (the numeric id from hub_list_bundles).")
+    String raw = args?.bundleId?.toString()?.trim()
+    if (!raw) throw new IllegalArgumentException("bundleId is required (the numeric bundle id from hub_list_bundles).")
+    if (!(raw ==~ /\d{1,10}/) || (raw as Long) <= 0) {
+        throw new IllegalArgumentException("bundleId must be a positive integer (got '${raw.take(40)}'). Use hub_list_bundles to find it.")
     }
-    def bundleId = rawId.toString().trim()
-    if (!(bundleId ==~ /\d+/)) {
-        throw new IllegalArgumentException("bundleId must be a positive integer (got '${bundleId.take(40)}').")
+    String id = (raw as Long).toString()
+    if (args.deleteCode != null && !(args.deleteCode instanceof Boolean)) {
+        throw new IllegalArgumentException("deleteCode must be true or false (got '${args.deleteCode.toString().take(40)}').")
     }
-    def before = adminListBundles([:])
-    def target = (before.bundles ?: []).find { it.id?.toString() == bundleId }
-    if (before.source == "hub_api" && !target) {
-        return [success: false, error: "No bundle with id ${bundleId} found on the hub.", bundleId: bundleId]
+    boolean deleteCode = (args.deleteCode == true)
+
+    Map read = _wdBundleRecord(id)
+    if (read.error) {
+        return [success: false, bundleId: id, error: "Could not read bundle ${id} (${read.error}), so it was not deleted.".toString(),
+                note: "The hub reports success for any bundle id, so the delete is sent only once the hub's record of the bundle has been read."]
     }
-    def bundleName = target?.name
-    mcpAdminLog "Deleting bundle ${bundleId} (${bundleName ?: 'name unknown'})"
-    try {
-        hubGet("/bundle/delete/${bundleId}", [:])
-    } catch (Exception e) {
-        return [success: false, error: "Bundle delete request failed: ${e.message ?: e.toString()}", bundleId: bundleId]
+    if (read.bundle == null) return [success: false, bundleId: id, error: "No bundle with id ${id}".toString(), note: "Nothing was deleted."]
+    Map view = _wdBundleView(read.bundle as Map)
+    String label = "Bundle ${id} ('${view.name}')".toString()
+
+    List items = []
+    if (deleteCode) {
+        Map types = [app: "apps", driver: "drivers", library: "libraries"]
+        Map lists = _wdCodeSnapshot(types.findAll { t, key -> view.codeIds.get(key) }.keySet() as List)
+        List missing = []
+        List unreadable = []
+        types.each { String type, String key ->
+            (view.codeIds.get(key) ?: []).each { String codeId ->
+                Map ids = lists.get(type)
+                if (ids == null) { if (!unreadable.contains(type)) unreadable << type }
+                else if (!ids.containsKey(codeId)) missing << [type: type, id: codeId]
+                else items << [type: type, id: codeId, name: ids.get(codeId)]
+            }
+        }
+        if (unreadable) {
+            return [success: false, bundleId: id, error: "${label}: the ${unreadable.join(' and ')} code list could not be read, so the bundle's code cannot be checked.".toString(),
+                    note: "Nothing was deleted."]
+        }
+        if (missing) {
+            return [success: false, bundleId: id, missingCode: missing,
+                    error: "${label} lists code that is no longer in Code: ${missing.collect { "${it.type} ${it.id}" }.join(', ')}.".toString(),
+                    note: "Nothing was deleted. Delete the bundle without deleteCode, then each remaining item with hub_delete_item."]
+        }
+        for (item in items.findAll { it.type == "app" }) {
+            def current = _parseJsonBody(hubGet("/app/ajax/code", [id: item.id]))
+            if (!(current instanceof Map))
+                return [success: false, bundleId: id, error: "Could not read app ${item.id} to rule out this watchdog's own code; nothing was deleted."]
+            if (isWatchdogSource(current.source))
+                return [success: false, bundleId: id, error: "Refused: ${label} delivered app ${item.id}, this watchdog's own code, the hub's remote repair path."]
+        }
     }
-    def after = adminListBundles([:])
-    if (after.source != "hub_api") {
-        return [success: false, verified: false,
-                error: "Delete request sent for bundle ${bundleId}, but removal could not be verified (list source=${after.source}).",
-                bundleId: bundleId]
+
+    mcpAdminLog "Deleting bundle ${id} (${view.name}, deleteCode ${deleteCode})"
+    def responseText = hubGet("/bundle/deleteJson/${id}".toString(), deleteCode ? [full: "true"] : [:])
+    def parsed = null
+    try { parsed = responseText ? new groovy.json.JsonSlurper().parseText(responseText) : null } catch (Exception ignored) { }
+    String failure = null
+    if (responseText == null) failure = "Bundle delete request failed: no response from the hub."
+    else if (!(parsed instanceof Map) || !parsed.containsKey("success")) failure = "Could not confirm the delete of ${label}: the hub's reply is not a recognized answer.".toString()
+    else if (parsed.success != true) failure = (parsed.message ?: "The hub refused the delete of ${label}").toString()
+    if (failure != null) {
+        Map out = [success: false, bundleId: id, error: failure]
+        if (responseText != null) out.response = responseText.toString().take(500)
+        Map again = _wdBundleRecord(id)
+        out.bundleExists = again.error ? null : (again.bundle != null)
+        if (deleteCode) out.putAll(_wdCodeOutcome(items))
+        out.note = "The hub can delete part of the code before it reports failure: check bundleExists" + (deleteCode ? " and codeDeleted/codeKept" : "") + " before retrying."
+        return out
     }
-    def stillThere = (after.bundles ?: []).any { it.id?.toString() == bundleId }
-    if (stillThere) {
-        return [success: false, error: "Bundle ${bundleId} is still present after the delete request.", bundleId: bundleId]
+    def out = [success: true, bundleId: id, name: view.name, deleteCode: deleteCode]
+    if (!deleteCode) {
+        out.message = "${label} deleted. The apps, drivers and libraries it delivered stay in Code.".toString()
+        return out
     }
-    return [success: true, message: "Bundle ${bundleId}${bundleName ? " ('${bundleName}')" : ''} deleted.",
-            bundleId: bundleId, bundleName: bundleName, verified: true]
+    Map code = _wdCodeOutcome(items)
+    out.putAll(code)
+    out.message = "${label} deleted with its code: ${code.codeDeleted.size()} of ${items.size()} delivered item(s) deleted.".toString()
+    if (code.codeKept) out.note = "The hub kept the code in codeKept because something still uses it."
+    return out
 }
 
 // hub_get_info: condensed from toolGetHubInfo (hubitat-mcp-server.groovy), surfacing the
@@ -2810,12 +2991,12 @@ def getManualToolDefinitions() {
         [name: "hub_get_hub_logs", annotations: [title: "Get Hub Logs", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Most-recent hub system log entries. Args: level (error/warn/info), limit (default 50). Read-only.",
          inputSchema: [type: "object", properties: [level: [type: "string"], limit: [type: "integer"]]]],
         [name: "hub_list_app_instances", annotations: [title: "List App Instances", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Every running app INSTANCE (flattened /hub2/appsList with parentId) -- the full app inventory. DISTINCT from hub_list_apps (Apps Code CLASSES, which resolve_class_id depends on). Read-only."],
-        [name: "hub_install_bundle", annotations: [title: "Install Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
-         inputSchema: [type: "object", properties: [importUrl: [type: "string"], primary: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
-        [name: "hub_list_bundles", annotations: [title: "List Bundles", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List installed code bundle containers (id/name/namespace). Read-only.",
+        [name: "hub_install_bundle", annotations: [title: "Install Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style); returns the new bundleId, or on a refusal the hub's reason and any code it still added (codeAdded). confirm:true required.",
+         inputSchema: [type: "object", properties: [importUrl: [type: "string"], installer: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
+        [name: "hub_list_bundles", annotations: [title: "List Bundles", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List installed code bundles (id/name/namespace/sourceUrl, the code ids the hub stored for each, and their names). Read-only.",
          inputSchema: [type: "object", properties: [:]]],
-        [name: "hub_delete_bundle", annotations: [title: "Delete Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete a code bundle container by id (verified by re-list). confirm:true required.",
-         inputSchema: [type: "object", properties: [bundleId: [type: "string"], confirm: [type: "boolean"]], required: ["bundleId", "confirm"]]],
+        [name: "hub_delete_bundle", annotations: [title: "Delete Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete a code bundle by id; deleteCode:true also deletes the code ids the hub stored for it (no backup on the watchdog; code in use is kept and listed in codeKept). confirm:true required.",
+         inputSchema: [type: "object", properties: [bundleId: [type: "string"], deleteCode: [type: "boolean"], confirm: [type: "boolean"]], required: ["bundleId", "confirm"]]],
         [name: "hub_get_info", annotations: [title: "Get Info", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [peer: [type: "boolean", description: "Also check that the MCP server's own endpoint answers (peerEndpoint.available); this calls its tools/list over loopback, so do not poll with it."]]], description: "Hub model/firmware/memory, the lastSelfDeploy record of the latest hub_update_app (with ageMs; hub_update_package does not write it), the latest package deployment (check its hold), and loopback wedge health including the last automatic reboot. The package is never restored automatically."],
         [name: "hub_list_apps", annotations: [title: "List Apps", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List Apps Code types (scope='types') or installed apps.",
          inputSchema: [type: "object", properties: [scope: [type: "string", enum: ["types", "instances"]]]]],
