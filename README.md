@@ -377,8 +377,8 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_rooms` | List all rooms with IDs, names, and device counts |
-| `hub_get_room` | Get room details with assigned devices |
+| `hub_list_rooms` | List all rooms with IDs, names, and device ids |
+| `hub_get_room` | Read one room by `roomId` with its devices and their current states |
 
 </details>
 
@@ -475,11 +475,11 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_rooms` | List all rooms with IDs, names, and device counts (also in `hub_read_rooms`) |
-| `hub_get_room` | Get room details with assigned devices (also in `hub_read_rooms`) |
-| `hub_create_room` | Create a new room (Write master + confirm) |
-| `hub_delete_room` | Permanently delete a room (Write master + confirm) |
-| `hub_update_room` | Rename a room (Write master + confirm) |
+| `hub_list_rooms` | List all rooms with IDs, names, and device ids (also in `hub_read_rooms`) |
+| `hub_get_room` | Read one room by `roomId` with its devices and their current states (also in `hub_read_rooms`) |
+| `hub_create_room` | Create a new room, optionally with devices (Write master + confirm) |
+| `hub_delete_room` | Permanently delete a room by `roomId` (Write master + confirm) |
+| `hub_update_room` | Rename a room and/or replace its device list, by `roomId` (Write master + confirm) |
 
 </details>
 

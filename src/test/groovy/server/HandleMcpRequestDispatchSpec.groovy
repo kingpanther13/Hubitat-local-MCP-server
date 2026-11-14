@@ -450,17 +450,17 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
     }
 
     def "validation-error mcpLog blames the SUB-TOOL, not the gateway, on a gateway-routed call (#319)"() {
-        given: 'hub_get_room reaches its handler (room supplied) then throws IAE (no rooms), via its gateway'
+        given: 'hub_get_room reaches its handler (roomId supplied) then throws IAE (no such room), via its gateway'
         settingsMap.enableRead = true
         settingsMap.useGateways = true
         seedDebugLogHistory([entries: [], config: [logLevel: 'debug', maxEntries: 100]])
         settingsMap.mcpLogLevel = 'debug'
         // getRooms is a dynamic SDK method (metaClass-stubbable); [] makes toolGetRoom
-        // throw its own "No rooms configured" IAE -> the validation branch.
+        // throw its own "No room has id" IAE -> the validation branch.
         script.metaClass.getRooms = { -> [] }
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 210, method: 'tools/call',
-            params: [name: 'hub_read_rooms', arguments: [tool: 'hub_get_room', args: [room: 'X']]]
+            params: [name: 'hub_read_rooms', arguments: [tool: 'hub_get_room', args: [roomId: 'X']]]
         ])
 
         when:
@@ -485,7 +485,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         script.metaClass.getRooms = { -> throw new RuntimeException('boom-exec') }
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 211, method: 'tools/call',
-            params: [name: 'hub_read_rooms', arguments: [tool: 'hub_get_room', args: [room: 'X']]]
+            params: [name: 'hub_read_rooms', arguments: [tool: 'hub_get_room', args: [roomId: 'X']]]
         ])
 
         when:
@@ -1705,7 +1705,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
             'Mcp-Name': 'hub_read_rooms',
         ])
         mcpDriver.pushBody([jsonrpc: '2.0', id: 317, method: 'tools/call',
-                            params: [name: 'hub_read_rooms', arguments: [tool: 'hub_get_room', args: [room: 'X']]]])
+                            params: [name: 'hub_read_rooms', arguments: [tool: 'hub_get_room', args: [roomId: 'X']]]])
 
         when:
         script.handleMcpRequest()

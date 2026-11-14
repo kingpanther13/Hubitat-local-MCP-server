@@ -177,15 +177,15 @@ Each dispatch test pins the gateway toggle explicitly via a data-driven Spock fe
 import spock.lang.Unroll
 
 @Unroll
-def "create_room dispatches successfully through the envelope (useGateways=#useGateways)"() {
+def "hub_create_room dispatches successfully through the envelope (useGateways=#useGateways)"() {
     given:
     settingsMap.useGateways = useGateways
     httpPostHandler = { Map params, Closure responseCb ->
-        responseCb.call([status: 200, data: ''])
+        responseCb.call([status: 200, data: '{"roomId":77}'])
     }
 
     when:
-    def response = mcpDriver.callTool('create_room', [name: 'Garage', confirm: true])
+    def response = mcpDriver.callTool('hub_create_room', [name: 'Garage', confirm: true])
 
     then:
     response.jsonrpc == '2.0'
@@ -273,13 +273,14 @@ class ToolRoomsSpec extends ToolSpecBase {
         httpPostHandler = null  // reset between features
     }
 
-    def "create_room posts to /room/save and reports success"() {
+    def "hub_create_room posts to /room/save and reports success"() {
         given:
         httpPostHandler = { Map params, Closure responseCb ->
             // emulate the hub's response shape (status + data) by calling
             // responseCb — the production code's `httpPost(params) { resp -> ... }`
-            // body reads resp.data / resp.status inside that callback
-            responseCb.call([status: 200, data: ''])
+            // body reads resp.data / resp.status inside that callback. The hub
+            // answers {"roomId": <new id>}; an empty body is reported as a failure.
+            responseCb.call([status: 200, data: '{"roomId":77}'])
         }
         // ... rest of setup
 
@@ -312,7 +313,7 @@ If the method appears in either output, it's in class 2 of the cheat sheet above
 - `1 * appExecutor.httpPost(_, _) >> { ... }` in `then:` — Spock `then:` interactions are consumed AFTER the `when:` block runs; they can't stub responses during the code-under-test's execution.
 - Reflecting into `AppChildExecutor.delegate` and swapping it for a custom JDK `Proxy` — **works** but is a hack that bypasses hubitat_ci's intended mock surface. Use the `setupSpec` dispatcher pattern instead.
 
-Reference spec that uses the `setupSpec` dispatcher pattern correctly: `src/test/groovy/server/ToolRoomsSpec.groovy` (covers `httpPost` for `create_room` / `delete_room` / `rename_room`).
+Reference spec that uses the `setupSpec` dispatcher pattern correctly: `src/test/groovy/server/ToolRoomsSpec.groovy` (covers `httpPost` for the `/room/save` of `hub_create_room` and `hub_update_room`; its GETs, `/room/updateName` and `/room/delete/<id>`, go through `hubGet`).
 
 ## Recipe: testing PR #79's `manage_rule_machine` tools (RMUtils)
 

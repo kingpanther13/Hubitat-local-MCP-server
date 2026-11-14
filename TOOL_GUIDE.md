@@ -135,6 +135,8 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_call_zwave -> hub_admin_write_radios
 - hub_set_zigbee -> hub_admin_write_radios
 - hub_set_zwave -> hub_admin_write_radios
+- hub_create_room -> rooms
+- hub_update_room -> rooms
 - hub_clone_custom_rule -> rules
 - hub_create_custom_rule -> rules
 - hub_delete_custom_rule -> rules
@@ -203,7 +205,7 @@ Only run Z-Wave radio operations when the user explicitly asks for them.
 - A Hub Mesh LINKED device (a local proxy for a peer's shared device) is UNLINKED local-only: only this hub's proxy is removed, the peer's source device is untouched. The tool warns when local apps use it (appsUsing), and distinctly when it could not check (mesh read failed / row missing).
 - All details logged to MCP debug logs for audit
 
-**hub_delete_room** - Devices become unassigned (not deleted). List affected devices first.
+**hub_delete_room** - Devices become unassigned (not deleted). List affected devices first with hub_get_room(roomId).
 Dashboards or automations that reference the room may need updating.
 
 **hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Backs up the source to File Manager before deleting, and sends no delete when that backup fails: a missing app or library returns `<Type> N does not exist`, a source the hub cannot read (a missing driver reads this way) says the item may not exist, and a backup file that cannot be written says to retry once File Manager accepts writes. `item_id` is the code id (digits only). A backup of that id under an hour old is reused without a read, so a missing app then reaches the hub, which accepts the delete of a missing app, and the call reports success. A refusal whose message says the item is in use carries a note on what to remove first; a refusal with no message means the item may not exist, so check the list tool. A reply the hub does not clearly confirm returns `success:false` with `response`; check the list tool.
@@ -1585,19 +1587,27 @@ Each entry: id, name, namespace, a private flag, and a `contains` summary of the
 
 ## Rooms
 
-Reference for the room tools (hub_list_rooms, hub_get_room, hub_create_room, hub_update_room, hub_delete_room). hub_delete_room's destructive behaviour is under "Destructive Write Tools".
+Room tools address a room by its id (a string from hub_list_rooms, passed as `roomId`), never by name. A device is in at most one room. The acknowledgment key above covers hub_create_room and hub_update_room. hub_delete_room is also under "Destructive Write Tools" and takes the key from hub_get_tool_guide(section='hub_admin_write_destructive') instead.
+
+### hub_list_rooms
+
+Every room as `{id, name, deviceCount, deviceIds}`, sorted by name ignoring case; `cursor` pages it (100 per page).
 
 ### hub_get_room
 
-The devices and their states come from one read of the hub's Devices page, the same source as hub_list_devices; if the page cannot be read the call returns an error. A device not selected for MCP access is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)"); a reachable device the page does not list is returned with `metadataUnavailable=true` (label "(device not on the hub's Devices page)"). For a paged or filtered list of a room's devices use hub_list_devices(roomFilter=<room name>).
+Takes the room's `roomId` (from hub_list_rooms). Returns `{id, name, deviceCount, devices}`, the devices read once from the hub's Devices page (as hub_list_devices) with `label`, `name` and `currentStates` (credential-named states masked while Hide passwords and credentials is on). A device not selected for MCP access has `accessible=false` and no states; one the page does not list has `metadataUnavailable=true`. If the page cannot be read the call returns an error. To filter or page a room's devices use hub_list_devices(roomFilter=<room name>).
 
 ### hub_create_room
 
-To move EXISTING devices into an existing room, set each device's room via hub_update_device -- do NOT create a room for that.
+Names must be unique (case-insensitive; the hub itself allows duplicates). A listed device moves out of its previous room; the result carries the new `id`, and `movedDevices` (`[{deviceId, fromRoomId, fromRoom}]`) for each device taken from another room. While Bypass Device Allowlist is off, every listed device must be in the MCP device selection; any other id is refused before anything is saved. To move devices into an existing room use hub_update_room, or set one device's room with hub_update_device -- do NOT create a room for that.
 
 ### hub_update_room
 
-Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
+`deviceIds` replaces the room's device list, as the hub's Rooms page does: a device left out becomes unassigned, an added one leaves its previous room, `[]` empties the room. Start from hub_get_room(roomId), and keep the ids it shows with `accessible=false` in the list you send: while Bypass Device Allowlist is off, adding or removing a device outside the MCP device selection is refused before anything is saved (one already in the room may stay). A name-only update renames the room without touching its devices. An update that sets `deviceIds` re-sends the name and the full device list, so any other change to that room landing in between (another update, a hub_update_device room move, an edit on the hub's Rooms page) can be undone: send room updates one at a time, waiting for each to finish. The result reports `previousName` after a rename, and `deviceIds`, `deviceCount`, `unassignedDeviceIds` and `movedDevices` (`[{deviceId, fromRoomId, fromRoom}]`, devices taken from another room) when the list was passed. The hub refuses a name-only update to a name shorter than 3 characters. A device id the hub does not know fails the save with nothing written. After a rename, automations or dashboards that name the room may need updating.
+
+### hub_delete_room
+
+Devices become unassigned (not deleted); the result reports `devicesUnassigned`. Pre-flight: backup <24h, verify the room with hub_get_room(roomId), list the affected devices to the user, get explicit confirmation, set confirm=true.
 
 ## Slow operations
 

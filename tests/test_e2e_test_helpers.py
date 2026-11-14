@@ -216,7 +216,7 @@ def test_metadata_mode_switch_is_registered_and_restores_without_catalog(monkeyp
                 raise et.McpError("Gateway is disabled - useGateways is OFF")
             if args["tool"] == "hub_get_room":
                 missing += 1
-                raise et.McpError("Missing required parameter for hub_get_room: room")
+                raise et.McpError("Missing required parameter for hub_get_room: roomId")
             return _raw_tool_body({"rooms": []})
         assert tool == "hub_search_tools" and gateway
         searches += 1
@@ -2810,7 +2810,7 @@ def test_membership_guard_allows_valid_membership_then_routes():
     # No McpError from the guard for a real member; _send would be next (not exercised here).
     # Drive only the guard by monkeypatching _send to short-circuit.
     c._send = lambda method, params, headers=None: {"content": [{"type": "text", "text": "{}"}]}
-    c.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {"room": "X", "confirm": True}})
+    c.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {"roomId": "X", "confirm": True}})
 
 
 def test_membership_guard_skipped_for_flat_calls():

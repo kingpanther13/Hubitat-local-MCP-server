@@ -171,11 +171,9 @@ definition(
 // metadata live in the library.
 #include mcp.McpDashboardsLib
 
-// issue #209 modularization: room-management tool implementations live in the McpRoomsLib
-// library (libraries/mcp-rooms-lib.groovy), delivered to real hubs by the required HPM bundle
-// and installable on the fly via hub_update_package. The gateway entries and dispatch cases stay
-// in this file; the tool definitions (_getAllToolDefinitions_partRooms) and impl methods live in
-// the library. First real module of the split.
+// issue #209 modularization: room tool implementations live in the McpRoomsLib library
+// (libraries/mcp-rooms-lib.groovy). The gateway entries and dispatch cases stay in this file; the
+// tool definitions (_getAllToolDefinitions_partRooms) and impl methods live in the library.
 #include mcp.McpRoomsLib
 
 // issue #209 modularization: bundle-management tool implementations (hub_list_bundles /
@@ -5704,21 +5702,21 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_rooms: [
-            description: "Manage hub rooms: list, view details, create, delete, and rename rooms.",
+            description: "Manage hub rooms by id: list, read one, create, rename or set a room's devices, and delete. Reads are also in hub_read_rooms.",
             tools: ["hub_list_rooms", "hub_get_room", "hub_create_room", "hub_delete_room", "hub_update_room"],
             summaries: [
-                hub_list_rooms: "List all rooms with IDs, names, and device counts",
-                hub_get_room: "Get room details with assigned devices. Args: room (name or ID)",
-                hub_create_room: "Create a new room, optionally assigning devices at creation. Args: name, deviceIds? (device IDs to assign), confirm=true",
-                hub_delete_room: "Permanently delete a room. Args: room (name or ID), confirm=true",
-                hub_update_room: "Rename a room. Args: room (name or ID), newName, confirm=true"
+                hub_list_rooms: "List rooms (id, name, device ids). Args: cursor?",
+                hub_get_room: "Read one room's devices and their current states. Args: roomId",
+                hub_create_room: "Create a room, optionally with devices. Args: name, deviceIds?, confirm=true",
+                hub_delete_room: "Permanently delete a room; its devices become unassigned. Args: roomId, confirm=true",
+                hub_update_room: "Rename a room and/or replace its full device list. Args: roomId, name?, deviceIds?, confirm=true"
             ],
             searchHints: [
                 hub_list_rooms: "show all locations areas groups",
-                hub_get_room: "view location area group",
+                hub_get_room: "view read one location area group room devices states",
                 hub_create_room: "add new location area group",
                 hub_delete_room: "remove location area group",
-                hub_update_room: "change name location area group"
+                hub_update_room: "change rename name move assign unassign devices location area group"
             ]
         ],
         // Option A: Virtual device tools moved to core tools/list (full inputSchema visible)
@@ -5992,15 +5990,15 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_rooms: [
-            description: "Read-only room inspection: list rooms and view a room's assigned devices. All operations are read-only; room create/delete/rename live in hub_manage_rooms.",
+            description: "Read-only room inspection: list rooms, and read one room's devices and their current states by id. Room create/update/delete live in hub_manage_rooms.",
             tools: ["hub_list_rooms", "hub_get_room"],
             summaries: [
-                hub_list_rooms: "List all rooms with IDs, names, and device counts",
-                hub_get_room: "Get room details with assigned devices. Args: room (name or ID)"
+                hub_list_rooms: "List rooms (id, name, device ids). Args: cursor?",
+                hub_get_room: "Read one room's devices and their current states. Args: roomId"
             ],
             searchHints: [
                 hub_list_rooms: "show all locations areas groups rooms",
-                hub_get_room: "view location area group room devices"
+                hub_get_room: "view read one location area group room devices states"
             ]
         ],
         hub_read_files: [
@@ -6382,7 +6380,7 @@ def getToolDisplayMeta() {
         hub_manage_custom_rules: [title: "Manage Custom Rules", summary: "Create, update, delete, test, export, import, and clone custom-engine rules."],
         hub_manage_devices: [title: "Manage Devices", summary: "Control devices and update device properties, plus device queries."],
         hub_manage_variables: [title: "Manage Variables", summary: "Create, set, and delete hub variables and their connectors."],
-        hub_manage_rooms: [title: "Manage Rooms", summary: "Create, rename, and delete rooms."],
+        hub_manage_rooms: [title: "Manage Rooms", summary: "Create, rename, delete, and set the devices of rooms."],
         hub_manage_destructive_ops: [title: "Manage Destructive Ops", summary: "Reboot or shut down the hub, or permanently delete devices."],
         hub_manage_backup: [title: "Manage Backups", summary: "List, restore, and delete hub-database backups, and restore code backups (create + schedule is the core hub_create_backup)."],
         hub_manage_code: [title: "Manage Code", summary: "Install, update, and delete apps, drivers, libraries, and code bundles."],
@@ -7147,10 +7145,10 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
 
         // Room Management
         case "hub_list_rooms": return toolListRooms(args)
-        case "hub_get_room": return toolGetRoom(args.room)
+        case "hub_get_room": return toolGetRoom(args)
         case "hub_create_room": return toolCreateRoom(args)
         case "hub_delete_room": return toolDeleteRoom(args)
-        case "hub_update_room": return toolRenameRoom(args)
+        case "hub_update_room": return toolUpdateRoom(args)
 
         // Hub Admin App Configuration Read
         case "hub_set_rule": return toolSetRule(args)
@@ -9799,8 +9797,8 @@ def _exceptionStack(Throwable e) {
 }
 
 // ==================== ROOM MANAGEMENT ====================
-// Tool implementations (toolListRooms / toolGetRoom / toolCreateRoom / toolDeleteRoom /
-// toolRenameRoom) live in the McpRoomsLib library (libraries/mcp-rooms-lib.groovy),
+// Tool implementations (toolListRooms / toolGetRoom / toolCreateRoom / toolUpdateRoom / toolDeleteRoom)
+// live in the McpRoomsLib library (libraries/mcp-rooms-lib.groovy),
 // #include'd near the top of this file. The hub_manage_rooms / hub_read_rooms gateway entries
 // and the executeTool dispatch cases stay here in the app; the tool definitions
 // (_getAllToolDefinitions_partRooms) live alongside the impl in the library.
@@ -11521,6 +11519,7 @@ def _guideSectionForTool(toolName) {
     if (t in ['hub_get_device', 'hub_update_device']) return 'update_device'
     if (t == 'hub_manage_virtual_device') return 'virtual_devices'
     if (t in ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard']) return 'dashboards'
+    if (t in ['hub_create_room', 'hub_update_room']) return 'rooms'
     if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
     if (t in ['hub_write_file', 'hub_delete_file']) return 'file_manager'
     if (t in ['hub_call_zwave', 'hub_set_zwave', 'hub_call_zigbee', 'hub_set_zigbee',
@@ -11660,6 +11659,8 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_call_zwave -> hub_admin_write_radios
 - hub_set_zigbee -> hub_admin_write_radios
 - hub_set_zwave -> hub_admin_write_radios
+- hub_create_room -> rooms
+- hub_update_room -> rooms
 - hub_clone_custom_rule -> rules
 - hub_create_custom_rule -> rules
 - hub_delete_custom_rule -> rules
@@ -11728,7 +11729,7 @@ Only run Z-Wave radio operations when the user explicitly asks for them.
 - A Hub Mesh LINKED device (a local proxy for a peer's shared device) is UNLINKED local-only: only this hub's proxy is removed, the peer's source device is untouched. The tool warns when local apps use it (appsUsing), and distinctly when it could not check (mesh read failed / row missing).
 - All details logged to MCP debug logs for audit
 
-**hub_delete_room** - Devices become unassigned (not deleted). List affected devices first.
+**hub_delete_room** - Devices become unassigned (not deleted). List affected devices first with hub_get_room(roomId).
 Dashboards or automations that reference the room may need updating.
 
 **hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Backs up the source to File Manager before deleting, and sends no delete when that backup fails: a missing app or library returns `<Type> N does not exist`, a source the hub cannot read (a missing driver reads this way) says the item may not exist, and a backup file that cannot be written says to retry once File Manager accepts writes. `item_id` is the code id (digits only). A backup of that id under an hour old is reused without a read, so a missing app then reaches the hub, which accepts the delete of a missing app, and the call reports success. A refusal whose message says the item is in use carries a note on what to remove first; a refusal with no message means the item may not exist, so check the list tool. A reply the hub does not clearly confirm returns `success:false` with `response`; check the list tool.
@@ -12921,19 +12922,27 @@ Each entry: id, name, namespace, a private flag, and a `contains` summary of the
     ,
         rooms: '''## Rooms
 
-Reference for the room tools (hub_list_rooms, hub_get_room, hub_create_room, hub_update_room, hub_delete_room). hub_delete_room's destructive behaviour is under "Destructive Write Tools".
+Room tools address a room by its id (a string from hub_list_rooms, passed as `roomId`), never by name. A device is in at most one room. The acknowledgment key above covers hub_create_room and hub_update_room. hub_delete_room is also under "Destructive Write Tools" and takes the key from hub_get_tool_guide(section='hub_admin_write_destructive') instead.
+
+### hub_list_rooms
+
+Every room as `{id, name, deviceCount, deviceIds}`, sorted by name ignoring case; `cursor` pages it (100 per page).
 
 ### hub_get_room
 
-The devices and their states come from one read of the hub's Devices page, the same source as hub_list_devices; if the page cannot be read the call returns an error. A device not selected for MCP access is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)"); a reachable device the page does not list is returned with `metadataUnavailable=true` (label "(device not on the hub's Devices page)"). For a paged or filtered list of a room's devices use hub_list_devices(roomFilter=<room name>).
+Takes the room's `roomId` (from hub_list_rooms). Returns `{id, name, deviceCount, devices}`, the devices read once from the hub's Devices page (as hub_list_devices) with `label`, `name` and `currentStates` (credential-named states masked while Hide passwords and credentials is on). A device not selected for MCP access has `accessible=false` and no states; one the page does not list has `metadataUnavailable=true`. If the page cannot be read the call returns an error. To filter or page a room's devices use hub_list_devices(roomFilter=<room name>).
 
 ### hub_create_room
 
-To move EXISTING devices into an existing room, set each device's room via hub_update_device -- do NOT create a room for that.
+Names must be unique (case-insensitive; the hub itself allows duplicates). A listed device moves out of its previous room; the result carries the new `id`, and `movedDevices` (`[{deviceId, fromRoomId, fromRoom}]`) for each device taken from another room. While Bypass Device Allowlist is off, every listed device must be in the MCP device selection; any other id is refused before anything is saved. To move devices into an existing room use hub_update_room, or set one device's room with hub_update_device -- do NOT create a room for that.
 
 ### hub_update_room
 
-Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
+`deviceIds` replaces the room's device list, as the hub's Rooms page does: a device left out becomes unassigned, an added one leaves its previous room, `[]` empties the room. Start from hub_get_room(roomId), and keep the ids it shows with `accessible=false` in the list you send: while Bypass Device Allowlist is off, adding or removing a device outside the MCP device selection is refused before anything is saved (one already in the room may stay). A name-only update renames the room without touching its devices. An update that sets `deviceIds` re-sends the name and the full device list, so any other change to that room landing in between (another update, a hub_update_device room move, an edit on the hub's Rooms page) can be undone: send room updates one at a time, waiting for each to finish. The result reports `previousName` after a rename, and `deviceIds`, `deviceCount`, `unassignedDeviceIds` and `movedDevices` (`[{deviceId, fromRoomId, fromRoom}]`, devices taken from another room) when the list was passed. The hub refuses a name-only update to a name shorter than 3 characters. A device id the hub does not know fails the save with nothing written. After a rename, automations or dashboards that name the room may need updating.
+
+### hub_delete_room
+
+Devices become unassigned (not deleted); the result reports `devicesUnassigned`. Pre-flight: backup <24h, verify the room with hub_get_room(roomId), list the affected devices to the user, get explicit confirmation, set confirm=true.
 ''',
 
         slow_ops: '''## Slow operations

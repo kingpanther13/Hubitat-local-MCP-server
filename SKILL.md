@@ -114,7 +114,7 @@ Read gateways (`hub_read_*`, every sub-tool read-only):
 | `hub_read_devices` | 6 | List/get devices, device attributes, device events, compatible-device catalog search, Hub Mesh read incl. available device/variable links (read-only) |
 | `hub_read_diagnostics` | 6 | Logs page tabs (log history, stats, cloud calls, events, jobs, hub actions) and the MCP log, metrics, memory history, device health, radio details (zwave/zigbee), captured states (read-only) |
 | `hub_read_files` | 2 | File Manager list + read (read-only) |
-| `hub_read_rooms` | 2 | Room list + get (read-only) |
+| `hub_read_rooms` | 2 | Room list + one room by id (read-only) |
 | `hub_read_rules` | 6 | Custom-engine rule get/test, native rule list, rule health, Visual Rules Builder rule list/read (read-only) |
 | `hub_read_variables` | 3 | Hub connector and rule engine variable list/get (+ opt-in dependents) + change history (read-only) |
 | `hub_read_dashboards` | 2 | Dashboard list + get config by id, covering both Easy and legacy Hubitat® Dashboards (read-only) |
@@ -124,7 +124,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 |---------|-------|--------|
 | `hub_manage_custom_rules` | 8 | Custom-engine rule get/create/update/delete/test/export/import/clone |
 | `hub_manage_variables` | 8 | Hub connector and rule engine variables (CRUD + connector + history + Hub Mesh variable share/link/unlink) |
-| `hub_manage_rooms` | 5 | Room CRUD |
+| `hub_manage_rooms` | 5 | Room CRUD (list, get, create, update name and devices, delete) |
 | `hub_manage_destructive_ops` | 4 | Hub reboot, shutdown, device deletion, and destructive ops by target via `hub_call_destructive_ops` (radio reset/wipe + firmware, network disconnect, cloud-controller disable/enable) (write) |
 | `hub_manage_backup` | 4 | Backup management — list code + whole-hub DB backups (+ auto-backup schedule), get code-backup source, restore (apps/drivers/rule snapshots), delete whole-hub DB backups (write) |
 | `hub_manage_code` | 10 | Install/update apps+drivers+libraries, install/delete/export HPM-style bundles, delete item (app/driver/library) (write) |
@@ -500,23 +500,26 @@ All routes require the Write master. Validation runs before mutation; runtime fa
 
 ### Room Management
 
-5 tools for full room CRUD, using `POST /room/save` (JSON) and `getRooms()` for verification:
+5 tools for full room CRUD, using `POST /room/save` (JSON), `GET /room/updateName` and `GET /room/delete/<id>` as the hub's Rooms page does. `hub_get_room`, `hub_update_room` and `hub_delete_room` address a room by its id in the `roomId` parameter; `getRooms()` (the in-process SDK room list, not an HTTP call) is the existence and duplicate-name check before a write:
 
 | Tool | Access Gate | Description |
 |------|------------|-------------|
-| `hub_list_rooms` | None | Lists all rooms with IDs, names, device counts via `getRooms()` |
-| `hub_get_room` | None | Room details with full device info/states. Accepts name (case-insensitive) or ID |
-| `hub_create_room` | Write master + confirm | Creates room via `POST /room/save` with `roomId: 0` (Grails create convention) |
-| `hub_delete_room` | Write master + confirm | Deletes room via `POST /room/delete/<id>` or `GET /room/delete/<id>`. Devices become unassigned |
-| `hub_update_room` | Write master + confirm | Renames room via `POST /room/save` with existing `roomId` and new `name`. Preserves device assignments |
+| `hub_list_rooms` | Read master | All rooms with IDs, names, device ids via `getRooms()` (cursor-pageable) |
+| `hub_get_room` | Read master | One room by `roomId`: its devices with labels and current states from the Devices page |
+| `hub_create_room` | Write master + confirm | Creates room via `POST /room/save` with `roomId: 0`; the new id comes from the response's `roomId`; devices taken from another room are reported in `movedDevices` |
+| `hub_delete_room` | Write master + confirm | Deletes room via `GET /room/delete/<id>` (POST answers 405). Devices become unassigned |
+| `hub_update_room` | Write master + confirm | A name-only update uses `GET /room/updateName?id=&name=`; with `deviceIds` it is `POST /room/save` with the existing `roomId`, the new or current `name`, and the new `deviceIds` (a wholesale device list). Updates are serialized in-process |
 
 **Key API details:**
-- All room mutations use `POST /room/save` at `http://127.0.0.1:8080` with `Content-Type: application/json`
+- Create and device-list updates use `POST /room/save` at `http://127.0.0.1:8080` with `Content-Type: application/json`; a name-only rename uses `GET /room/updateName`, delete uses `GET /room/delete/<id>`
 - The JSON body uses `roomId` (not `id`) — the API returns `{"roomId":null,"error":"Invalid room id"}` if `id` is used
 - Body format: `{"roomId": <int>, "name": "<string>", "deviceIds": [<int>, ...]}`
 - For room creation, `roomId: 0` triggers create behavior (Grails convention)
 - `getRooms()` is a built-in Hubitat SDK method returning `[[id:1, name:"Bedroom", deviceIds:[5, 6]], ...]`
-- All write tools verify the operation via `getRooms()` after the API call
+- `/room/save` answers `{"roomId": <id>}` on success and `{"error": "Invalid room or device ids"}` (HTTP 200) for an unknown device id; an answer without `roomId` is reported as a failure. It also answers success for a `roomId` that does not exist without changing anything, and `GET /room/delete/<id>` answers 200 for an unknown id, so update and delete check the id against `getRooms()` first; no write re-reads the room list afterwards
+- `/room/updateName` answers `{"success":true,"message":null}`, or `success:false` with `"Room not found"` or `"Room name is too short"` (under 3 characters; `/room/save` accepts such a name)
+- While Bypass Device Allowlist is off, create refuses any device outside the MCP device selection and update refuses one whose membership changes, before any request
+- The hub allows duplicate room names; create and rename refuse them
 - Form-encoded bodies return 500 — the endpoint strictly requires JSON
 
 ### Version Management
@@ -617,7 +620,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/app/edit/deleteJsonSafe/<id>` | GET | Delete app (returns JSON with `status: true`) |
 | `/driver/editor/deleteJson/<id>` | GET | Delete driver (returns JSON with `status: true`) |
 | `/library/edit/deleteJson/<id>` | GET | Delete library (returns JSON with `success: true, message: null`) |
-| `/room/delete/<roomId>` | POST or GET | Delete room (try POST first, fall back to GET) |
+| `/room/delete/<roomId>` | GET | Delete room (empty 200, also for an unknown id; POST answers 405) |
 
 **Uncertain command outcome:** `outcomeUnknown: true` means the native command request failed without proving whether the device acted. Read the device state or event history before deciding whether to retry; blindly repeating a non-idempotent command can apply it twice.
 
