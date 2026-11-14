@@ -13984,7 +13984,8 @@ def updated() {}
 
         Exercises all five room tools against the real hub through the deployed app:
         create WITH a device (the id comes back from the hub's save answer),
-        hub_get_room(roomId) renders it, hub_update_room renames (the name-only path),
+        hub_get_room(roomId) renders it, hub_update_room renames (the name-only path, and a
+        name under 3 characters),
         then replaces the device list wholesale (empty, then the device again), a second
         room takes the device and both writes report it in movedDevices, hub_list_rooms
         reflects each change, and hub_delete_room unassigns the device. The device's
@@ -14059,6 +14060,25 @@ def updated() {}
                         if str(r.get("id")) == room_id), None)
             assert row and row.get("name") == renamed and row.get("deviceIds") == [dev_id], \
                 f"renamed room {room_id} not listed as '{renamed}' with its device: {row}"
+
+            # A name under 3 characters, which /room/updateName refuses, saves through /room/save
+            # and keeps the device; then the fixture name goes back on so the sweep can find it.
+            short = "Z9"
+            short_res = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_update_room",
+                "args": {"roomId": room_id, "name": short, "confirm": True},
+            })
+            assert short_res.get("success") is True and (short_res.get("room") or {}).get("name") == short, \
+                f"hub_update_room did not rename to the short name {short!r}: {short_res}"
+            got = self.client.call_tool("hub_manage_rooms", {"tool": "hub_get_room", "args": {"roomId": room_id}})
+            assert got.get("name") == short and [str(d.get("id")) for d in (got.get("devices") or [])] == [dev_id], \
+                f"room {room_id} lost its name or device after the short rename: {got}"
+            restored = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_update_room",
+                "args": {"roomId": room_id, "name": renamed, "confirm": True},
+            })
+            assert restored.get("success") is True and (restored.get("room") or {}).get("previousName") == short, \
+                f"hub_update_room did not rename back from {short!r}: {restored}"
 
             # hub_update_room(deviceIds): the list is wholesale -- [] empties the room...
             emptied = self.client.call_tool("hub_manage_rooms", {
@@ -14254,14 +14274,11 @@ def updated() {}
                     assert False, f"hub_update_room({args}) should have raised"
                 except McpError as e:
                     assert needle in str(e).lower(), f"hub_update_room({args}) error unexpected: {e}"
-            # Hub refusals are runtime failures, not validation refusals: a numeric device id the hub
-            # does not know (refused by /room/save), and a name-only rename to a name under 3
-            # characters (refused by /room/updateName, which /room/save would accept).
+            # A hub refusal is a runtime failure, not a validation refusal: a numeric device id the
+            # hub does not know is refused by /room/save.
             for args, needle in (
                 ({"roomId": id_b, "deviceIds": ["999999999"], "confirm": True},
                  f"The hub refused to update room {id_b}"),
-                ({"roomId": id_b, "name": "ab", "confirm": True},
-                 f"The hub refused to rename room {id_b}: Room name is too short"),
             ):
                 failed = self.client.call_tool_failure("hub_manage_rooms", {"tool": "hub_update_room", "args": args})
                 assert needle in str(failed.get("error")), f"hub_update_room({args}) failed, but not with {needle!r}: {failed}"

@@ -23,8 +23,9 @@ import support.ToolSpecBase
  * every POST and answers with a JSON body. getRooms / getHubSecurityCookie are purely dynamic,
  * stubbed per-test on script.metaClass. GETs (the Devices page, /room/updateName, /room/delete/<id>)
  * are registered per feature on hubGet, which records every call, so each write's request count
- * is pinned: create and a device-list update make exactly one POST /room/save, a name-only update
- * one GET /room/updateName, delete one GET /room/delete/<id>.
+ * is pinned: create, a device-list update and a rename to a name under 3 characters make exactly
+ * one POST /room/save, any other name-only update one GET /room/updateName, delete one
+ * GET /room/delete/<id>.
  *
  * Destructive tools require (the Write master gates centrally at executeTool and
  * defaults ON, so it needs no seed; requireDestructiveConfirm needs confirm + 24h backup):
@@ -709,6 +710,31 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @Unroll
+    def "hub_update_room renames to a #label name with one POST /room/save carrying the current devices"() {
+        given:
+        enableWrite()
+        installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [600, 601]], [id: 9, name: 'Den', deviceIds: []]])
+        def posts = postJson([roomId: 8])
+        registerUpdateName([success: false, message: 'Room name is too short'])
+
+        when:
+        def result = script.toolUpdateRoom([roomId: '8', name: name, confirm: true])
+
+        then: '/room/updateName refuses names under 3 characters, so the save sends the device list unchanged'
+        hubGet.calls.empty
+        posts*.body == [[roomId: 8, name: name, deviceIds: [600, 601]]]
+        getRoomsCalls == 1
+
+        and:
+        result == [success: true, room: [id: '8', name: name, previousName: 'Office'], message: "Room '${name}' updated."]
+
+        where:
+        label            | name
+        'two-character'  | 'ab'
+        'one-character'  | 'Z'
+    }
+
+    @Unroll
     def "hub_update_room reports #label from /room/updateName as a structured failure"() {
         given:
         enableWrite()
@@ -721,7 +747,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateRoom([roomId: '8', name: 'St', confirm: true])
+        def result = script.toolUpdateRoom([roomId: '8', name: 'Study', confirm: true])
 
         then:
         posts.empty
@@ -736,7 +762,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         where:
         label               | handler                                                                     | error                                                                             | noteStart
-        'a refusal'         | { JsonOutput.toJson([success: false, message: 'Room name is too short']) } | 'The hub refused to rename room 8: Room name is too short'                        | 'Nothing was saved.'
+        'a refusal'         | { JsonOutput.toJson([success: false, message: 'Room name is invalid']) }   | 'The hub refused to rename room 8: Room name is invalid'                          | 'Nothing was saved.'
         'an unknown room'   | { JsonOutput.toJson([success: false, message: 'Room not found']) }         | 'The hub refused to rename room 8: Room not found'                                | 'Nothing was saved.'
         'an empty answer'   | { '' }                                                                      | "The hub's answer to rename room 8 carried no success flag (an empty body)."      | 'The rename may have landed'
         'a failed request'  | { throw new RuntimeException('HTTP 500: boom') }                            | 'Could not rename room 8: HTTP 500: boom'                                         | 'The hub may still have renamed it'

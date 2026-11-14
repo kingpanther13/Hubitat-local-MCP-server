@@ -500,7 +500,7 @@ All routes require the Write master. Validation runs before mutation; runtime fa
 
 ### Room Management
 
-5 tools for full room CRUD, using `POST /room/save` (JSON), `GET /room/updateName` and `GET /room/delete/<id>` as the hub's Rooms page does. `hub_get_room`, `hub_update_room` and `hub_delete_room` address a room by its id in the `roomId` parameter; `getRooms()` (the in-process SDK room list, not an HTTP call) is the existence and duplicate-name check before a write:
+5 tools for full room CRUD, using `POST /room/save` (JSON) and `GET /room/delete/<id>` as the hub's Rooms page does, plus `GET /room/updateName`, which the hub serves but the page does not use. `hub_get_room`, `hub_update_room` and `hub_delete_room` address a room by its id in the `roomId` parameter; `getRooms()` (the in-process SDK room list, not an HTTP call) is the existence and duplicate-name check before a write:
 
 | Tool | Access Gate | Description |
 |------|------------|-------------|
@@ -508,10 +508,10 @@ All routes require the Write master. Validation runs before mutation; runtime fa
 | `hub_get_room` | Read master | One room by `roomId`: its devices with labels and current states from the Devices page |
 | `hub_create_room` | Write master + confirm | Creates room via `POST /room/save` with `roomId: 0`; the new id comes from the response's `roomId`; devices taken from another room are reported in `movedDevices` |
 | `hub_delete_room` | Write master + confirm | Deletes room via `GET /room/delete/<id>` (POST answers 405). Devices become unassigned |
-| `hub_update_room` | Write master + confirm | A name-only update uses `GET /room/updateName?id=&name=`; with `deviceIds` it is `POST /room/save` with the existing `roomId`, the new or current `name`, and the new `deviceIds` (a wholesale device list). Updates are serialized in-process |
+| `hub_update_room` | Write master + confirm | A name-only update uses `GET /room/updateName?id=&name=` (a name under 3 characters goes through `POST /room/save` with the room's current `deviceIds`, since `/room/updateName` refuses it); with `deviceIds` it is `POST /room/save` with the existing `roomId`, the new or current `name`, and the new `deviceIds` (a wholesale device list). Updates are serialized in-process |
 
 **Key API details:**
-- Create and device-list updates use `POST /room/save` at `http://127.0.0.1:8080` with `Content-Type: application/json`; a name-only rename uses `GET /room/updateName`, delete uses `GET /room/delete/<id>`
+- Create and device-list updates use `POST /room/save` at `http://127.0.0.1:8080` with `Content-Type: application/json`; a name-only rename uses `GET /room/updateName` (`POST /room/save` for a name under 3 characters), delete uses `GET /room/delete/<id>`
 - The JSON body uses `roomId` (not `id`) — the API returns `{"roomId":null,"error":"Invalid room id"}` if `id` is used
 - Body format: `{"roomId": <int>, "name": "<string>", "deviceIds": [<int>, ...]}`
 - For room creation, `roomId: 0` triggers create behavior (Grails convention)

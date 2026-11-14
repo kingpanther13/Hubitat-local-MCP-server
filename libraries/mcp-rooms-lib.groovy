@@ -225,7 +225,12 @@ private Map _updateRoomLocked(roomIdArg, String newName, List newIds) {
     String finalName = newName ?: oldName
     Map updated = [id: roomId, name: finalName]
     if (finalName != oldName) updated.previousName = oldName
-    if (newIds == null) {
+    if (newIds == null && finalName.length() < 3) {
+        // /room/updateName refuses names under 3 characters and /room/save takes them; the lock keeps
+        // the re-sent device list from undoing another update.
+        def saved = _saveRoom(roomId as Integer, finalName, currentIds, "rename room ${roomId}")
+        if (saved.failure) return saved.failure
+    } else if (newIds == null) {
         Map failure = _renameRoom(roomId, finalName)
         if (failure) return failure
     } else {
