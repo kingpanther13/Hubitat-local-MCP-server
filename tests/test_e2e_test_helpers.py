@@ -399,6 +399,21 @@ ROOM_SELECTION_CALLS = ["hub_list_rooms", "hub_create_room", "hub_list_rooms", "
                         "hub_list_rooms", "hub_list_rooms", "hub_create_room", "hub_create_room", "hub_list_rooms",
                         "hub_get_room",
                         "hub_update_room", "hub_list_rooms", "hub_update_room", "hub_delete_room", "hub_delete_room"]
+# The dashboard leg of _bypass_boundary_checks: list, a refused create naming the unselected
+# device, then list again to prove nothing was written.
+_BOUNDARY_DASHBOARD_CALLS = ["hub_list_dashboards", "hub_create_dashboard", "hub_list_dashboards"]
+
+
+def _boundary_dashboard_call(arguments, bypass, calls):
+    assert not bypass, "the dashboard create refusal must run with the bypass off"
+    tool = arguments["tool"]
+    calls.append(tool)
+    if tool == "hub_list_dashboards":
+        return {"dashboards": [{"id": "5", "name": "Existing"}], "count": 1}
+    assert tool == "hub_create_dashboard" and arguments["args"]["deviceIds"] == ["10"], arguments
+    raise et.McpToolError("hub_create_dashboard", "deviceIds 10 is outside the MCP device selection, so this "
+                          "dashboard write cannot add it. Select it in the MCP app's device list, or turn on "
+                          "Bypass Device Allowlist.")
 
 
 @pytest.mark.parametrize("rejection", ["unknown", "wrong-code", "wrong-name", "unavailable", "accepted"])
@@ -416,6 +431,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     denied_tools = []
     log_bypasses = []
     rooms = _FakeRoomGateway("10")
+    dashboard_calls = []
 
     class FakeClient:
         call_tool_result = et.HubitatMcpClient.call_tool_result
@@ -438,6 +454,8 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                 return rooms.virtual_device(arguments)
             if name in ("hub_manage_devices", "hub_manage_mcp", "hub_manage_destructive_ops"):
                 return rooms.device_admin(name, arguments)
+            if name == "hub_manage_dashboards":
+                return _boundary_dashboard_call(arguments, bypass, dashboard_calls)
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -514,6 +532,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     assert current_label == "Native original"
     assert len(native_observations) == 1
     assert log_bypasses == [False, True]
+    assert dashboard_calls == _BOUNDARY_DASHBOARD_CALLS
     assert denied_tools == ["hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
                             "hub_update_device", "hub_call_device_command",
                             "hub_list_device_dependents"] + (["hub_get_device"] if rejection == "unknown" else [])
@@ -608,6 +627,7 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
     denied_tools = []
     log_bypasses = []
     rooms = _FakeRoomGateway("10")
+    dashboard_calls = []
 
     class FakeClient:
         call_tool_failure = et.HubitatMcpClient.call_tool_failure
@@ -629,6 +649,8 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
                 return rooms.virtual_device(arguments)
             if name in ("hub_manage_devices", "hub_manage_mcp", "hub_manage_destructive_ops"):
                 return rooms.device_admin(name, arguments)
+            if name == "hub_manage_dashboards":
+                return _boundary_dashboard_call(arguments, bypass, dashboard_calls)
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -671,6 +693,7 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
     assert label_attempts == [f"{native_label} _BWTEST", native_label]
     assert current_label == native_label
     assert log_bypasses == [False, True]
+    assert dashboard_calls == _BOUNDARY_DASHBOARD_CALLS
     assert denied_tools == ["hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
                             "hub_update_device", "hub_call_device_command",
                             "hub_list_device_dependents"]

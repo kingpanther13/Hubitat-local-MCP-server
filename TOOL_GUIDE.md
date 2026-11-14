@@ -1532,6 +1532,7 @@ Write op. `type` selects the kind: `easy` (default) or `legacy`.
   - `dashboardPin`
   - `hsmPin`
 - **Legacy** (`type: "legacy"`) — creates the dashboard with an EMPTY layout (no tiles). `name` is required; `deviceIds` is OPTIONAL and sets the dashboard's authorized-device list (NOT tiles). The `options` arg is REJECTED (Easy-only) — a legacy dashboard's look lives in its layout, set via `hub_update_dashboard` after creation. Requires the built-in "Hubitat® Dashboard" app (installed automatically through Add Built-In App when missing).
+- **MCP device selection:** while Bypass Device Allowlist is off, every id in `deviceIds` must be a device selected in the MCP app's device list (or a device this app created); otherwise the call is refused before anything is written, naming the ids. A copy is checked the same way against the source's devices. Select the devices, or turn on Bypass Device Allowlist.
 - **Copy** (`sourceId`) — copies an existing dashboard by value; the source is never touched. An Easy copy takes the source's devices and config (PINs included); when the hub's dashboard list is unreadable the source's theme can't be read, so the copy gets the default theme and the result carries a warning. A legacy copy is a new legacy dashboard with the same authorized devices, then the source's layout saved into it. Only `name` may accompany `sourceId` (default `"<source name> (copy)"`); `type`, `deviceIds` and `options` are rejected — change the copy afterwards with `hub_update_dashboard`. The result carries the new `id` and the `sourceId`; a legacy copy whose layout could not be written returns `success: false` with the new `id`, so the layout can be re-applied.
 
 ### hub_update_dashboard
@@ -1554,6 +1555,10 @@ Update by id; the behavior depends on the dashboard's kind.
 - Retry-safe semantics: `removeTileIds` skips an id that is already gone (with a warning), and `addTiles` skips a tile identical to an existing one (with a warning), so a retried call cannot stack duplicates. An `updateTiles` entry for an unknown tile id throws.
 - The `options` arg does NOT apply to legacy — pass grid/color/font fields via `setOptions` instead.
 - Result: `applied` (the ops that ran), `tileCount`, the saved `layout` echo, and any `warnings`.
+
+**Both kinds:**
+- **MCP device selection:** while Bypass Device Allowlist is off, only the devices whose membership changes (added to or dropped from `deviceIds`) are checked: each must be selected in the MCP app's device list (or created by this app), or the call is refused before anything is written. An id `hub_get_dashboard` returns stays in the list you send, so a rename, or a re-send that keeps an unselected device, still works. When the current device list cannot be read, the update is refused with `success: false` and nothing is changed.
+- **One at a time:** send dashboard updates one at a time. An update reads the dashboard and then saves it, so a change made on the hub's Dashboards page between the read and the save is overwritten.
 
 **Legacy layout shape:**
 - Top-level fields: `cols`, `rows`, `colWidth`, `rowHeight`, `gridGap`, `bgColor`, `iconSize`, `fontSize`, `customColors`, `roundedCorners`, `hideLabels`, and `tiles`. `setOptions` merges any of the top-level fields (the `tiles` and `name` keys are rejected there).

@@ -2,6 +2,8 @@ package server
 
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import spock.lang.Unroll
+import support.TestDevice
 import support.ToolSpecBase
 
 /**
@@ -27,7 +29,8 @@ import support.ToolSpecBase
  * stubs of hubInternalGetRaw / hubInternalPostForm / hubInternalPostJson.
  *
  * enableWrite() sets the Write master + a recent backup so the destructive-confirm gate on
- * hub_delete_dashboard passes. update and delete read statusJson first, so the Easy fixture ids
+ * hub_delete_dashboard passes. setup() turns the device allowlist bypass on so fixtures can use any
+ * device id; the MCP device selection features turn it off and select devices themselves. update and delete read statusJson first, so the Easy fixture ids
  * (412, 38) get an Easy statusJson in setup().
  */
 class ToolDashboardSpec extends ToolSpecBase {
@@ -89,6 +92,7 @@ class ToolDashboardSpec extends ToolSpecBase {
     private Set<String> easyDeleted = [] as Set
 
     def setup() {
+        settingsMap.bypassDeviceAllowlist = true
         script.metaClass.hubInternalGetRaw = { String p, Map q = null, int t = 30, boolean r = false -> defaultRaw(p) }
         script.metaClass.hubInternalGetInSession = { String p, Map q, String session, int t = 30 -> hubGet.call(p, q) }
         hubGet.register('/dashboard/all') { params -> params?.pinToken == PIN_TOKEN ? LIST_JSON : '[]' }
@@ -657,7 +661,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         then:
         r.success == false
-        r.isError == true
+        !r.containsKey('isError')
         r.error == 'hub reported failure'
         r.note.endsWith("See hub_get_tool_guide(section='dashboards').")
     }
@@ -673,7 +677,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         then:
         r.success == false
-        r.isError == true
+        !r.containsKey('isError')
         r.error == 'hub reported failure'
     }
 
@@ -888,7 +892,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
-    def "a delete that leaves the dashboard in place returns a structured failure flagged isError (does NOT throw)"() {
+    def "a delete that leaves the dashboard in place returns a structured failure (does NOT throw)"() {
         given: '/dashboard/delete answers as always, but statusJson still lists the app'
         enableWrite()
         hubGet.register('/dashboard/delete') { params -> '{"success":false,"message":null}' }
@@ -898,7 +902,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         then:
         r.success == false
-        r.isError == true
+        !r.containsKey('isError')
         r.error.contains('still present')
         r.note.contains('Nothing was deleted')
         r.note.contains("hub_get_tool_guide(section='dashboards')")
@@ -952,10 +956,10 @@ class ToolDashboardSpec extends ToolSpecBase {
         when:
         def r = script.toolDeleteDashboard([dashboardId: '412', confirm: true])
 
-        then: 'a destructive op is NOT reported as success without confirming evidence, and is flagged isError'
+        then: 'a destructive op is NOT reported as success without confirming evidence'
         r.success == false
         r.outcomeUnknown == true
-        r.isError == true
+        !r.containsKey('isError')
         r.error.toLowerCase().contains('could not be confirmed')
         r.note != null
     }
@@ -1158,7 +1162,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         when:
         def resp = mcpDriver.callTool('hub_create_dashboard', [deviceIds: ['12']])
 
-        then: 'an IllegalArgumentException maps to a isError validation result (or isError) envelope, not a success'
+        then: 'an IllegalArgumentException maps to an isError validation result, not a success'
         resp.error == null
         resp.result?.isError == true
     }
@@ -1239,13 +1243,13 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     // ---------- review-round fixes ----------
 
-    def "a runtime failure result is success:false flagged isError, its note pointing at the guide"() {
+    def "a runtime failure result is success:false with its note pointing at the guide, and sets no isError itself"() {
         when:
         def r = script.toolGetDashboard([dashboardId: '9999'])
 
         then: 'the recovery advice is kept and the guide pointer is appended once'
         r.success == false
-        r.isError == true
+        !r.containsKey('isError')
         r.note == "Call hub_list_dashboards to see valid ids. See hub_get_tool_guide(section='dashboards')."
     }
 
@@ -1274,13 +1278,13 @@ class ToolDashboardSpec extends ToolSpecBase {
         def legacy = script.toolUpdateDashboard([dashboardId: '9999', addTiles: [[template: 'clock', col: 1, row: 1]]])
 
         then: 'a not-found failure, not an Easy write and not a "this is an Easy Dashboard" refusal'
-        [easy, legacy].every { r -> r.success == false && r.isError == true && r.id == '9999' && r.error.contains('No dashboard found') }
+        [easy, legacy].every { r -> r.success == false && !r.containsKey('isError') && r.id == '9999' && r.error.contains('No dashboard found') }
         [easy, legacy].every { r -> r.note == "Call hub_list_dashboards to see valid ids. See hub_get_tool_guide(section='dashboards')." }
         !hubGet.calls.any { it.path == '/dashboard/update' }
         !hubGet.calls.any { it.path.contains('/layout') }
     }
 
-    def "hub_update_dashboard of a removed id via dispatch (gateway=#gatewayMode) is a success:false result flagged isError"() {
+    def "hub_update_dashboard of a removed id via dispatch (gateway=#gatewayMode) is a success:false result the envelope flags isError"() {
         given:
         enableWrite()
         hubGet.register('/installedapp/statusJson/9999') { params -> '{}' }
@@ -1372,7 +1376,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         then:
         r.success == success
         (r.outcomeUnknown == true) == unknown
-        (r.isError == true) == !success
+        !r.containsKey('isError')
         !(r.note ?: '').contains('Nothing was deleted') || after == 'present'
         after == 'gone' || r.error.contains('response body lost')
 
@@ -2436,7 +2440,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         then:
         r.success == false
-        r.isError == true
+        !r.containsKey('isError')
         r.type == 'legacy'
         r.error.toLowerCase().contains('still present')
         forceDeletePaths == ['/installedapp/forcedelete/700/quiet']
@@ -2516,7 +2520,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         then:
         r.success == false
-        r.isError == true
+        !r.containsKey('isError')
         r.sourceId == '700'
         r.error.contains('authorized device list')
         r.note.contains('hub_get_dashboard')
@@ -2626,6 +2630,317 @@ class ToolDashboardSpec extends ToolSpecBase {
         result.note.contains('before retrying')
         !result.note.contains('Nothing was created')
         hubGet.calls.count { it.path == '/dashboard/create' } == 1
+    }
+
+    // ---------- the MCP device selection ----------
+
+    /** Bypass off, with {@code ids} selected for MCP. */
+    private void selectOnly(List ids) {
+        settingsMap.bypassDeviceAllowlist = false
+        settingsMap.selectedDevices = ids.collect { new TestDevice(id: it, name: "dev${it}", label: "Dev ${it}") }
+    }
+
+    /** Runs {@code call}, returning its result or the IllegalArgumentException it threw. */
+    private static Object outcomeOf(Closure call) {
+        try {
+            return call()
+        } catch (IllegalArgumentException e) {
+            return e
+        }
+    }
+
+    @Unroll
+    def "create #kind with the bypass off refuses #label before any request"() {
+        given: 'device 12 selected, 34 a child of this app, 56 neither'
+        enableWrite()
+        selectOnly([12])
+        childDevicesList << new TestDevice(id: 34, name: 'child', label: 'Child')
+        registerLegacyParent(21)
+        def rawPaths = stubCreateChild('850')
+        def forms = captureFormPosts()
+
+        when:
+        script.toolCreateDashboard([name: 'Patio', type: kind, deviceIds: ids])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.startsWith(needle)
+        ex.message.contains('Bypass Device Allowlist')
+        ex.message.contains('hub_get_dashboard')
+        !hubGet.calls.any { it.path == '/dashboard/create' }
+        !rawPaths.any { it.startsWith('/installedapp/createchild') }
+        forms.isEmpty()
+
+        where:
+        kind     | label              | ids                      | needle
+        'easy'   | 'an unselected id' | ['12', '34', '56']       | 'deviceIds 56 is outside the MCP device selection'
+        'easy'   | 'two of them'      | ['57', '12', '56', '57'] | 'deviceIds 57, 56 are outside the MCP device selection'
+        'legacy' | 'an unselected id' | ['12', '56']             | 'deviceIds 56 is outside the MCP device selection'
+    }
+
+    def "create refuses an unknown theme and a missing name ahead of the device selection"() {
+        given:
+        enableWrite()
+        selectOnly([12])
+
+        when:
+        def missingName = outcomeOf { script.toolCreateDashboard([deviceIds: ['56']]) }
+        def badTheme = outcomeOf { script.toolCreateDashboard([name: 'Patio', deviceIds: ['56'], options: [theme: 'neon']]) }
+        def noDevices = outcomeOf { script.toolCreateDashboard([name: 'Patio', deviceIds: []]) }
+
+        then:
+        missingName.message.startsWith('name is required')
+        badTheme.message.startsWith('theme must be one of')
+        noDevices.message.startsWith('deviceIds must contain at least one device id')
+        !hubGet.calls.any { it.path == '/dashboard/create' }
+    }
+
+    @Unroll
+    def "create #kind saves selected and child devices with the bypass off, and any device with it on (bypass=#bypass)"() {
+        given:
+        enableWrite()
+        selectOnly([12])
+        settingsMap.bypassDeviceAllowlist = bypass
+        childDevicesList << new TestDevice(id: 34, name: 'child', label: 'Child')
+        registerLegacyParent(21)
+        stubCreateChild('850')
+        def forms = captureFormPosts()
+
+        when:
+        def r = script.toolCreateDashboard([name: 'Patio', type: kind, deviceIds: ids])
+
+        then:
+        r.success == true
+        kind == 'easy'
+            ? hubGet.calls.find { it.path == '/dashboard/create' }.params.deviceIds == ids.join(',')
+            : forms.find { it.body.containsKey('settings[devicesPicked]') }.body['settings[devicesPicked]'] == ids.join(',')
+
+        where:
+        kind     | bypass | ids
+        'easy'   | false  | ['12', '34']
+        'easy'   | true   | ['12', '34', '56']
+        'legacy' | false  | ['12', '34']
+        'legacy' | true   | ['12', '56']
+    }
+
+    @Unroll
+    def "copy of #kind dashboard #source with the bypass off refuses a source device outside the selection, and copies with it on"() {
+        given: 'Easy 412 shows devices 12 and 34; legacy 700 authorizes 16 and 4'
+        enableWrite()
+        hubGet.register('/dashboard/all') { params ->
+            JsonOutput.toJson([easyRow(412, 'Living Room', [deviceIds: [12, 34]]), legacyRow(700, 'Studio', [deviceIds: [16, 4]])])
+        }
+        registerLegacyStatus('700', [label: 'Studio', deviceIds: [16, 4]])
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+        registerLegacyParent(21)
+        def rawPaths = stubCreateChild('882')
+        def forms = captureFormPosts()
+        def posts = captureLayoutPosts()
+        registerLegacyStatus('882', [accessToken: 'tok-882', label: 'Studio (copy)'])
+        registerLegacyMint('882')
+        selectOnly(selected)
+
+        when:
+        def refused = outcomeOf { script.toolCreateDashboard([sourceId: source]) }
+
+        then:
+        refused instanceof IllegalArgumentException
+        refused.message.startsWith("deviceIds ${outside} is outside the MCP device selection, so a copy of dashboard ${source} cannot authorize it")
+        !hubGet.calls.any { it.path == '/dashboard/create' }
+        !rawPaths.any { it.startsWith('/installedapp/createchild') }
+        forms.isEmpty()
+        posts.isEmpty()
+
+        when:
+        settingsMap.bypassDeviceAllowlist = true
+        def copied = script.toolCreateDashboard([sourceId: source])
+
+        then:
+        copied.success == true
+        copied.sourceId == source
+
+        where:
+        kind     | source | selected | outside
+        'easy'   | '412'  | [12]     | '34'
+        'legacy' | '700'  | [4]      | '16'
+    }
+
+    @Unroll
+    def "Easy update with the bypass off checks only the ids whose membership changes: #label"() {
+        given: 'dashboard 412 shows 600 (not selected) and 100 (selected); 101 is selected, 700 is not'
+        enableWrite()
+        selectOnly([100, 101])
+        hubGet.register('/installedapp/configure/json/412') { params ->
+            easyConfigJson('Living Room', [devicesPicked: ['600': 'Lamp', '100': 'Fan']])
+        }
+
+        when:
+        def outcome = outcomeOf { script.toolUpdateDashboard([dashboardId: '412', name: 'Den', deviceIds: ids]) }
+
+        then:
+        refused ? (outcome instanceof IllegalArgumentException && outcome.message.startsWith(refused)) : outcome.success == true
+        hubGet.calls.count { it.path == '/dashboard/update' } == (refused ? 0 : 1)
+
+        where:
+        label                                    | ids                   | refused
+        'a rename keeps the unselected device'   | ['600', '100']        | null
+        're-sending it with a selected addition' | ['600', '100', '101'] | null
+        'dropping a selected device'             | ['600']               | null
+        'dropping the unselected device'         | ['100']               | 'deviceIds 600 is outside the MCP device selection, so this dashboard write cannot add or remove it'
+        'adding an unselected device'            | ['600', '100', '700'] | 'deviceIds 700 is outside the MCP device selection'
+        'both at once'                           | ['100', '700']        | 'deviceIds 700, 600 are outside the MCP device selection'
+    }
+
+    def "Easy update with the bypass on changes any device without reading the device list for the check"() {
+        given: 'both PINs passed, so nothing else needs the config read'
+        enableWrite()
+        selectOnly([100])
+        settingsMap.bypassDeviceAllowlist = true
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Den', deviceIds: ['700'], dashboardPin: '1', hsmPin: '2'])
+
+        then:
+        r.success == true
+        hubGet.calls.find { it.path == '/dashboard/update' }.params.deviceIds == '700'
+        !hubGet.calls.any { it.path == '/installedapp/configure/json/412' }
+    }
+
+    def "Easy update with the bypass off and an unreadable current device list fails without a write"() {
+        given:
+        enableWrite()
+        selectOnly([100])
+        hubGet.register('/installedapp/configure/json/412') { params -> throw new RuntimeException('config page down') }
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Den', deviceIds: ['100']])
+
+        then:
+        r.success == false
+        r.error.contains('MCP device selection')
+        r.note.endsWith("See hub_get_tool_guide(section='dashboards').")
+        !hubGet.calls.any { it.path == '/dashboard/update' }
+    }
+
+    @Unroll
+    def "legacy update with the bypass off checks only the ids whose membership changes: #label"() {
+        given: 'legacy 700 authorizes 600 (not selected) and 100 (selected); 101 is selected, 700 is not'
+        enableWrite()
+        selectOnly([100, 101])
+        registerLegacyStatus('700', [deviceIds: [600, 100]])
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+        def forms = captureFormPosts()
+        def posts = captureLayoutPosts()
+
+        when:
+        def outcome = outcomeOf { script.toolUpdateDashboard(args + [dashboardId: '700']) }
+
+        then:
+        refused ? (outcome instanceof IllegalArgumentException && outcome.message.startsWith(refused)) : outcome.success == true
+        forms.count { it.body.containsKey('settings[devicesPicked]') } == deviceWrites
+        refused ? (forms.isEmpty() && posts.isEmpty()) : true
+
+        where:
+        label                                    | args                                                       | refused                                                    | deviceWrites
+        'a rename keeps the unselected device'   | [name: 'Study']                                            | null                                                       | 0
+        're-sending it with a selected addition' | [name: 'Study', deviceIds: ['600', '100', '101']]          | null                                                       | 1
+        'dropping a selected device'             | [deviceIds: ['600']]                                       | null                                                       | 1
+        'dropping every device but one selected' | [deviceIds: ['100']]                                       | 'deviceIds 600 is outside the MCP device selection'        | 0
+        'adding an unselected device'            | [deviceIds: ['600', '100', '700'], setOptions: [cols: 5]] | 'deviceIds 700 is outside the MCP device selection'        | 0
+        'both at once'                           | [name: 'Study', deviceIds: ['100', '700']]                 | 'deviceIds 700, 600 are outside the MCP device selection'  | 0
+    }
+
+    def "legacy update names an unknown tile key ahead of the device selection"() {
+        given:
+        enableWrite()
+        selectOnly([100])
+        registerLegacyStatus('700', [deviceIds: [100]])
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+        def forms = captureFormPosts()
+
+        when:
+        script.toolUpdateDashboard([dashboardId: '700', deviceIds: ['100', '700'],
+                                    addTiles: [[template: 'clock', col: 1, row: 1, colour: 'red']]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('unknown tile key colour')
+        forms.isEmpty()
+    }
+
+    def "legacy update with the bypass off and an unreadable current device list fails without a write"() {
+        given: 'statusJson carries devicesPicked without its device list'
+        enableWrite()
+        selectOnly([100])
+        registerLegacyStatus('700', [deviceIds: null])
+        def forms = captureFormPosts()
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700', name: 'Study', deviceIds: ['100']])
+
+        then:
+        r.success == false
+        r.applied == []
+        r.error.contains('MCP device selection')
+        forms.isEmpty()
+    }
+
+    def "legacy update with the bypass on changes any device"() {
+        given:
+        enableWrite()
+        selectOnly([100])
+        settingsMap.bypassDeviceAllowlist = true
+        registerLegacyStatus('700', [deviceIds: [600, 100]])
+        def forms = captureFormPosts()
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700', deviceIds: ['100', '700']])
+
+        then:
+        r.success == true
+        r.deviceIds == ['100', '700']
+        forms.find { it.body.containsKey('settings[devicesPicked]') }.body['settings[devicesPicked]'] == '100,700'
+    }
+
+    @Unroll
+    def "#tool via dispatch with bypass=#bypass #outcome an unselected device (gateway=#gatewayMode)"() {
+        given:
+        enableWrite()
+        selectOnly([12])
+        settingsMap.bypassDeviceAllowlist = bypass
+        hubGet.register('/installedapp/configure/json/412') { params -> easyConfigJson('Living Room', [devicesPicked: ['12': 'Lamp']]) }
+        registerLegacyStatus('700', [deviceIds: [12]])
+        def forms = captureFormPosts()
+        def writes = { -> hubGet.calls.count { it.path in ['/dashboard/create', '/dashboard/update'] } + forms.size() }
+
+        when:
+        def resp = callDashboard(gatewayMode, 'hub_manage_dashboards', tool, args)
+
+        then:
+        def body = new JsonSlurper().parseText(resultText(resp))
+        if (bypass) {
+            assert resp.result.isError != true
+            assert body.success == true
+            assert writes() == 1
+        } else {
+            assert resp.result.isError == true
+            assert resultText(resp).contains('deviceIds 56 is outside the MCP device selection')
+            assert writes() == 0
+        }
+
+        where:
+        [tool, args, bypass, gatewayMode] << [
+            ['hub_create_dashboard', [name: 'Patio', deviceIds: ['12', '56']]],
+            ['hub_update_dashboard', [dashboardId: '412', name: 'Den', deviceIds: ['12', '56'], options: [dashboardPin: '', hsmPin: '']]],
+            ['hub_update_dashboard', [dashboardId: '700', deviceIds: ['12', '56']]]
+        ].collectMany { row -> [[false, true], [true, false]].combinations().collect { row + it } }
+        outcome = bypass ? 'saves' : 'refuses'
+    }
+
+    def "hub_update_dashboard holds its own lock, not the write reservation lock"() {
+        expect:
+        script.DASHBOARD_UPDATE_LOCK != null
+        !script.DASHBOARD_UPDATE_LOCK.is(script.WRITE_RESERVATION_LOCK)
     }
 
 }

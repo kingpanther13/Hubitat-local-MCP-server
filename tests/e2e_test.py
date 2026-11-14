@@ -5681,17 +5681,20 @@ class TestRunner:
         if dash_id in self.created_dashboard_ids:
             self.created_dashboard_ids.remove(dash_id)
 
-        # The deleted id: an update is a runtime failure (success:false plus isError) that sends no
-        # write, and a read reports it missing.
-        self._expect_tool_refusal("hub_manage_dashboards", {
+        # The deleted id: an update and a read are runtime failures. Their success:false payload
+        # carries no isError of its own, so the envelope flag proves the server sets it centrally.
+        gone = self.client.call_tool_failure("hub_manage_dashboards", {
             "tool": "hub_update_dashboard",
-            "args": {"dashboardId": dash_id, "name": dash_name, "deviceIds": upd_devices}},
-            "No dashboard found")
+            "args": {"dashboardId": dash_id, "name": dash_name, "deviceIds": upd_devices}})
+        assert "No dashboard found" in str(gone.get("error")), f"hub_update_dashboard on deleted id {dash_id}: {gone}"
+        assert "hub_get_tool_guide(section='dashboards')" in str(gone.get("note")), \
+            f"the deleted-id update failure lost its guide pointer: {gone}"
         assert not self._dashboard_id_present(dash_id), \
             f"hub_update_dashboard on deleted id {dash_id} brought a dashboard back"
-        self._expect_tool_refusal("hub_read_dashboards", {
-            "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}},
-            f"No dashboard found with id '{dash_id}'")
+        missing = self.client.call_tool_failure("hub_read_dashboards", {
+            "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
+        assert f"No dashboard found with id '{dash_id}'" in str(missing.get("error")), \
+            f"hub_get_dashboard on deleted id {dash_id}: {missing}"
 
     @test("dashboards")
     def test_dashboard_legacy_lifecycle(self) -> None:
@@ -16274,6 +16277,14 @@ def updated() {}
         self._expect_tool_refusal("hub_manage_logs", {"tool": "hub_delete_logs", "args": {
             "mode": "scheduledJobs", "jobId": f"dev{unauth}Once.x", "confirm": True}},
             "outside this server's device access")
+        # A dashboard's deviceIds authorizes it to show and control a device, so it keeps the same
+        # boundary: a create naming the unselected device is refused before anything is written.
+        dashboards_before = self._dashboard_ids()
+        self._expect_tool_refusal("hub_manage_dashboards", {"tool": "hub_create_dashboard", "args": {
+            "name": f"{PREFIX}Dashboard_Unselected", "deviceIds": [unauth]}},
+            f"deviceIds {unauth} is outside the MCP device selection")
+        assert self._dashboard_ids() == dashboards_before, \
+            f"the refused dashboard create for unselected device {unauth} wrote a dashboard"
 
         flipped = False
         try:

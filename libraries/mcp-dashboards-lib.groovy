@@ -1,23 +1,27 @@
 library(name: "McpDashboardsLib", namespace: "mcp", author: "kingpanther13", description: "Dashboard tools (list, get, create/copy, update, delete) covering Easy Dashboards and legacy Hubitat® Dashboards for the MCP Rule Server.")
 
+// Held across a dashboard update's read and its writes: a legacy update reads the layout and device
+// list, edits them and saves them back, so two overlapping updates would each save over the other.
+@groovy.transform.Field static final Object DASHBOARD_UPDATE_LOCK = new Object()
+
 def toolListDashboards(args = null) {
-    return _dashboardFlagged(_readDashboards().out)
+    return _dashboardFailureNote(_readDashboards().out)
 }
 
 def toolGetDashboard(args) {
     args = args ?: [:]
     String wantId = _requireDashboardId(args.dashboardId, "dashboardId", " to read")
     def read = _readDashboards()
-    return _dashboardFlagged(read.out.success == false ? read.out : _getDashboard(wantId, read))
+    return _dashboardFailureNote(read.out.success == false ? read.out : _getDashboard(wantId, read))
 }
 
-// The MCP envelope reads isError, not success, so every failure (success:false) also carries
-// isError:true, and its note points at the guide section for recovery.
-private Map _dashboardFlagged(Map result) {
+// A failure's note ends with the guide pointer so the model reads the recovery reference; a note
+// that already names it is left alone so the pointer never appears twice.
+private Map _dashboardFailureNote(Map result) {
     if (result?.success != false) return result
     String guide = "See hub_get_tool_guide(section='dashboards')."
     String note = result.note?.toString()
-    return result + [isError: true, note: !note ? guide : (note.contains(guide) ? note : note + " " + guide)]
+    return result + [note: !note ? guide : (note.contains(guide) ? note : note + " " + guide)]
 }
 
 // One read of the hub's dashboard list: [out: <the public list result>, records: <the raw rows>].
@@ -304,7 +308,7 @@ private Map _dashboardConfigFromApp(String id) {
 }
 
 def toolCreateDashboard(args) {
-    return _dashboardFlagged(_createDashboard(args ?: [:]))
+    return _dashboardFailureNote(_createDashboard(args ?: [:]))
 }
 
 private Map _createDashboard(Map args) {
@@ -317,7 +321,9 @@ private Map _createDashboard(Map args) {
     if (_dashboardTypeArg(args.type) == "legacy") {
         return _createLegacyDashboard(args)
     }
-    def q = _buildDashboardConfigQuery(args, _dashboardDeviceCsv(args.deviceIds, true))
+    def deviceCsv = _dashboardDeviceCsv(args.deviceIds, true)
+    def q = _buildDashboardConfigQuery(args, deviceCsv)
+    _requireDashboardDevicesSelected(deviceCsv.split(",") as List, "this dashboard write", "add")
     // CREATE-ONLY: the hub's editor sends version=2.0 on create (and drops it on update).
     q.version = "2.0"
     _requireUnprotectedEasyDashboardParent()
@@ -443,6 +449,7 @@ private Map _createLegacyDashboard(Map args) {
         throw new IllegalArgumentException("options applies only to Easy Dashboards. A legacy dashboard's look lives in its layout -- create it first, then pass setOptions/addTiles to hub_update_dashboard.")
     }
     def deviceCsv = _dashboardDeviceCsv(args.deviceIds, false)
+    if (deviceCsv) _requireDashboardDevicesSelected(deviceCsv.split(",") as List, "this dashboard write", "add")
     def parentId = _legacyDashboardParentId()
     if (parentId == null) {
         return [success: false,
@@ -515,6 +522,7 @@ private Map _copyDashboard(Map args) {
                 error: "Could read the source dashboard's id/name but not its device list, so it can't be copied.",
                 note: "Retry; if it persists, read it with hub_get_dashboard and recreate it with hub_create_dashboard."]
     }
+    _requireDashboardDevicesSelected(src.deviceIds, "a copy of dashboard ${sourceId}", "authorize")
     def opts = [:]
     (_dashboardTileKeys() + ["theme", "navigationSelection", "dashboardPin", "hsmPin"]).each { k ->
         if (src.containsKey(k)) opts.put(k, src.get(k))
@@ -549,6 +557,7 @@ private Map _copyLegacyDashboard(String sourceId, Map src, String name) {
                 error: "Could read the legacy dashboard's layout but not its authorized device list, so a copy would show no device data. Nothing was created.",
                 note: "Retry; if it persists, open the dashboard's app page once, or read it with hub_get_dashboard(dashboardId=${sourceId}) and recreate it with hub_create_dashboard(type='legacy', deviceIds=[...]) plus hub_update_dashboard(layout=...)."]
     }
+    _requireDashboardDevicesSelected(src.deviceIds, "a copy of dashboard ${sourceId}", "authorize")
     def created = _createLegacyDashboard([name: name, deviceIds: src.deviceIds])
     if (created.success != true) {
         return created + [sourceId: sourceId]
@@ -579,12 +588,18 @@ private Map _copyLegacyDashboard(String sourceId, Map src, String name) {
 }
 
 def toolUpdateDashboard(args) {
-    return _dashboardFlagged(_updateDashboard(args ?: [:]))
+    return _dashboardFailureNote(_updateDashboard(args ?: [:]))
 }
 
 private Map _updateDashboard(Map args) {
     def updateId = _requireDashboardId(args.dashboardId, "dashboardId", " to update")
     _requireUnprotectedAppMutation(updateId, "edit dashboard")
+    synchronized (DASHBOARD_UPDATE_LOCK) {
+        return _updateDashboardLocked(updateId, args)
+    }
+}
+
+private Map _updateDashboardLocked(String updateId, Map args) {
     def status = _dashboardStatus(updateId)
     if (status == null) {
         // Unknown target type: the Easy path's wholesale /dashboard/update MUST NOT be blind-fired
@@ -619,8 +634,9 @@ private Map _updateDashboard(Map args) {
     ["dashboardPin", "hsmPin"].each { k -> if (args[k]?.toString() == pinMarker) args.remove(k) }
     def missingPins = ["dashboardPin", "hsmPin"].findAll { k -> !opts.containsKey(k) && !args.containsKey(k) }
     boolean pinPreserveFailed = false
+    boolean selectionGate = _mcpAuthorizedIds(getChildDevices() ?: []) != null
+    def cur = (missingPins || selectionGate) ? _dashboardConfigFromApp(updateId) : null
     if (missingPins) {
-        def cur = _dashboardConfigFromApp(updateId)
         if (cur != null) {
             missingPins.each { k -> if (cur.containsKey(k)) opts.put(k, cur.get(k)) }
         } else {
@@ -630,6 +646,14 @@ private Map _updateDashboard(Map args) {
     }
     args.options = opts
     def q = _buildDashboardConfigQuery(args, deviceCsv)
+    if (selectionGate) {
+        if (cur?.deviceIds == null) {
+            return [success: false, id: updateId,
+                    error: "Could not read the dashboard's current device list to check it against the MCP device selection, so no update was attempted.",
+                    note: "Transient hub error (details logged); retry."]
+        }
+        _requireDashboardDevicesSelected(_dashboardChangedDeviceIds(cur.deviceIds, deviceCsv.split(",") as List), "this dashboard write", "add or remove")
+    }
     q.id = updateId
     try {
         def result = _dashboardWriteResult(hubInternalGet("/dashboard/update", q), "update", updateId)
@@ -691,6 +715,13 @@ private Map _updateLegacyDashboard(String id, Map status, Map args) {
             def planStatus = hasDevices ? (status + [deviceIds: newDeviceIds]) : status
             newLayout = _applyLegacyLayoutOps(current, args, planStatus, warnings)
         }
+    }
+    if (hasDevices && _mcpAuthorizedIds(getChildDevices() ?: []) != null) {
+        if (status.deviceIds == null) {
+            return failed("Could not read the dashboard's current device list to check it against the MCP device selection. Nothing was changed.",
+                "Retry; if it persists, open the dashboard's app page once.")
+        }
+        _requireDashboardDevicesSelected(_dashboardChangedDeviceIds(status.deviceIds, newDeviceIds), "this dashboard write", "add or remove")
     }
     if (hasName) {
         def newName = args.name.toString().trim()
@@ -848,7 +879,7 @@ private void _warnUnauthorizedTileDevice(Map tile, Map status, List warnings) {
 }
 
 def toolDeleteDashboard(args) {
-    return _dashboardFlagged(_deleteDashboard(args ?: [:]))
+    return _dashboardFailureNote(_deleteDashboard(args ?: [:]))
 }
 
 private Map _deleteDashboard(Map args) {
@@ -906,6 +937,28 @@ private Map _deleteDashboard(Map args) {
 }
 
 // ---- domain helpers ----
+
+// A dashboard's deviceIds authorizes it to show and control those devices, so while the allowlist
+// bypass is off it may gain or lose only devices MCP may configure, the boundary hub_update_device
+// keeps. Updates pass only the ids whose membership changes, so a rename or a re-send that keeps an
+// unselected device still works.
+private void _requireDashboardDevicesSelected(Collection ids, String write, String verb) {
+    if (!ids) return
+    Set authorized = _mcpAuthorizedIds(getChildDevices() ?: [])
+    if (authorized == null) return
+    List outside = ids.collect { it.toString() }.unique().findAll { !authorized.contains(it) }
+    if (outside) {
+        boolean one = outside.size() == 1
+        throw new IllegalArgumentException("deviceIds ${outside.join(', ')} ${one ? 'is' : 'are'} outside the MCP device selection, so ${write} cannot ${verb} ${one ? 'it' : 'them'}. Select ${one ? 'it' : 'them'} in the MCP app's device list, or turn on Bypass Device Allowlist. An id hub_get_dashboard returns stays in the list you send.")
+    }
+}
+
+// Ids added, then ids dropped.
+private List _dashboardChangedDeviceIds(Collection current, Collection next) {
+    List cur = current.collect { it.toString() }
+    List nxt = next.collect { it.toString() }
+    return (nxt.findAll { !cur.contains(it) } + cur.findAll { !nxt.contains(it) }).unique()
+}
 
 private List _dashboardTileKeys() {
     return ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit", "showNavigation", "showTutorial"]
@@ -1099,7 +1152,7 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_create_dashboard",
-            description: "Create a dashboard, or copy one with sourceId. type='easy' (default) builds an Easy Dashboard from devices + options; type='legacy' creates an empty legacy Hubitat® Dashboard. PRE-FLIGHT: 1) verify deviceIds with hub_list_devices (or sourceId with hub_list_dashboards) 2) tell the user what will be created.[[FLAT_TRIM]] A copy duplicates an Easy config, or a legacy dashboard's devices and layout; the source is never changed. A legacy dashboard starts empty -- add tiles with hub_update_dashboard. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
+            description: "Create a dashboard, or copy one with sourceId. type='easy' (default) builds an Easy Dashboard from devices + options; type='legacy' creates an empty legacy Hubitat® Dashboard. PRE-FLIGHT: 1) verify deviceIds with hub_list_devices (or sourceId with hub_list_dashboards) 2) tell the user what will be created.[[FLAT_TRIM]] A copy duplicates an Easy config, or a legacy dashboard's devices and layout; the source is never changed. A legacy dashboard starts empty -- add tiles with hub_update_dashboard. While Bypass Device Allowlist is off, every device in deviceIds (or the source's devices, for a copy) must be in the MCP device selection. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1113,7 +1166,7 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_update_dashboard",
-            description: "Update a dashboard by id. Easy Dashboard: wholesale config replace -- read it with hub_get_dashboard and pass the FULL config back (name + deviceIds required; omitted fields revert to default). Legacy Hubitat® Dashboard: edit its name, deviceIds (authorized devices) and/or layout. PRE-FLIGHT: 1) hub_get_dashboard to confirm the id and read the current config 2) tell the user what will change.[[FLAT_TRIM]] Legacy layout edits are EITHER `layout` (wholesale) OR the granular ops removeTileIds / updateTiles / addTiles / setOptions, applied in that order in one save; an already-gone removal and an identical add are skipped with a warning. Args for the other kind are rejected. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
+            description: "Update a dashboard by id. Easy Dashboard: wholesale config replace -- read it with hub_get_dashboard and pass the FULL config back (name + deviceIds required; omitted fields revert to default). Legacy Hubitat® Dashboard: edit its name, deviceIds (authorized devices) and/or layout. PRE-FLIGHT: 1) hub_get_dashboard to confirm the id and read the current config 2) tell the user what will change.[[FLAT_TRIM]] Legacy layout edits are EITHER `layout` (wholesale) OR the granular ops removeTileIds / updateTiles / addTiles / setOptions, applied in that order in one save; an already-gone removal and an identical add are skipped with a warning. Args for the other kind are rejected. While Bypass Device Allowlist is off, a device added to or dropped from deviceIds must be in the MCP device selection. Send updates one at a time; a change made on the hub's Dashboards page between the read and the save is overwritten. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
