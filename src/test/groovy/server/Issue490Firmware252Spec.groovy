@@ -1449,7 +1449,9 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         r.freeSpaceBytes == 991530715
         r.filesExcludedFromFullBackup == 1
         r.files.find { it.name == 'sub' } == [name: 'sub', type: 'dir']
-        r.files.find { it.name == 'a.js' }.directDownload == 'http://<HUB_IP>/local/webcore/a.js'
+        r.files.find { it.name == 'a.js' }.size == 10L
+        !r.files.find { it.name == 'a.js' }.containsKey('directDownload')
+        r.downloadUrlBase.endsWith('/local/webcore/')
         r.files.find { it.name == 'a.js' }.backupIncluded == false
     }
 
@@ -1476,19 +1478,6 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         then:
         r.note.contains('does not exist')
-    }
-
-    def "hub_list_files refuses a folder on firmware before 2.5.2"() {
-        given:
-        sharedLocation.hub = hubOnFirmware('2.5.1.181')
-
-        when:
-        script.toolListFiles([folder: 'webcore'])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('2.5.2')
-        hubGet.calls.isEmpty()
     }
 
     @Unroll

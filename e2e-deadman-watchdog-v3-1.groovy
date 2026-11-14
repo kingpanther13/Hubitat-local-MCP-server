@@ -2753,26 +2753,35 @@ def adminGetJobs(args) {
     ]
 }
 
-// hub_read_file: copied from toolReadFile (hubitat-mcp-server.groovy). downloadHubFile + chunk.
+// hub_read_file: copied from toolReadFile (libraries/mcp-files-lib.groovy). downloadHubFile + chunk.
 def adminReadFile(args) {
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
-    def maxChunkSize = 60000
-    def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : 30000
+    String fileName = args.fileName.toString()
+    int requestedOffset = adminFileIntArg(args, "offset", 0, 0, Integer.MAX_VALUE)
+    int requestedLength = adminFileIntArg(args, "length", 30000, 1, 60000)
     def content
     try {
-        def bytes = downloadHubFile(args.fileName)
-        if (bytes == null) throw new Exception("File not found in File Manager")
+        def bytes = downloadHubFile(fileName)
+        if (bytes == null) throw new Exception("the hub returned no content")
         content = new String(bytes, "UTF-8")
     } catch (Exception e) {
-        return [success: false, error: "File '${args.fileName}' could not be read: ${e.message}",
-                suggestion: "Check the file name in Hubitat > Settings > File Manager."]
+        // The hub's exception names only the file, so the listing tells a missing file apart.
+        List names = null
+        if (!fileName.contains("/")) {
+            try { names = fileManagerNames() } catch (Exception ignored) { /* generic error below */ }
+        }
+        if (names != null && !names.contains(fileName)) {
+            return [success: false, fileName: fileName, error: "File '${fileName}' does not exist in File Manager.",
+                    note: "Check the exact file name in Hubitat > Settings > File Manager."]
+        }
+        return [success: false, fileName: fileName, error: "File '${fileName}' could not be read: ${e.message}",
+                note: "Check the file name in Hubitat > Settings > File Manager."]
     }
     def totalLength = content.length()
-    def endIndex = Math.min(requestedOffset + requestedLength, totalLength)
+    int endIndex = (int) Math.min((long) requestedOffset + requestedLength, (long) totalLength)
     def chunk = (requestedOffset < totalLength) ? content.substring(requestedOffset, endIndex) : ""
     def hasMore = endIndex < totalLength
-    def result = [success: true, fileName: args.fileName, totalLength: totalLength, offset: requestedOffset,
+    def result = [success: true, fileName: fileName, totalLength: totalLength, offset: requestedOffset,
                   chunkLength: chunk.length(), hasMore: hasMore, content: chunk]
     if (hasMore) {
         result.nextOffset = endIndex
@@ -2782,7 +2791,18 @@ def adminReadFile(args) {
     return result
 }
 
-// hub_write_file: copied from toolWriteFile (hubitat-mcp-server.groovy). uploadHubFile + name check.
+private int adminFileIntArg(Map args, String key, int defaultValue, int min, int max) {
+    def v = args?.get(key)
+    if (v == null) return defaultValue
+    String t = (v instanceof Number || v instanceof CharSequence) ? v.toString().trim() : ""
+    if (!t.isLong() || t.toLong() < min || t.toLong() > max) {
+        throw new IllegalArgumentException("${key} must be an integer from ${min} to ${max}; got ${v}.")
+    }
+    return t.toInteger()
+}
+
+// hub_write_file: copied from toolWriteFile (libraries/mcp-files-lib.groovy) without the backup
+// copy. uploadHubFile + name check; identical content writes nothing.
 def adminWriteFile(args) {
     requireConfirm(args)
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
@@ -2790,9 +2810,17 @@ def adminWriteFile(args) {
     if (!(args.fileName ==~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/)) {
         throw new IllegalArgumentException("Invalid file name '${args.fileName}'. Only letters, numbers, hyphens, underscores, and periods; cannot start with a period.")
     }
+    String content = args.content.toString()
+    byte[] incomingBytes = content.getBytes("UTF-8")
+    byte[] existingBytes = null
+    try { existingBytes = downloadHubFile(args.fileName) } catch (Exception ignored) { /* no existing file */ }
+    if (existingBytes != null && (existingBytes as List) == (incomingBytes as List)) {
+        return [success: true, unchanged: true, message: "File '${args.fileName}' already holds this exact content; nothing was written.",
+                fileName: args.fileName, contentLength: content.length()]
+    }
     try {
-        uploadHubFile(args.fileName, args.content.getBytes("UTF-8"))
-        return [success: true, message: "File '${args.fileName}' written.", fileName: args.fileName, contentLength: args.content.length()]
+        uploadHubFile(args.fileName, incomingBytes)
+        return [success: true, message: "File '${args.fileName}' written.", fileName: args.fileName, contentLength: content.length()]
     } catch (Exception e) {
         log.error "adminWriteFile: ${e.message}"
         return [success: false, error: "Failed to write file '${args.fileName}': ${e.message}"]

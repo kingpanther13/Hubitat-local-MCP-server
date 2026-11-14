@@ -13055,8 +13055,10 @@ def updated() {}
     def test_write_file_keeps_newest_backup_copies(self) -> None:
         # hub_write_file copies the previous content to <name>_backup_<ts><ext> before an
         # overwrite and keeps only the newest five copies of that file name (issue #517). The
-        # copy name carries milliseconds, so back-to-back writes never share one.
+        # copy name carries milliseconds, so back-to-back writes never share one. The same file
+        # covers the File Manager refusals and listing shape from issue #561.
         name = f"{PREFIX}517_copy_cap_{int(time.time())}.txt"
+        missing = f"{PREFIX}561_missing_{int(time.time())}.txt"
         stem = name[:-len(".txt")] + "_backup_"
         copy_name = re.compile(re.escape(stem) + r"\d{8}-\d{6}(-\d{3})?\.txt$")
         removed: list = []
@@ -13066,6 +13068,26 @@ def updated() {}
                 res = self.client.call_tool("hub_manage_files", {
                     "tool": "hub_write_file", "args": {"fileName": name, "content": f"version {i}", "confirm": True}})
                 assert isinstance(res, dict) and res.get("success") is True, f"write {i} failed: {res}"
+                if i == 0:
+                    # Identical content writes nothing, so it takes no copy and does not count below.
+                    same = self.client.call_tool("hub_manage_files", {
+                        "tool": "hub_write_file", "args": {"fileName": name, "content": "version 0", "confirm": True}})
+                    assert same.get("success") is True and same.get("unchanged") is True and not same.get("backupFile"), \
+                        f"identical write was not reported unchanged: {same}"
+                    listed = self.client.call_tool("hub_read_files", {
+                        "tool": "hub_list_files", "args": {"filter": name, "cursor": ""}})
+                    entry = next((f for f in listed.get("files") or [] if f.get("name") == name), None)
+                    assert entry, f"{name} is not listed: {listed}"
+                    assert isinstance(entry.get("size"), int) and isinstance(entry.get("lastModified"), int) \
+                        and "directDownload" not in entry, f"list entry shape: {entry}"
+                    assert str(listed.get("downloadUrlBase", "")).endswith("/local/") and "storage" not in listed, \
+                        f"list download base: {sorted(listed)}"
+                    self._expect_tool_refusal("hub_read_file", {"fileName": name, "offset": -1},
+                                              "offset must be an integer")
+                    self._expect_tool_refusal("hub_read_file", {"fileName": missing},
+                                              "does not exist in File Manager")
+                    self._expect_tool_refusal("hub_delete_file", {"fileName": missing, "confirm": True},
+                                              "nothing was deleted")
                 if i > 0:
                     assert copy_name.match(str(res.get("backupFile", ""))), f"write {i} made no backup copy: {res}"
                     assert res.get("backupRetention") == "copies" and "newest 5" in str(res.get("backupRetentionNote")), \
@@ -14752,7 +14774,7 @@ def updated() {}
                 return names, False
             page_names = [f.get("name") for f in page.get("files", [])]
             if not page_names and (page.get("message") or page.get("error")):
-                return names, False  # degraded blind-empty page under load
+                return names, False  # an empty page that reports a problem is not evidence
             names.extend(n for n in page_names if isinstance(n, str))
             nxt = page.get("nextCursor")
             if not nxt:
@@ -14794,8 +14816,8 @@ def updated() {}
 
         def _list_files_once() -> tuple[list, bool]:
             # One paginated enumeration -> (names, authoritative). Under peak load
-            # hub_list_files DEGRADES rather than errors (blind empty page with a
-            # message/error marker), a relay 504 is equally inconclusive, and a
+            # hub_list_files can fail (an isError result), a relay 504 is equally
+            # inconclusive, and a
             # NO-CURSOR listing on a file-heavy hub trips the 120KB size guard into a
             # response_too_large envelope that reads as a false authoritative-empty.
             # The exact export name is unique, so filter on the hub before paginating;
@@ -14836,8 +14858,8 @@ def updated() {}
                 # success + bytes + matching filename IS proof the file was written -- that is
                 # the pass criterion. An independent hub_list_files cross-check is nice for the
                 # log, but it MUST NOT gate the test: under peak full-suite load the File
-                # Manager listing degrades to a blind empty page (hub-wide saturation, which a
-                # runtime-statistics reset cannot restore in-run). The only listing outcome worth failing
+                # Manager listing can fail (hub-wide saturation, which a runtime-statistics
+                # reset cannot restore in-run). The only listing outcome worth failing
                 # on is an AUTHORITATIVE listing that enumerates files while omitting THIS one --
                 # a real contradiction of the affirmed success, not a load artifact.
                 result = outcome["response"]
@@ -14855,7 +14877,7 @@ def updated() {}
             else:
                 # The relay 504'd AFTER the transport-level retries, dropping the response. The
                 # op may still have committed -- resolve by the file. found -> pass; an
-                # authoritative listing WITHOUT it -> real failure; every read degraded/504 (the
+                # authoritative listing WITHOUT it -> real failure; every read failed/504 (the
                 # listing surface itself unavailable under load) -> the one sanctioned skip: a
                 # relay-504-only soft-pass, since hub_export_bundle is otherwise proven (the BAT
                 # scenario + the low-load/isolation run both exercise it end-to-end).

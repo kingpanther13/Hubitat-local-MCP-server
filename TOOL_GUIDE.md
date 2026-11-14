@@ -822,7 +822,7 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 
 ## File Manager
 
-Files stored at http://<HUB_IP>/local/<filename>
+Files download from http://<hub IP>/local/<filename> (`downloadUrlBase` in hub_list_files, `directDownload` in the other results).
 
 **File name rules:**
 - Must match ^[A-Za-z0-9][A-Za-z0-9._-]*$
@@ -831,17 +831,17 @@ Files stored at http://<HUB_IP>/local/<filename>
 - Invalid: .hidden, my file.txt
 
 **Chunked reading:**
-- Use offset and length for files >60KB
-- Each chunk must be <60KB
-- Follow `nextOffset` while `hasMore` is true to read the next chunk
+- `offset` (character offset, 0 or more) and `length` (1-60000, default 30000); follow `nextOffset` while `hasMore` is true. Each chunk downloads the whole file on the hub, so read a large file with `length: 60000`.
+
+**Errors and retries:** every failure is an error result (`isError: true`, `success: false`). Reading or deleting a root file that does not exist says "does not exist in File Manager" and changes nothing. Writing a file's current content again writes nothing (`unchanged: true`), so a retried write is safe.
 
 **Backup copies:** hub_write_file (when it overwrites different content) and hub_delete_file first copy the file to `<name>_backup_<yyyyMMdd-HHmmss-SSS><ext>` (older copies use `<yyyyMMdd-HHmmss>`). If that copy cannot be written, hub_write_file writes nothing and returns `success: false`; hub_delete_file deletes anyway with a `warning`. After the write or delete succeeds, the newest 5 copies of each file name are kept; older copies of that same name are deleted and listed in `removedOldBackups`. A failed listing or delete leaves them and adds `pruneWarning`.
 
 ### hub_list_files
 
-Use to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. **`filter`:** case-insensitive substring match on the file name -- pass `filter: "backup"` to find backups instead of paging the whole listing and matching client-side. **Cursor pagination:** page size 100 -- omit the cursor for an unbounded list; pass "" for the first page and iterate `nextCursor`.
+Use to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Each file carries `size` (bytes) and `lastModified` (epoch ms). **`filter`:** case-insensitive substring match on the file name -- pass `filter: "backup"` to find backups instead of paging the whole listing and matching client-side. **Cursor pagination:** page size 100 -- omit the cursor for an unbounded list; pass "" for the first page and iterate `nextCursor`.
 
-**Folders (firmware 2.5.2+):** the root listing includes subfolders as entries with `type: "dir"` (no size or download URL); list one with `folder: "<name>"` (nested as `a/b`). Files carry `type: "file"`, and `backupIncluded: false` marks a file a full local backup leaves out (past its 100 MiB File Manager limit). The response adds `freeSpaceBytes` and `filesExcludedFromFullBackup`. A folder that is empty or does not exist lists no files. hub_read_file, hub_write_file and hub_delete_file act on root files only (the hub rejects a `/` in their names); a file in a subfolder is read through its `directDownload` URL.
+**Folders:** the root listing includes subfolders as entries with `type: "dir"` (no size); list one with `folder: "<name>"` (nested as `a/b`). Files carry `type: "file"`, and `backupIncluded: false` marks a file a full local backup leaves out (past its 100 MiB File Manager limit). The response adds `freeSpaceBytes` and `filesExcludedFromFullBackup`. A folder that is empty or does not exist lists no files. hub_read_file, hub_write_file and hub_delete_file act on root files only (the hub rejects a `/` in their names); a file in a subfolder downloads from `downloadUrlBase` + its name.
 
 ### hub_read_file
 

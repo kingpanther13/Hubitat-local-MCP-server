@@ -312,10 +312,10 @@ Exception: `toolCreateHubBackup` checks `confirm` directly without requiring a p
 - All operations are fully local — no cloud involvement
 
 **File Manager Tools** (4 tools):
-- `hub_list_files` — lists files via `/hub/fileManager/json` internal API endpoint, optionally narrowed by a `filter` name substring; available under the Read master
-- `hub_read_file` — reads file via `downloadHubFile()`; returns content inline for files ≤60KB, otherwise provides download URL; available under the Read master
-- `hub_write_file` — writes via `uploadHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`; the newest 5 copies per file name are kept)
-- `hub_delete_file` — deletes via `deleteHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up file before deletion (same 5-copy cap)
+- `hub_list_files` — lists files via `/hub/fileManager/json` internal API endpoint (size and date as numbers, free space, backup inclusion, one `downloadUrlBase`), optionally narrowed by a `filter` name substring or a `folder`; available under the Read master
+- `hub_read_file` — reads file via `downloadHubFile()` in chunks (`offset`, `length` up to 60000 characters; every chunk downloads the whole file); a missing file is reported as not existing; available under the Read master
+- `hub_write_file` — writes via `uploadHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`; the newest 5 copies per file name are kept); content identical to the file's current bytes writes nothing (`unchanged: true`)
+- `hub_delete_file` — deletes via `deleteHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up file before deletion (same 5-copy cap); a file that does not exist is refused and nothing is deleted
 - File name validation: must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
 
 **Device Authorization Safety** (v0.7.2+):
@@ -584,7 +584,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub2/userLibraries` | Installed user libraries (JSON array: id, version, name, namespace, author, description, usedByAppTypes, usedByDeviceTypes -- no source field) |
 | `/library/list/single/data/<id>` | Single library with full source (JSON array of one: id, version, name, namespace, source, lastModified, usedByDeviceTypes, etc.) |
 | `/hub/backupDB` with query `fileName=latest` | Creates fresh backup and returns .lzf binary |
-| `/hub/fileManager/json` | Lists all files in File Manager (JSON array: name, size, date) |
+| `/hub/fileManager/json` | Lists File Manager files (JSON object: `files` array of name, type, size, date, backupIncluded; `freeSpace`; `backupSelection.excludedFiles`). Accepts `?folder=<path>` |
 | `/hub2/roomsList` | List of rooms as JSON (alternative to `getRooms()` SDK method) |
 | `/logs/past/json` | Hub log buffer as JSON array of tab-delimited strings (chronological order, oldest first — reverse client-side for newest-first). Accepts optional `?type=dev&id=<deviceId>` or `?type=app&id=<appId>` to scope server-side to a single source. |
 | `/hub2/appsList` | All installed apps (built-in + user) as JSON. Keys: `systemAppTypes[]`, `userAppTypes[]`, `apps[]` (instance tree). Each `apps[]` entry has `{key, id, data: {id, name, type, disabled, user, hidden, appTypeId}, parent: bool, child: bool, children: [...]}`. Used by `hub_list_apps` (`scope=instances`). |
