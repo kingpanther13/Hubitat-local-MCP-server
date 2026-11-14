@@ -1,15 +1,11 @@
 library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room tools: hub_list_rooms, hub_get_room, hub_create_room, hub_update_room, hub_delete_room.")
 
-// A room update reads the room and then saves it; holding this across both keeps one update from
-// saving over another. It is not WRITE_RESERVATION_LOCK, which every write takes briefly to reserve
-// its slot and must not wait on a hub request.
 @groovy.transform.Field static final Object ROOM_UPDATE_LOCK = new Object()
 
 def toolListRooms(args = null) {
     return _listRoomSummaries(args?.cursor)
 }
 
-// One room's devices, read from the Devices page.
 def toolGetRoom(args) {
     def room = _requireRoom(args?.roomId).room
     List roomIds = (room.deviceIds ?: []).collect { it.toString() }
@@ -72,10 +68,10 @@ private Map _listRoomSummaries(cursor) {
     return result
 }
 
-// getRooms() is the in-process room list, not a hub request. Every tool that takes a roomId checks
-// it here first: GET /room/delete/<id> answers 200 for an unknown id, and /room/save answers success
-// for one without changing anything.
 private Map _requireRoom(roomId) {
+    // getRooms() is the in-process room list, not a hub request. Every tool that takes a roomId checks
+    // it here first: GET /room/delete/<id> answers 200 for an unknown id, and /room/save answers success
+    // for one without changing anything.
     String rid = roomId?.toString()?.trim()
     if (!rid) throw new IllegalArgumentException("roomId is required: the room id from hub_list_rooms.")
     def rooms = (getRooms() ?: []).findAll { it != null }
@@ -98,10 +94,10 @@ private List _roomDeviceIds(deviceIds) {
     }.unique()
 }
 
-// While the allowlist bypass is off, a room write may move only devices MCP may configure, the same
-// boundary hub_update_device keeps. On update only ids whose membership changes are checked, so a
-// rename or a re-send that keeps an unselected device in its room still works.
 private void _requireRoomDevicesSelected(Collection ids) {
+    // While the allowlist bypass is off, a room write may move only devices MCP may configure, the same
+    // boundary hub_update_device keeps. On update only ids whose membership changes are checked, so a
+    // rename or a re-send that keeps an unselected device in its room still works.
     if (!ids) return
     Set authorized = _mcpAuthorizedIds(getChildDevices() ?: [])
     if (authorized == null) return
@@ -111,8 +107,8 @@ private void _requireRoomDevicesSelected(Collection ids) {
     }
 }
 
-// Each listed device already in another room, with the room it leaves.
 private List _roomMovedDevices(List rooms, Collection ids, String exceptRoomId) {
+    // Each listed device already in another room, with the room it leaves.
     List moved = []
     for (id in ids) {
         String did = id.toString()
@@ -122,8 +118,8 @@ private List _roomMovedDevices(List rooms, Collection ids, String exceptRoomId) 
     return moved
 }
 
-// The hub allows duplicate room names; the tools refuse them so a room name stays unambiguous.
 private void _requireUniqueRoomName(List rooms, String name, exceptId) {
+    // The hub allows duplicate room names; the tools refuse them so a room name stays unambiguous.
     if (rooms.find { it.name?.toLowerCase() == name.toLowerCase() && it.id?.toString() != exceptId?.toString() }) {
         throw new IllegalArgumentException("A room named '${name}' already exists.")
     }
@@ -135,9 +131,9 @@ private Map _roomFailure(String error, String note) {
             note: "${note} See hub_get_tool_guide(section='rooms').".toString()]
 }
 
-// One POST /room/save, the call the hub's Rooms page makes. The hub answers {roomId} on success
-// and {error} (HTTP 200) for a bad device id. Returns [roomId] or [failure: <structured error>].
 private Map _saveRoom(roomId, String name, List deviceIds, String action) {
+    // One POST /room/save, the call the hub's Rooms page makes. The hub answers {roomId} on success
+    // and {error} (HTTP 200) for a bad device id. Returns [roomId] or [failure: <structured error>].
     def parsed
     try {
         parsed = hubInternalPostJson("/room/save", groovy.json.JsonOutput.toJson([roomId: roomId, name: name, deviceIds: deviceIds]), 30)
@@ -176,9 +172,9 @@ def toolCreateRoom(args) {
     return [success: true, room: created, message: "Room '${name}' created."]
 }
 
-// GET /room/updateName, the hub's rename that carries no device list, so it cannot undo a device
-// change made meanwhile. The hub answers {success, message}. Returns null or a structured failure.
 private Map _renameRoom(String roomId, String name) {
+    // GET /room/updateName, the hub's rename that carries no device list, so it cannot undo a device
+    // change made meanwhile. The hub answers {success, message}. Returns null or a structured failure.
     def raw
     try {
         raw = hubInternalGet("/room/updateName", [id: roomId, name: name])
@@ -210,13 +206,16 @@ def toolUpdateRoom(args) {
     String newName = hasName ? args.name.toString().trim() : null
     if (hasName && !newName) throw new IllegalArgumentException("name must not be blank.")
     List newIds = hasDevices ? _roomDeviceIds(args.deviceIds) : null
+    // A room update reads the room and then saves it; holding this across both keeps one update from
+    // saving over another. It is not WRITE_RESERVATION_LOCK, which every write takes briefly to reserve
+    // its slot and must not wait on a hub request.
     synchronized (ROOM_UPDATE_LOCK) {
         return _updateRoomLocked(args.roomId, newName, newIds)
     }
 }
 
-// newName or newIds is null when that field keeps its value.
 private Map _updateRoomLocked(roomIdArg, String newName, List newIds) {
+    // newName or newIds is null when that field keeps its value.
     Map found = _requireRoom(roomIdArg)
     def room = found.room
     String roomId = room.id.toString()
