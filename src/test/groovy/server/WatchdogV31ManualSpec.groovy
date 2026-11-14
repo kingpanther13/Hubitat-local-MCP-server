@@ -1408,6 +1408,33 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         r.codeAdded == [[type: 'app', id: '846', name: 'A']]
     }
 
+    @Unroll
+    def "adminInstallBundle reads the bundle list again when the install reply is lost (#why)"() {
+        given:
+        boolean installed = false
+        String url = 'https://example.com/throwaway.zip'
+        routeHubGet(['/bundle/list/json': { q -> BundleRecords.listJson(installed ? after : []) },
+                     '/hub2/userAppTypes': { q -> installed ? '[{"id":70,"name":"A"}]' : '[]' },
+                     '/hub2/userDeviceTypes': { q -> '[]' }, '/hub2/userLibraries': { q -> '[]' },
+                     '/bundle2/uploadZipFromUrl': { q -> installed = true; throw new RuntimeException('read timed out') }])
+
+        when:
+        def r = script.adminInstallBundle([importUrl: url, confirm: true])
+
+        then:
+        r.success == false
+        r.bundleId == bundleId
+        r.codeAdded == [[type: 'app', id: '70', name: 'A']]
+        r.note.contains(message)
+        r.note.contains('added to Code during the install')
+        !r.note.contains('no bundle lists it')
+
+        where:
+        why            | after                                | bundleId || message
+        'bundle found' | [BundleRecords.record(id: 7)]        | '7'      || 'appears to have completed'
+        'none found'   | []                                   | null     || 'Check hub_list_bundles before retrying or deleting anything'
+    }
+
     def "adminGetHubLogs parses tab-delimited rows newest-first with a level filter"() {
         given:
         script.metaClass.hubGet = { String p, Map q, int t = 30 ->

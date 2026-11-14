@@ -63,6 +63,9 @@ class ToolBundlesSpec extends ToolSpecBase {
 
     @Shared Map savedFiles = [:]
 
+    // Runs inside stubHub's delete request, before the hub deletes anything.
+    Closure onDelete = null
+
     private static Map libsBundle(Map over = [:]) {
         record([id: 4, name: "mcp_libraries", namespace: "mcp", "private": false, libraryIds: [31, 32],
                 contentReadable: "apps [], drivers [], libraries [McpRoomsLib, McpBundlesLib]"] + over)
@@ -248,7 +251,7 @@ class ToolBundlesSpec extends ToolSpecBase {
         boolean deleted = false
         boolean full = false
         hubGet.register('/bundle/json/4') { params -> deleted ? unknownJson() : recordJson(bundle) }
-        hubGet.register('/bundle/deleteJson/4') { params -> deleted = true; full = params?.full == 'true'; deleteReply }
+        hubGet.register('/bundle/deleteJson/4') { params -> onDelete?.call(); deleted = true; full = params?.full == 'true'; deleteReply }
         Closure gone = { row -> deleted && full && !(row.id.toString() in inUse) &&
             ((bundle.appTypeIds + bundle.libraryIds + bundle.deviceTypeIds)*.toString()).contains(row.id.toString()) }
         hubGet.register('/hub2/userAppTypes') { params -> groovy.json.JsonOutput.toJson(apps.findAll { !gone(it) }) }
@@ -502,6 +505,10 @@ class ToolBundlesSpec extends ToolSpecBase {
         given:
         enableWrite()
         stubHub(fixtureBundle(), targetApps(), sharedLibs(), ['21'] as Set)
+        onDelete = {
+            assert savedFiles.keySet().any { it.contains('mcp-backup-app-11') }
+            assert savedFiles.keySet().any { it.contains('mcp-backup-library-21') }
+        }
 
         when:
         def result = script.toolDeleteBundle([bundleId: "4", deleteCode: true, confirm: true])
@@ -657,7 +664,9 @@ class ToolBundlesSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error.contains("Could not back up library 21")
-        result.note.contains('Nothing was deleted')
+        result.note.contains('Nothing was deleted. backupFiles lists the backups already written.')
+        result.backupFiles.size() == 1
+        result.backupFiles[0].contains('mcp-backup-app-11')
         !deleteSent()
     }
 
@@ -701,6 +710,104 @@ class ToolBundlesSpec extends ToolSpecBase {
         backupIndex.keySet() == ['app_11', 'app_12'] as Set
         result.backupFiles == ['mcp-backup-app-11.groovy', 'mcp-backup-app-12.groovy']
         !hubGet.calls*.key.contains('/app/ajax/code?id=11')
+    }
+
+    def "deleteCode holds the backup lock through the delete, so a competing backup publishes after it and is kept"() {
+        given: 'a 1 MB budget: the bundle\'s two 400 KB backups and a third 400 KB one cannot all be kept'
+        enableWrite()
+        settingsMap.backupBudgetMb = 1
+        long kb400 = 400L * 1024L
+        stubHub(fixtureBundle(appTypeIds: [11, 12], libraryIds: []), targetApps(), [])
+        hubGet.register('/app/ajax/code') { params -> groovy.json.JsonOutput.toJson([status: 'ok', version: 1, source: 'y' * kb400]) }
+
+        and: 'another tool backs up app 99 once the bundle\'s first backup is being written'
+        Map rival = [:]
+        Thread rivalThread = null
+        script.metaClass.uploadHubFile = { String name, byte[] content ->
+            savedFiles[name] = content
+            if (rivalThread == null) {
+                rivalThread = Thread.start {
+                    try { rival.entry = script.backupItemSource('app', '99') } catch (Throwable t) { rival.error = t }
+                }
+            }
+        }
+        boolean rivalWaiting = false
+        Set indexAtDelete = null
+        onDelete = {
+            rivalThread.join(300)
+            rivalWaiting = rivalThread.alive
+            indexAtDelete = backupIndex.keySet()
+        }
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "4", deleteCode: true, confirm: true])
+        rivalThread.join(5000)
+
+        then: 'the rival backup waited through the bundle\'s backups and the delete'
+        rivalWaiting
+        indexAtDelete == ['app_11', 'app_12'] as Set
+        result.success == true
+        result.backupFiles == ['mcp-backup-app-11.groovy', 'mcp-backup-app-12.groovy']
+
+        and: 'it then published, and the file it reports still exists'
+        !rivalThread.alive
+        rival.error == null
+        savedFiles.containsKey(rival.entry.fileName)
+        backupIndex.containsKey('app_99')
+    }
+
+    // Each way deleteCode refuses before it sends the delete.
+    private String arrangeDeleteCodeRefusal(String why) {
+        switch (why) {
+            case 'missingCode':
+                stubHub(fixtureBundle(), targetApps(), [])
+                return 'library 21'
+            case 'unreadable code list':
+                stubHub(fixtureBundle(), targetApps(), sharedLibs())
+                hubGet.register('/hub2/userLibraries') { params -> throw new RuntimeException('HTTP 500') }
+                return 'library code list could not be read'
+            case 'failed source read':
+                stubHub(fixtureBundle(), targetApps(), sharedLibs())
+                hubGet.register('/library/list/single/data/21') { params -> '[]' }
+                return 'Could not read the source of library 21'
+            case 'failed backup':
+                stubHub(fixtureBundle(), targetApps(), sharedLibs())
+                script.metaClass.uploadHubFile = { String name, byte[] content ->
+                    if (name.contains('library')) throw new RuntimeException('disk full')
+                    savedFiles[name] = content
+                }
+                return 'Could not back up library 21'
+            case 'over budget':
+                settingsMap.backupBudgetMb = 1
+                stubHub(fixtureBundle(appTypeIds: [11, 12], libraryIds: []), targetApps(), [])
+                hubGet.register('/app/ajax/code') { params -> groovy.json.JsonOutput.toJson([status: 'ok', version: 1, source: 'x' * (700 * 1024)]) }
+                return 'backup storage budget'
+        }
+        throw new IllegalStateException(why)
+    }
+
+    @Unroll
+    def "a deleteCode refusal via dispatch is an isError result with no delete sent (#why, useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        String expected = arrangeDeleteCodeRefusal(why)
+
+        when:
+        def response = mcpDriver.callTool('hub_delete_bundle', [bundleId: "4", deleteCode: true, confirm: true])
+
+        then:
+        response.jsonrpc == "2.0"
+        response.id == mcpDriver.lastSentId
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error.contains(expected)
+        !deleteSent()
+
+        where:
+        [why, useGateways] << [['missingCode', 'unreadable code list', 'failed source read', 'failed backup', 'over budget'], [true, false]].combinations()
     }
 
     @Unroll

@@ -2319,11 +2319,22 @@ def adminInstallBundle(args) {
                            : "Bundle install failed: the hub returned no success signal. The zip may be malformed or unreachable, or the firmware endpoint unavailable."]
         if (respBody != null) failure.rawResponse = respBody.toString().take(500)
         List notes = []
-        if (respBody == null) notes << "Whether the bundle was installed is unknown. Check hub_list_bundles before retrying."
+        if (respBody == null) {
+            // No reply does not mean the hub stopped: it may have finished, so the list is read again.
+            Map found = _wdInstalledBundle(before, importUrl)
+            if (found.fresh) {
+                failure.bundle = found.bundle
+                failure.bundleId = found.bundle.id
+                notes << "No reply came, but the bundle list read again shows the new bundle from this install (in bundle), so the install appears to have completed."
+            } else {
+                notes << "No reply came, and ${found.read ? 'the bundle list read again shows no new bundle it can tie to this install' : 'the bundle list could not be read'}, so whether the bundle was installed is unknown. Check hub_list_bundles before retrying or deleting anything with hub_delete_item.".toString()
+            }
+        }
         Map added = _wdCodeAdded(codeBefore)
         if (added.items) {
             failure.codeAdded = added.items
-            notes << "The hub added the code in codeAdded to Code before the install failed, and no bundle lists it. Check it before retrying; delete what you do not want with hub_delete_item."
+            notes << (respBody != null ? "The hub added the code in codeAdded to Code before the install failed, and no bundle lists it. Check it before retrying; delete what you do not want with hub_delete_item."
+                : "The code in codeAdded was added to Code during the install.")
         }
         if (added.unverified) notes << "The ${added.unverified.join(' and ')} code list could not be read, so code the install added there is not listed.".toString()
         failure.note = notes.join(" ")
@@ -2332,31 +2343,30 @@ def adminInstallBundle(args) {
     mcpAdminLog "Bundle installed successfully from ${importUrl}"
     def out = [success: true, bundleId: null, endpoint: endpoint, installer: installer,
                message: "Bundle installed from ${importUrl}. Its apps, drivers and libraries are in Code.".toString()]
-    if (before == null) {
-        out.note = "The bundle list could not be read before the install, so the new bundle's id is unknown. hub_list_bundles shows it."
-        return out
+    Map found = _wdInstalledBundle(before, importUrl)
+    if (found.bundle) {
+        out.bundle = found.bundle
+        out.bundleId = found.bundle.id
+    }
+    if (found.note) out.note = found.note
+    return out
+}
+
+// The bundle an install added, from the bundle list read before it and again now: [read, bundle,
+// fresh (a new id, not a reinstall), note].
+Map _wdInstalledBundle(List before, String importUrl) {
+    List after = before == null ? null : _wdBundleRecords()
+    if (after == null) {
+        return [read: false, note: "The bundle list could not be read ${before == null ? 'before' : 'after'} the install, so the new bundle's id is unknown. hub_list_bundles shows it.".toString()]
     }
     Set beforeIds = before.collect { it.id?.toString() }.findAll { it } as Set
-    List after = _wdBundleRecords()
-    if (after == null) {
-        out.note = "The bundle list could not be read after the install, so the new bundle's id is unknown. hub_list_bundles shows it."
-        return out
-    }
     List fresh = after.findAll { it.id != null && !beforeIds.contains(it.id.toString()) }
     List pick = fresh.size() > 1 ? fresh.findAll { it.sourceUrl?.toString() == importUrl } : fresh
-    boolean reinstalled = false
-    if (fresh.isEmpty()) {
-        pick = after.findAll { it.id != null && it.sourceUrl?.toString() == importUrl }
-        reinstalled = true
-    }
-    if (pick.size() == 1) {
-        out.bundle = _wdBundleView(pick[0] as Map)
-        out.bundleId = out.bundle.id
-        if (reinstalled) out.note = "The bundle installed from this URL was already on the hub; the install updated it and it kept its id."
-    } else {
-        out.note = "No single new bundle appeared, and no single bundle was installed from this URL. hub_list_bundles shows it."
-    }
-    return out
+    // Reinstalling a bundle keeps its id: with nothing new, the bundle installed from this URL is the one.
+    if (fresh.isEmpty()) pick = after.findAll { it.id != null && it.sourceUrl?.toString() == importUrl }
+    if (pick.size() != 1) return [read: true, note: "No single new bundle appeared, and no single bundle was installed from this URL. hub_list_bundles shows it."]
+    return [read: true, bundle: _wdBundleView(pick[0] as Map), fresh: !fresh.isEmpty(),
+            note: fresh ? null : "The bundle installed from this URL was already on the hub; the install updated it and it kept its id."]
 }
 
 // _firmwareAtLeast: copied VERBATIM from hubitat-mcp-server.groovy (numeric

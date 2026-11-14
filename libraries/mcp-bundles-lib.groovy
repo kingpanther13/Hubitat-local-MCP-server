@@ -289,11 +289,22 @@ private Map _installBundle(String url, boolean installer) {
         def failure = [success: false, error: r.error, endpoint: r.endpoint, lastBackup: lastBackup]
         List notes = []
         if (r.raw != null) failure.rawResponse = r.raw.toString().take(500)
-        else notes << "Whether the bundle was installed is unknown. Check hub_list_bundles before retrying."
+        else {
+            // No reply does not mean the hub stopped: it may have finished, so the list is read again.
+            Map found = _installedBundle(beforeRecords, url)
+            if (found.fresh) {
+                failure.bundle = found.bundle
+                failure.bundleId = found.bundle.id
+                notes << "No reply came, but the bundle list read again shows the new bundle from this install (in bundle), so the install appears to have completed."
+            } else {
+                notes << "No reply came, and ${found.read ? 'the bundle list read again shows no new bundle it can tie to this install' : 'the bundle list could not be read'}, so whether the bundle was installed is unknown. Check hub_list_bundles before retrying or deleting anything with hub_delete_item."
+            }
+        }
         Map added = _bundleCodeAdded(codeBefore)
         if (added.items) {
             failure.codeAdded = added.items
-            notes << "The hub added the code in codeAdded to Code before the install failed, and no bundle lists it. Check it before retrying; delete what you do not want with hub_delete_item(type, item_id)."
+            notes << (r.raw != null ? "The hub added the code in codeAdded to Code before the install failed, and no bundle lists it. Check it before retrying; delete what you do not want with hub_delete_item(type, item_id)."
+                : "The code in codeAdded was added to Code during the install.")
         }
         if (added.unverified) {
             String unread = "The ${added.unverified.join(' and ')} code list could not be read, so code the install added there is not listed; check hub_list_apps(scope='types'), hub_list_drivers or hub_list_libraries."
@@ -305,23 +316,30 @@ private Map _installBundle(String url, boolean installer) {
 
     String message = "Bundle installed from ${url}. Its apps, drivers and libraries are in Code."
     def out = [success: true, bundleId: null, endpoint: r.endpoint, installer: installer, lastBackup: lastBackup, message: message]
-    List after = beforeRecords == null ? null : _readBundleList().records
-    String note = "The bundle list could not be read ${beforeRecords == null ? 'before' : 'after'} the install, so the new bundle's id is unknown. hub_list_bundles shows it."
-    if (after != null) {
-        List beforeIds = beforeRecords*.id*.toString()
-        List fromUrl = after.findAll { it.id != null && it.sourceUrl?.toString() == url }
-        List fresh = after.findAll { it.id != null && !beforeIds.contains(it.id.toString()) }
-        // Reinstalling a bundle keeps its id: with nothing new, the bundle installed from this URL is the one.
-        List pick = fresh.size() == 1 ? fresh : (fresh ? fresh.intersect(fromUrl) : fromUrl)
-        note = pick.size() == 1 ? (fresh ? null : "The bundle installed from this URL was already on the hub; the install updated it and it kept its id.")
-            : "No single new bundle appeared, and no single bundle was installed from this URL. hub_list_bundles shows it."
-        if (pick.size() == 1) {
-            out.bundle = _bundleView(pick[0])
-            out.bundleId = out.bundle.id
-        }
+    Map found = _installedBundle(beforeRecords, url)
+    if (found.bundle) {
+        out.bundle = found.bundle
+        out.bundleId = found.bundle.id
     }
-    if (note) out.note = note
+    if (found.note) out.note = found.note
     return out
+}
+
+// The bundle an install added, from the bundle list read before it and again now: [read, bundle,
+// fresh (a new id, not a reinstall), note].
+private Map _installedBundle(List beforeRecords, String url) {
+    List after = beforeRecords == null ? null : _readBundleList().records
+    if (after == null) {
+        return [read: false, note: "The bundle list could not be read ${beforeRecords == null ? 'before' : 'after'} the install, so the new bundle's id is unknown. hub_list_bundles shows it."]
+    }
+    List beforeIds = beforeRecords*.id*.toString()
+    List fromUrl = after.findAll { it.id != null && it.sourceUrl?.toString() == url }
+    List fresh = after.findAll { it.id != null && !beforeIds.contains(it.id.toString()) }
+    // Reinstalling a bundle keeps its id: with nothing new, the bundle installed from this URL is the one.
+    List pick = fresh.size() == 1 ? fresh : (fresh ? fresh.intersect(fromUrl) : fromUrl)
+    if (pick.size() != 1) return [read: true, note: "No single new bundle appeared, and no single bundle was installed from this URL. hub_list_bundles shows it."]
+    return [read: true, bundle: _bundleView(pick[0]), fresh: !fresh.isEmpty(),
+            note: fresh ? null : "The bundle installed from this URL was already on the hub; the install updated it and it kept its id."]
 }
 
 // type -> [id: name] from the lists behind hub_list_apps(scope='types') / hub_list_drivers /
@@ -386,17 +404,20 @@ Map _deleteBundleItem(String id, boolean deleteCode) {
     String name = view.name
     String label = "Bundle ${id} ('${name}')"
 
-    List items = []
-    List backupFiles = []
-    if (deleteCode) {
-        Map plan = _bundleDeletePlan(id, label, view)
-        if (plan.refusal) return plan.refusal
-        items = plan.items
-        plan = _backupBundleCode(id, label, items)
-        if (plan.refusal) return plan.refusal
-        backupFiles = plan.files
+    if (!deleteCode) return _sendBundleDelete(id, name, label, [], null)
+    Map plan = _bundleDeletePlan(id, label, view)
+    if (plan.refusal) return plan.refusal
+    // Held from the first backup through the delete: released in between, another tool's backup
+    // could publish between this set's backups and be evicted by this set's protected publish.
+    return _withBackupLock("delete bundle ${id} with its code") {
+        Map backup = _backupBundleCode(id, label, plan.items)
+        backup.refusal ?: _sendBundleDelete(id, name, label, plan.items, backup.files)
     }
+}
 
+// The delete request itself, with deleteCode when backupFiles is not null.
+Map _sendBundleDelete(String id, String name, String label, List items, List backupFiles) {
+    boolean deleteCode = backupFiles != null
     mcpLog("warn", "hub-admin", "Deleting bundle ${id} (${name}, deleteCode: ${deleteCode})")
     String failure = null
     String responseText = null
@@ -475,7 +496,7 @@ private Map _bundleRefusal(String id, error, String note, Map extra = null) {
 // Back up every item before anything is deleted. Each backup is protected from retention until
 // the delete has run, and the set is refused up front when it alone would exceed the backup
 // budget, since retention could then keep it only by going over budget.
-private Map _backupBundleCode(String id, String label, List items) {
+Map _backupBundleCode(String id, String label, List items) {
     if (!items) return [files: []]
     Map manifest
     try {
@@ -523,7 +544,7 @@ private Map _backupBundleCode(String id, String label, List items) {
             if (unavailable != null) return [refusal: _bundleRefusal(id, unavailable.error, unavailable.note, [backupFiles: files])]
             String why = "Could not back up ${type} ${codeId} ('${item.name}'): ${backupErr.message}"
             mcpLog("warn", "hub-admin", "Bundle ${id}: ${why}")
-            return [refusal: _bundleRefusal(id, why, "Nothing was deleted.", [backupFiles: files])]
+            return [refusal: _bundleRefusal(id, why, "Nothing was deleted. backupFiles lists the backups already written.", [backupFiles: files])]
         }
     }
     return [files: files]

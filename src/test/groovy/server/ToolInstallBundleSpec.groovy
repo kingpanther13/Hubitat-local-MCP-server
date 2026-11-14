@@ -477,6 +477,107 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         result.note.contains('unknown')
     }
 
+    // The hub installs the bundle and its app, but the reply never arrives.
+    private void stubLostReply(List after) {
+        boolean installed = false
+        hubGet.register('/bundle/list/json') { params -> listJson(installed ? after : []) }
+        hubGet.register('/hub2/userAppTypes') { params -> JsonOutput.toJson(installed ? [[id: 50, name: 'Target']] : []) }
+        hubGet.register('/hub2/userDeviceTypes') { params -> '[]' }
+        hubGet.register('/hub2/userLibraries') { params -> '[]' }
+        hubGet.register('/bundle2/uploadZipFromUrl') { params -> installed = true; throw new RuntimeException('read timed out') }
+    }
+
+    def "a lost reply reads the bundle list again and reports the bundle the install added"() {
+        given:
+        enableWrite()
+        modernHub()
+        stubLostReply([bundleRow(5)])
+
+        when:
+        def result = createBundle()
+
+        then:
+        result.success == false
+        result.error.contains('read timed out')
+        result.bundleId == '5'
+        result.bundle.name == 'Throwaway'
+        result.codeAdded == [[type: 'app', id: '50', name: 'Target']]
+        result.note.contains('appears to have completed')
+        result.note.contains('added to Code during the install')
+        !result.note.contains('no bundle lists it')
+        hubGet.calls*.path.count { it == '/bundle/list/json' } == 2
+    }
+
+    def "a lost reply with no new bundle in the list read again points at hub_list_bundles before any delete"() {
+        given:
+        enableWrite()
+        modernHub()
+        stubLostReply([])
+
+        when:
+        def result = createBundle()
+
+        then:
+        result.success == false
+        result.bundleId == null
+        !result.containsKey('bundle')
+        result.codeAdded == [[type: 'app', id: '50', name: 'Target']]
+        result.note.contains('shows no new bundle it can tie to this install')
+        result.note.contains('Check hub_list_bundles before retrying or deleting anything with hub_delete_item')
+        !result.note.contains('no bundle lists it')
+        hubGet.calls*.path.count { it == '/bundle/list/json' } == 2
+    }
+
+    @Unroll
+    def "a lost reply via dispatch is an isError result that carries the bundle found (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        modernHub()
+        stubLostReply([bundleRow(5)])
+
+        when:
+        def response = mcpDriver.callTool('hub_install_bundle', [importUrl: BUNDLE_URL, confirm: true])
+
+        then:
+        response.jsonrpc == "2.0"
+        response.id == mcpDriver.lastSentId
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.bundleId == '5'
+        inner.note.contains('appears to have completed')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @Unroll
+    def "hub_install_bundle via dispatch refuses a bad #arg before any hub call (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+
+        when:
+        def response = mcpDriver.callTool('hub_install_bundle', [importUrl: BUNDLE_URL, confirm: true] + [(arg): value])
+
+        then:
+        response.jsonrpc == "2.0"
+        response.id == mcpDriver.lastSentId
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains(message)
+        hubGet.calls.isEmpty()
+
+        where:
+        useGateways | arg         | value              | message
+        true        | 'importUrl' | '   '              | 'importUrl is required'
+        false       | 'importUrl' | '   '              | 'importUrl is required'
+        true        | 'importUrl' | 'ftp://host/x.zip' | 'scheme must be http or https'
+        false       | 'importUrl' | 'ftp://host/x.zip' | 'scheme must be http or https'
+        true        | 'installer' | 'yes'              | 'installer must be true or false'
+        false       | 'installer' | 'yes'              | 'installer must be true or false'
+    }
+
     // -------- the shared helper --------
 
     def "_installBundleFromUrl never throws and reports the endpoint it used"() {
