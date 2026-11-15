@@ -287,7 +287,7 @@ The `sandbox-lint` workflow runs the builder in-PR as a build smoke, and `groovy
 ### BP20 — library file hygiene (avoids a Hubitat parser `Internal error`)
 
 - The `library(...)` declaration MUST be the **first line** of the file. **Zero file-scope commentary before it.**
-- Keep comments **inside method bodies**. Avoid file-scope `/* */` / `/** */` blocks and any file-scope comment containing the literal text `library(` or `/* */` — these can fail the hub's parser on save.
+- After the `library(...)` line, comments may go anywhere, `//` or `/* */`. When a library is saved the hub drops `//` comments and reads the first `library` it finds as the declaration, so a `/* */` block containing that word above the declaration fails the save with `Cannot parse library definition`. Keeping the declaration on line 1 (the bullet above) rules that out.
 - Use **string-literal** handler names for `subscribe`/`schedule` (never bare identifiers).
 - Do NOT move `preferences {}`, `mappings {}`, or any **file-scope** closure into a library (root-level DSL / unverified closure binding under `#include`). Method-scoped closures travel with their enclosing method through the include system.
 
