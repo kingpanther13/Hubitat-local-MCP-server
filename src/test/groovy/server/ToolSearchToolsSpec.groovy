@@ -97,7 +97,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
 
         then:
         room != null
-        room.description.contains('Manage hub rooms: list, view details, create, delete, and rename rooms.')
+        room.description.contains("Manage hub rooms by id: list, read one, create, rename or set a room's devices, and delete.")
         room.description.endsWith('[' + (gateway.description.split('\\n\\n')[0] - (script.guideFirstSentence() + ' ')) + ']')
     }
 

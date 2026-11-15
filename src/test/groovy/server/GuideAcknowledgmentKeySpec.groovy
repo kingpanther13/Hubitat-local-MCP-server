@@ -102,7 +102,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
 
         where:
         section << ['best_practice_reference', 'set_rule_reference', 'hub_admin_write_devices',
-                    'builtin_app_tools_crud', 'hub_admin_write_radios']
+                    'builtin_app_tools_crud', 'hub_admin_write_radios', 'rooms']
     }
 
     def "a parent serves one named key per gated sub-section -- #parent"() {
@@ -127,8 +127,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         script.toolGetToolGuide(section).content == rawBody(section)
 
         where:
-        section << ['tool_access', 'performance', 'performance_overview', 'rooms',
-                    'device_authorization']
+        section << ['tool_access', 'performance', 'performance_overview', 'device_authorization']
     }
 
     def "a gated admin sub-section serves its own key -- #section"() {
