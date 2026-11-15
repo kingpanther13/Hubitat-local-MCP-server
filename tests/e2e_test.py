@@ -5523,7 +5523,7 @@ class TestRunner:
         listed = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_list_dashboards", "args": {}})
         assert isinstance(listed, dict) and listed.get("success") is not False, \
             f"hub_list_dashboards failed: {listed}"
-        assert listed.get("partial") is not True, \
+        assert listed.get("partial") is not True and not listed.get("response_too_large"), \
             f"hub_list_dashboards returned an incomplete inventory, so the no-write check cannot run: {listed}"
         return {str(d["id"]) for d in (listed.get("dashboards", []) or []) if d.get("id")}
 

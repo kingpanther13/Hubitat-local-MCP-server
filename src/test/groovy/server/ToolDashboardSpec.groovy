@@ -2976,13 +2976,24 @@ class ToolDashboardSpec extends ToolSpecBase {
         assert firstReadEntered.await(10, java.util.concurrent.TimeUnit.SECONDS)
         def second = new Thread(update(2))
         second.start()
-        Thread.sleep(300)
+        // Wait until the second worker is parked on the update lock (or has finished, which only
+        // happens without the lock), instead of assuming it got scheduled within a fixed delay.
+        def mx = java.lang.management.ManagementFactory.getThreadMXBean()
+        int lockHash = System.identityHashCode(script.DASHBOARD_UPDATE_LOCK)
+        def onUpdateLock = { ->
+            def info = mx.getThreadInfo(second.id)
+            info?.threadState == Thread.State.BLOCKED && info.lockInfo?.identityHashCode == lockHash
+        }
+        long deadline = System.currentTimeMillis() + 10000
+        while (!onUpdateLock() && second.isAlive() && System.currentTimeMillis() < deadline) Thread.sleep(5)
+        boolean secondBlockedOnLock = onUpdateLock()
         int readsWhilePaused = reads.get()
         release.countDown()
         first.join(10000)
         second.join(10000)
 
-        then: 'the second could not read the layout until the first had saved'
+        then: 'the second waited on the update lock and could not read the layout until the first had saved'
+        secondBlockedOnLock
         readsWhilePaused == 1
         reads.get() == 2
 
