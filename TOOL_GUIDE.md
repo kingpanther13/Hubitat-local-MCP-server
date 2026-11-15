@@ -1511,7 +1511,7 @@ Read-only; each entry carries `id`, `name`, and `type`. Easy entries also carry 
 
 ### hub_get_dashboard
 
-Read-only. For an Easy Dashboard: tiles, navigation, theme, devices, PINs, and `localOnly`. For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). This is the read `hub_update_dashboard` takes straight back.
+Read-only. For an Easy Dashboard: tiles, navigation, theme, devices, PINs, and `localOnly`. For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). This is the read `hub_update_dashboard` takes back: `name` and `deviceIds` go top level, and an Easy dashboard's config fields (tile toggles, `navigationSelection`, `theme`, PINs, `localOnly`) go inside `options`; sent top level they are refused as unknown arguments.
 
 - PINs read `***redacted (password)***` while Hide passwords and credentials is on; passing that back to `hub_update_dashboard` keeps the stored PIN.
 - A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
@@ -1522,7 +1522,7 @@ Write op. `type` selects the kind: `easy` (default) or `legacy`.
 
 **Pre-flight:** 1) verify the `deviceIds` exist with `hub_list_devices` (for a copy, verify `sourceId` with `hub_list_dashboards`); 2) tell the user what will be created.
 
-- **Easy** — needs >=1 device. Tiles default off; theme defaults to `legacy` (the theme name, unrelated to the dashboard kind). The hub's create turns `showEdit` and `showNavigation` on whatever it is sent, so when either is off (omitted counts as off) the create is followed by an update that turns it off; the result lists them in `offAfterCreate`. If that update fails, the result is still `success: true` with the new `id` and a warning naming the two settings; set them with `hub_update_dashboard`.
+- **Easy** — needs >=1 device. The tile toggles (`showModeTile`, `showClockTile`, `showCalendarTile`, `showHSMTile`, `showTutorial`) default off; `showEdit` and `showNavigation` default on, the hub's own default; theme defaults to `legacy` (the theme name, unrelated to the dashboard kind). The hub's create turns `showEdit` and `showNavigation` on whatever it is sent, so when either is set to `false` the create is followed by an update that turns it off; the result lists them in `offAfterCreate`. If that update fails, the result is still `success: true` with the new `id` and a warning naming the two settings; set them with `hub_update_dashboard`.
 
   **`options` (optional config object):**
   - `showModeTile`, `showClockTile`, `showCalendarTile`, `showHSMTile` (bool)
@@ -1534,7 +1534,7 @@ Write op. `type` selects the kind: `easy` (default) or `legacy`.
   - `localOnly` (bool) — the "Local access only" setting; left as the hub's default when omitted on create
 - **Legacy** (`type: "legacy"`) — creates the dashboard with an EMPTY layout (no tiles). `name` is required; `deviceIds` is OPTIONAL and sets the dashboard's authorized-device list (NOT tiles). The `options` arg is REJECTED (Easy-only) — a legacy dashboard's look lives in its layout, set via `hub_update_dashboard` after creation. Requires the built-in "Hubitat® Dashboard" app (installed automatically through Add Built-In App when missing).
 - **MCP device selection:** while Bypass Device Allowlist is off, every id in `deviceIds` must be a device selected in the MCP app's device list (or a device this app created); otherwise the call is refused before anything is written, naming the ids. A copy is checked the same way against the source's devices. Select the devices, or turn on Bypass Device Allowlist.
-- **Copy** (`sourceId`) — copies an existing dashboard by value; the source is never touched. An Easy copy takes the source's devices and config (PINs and `localOnly` included; `showEdit` / `showNavigation` that are off are set by the follow-up update described above); when the hub's dashboard list is unreadable the source's theme can't be read, so the copy gets the default theme and the result carries a warning. A legacy copy is a new legacy dashboard with the same authorized devices, then the source's layout saved into it. Only `name` may accompany `sourceId` (default `"<source name> (copy)"`); `type`, `deviceIds` and `options` are rejected — change the copy afterwards with `hub_update_dashboard`. The result carries the new `id` and the `sourceId`; a legacy copy whose layout could not be written returns `success: false` with the new `id`, so the layout can be re-applied.
+- **Copy** (`sourceId`) — copies an existing dashboard by value; the source is never touched. An Easy copy takes the source's devices and config (PINs and `localOnly` included; `showEdit` / `showNavigation` that are off are set by the follow-up update described above, and take the default when the source's value can't be read); when the hub's dashboard list is unreadable the source's theme can't be read, so the copy gets the default theme and the result carries a warning. A legacy copy is a new legacy dashboard with the same authorized devices, then the source's layout saved into it. Only `name` may accompany `sourceId` (default `"<source name> (copy)"`); `type`, `deviceIds` and `options` are rejected — change the copy afterwards with `hub_update_dashboard`. The result carries the new `id` and the `sourceId`; a legacy copy whose layout could not be written returns `success: false` with the new `id`, so the layout can be re-applied.
 
 ### hub_update_dashboard
 
@@ -1543,8 +1543,8 @@ Update by id; the behavior depends on the dashboard's kind.
 **Pre-flight:** 1) read the dashboard with `hub_get_dashboard` to confirm the target id and its current config (an Easy update is wholesale); 2) tell the user what will change.
 
 **Easy Dashboard** — wholesale config replace:
-- **Read `hub_get_dashboard` first** and pass the FULL config back; this is a wholesale replace, not a partial patch. `name` and `deviceIds` (>=1) are required; any omitted field reverts to its default, except an omitted PIN or `localOnly`, which is read and re-sent (the result flags `pinPreserveFailed` / `localOnlyPreserveFailed` when it could not be read). Pass `dashboardPin: ""` or `hsmPin: ""` to clear a PIN.
-- `options`: same keys as `hub_create_dashboard.options`.
+- **Read `hub_get_dashboard` first** and pass the FULL config back; this is a wholesale replace, not a partial patch. `name` and `deviceIds` (>=1) are required; any omitted field reverts to its default (see `hub_create_dashboard`), except an omitted PIN or `localOnly`, which is read and re-sent (the result flags `pinPreserveFailed` / `localOnlyPreserveFailed` when it could not be read). Pass `dashboardPin: ""` or `hsmPin: ""` to clear a PIN.
+- `options`: same keys as `hub_create_dashboard.options`. Every config field goes inside `options`; only `name` and `deviceIds` are top level.
 - Passing any legacy-only arg (`layout`, `setOptions`, `addTiles`, `updateTiles`, `removeTileIds`) at an Easy Dashboard is rejected.
 
 **Legacy Hubitat® Dashboard** — edit the label, devices, and/or layout:

@@ -459,10 +459,10 @@ class ToolDashboardSpec extends ToolSpecBase {
         got.hsmPin == '2222'
         got.navigationSelection == '5,6'
 
-        when: 'round-trip: pass the get output (flattened) back through update'
+        when: 'round-trip: pass the get output back through update, config fields inside options'
         script.toolUpdateDashboard([dashboardId: got.id, name: got.name, deviceIds: '12,34',
-                                    dashboardPin: got.dashboardPin, hsmPin: got.hsmPin,
-                                    navigationSelection: got.navigationSelection])
+                                    options: [dashboardPin: got.dashboardPin, hsmPin: got.hsmPin,
+                                              navigationSelection: got.navigationSelection]])
 
         then: 'the pins are preserved (not cleared) and nav stays CSV'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
@@ -490,7 +490,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         got.navigationSelection == '1,2'
 
         when: 'round-trip: feed the get output back through update'
-        script.toolUpdateDashboard([dashboardId: got.id, name: got.name, deviceIds: ['14'], navigationSelection: got.navigationSelection])
+        script.toolUpdateDashboard([dashboardId: got.id, name: got.name, deviceIds: ['14'], options: [navigationSelection: got.navigationSelection]])
 
         then: 'update sends a CSV the hub parses correctly, so nav survives the get->update round-trip'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
@@ -518,20 +518,26 @@ class ToolDashboardSpec extends ToolSpecBase {
         call.params.showClockTile == 'false'
     }
 
-    def "create also accepts the tile toggles flattened at the top level (back-compat)"() {
+    def "#tool refuses config fields sent top level instead of inside options, before any write"() {
         given:
         enableWrite()
 
-        when: 'config supplied flat (not under options) -- the fallback path'
-        script.toolCreateDashboard([name: 'New Dash', deviceIds: ['12'], showModeTile: true, theme: 'dark'])
+        when:
+        script.executeTool(tool, args)
 
         then:
-        def call = hubGet.calls.find { it.path == '/dashboard/create' }
-        call.params.showModeTile == 'true'
-        call.params.theme == 'dark'
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("Unknown ${tool} argument")
+        e.message.contains('showModeTile')
+        !hubGet.calls.any { it.path in ['/dashboard/create', '/dashboard/update'] }
+
+        where:
+        tool                   | args
+        'hub_create_dashboard' | [name: 'New Dash', deviceIds: ['12'], showModeTile: true, theme: 'dark']
+        'hub_update_dashboard' | [dashboardId: '412', name: 'Den', deviceIds: ['12'], showModeTile: true, dashboardPin: '1']
     }
 
-    def "create defaults theme to legacy and omitted booleans to false"() {
+    def "create defaults theme to legacy, omitted tile toggles to false, and omitted showEdit/showNavigation to the hub's on"() {
         given:
         enableWrite()
 
@@ -542,7 +548,12 @@ class ToolDashboardSpec extends ToolSpecBase {
         def call = hubGet.calls.find { it.path == '/dashboard/create' }
         call.params.theme == 'legacy'
         call.params.showHSMTile == 'false'
-        call.params.showNavigation == 'false'
+        call.params.showTutorial == 'false'
+        call.params.showEdit == 'true'
+        call.params.showNavigation == 'true'
+
+        and: 'both are on, so no follow-up update is needed'
+        !hubGet.calls.any { it.path == '/dashboard/update' }
         call.params.navigationSelection == ''
         call.params.dashboardPin == ''
         call.params.hsmPin == ''
@@ -553,7 +564,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolCreateDashboard([name: 'New Dash', deviceIds: ['12'], navigationSelection: ['5', '6']])
+        script.toolCreateDashboard([name: 'New Dash', deviceIds: ['12'], options: [navigationSelection: ['5', '6']]])
 
         then:
         def call = hubGet.calls.find { it.path == '/dashboard/create' }
@@ -755,7 +766,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         when: 'the masked PINs from a read are passed back'
         script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'],
-                                    dashboardPin: '***redacted (password)***', options: [hsmPin: '***redacted (password)***']])
+                                    options: [dashboardPin: '***redacted (password)***', hsmPin: '***redacted (password)***']])
 
         then: 'the stored PINs are re-sent, not the marker'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
@@ -822,7 +833,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], dashboardPin: '9999'])
+        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [dashboardPin: '9999']])
 
         then: 'the new dashboardPin is sent and the omitted hsmPin is preserved (not cleared)'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
@@ -2788,7 +2799,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         settingsMap.bypassDeviceAllowlist = true
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Den', deviceIds: ['700'], dashboardPin: '1', hsmPin: '2', options: [localOnly: false]])
+        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Den', deviceIds: ['700'], options: [dashboardPin: '1', hsmPin: '2', localOnly: false]])
 
         then:
         r.success == true
@@ -2921,7 +2932,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         where:
         [tool, args, bypass, gatewayMode] << [
-            ['hub_create_dashboard', [name: 'Patio', deviceIds: ['12', '56'], options: [showEdit: true, showNavigation: true]]],
+            ['hub_create_dashboard', [name: 'Patio', deviceIds: ['12', '56']]],
             ['hub_update_dashboard', [dashboardId: '412', name: 'Den', deviceIds: ['12', '56'], options: [dashboardPin: '', hsmPin: '']]],
             ['hub_update_dashboard', [dashboardId: '700', deviceIds: ['12', '56']]]
         ].collectMany { row -> [[false, true], [true, false]].combinations().collect { row + it } }
@@ -3124,7 +3135,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Den', deviceIds: ['12'], dashboardPin: '', hsmPin: ''])
+        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Den', deviceIds: ['12'], options: [dashboardPin: '', hsmPin: '']])
 
         then:
         r.success == true
@@ -3293,7 +3304,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/412') { params ->
             JsonOutput.toJson([installedApp: [id: 412, name: 'Easy Dashboard v2', systemAppType: true, label: 'Living Room'], appSettings: [], appState: []])
         }
-        def args = [dashboardId: '412', name: 'Den', deviceIds: ['12'], dashboardPin: '', hsmPin: '', options: [localOnly: false]]
+        def args = [dashboardId: '412', name: 'Den', deviceIds: ['12'], options: [dashboardPin: '', hsmPin: '', localOnly: false]]
 
         when:
         def listed = script.toolUpdateDashboard(args)
@@ -3424,6 +3435,124 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.layout.tiles.size() == 2
         hubGet.calls.count { it.path == '/installedapp/statusJson/700' } == 1
         hubGet.calls.find { it.path == '/apps/api/700/dashboard/700/layout' }.params.access_token == 'tok-700'
+    }
+
+    // ---------- unreadable vs empty device lists ----------
+
+    // statusJson for legacy 700 with the given appSettings value (absent when the key is omitted).
+    private void registerLegacyStatusSettings(Map extra) {
+        hubGet.register('/installedapp/statusJson/700') { params ->
+            JsonOutput.toJson([installedApp: [id: 700, name: 'Dashboard', systemAppType: true, label: 'Kitchen'],
+                               appState: [[name: 'accessToken', value: 'tok-700']]] + extra)
+        }
+    }
+
+    def "legacy update with the bypass off refuses a drop when the device list is unreadable: #label"() {
+        given:
+        enableWrite()
+        selectOnly([100])
+        registerLegacyStatusSettings(extra)
+        def forms = captureFormPosts()
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700', deviceIds: ['100']])
+
+        then:
+        r.success == false
+        r.error.contains('MCP device selection')
+        r.applied == []
+        forms.isEmpty()
+
+        where:
+        label                              | extra
+        'no appSettings key'               | [:]
+        'appSettings is not a list'        | [appSettings: [devicesPicked: [100, 600]]]
+        'devicesPicked entry is malformed' | [appSettings: [[name: 'devicesPicked', deviceIdsForDeviceList: [bad: 1]]]]
+    }
+
+    def "Easy update with the bypass off refuses a drop when devicesPicked is not a map"() {
+        given:
+        enableWrite()
+        selectOnly([100])
+        hubGet.register('/installedapp/configure/json/412') { params ->
+            new JsonSlurper().parseText(easyConfigJson('Living Room')).with { m -> m.settings.devicesPicked = '600,100'; JsonOutput.toJson(m) }
+        }
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Den', deviceIds: ['100']])
+
+        then:
+        r.success == false
+        r.error.contains('MCP device selection')
+        !hubGet.calls.any { it.path == '/dashboard/update' }
+    }
+
+    // ---------- showEdit / showNavigation defaults ----------
+
+    def "an omitted showEdit/showNavigation is sent as on by update and by a copy whose source lacks them"() {
+        given: 'the copy source comes from the child-app fallback, whose config has neither key'
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/412') { params -> easyConfigJson('Living Room') }
+        hubGet.register('/dashboard/all') { params -> '[]' }
+        hubGet.register('/hub2/appsList') { params ->
+            '{"apps":[{"data":{"id":19,"name":"Easy Dashboards","type":"Easy Dashboard Parent"},' +
+            '"children":[{"data":{"id":38,"name":"Dashboard 1","type":"Easy Dashboard"},"children":[]}]}]}'
+        }
+        hubGet.register('/installedapp/configure/json/38') { params ->
+            new JsonSlurper().parseText(easyConfigJson('Dashboard 1', [devicesPicked: ['8': 'Lamp']])).with { m ->
+                m.settings.remove('showEdit'); m.settings.remove('showNavigation'); JsonOutput.toJson(m)
+            }
+        }
+
+        when:
+        script.toolUpdateDashboard([dashboardId: '412', name: 'Den', deviceIds: ['12']])
+        def copy = script.toolCreateDashboard([sourceId: '38'])
+
+        then:
+        def upd = hubGet.calls.find { it.path == '/dashboard/update' }
+        upd.params.showEdit == 'true' && upd.params.showNavigation == 'true'
+        def create = hubGet.calls.find { it.path == '/dashboard/create' }
+        create.params.showEdit == 'true' && create.params.showNavigation == 'true'
+        copy.success == true
+        !copy.containsKey('offAfterCreate')
+        hubGet.calls.count { it.path == '/dashboard/update' } == 1
+    }
+
+    // ---------- a requestToken mint that throws ----------
+
+    def "update legacy: a wholesale layout whose requestToken mint throws says it was not saved and names LAN access"() {
+        given:
+        enableWrite()
+        registerLegacyStatus('700', [localAccess: false])
+        hubGet.register('/apps/api/700/dashboard/700') { params -> throw new RuntimeException('page render failed') }
+        def posts = captureLayoutPosts()
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700', layout: LEGACY_LAYOUT])
+
+        then:
+        r.success == false
+        r.error.contains('the layout was not saved')
+        r.note.contains("'Allow LAN access' disabled")
+        !r.note.contains('may be unchanged')
+        posts.isEmpty()
+    }
+
+    def "update legacy: a wholesale layout save with no echo names the whole-layout rule and LAN access"() {
+        given:
+        enableWrite()
+        registerLegacyStatus('700', [localAccess: false])
+        registerLegacyMint('700')
+        script.metaClass.hubInternalPostJson = { String p, String body, int t = 420, boolean r = false, Map q = null -> [error: true] }
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700', layout: [cols: 6, rows: 4, tiles: []]])
+
+        then:
+        r.success == false
+        r.error.contains('outcome unconfirmed')
+        r.note.contains('the whole object hub_get_dashboard returns')
+        r.note.contains("'Allow LAN access' disabled")
     }
 
 }

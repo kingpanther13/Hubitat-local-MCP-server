@@ -3389,13 +3389,13 @@ class TestRunner:
         info = self.client.call_tool("hub_get_info", {})
         return ((info.get("mcpClient") or {}).get("client") or {}).get("source")
 
-    def _expect_tool_refusal(self, name: str, args: dict, needle: str) -> None:
-        """A refusal that fires before anything is written: an isError carrying `needle`."""
+    def _expect_tool_refusal(self, name: str, args: dict, needle: str) -> str:
+        """A refusal that fires before anything is written: an isError carrying `needle`. Returns its text."""
         try:
             result = self.client.call_tool(name, args)
         except McpToolError as exc:
             assert needle in str(exc), f"{name} refused, but not with {needle!r}: {exc}"
-            return
+            return str(exc)
         raise AssertionError(f"{name} must refuse {args} with {needle!r}, got: {str(result)[:400]}")
 
     def _call_health_probe(self, args: dict) -> dict:
@@ -5555,14 +5555,14 @@ class TestRunner:
         assert self._dashboard_ids() == ids_before_create, \
             "hub_create_dashboard(version=...) was refused but a dashboard was created anyway"
 
-        # CREATE. showEdit and showNavigation are omitted (off), which the hub's create ignores, so
-        # the tool follows with an update that turns them off.
+        # CREATE. showEdit is off, which the hub's create ignores, so the tool follows with an update
+        # that turns it off; the omitted showNavigation takes the hub's default (on).
         cw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_create_dashboard",
                 "args": {"name": dash_name, "deviceIds": [str(switch_id)],
                          "options": {"showClockTile": True, "theme": "dark", "dashboardPin": "4321",
-                                     "localOnly": True}},
+                                     "localOnly": True, "showEdit": False}},
             }),
             lambda: self._find_dashboard_id_by_name(dash_name),
             "create dashboard",
@@ -5578,8 +5578,8 @@ class TestRunner:
             # provisions the Easy Dashboard parent as a documented precondition.
             assert isinstance(resp, dict), f"hub_create_dashboard returned non-dict: {resp}"
             assert resp.get("success") is not False, f"hub_create_dashboard failed: {resp.get('error')}"
-            assert resp.get("offAfterCreate") == ["showEdit", "showNavigation"] and not resp.get("warnings"), \
-                f"the create did not report turning showEdit/showNavigation off: {resp}"
+            assert resp.get("offAfterCreate") == ["showEdit"] and not resp.get("warnings"), \
+                f"the create did not report turning showEdit off: {resp}"
             dash_id = self._find_dashboard_id_by_name(dash_name)
             if not dash_id and resp.get("id"):
                 dash_id = str(resp["id"])
@@ -5599,8 +5599,8 @@ class TestRunner:
         assert got.get("theme") == "dark", f"hub_get_dashboard lost the dashboard's theme: {got}"
         # Hide passwords and credentials masks the PIN in the read.
         assert got.get("dashboardPin") == "***redacted (password)***", f"hub_get_dashboard returned the PIN in clear: {got}"
-        assert got.get("showEdit") is False and got.get("showNavigation") is False, \
-            f"showEdit/showNavigation are not off after the create: {got}"
+        assert got.get("showEdit") is False and got.get("showNavigation") is True, \
+            f"showEdit is not off, or showNavigation not on, after the create: {got}"
         assert got.get("localOnly") is True, f"the create did not store localOnly: {got}"
         listed_all = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})
         assert listed_all.get("source") == "dashboard-all", \
@@ -5680,8 +5680,8 @@ class TestRunner:
         assert isinstance(copied, dict) and copied.get("name") == copy_name, f"copy name mismatch: {copied}"
         assert copied.get("theme") == "dark", f"the copy lost the source's theme: {copied}"
         assert sorted(copied.get("deviceIds") or []) == sorted(upd_devices), f"the copy lost the source's devices: {copied}"
-        assert copied.get("showEdit") is False and copied.get("showNavigation") is False, \
-            f"the copy turned the source's showEdit/showNavigation back on: {copied}"
+        assert copied.get("showEdit") is False and copied.get("showNavigation") is True, \
+            f"the copy did not keep the source's showEdit/showNavigation: {copied}"
         assert copied.get("localOnly") is True, f"the copy lost the source's localOnly: {copied}"
 
         # DELETE the original (confirm-gated -- the suite ensured a recent backup at startup).
@@ -5725,6 +5725,33 @@ class TestRunner:
             f"hub_get_dashboard on deleted id {dash_id}: {missing}"
         self._non_dashboard_id_checks(upd_devices)
 
+    def _legacy_tile_editor_keys(self, dash_id: str) -> None:
+        """The tile editor's own keys are stored: a global-variable tile showing a BAT_E2E_ hub
+        variable, and a linkName on an existing tile. The variable's tile is removed before the
+        variable is deleted."""
+        var_name = f"{PREFIX}DashVar_{_run_artifact_suffix()}"
+        self._create_variable(var_name, "String", "dashboard")
+        try:
+            current = ((self._read_dashboard(dash_id) or {}).get("layout") or {}).get("tiles") or []
+            assert current, f"dashboard {dash_id} has no tile to give a linkName: {current}"
+            first_id = current[0]["id"]
+            added = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_update_dashboard", "args": {
+                "dashboardId": dash_id,
+                "updateTiles": [{"id": first_id, "linkName": "Docs"}],
+                "addTiles": [{"template": "global-variable", "col": 4, "row": 4, "globalVar": var_name}]}})
+            assert added.get("success") is True and added.get("applied") == ["updateTiles", "addTiles"], \
+                f"the tile editor keys were refused: {added}"
+            saved = ((self._read_dashboard(dash_id) or {}).get("layout") or {}).get("tiles") or []
+            var_tile = next((t for t in saved if t.get("template") == "global-variable"), None)
+            assert var_tile is not None and var_tile.get("globalVar") == var_name, f"globalVar was not stored: {saved}"
+            assert next(t for t in saved if t.get("id") == first_id).get("linkName") == "Docs", \
+                f"linkName was not stored: {saved}"
+            removed = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_update_dashboard", "args": {
+                "dashboardId": dash_id, "removeTileIds": [var_tile["id"]]}})
+            assert removed.get("success") is True, f"removing the global-variable tile failed: {removed}"
+        finally:
+            self._delete_variable_safe(var_name, inline=True)
+
     def _overlapping_legacy_updates(self, dash_id: str) -> None:
         """Two legacy updates sent at once, each adding its own tile: both tiles are saved."""
         tiles = [{"template": "clock", "col": col, "row": 3} for col in (2, 3)]
@@ -5764,26 +5791,23 @@ class TestRunner:
 
     def _non_dashboard_id_checks(self, device_ids: list) -> None:
         """An app that is not a dashboard gets hub_get_dashboard's not-found answer from update and
-        delete, before any write. Uses a standing BAT_E2E_KEEP_ app; creates nothing."""
-        rows = self._installed_app_rows()
-        dashboards = self._dashboard_ids()
-        keep = next((a for a in rows if isinstance(a, dict) and a.get("id") and str(a["id"]) not in dashboards
-                     and str(a.get("label") or a.get("name") or "").startswith(SCAFFOLD_PREFIX)), None)
-        if keep is None:
-            print("    no standing BAT_E2E_KEEP_ app on this hub; the non-dashboard id leg is skipped")
-            return
-        app_id = str(keep["id"])
-        expected = f"No dashboard found with id '{app_id}'."
-        for tool, args in (("hub_update_dashboard", {"dashboardId": app_id, "name": f"{PREFIX}NotADashboard",
-                                                     "deviceIds": device_ids}),
-                           ("hub_delete_dashboard", {"dashboardId": app_id, "confirm": True})):
-            refused = self.client.call_tool_failure("hub_manage_dashboards", {"tool": tool, "args": args})
-            assert refused.get("error") == expected, f"{tool} on non-dashboard app {app_id}: {refused}"
-            assert "retry" not in str(refused.get("note")).lower(), \
-                f"{tool} on non-dashboard app {app_id} told the caller to retry: {refused}"
-        still = next((a for a in self._installed_app_rows() if isinstance(a, dict) and str(a.get("id")) == app_id), None)
-        assert still is not None and (still.get("label") or still.get("name")) == (keep.get("label") or keep.get("name")), \
-            f"the refused dashboard update/delete changed app {app_id}: {still}"
+        delete, before any write. The app is an empty Rule Machine rule made and deleted here."""
+        app_id = str(self._create_native_rule("NotADashboard"))
+        try:
+            expected = f"No dashboard found with id '{app_id}'."
+            for tool, args in (("hub_update_dashboard", {"dashboardId": app_id, "name": f"{PREFIX}NotADashboard",
+                                                         "deviceIds": device_ids}),
+                               ("hub_delete_dashboard", {"dashboardId": app_id, "confirm": True})):
+                refused = self.client.call_tool_failure("hub_manage_dashboards", {"tool": tool, "args": args})
+                assert refused.get("error") == expected, f"{tool} on non-dashboard app {app_id}: {refused}"
+                assert "retry" not in str(refused.get("note")).lower(), \
+                    f"{tool} on non-dashboard app {app_id} told the caller to retry: {refused}"
+            # The rule is still there and still carries its own name.
+            doc = self._native_rule_document(app_id)
+            assert f"{PREFIX}NotADashboard_" in json.dumps(doc), \
+                f"the refused dashboard update/delete changed rule {app_id}: {str(doc)[:400]}"
+        finally:
+            self._delete_native(app_id)
 
     @test("dashboards")
     def test_dashboard_legacy_lifecycle(self) -> None:
@@ -5873,6 +5897,22 @@ class TestRunner:
             f"the refused update changed the authorized devices: {after_typo}"
 
         self._overlapping_legacy_updates(dash_id)
+        self._legacy_tile_editor_keys(dash_id)
+
+        # A partial wholesale layout is refused by the hub; the note says to send the whole object.
+        tiles_before = ((self._read_dashboard(dash_id) or {}).get("layout") or {}).get("tiles") or []
+        partial = self.client.call_tool_failure("hub_manage_dashboards", {"tool": "hub_update_dashboard", "args": {
+            "dashboardId": dash_id, "layout": {"cols": 4, "rows": 4, "tiles": []}}})
+        assert "the whole object hub_get_dashboard returns" in str(partial.get("note")), \
+            f"the refused partial layout did not name the whole-object rule: {partial}"
+        tiles_after = ((self._read_dashboard(dash_id) or {}).get("layout") or {}).get("tiles") or []
+        assert len(tiles_after) == len(tiles_before), f"the refused partial layout changed the tiles: {tiles_after}"
+
+        # The listed legacy entry carries no Easy-only fields.
+        listed = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})
+        entry = next((d for d in listed.get("dashboards") or [] if str(d.get("id")) == dash_id), None)
+        assert entry is not None and set(entry) == {"id", "name", "type", "deviceIds"}, \
+            f"the legacy list entry carries more than id, name, type and deviceIds: {entry}"
 
         # COPY (hub_create_dashboard with sourceId): a new legacy dashboard with the source's layout.
         copy_name = f"{dash_name} (copy)"
@@ -16164,8 +16204,9 @@ def updated() {}
 
     def _dashboard_selection_boundary_checks(self, unauth: str, auth: str) -> None:
         """With the bypass off, a dashboard update may keep an unselected device but not add or drop
-        one, a copy may not carry one, and a dashboard with no devices takes a selected one. The
-        fixtures are made with the bypass on and deleted at the end; the caller restores the bypass."""
+        one, a copy may not carry one, and a dashboard with no devices takes a selected one. Makes its
+        fixtures with the bypass on, runs the checks with it off, leaves it off, and deletes the
+        fixtures."""
         suffix = _run_artifact_suffix()
         made: list[str] = []
         try:
@@ -16184,8 +16225,9 @@ def updated() {}
                 "dashboardId": both, "name": f"{PREFIX}Dashboard_Selection_{suffix}_Kept", "deviceIds": [unauth, auth]}})
             assert kept.get("success") is True and kept.get("applied") == ["name", "deviceIds"], \
                 f"an update keeping the unselected device was refused: {kept}"
-            self._expect_tool_refusal("hub_manage_dashboards", {"tool": "hub_update_dashboard", "args": {
+            dropped = self._expect_tool_refusal("hub_manage_dashboards", {"tool": "hub_update_dashboard", "args": {
                 "dashboardId": both, "deviceIds": [auth]}}, outside)
+            assert "An id hub_get_dashboard returns stays in the list you send." in dropped, f"the update refusal lost the kept-id sentence: {dropped}"
             self._expect_tool_refusal("hub_manage_dashboards", {"tool": "hub_update_dashboard", "args": {
                 "dashboardId": empty, "deviceIds": [unauth]}}, outside)
             assert devices(both) == sorted([unauth, auth]), f"the refused drop changed dashboard {both}"
@@ -16198,8 +16240,10 @@ def updated() {}
             assert devices(empty) == [auth], f"the selected device did not reach dashboard {empty}"
 
             ids_before = self._dashboard_ids()
-            self._expect_tool_refusal("hub_manage_dashboards", {"tool": "hub_create_dashboard", "args": {
+            copy_refusal = self._expect_tool_refusal("hub_manage_dashboards", {"tool": "hub_create_dashboard", "args": {
                 "sourceId": both}}, f"{outside}, so a copy of dashboard {both}")
+            assert "stays in the list you send" not in copy_refusal, \
+                f"the copy refusal carries the update-only kept-id sentence: {copy_refusal}"
             assert self._dashboard_ids() == ids_before, f"the refused copy of dashboard {both} created a dashboard"
         finally:
             for dash_id in made:
@@ -16446,9 +16490,11 @@ def updated() {}
         # A dashboard's deviceIds authorizes it to show and control a device, so it keeps the same
         # boundary: a create naming the unselected device is refused before anything is written.
         dashboards_before = self._dashboard_ids()
-        self._expect_tool_refusal("hub_manage_dashboards", {"tool": "hub_create_dashboard", "args": {
+        create_refusal = self._expect_tool_refusal("hub_manage_dashboards", {"tool": "hub_create_dashboard", "args": {
             "name": f"{PREFIX}Dashboard_Unselected", "deviceIds": [unauth]}},
             f"deviceIds {unauth} is outside the MCP device selection")
+        assert "stays in the list you send" not in create_refusal, \
+            f"the create refusal carries the update-only kept-id sentence: {create_refusal}"
         assert self._dashboard_ids() == dashboards_before, \
             f"the refused dashboard create for unselected device {unauth} wrote a dashboard"
 
