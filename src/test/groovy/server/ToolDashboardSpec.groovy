@@ -2943,4 +2943,53 @@ class ToolDashboardSpec extends ToolSpecBase {
         !script.DASHBOARD_UPDATE_LOCK.is(script.WRITE_RESERVATION_LOCK)
     }
 
+    def "overlapping legacy updates run one at a time, so neither added tile is lost"() {
+        given: 'a layout read that the first update pauses inside until released'
+        enableWrite()
+        registerLegacyStatus('700')
+        registerLegacyMint('700')
+        def saved = new groovy.json.JsonSlurper().parseText(JsonOutput.toJson(LEGACY_LAYOUT))
+        def reads = new java.util.concurrent.atomic.AtomicInteger()
+        def firstReadEntered = new java.util.concurrent.CountDownLatch(1)
+        def release = new java.util.concurrent.CountDownLatch(1)
+        hubGet.register('/apps/api/700/dashboard/700/layout') { params ->
+            String snapshot
+            synchronized (saved) { snapshot = JsonOutput.toJson(saved) }
+            if (reads.incrementAndGet() == 1) {
+                firstReadEntered.countDown()
+                release.await(10, java.util.concurrent.TimeUnit.SECONDS)
+            }
+            snapshot
+        }
+        script.metaClass.hubInternalPostJson = { String p, String body, int t = 420, boolean r = false, Map q = null ->
+            def parsed = new groovy.json.JsonSlurper().parseText(body)
+            synchronized (saved) { saved.clear(); saved.putAll(parsed) }
+            return parsed
+        }
+        def results = Collections.synchronizedList([])
+        def update = { int col -> { -> results << script.toolUpdateDashboard([dashboardId: '700',
+            addTiles: [[template: 'clock', col: col, row: 5]]]) } as Runnable }
+
+        when: 'the second update starts while the first is paused after its read'
+        def first = new Thread(update(1))
+        first.start()
+        assert firstReadEntered.await(10, java.util.concurrent.TimeUnit.SECONDS)
+        def second = new Thread(update(2))
+        second.start()
+        Thread.sleep(300)
+        int readsWhilePaused = reads.get()
+        release.countDown()
+        first.join(10000)
+        second.join(10000)
+
+        then: 'the second could not read the layout until the first had saved'
+        readsWhilePaused == 1
+        reads.get() == 2
+
+        and: 'both updates succeeded and the saved layout holds both tiles'
+        results.size() == 2
+        results.every { it.success == true }
+        saved.tiles.findAll { it.template == 'clock' && it.row == 5 }*.col.sort() == [1, 2]
+    }
+
 }

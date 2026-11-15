@@ -5519,10 +5519,12 @@ class TestRunner:
         return self.client.call_tool(gateway, {"tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
 
     def _dashboard_ids(self) -> set[str]:
-        """Every dashboard id on the hub; fails the test when the list cannot be read."""
+        """Every dashboard id on the hub; fails the test when the list is unreadable or incomplete."""
         listed = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_list_dashboards", "args": {}})
         assert isinstance(listed, dict) and listed.get("success") is not False, \
             f"hub_list_dashboards failed: {listed}"
+        assert listed.get("partial") is not True, \
+            f"hub_list_dashboards returned an incomplete inventory, so the no-write check cannot run: {listed}"
         return {str(d["id"]) for d in (listed.get("dashboards", []) or []) if d.get("id")}
 
     def _dashboard_id_present(self, dash_id: str) -> bool:
