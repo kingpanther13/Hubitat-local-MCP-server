@@ -12,26 +12,55 @@ private String _filesDownloadUrl(String name) {
     return "http://${hubIp ?: '<HUB_IP>'}/local/${name}".toString()
 }
 
-// Whether a root file exists, from the listing. Null when that cannot be told: a name with a
-// '/' is not in the root listing, and a failed listing proves nothing either way.
-private Boolean _filesRootFileExists(String fileName) {
-    if (fileName.contains("/")) return null
-    try { return _fileManagerRootFiles().any { it.name == fileName } }
-    catch (Exception e) {
-        mcpLog("warn", "file-manager", "Could not list File Manager to check '${fileName}' exists: ${e.message}")
-        return null
+@groovy.transform.Field static final String FILES_GUIDE_POINTER = "See hub_get_tool_guide(section='file_manager')."
+// A failed listing proves neither presence nor absence.
+@groovy.transform.Field static final String FILES_KIND_UNKNOWN = "unknown"
+
+// The read, write and delete tools act on root files only, and the hub accepts only these
+// characters in a name it uploads; a leading period fails its upload.
+private void _filesRequireRootName(String fileName, String toolName) {
+    if (fileName.contains("/")) {
+        String folder = fileName.substring(0, fileName.lastIndexOf('/'))
+        throw new IllegalArgumentException(toolName == "hub_write_file"
+            ? "'${fileName}' names a file in a subfolder. hub_write_file writes root files only; it cannot write into a subfolder.".toString()
+            : "'${fileName}' names a file in a subfolder; ${toolName} acts on root files only. List the folder with hub_list_files(folder: '${folder}'); its files download from that listing's downloadUrlBase.".toString())
+    }
+    if (!(fileName ==~ /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/)) {
+        throw new IllegalArgumentException("Invalid file name '${fileName}'. Only letters, numbers, hyphens, underscores and periods; cannot start with a period.")
     }
 }
 
-private Map _filesMissing(String fileName, String error) {
+// The hub's download exception names only the file, so the listing is what tells a missing file
+// from a folder or an unreadable one.
+private String _filesRootEntryKind(String name) {
+    try {
+        def entry = _fileManagerListing().files.find { it.name == name }
+        return entry == null ? null : (entry.type == "dir" ? "dir" : "file")
+    } catch (Exception e) {
+        mcpLog("warn", "file-manager", "Could not list File Manager to check '${name}': ${e.message}")
+        return FILES_KIND_UNKNOWN
+    }
+}
+
+private Map _filesFolderResult(String name) {
+    return [success: false, fileName: name, error: "'${name}' is a folder, not a file.",
+            note: "List it with hub_list_files(folder: '${name}'). ${FILES_GUIDE_POINTER}".toString()]
+}
+
+private Map _filesMissing(String fileName, String error, String extraNote = null) {
     return [success: false, fileName: fileName, error: error,
-            note: "Use hub_list_files (filter narrows it) to find the exact file name."]
+            note: "Use hub_list_files (filter narrows it) to find the exact file name.${extraNote ? ' ' + extraNote : ''} ${FILES_GUIDE_POINTER}".toString()]
 }
 
 private int _filesIntArg(Map args, String key, int defaultValue, int min, int max) {
     def v = args?.get(key)
     if (v == null) return defaultValue
     String t = (v instanceof Number || v instanceof CharSequence) ? v.toString().trim() : ""
+    // JSON clients may send 3 as 3.0; a number with no fractional part is still that integer.
+    if (v instanceof Number && !t.isLong() && t.isBigDecimal()) {
+        BigDecimal d = new BigDecimal(t)
+        if (d.signum() == 0 || d.stripTrailingZeros().scale() <= 0) t = d.toBigInteger().toString()
+    }
     if (!t.isLong() || t.toLong() < min || t.toLong() > max) {
         throw new IllegalArgumentException("${key} must be an integer from ${min} to ${max}; got ${v}.")
     }
@@ -109,8 +138,9 @@ def toolListFiles(args = null) {
     def cursor = args?.cursor
     def filterLower = _filesFoldCase(args?.filter?.toString()?.trim())
     def folder = args?.folder?.toString()?.trim()?.replaceAll(/^\/+|\/+$/, "")
-    if (folder && (!(folder ==~ /[A-Za-z0-9_.\/ -]+/) || folder.split("/").any { it == ".." || it == "." || it == "" })) {
-        throw new IllegalArgumentException("folder must be a relative File Manager folder path such as 'webcore' (letters, digits, space, dot, underscore, hyphen, '/' between parts; no '..').")
+    // No spaces: the hub can neither create nor list a folder whose name has one.
+    if (folder && (!(folder ==~ /[A-Za-z0-9_.\/-]+/) || folder.split("/").any { it == ".." || it == "." || it == "" })) {
+        throw new IllegalArgumentException("folder must be a relative File Manager folder path such as 'webcore' (letters, digits, dot, underscore, hyphen, '/' between parts; no spaces, no '..').")
     }
     Map listing
     try { listing = _fileManagerListing(folder ?: null) }
@@ -132,7 +162,7 @@ def toolListFiles(args = null) {
     def paged = _paginateList(fileList, cursor, 100, "hub_list_files")
     def res = [files: paged.page, total: fileList.size(), downloadUrlBase: _filesDownloadUrl(folder ? "${folder}/" : "")]
     if (folder) res.folder = folder
-    // An empty subfolder and a missing one answer the same, so say both.
+    // The hub answers an empty subfolder and a missing one identically.
     if (folder && fileList.isEmpty() && !filterLower) res.note = "Folder '${folder}' is empty or does not exist; the root listing shows the folders as type:'dir'."
     if (listing.freeSpace != null) res.freeSpaceBytes = listing.freeSpace
     if (listing.excludedFiles != null) res.filesExcludedFromFullBackup = listing.excludedFiles
@@ -141,8 +171,9 @@ def toolListFiles(args = null) {
 }
 
 def toolReadFile(args) {
-    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required.")
     String fileName = args.fileName.toString()
+    _filesRequireRootName(fileName, "hub_read_file")
     int requestedOffset = _filesIntArg(args, "offset", 0, 0, Integer.MAX_VALUE)
     int requestedLength = _filesIntArg(args, "length", defaultReadChunkChars() as int, 1, 60000)
 
@@ -153,17 +184,18 @@ def toolReadFile(args) {
         if (bytes == null) throw new Exception("the hub returned no content")
         content = new String(bytes, "UTF-8")
     } catch (Exception e) {
-        // The hub's exception names only the file, so the listing tells a missing file apart.
-        if (_filesRootFileExists(fileName) == false) {
+        String kind = _filesRootEntryKind(fileName)
+        if (kind == null) {
             mcpLog("info", "file-manager", "Read of '${fileName}' refused: no such file")
             return _filesMissing(fileName, "File '${fileName}' does not exist in File Manager.")
         }
+        if (kind == "dir") return _filesFolderResult(fileName)
         mcpLogError("file-manager", "Failed to read file '${fileName}'", e)
         return [
             success: false,
             fileName: fileName,
             error: "File '${fileName}' could not be read: ${e.message}",
-            note: "Check the exact name with hub_list_files, or download it from directDownload.",
+            note: "Check the exact name with hub_list_files, or download it from directDownload. ${FILES_GUIDE_POINTER}".toString(),
             directDownload: _filesDownloadUrl(fileName)
         ]
     }
@@ -196,28 +228,42 @@ def toolReadFile(args) {
 
 def toolWriteFile(args) {
     requireDestructiveConfirm(args.confirm)
-    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
-    if (args.content == null) throw new IllegalArgumentException("content is required")
-
-    // Validate file name — only A-Za-z0-9, hyphens, underscores, periods allowed
-    if (!(args.fileName ==~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/)) {
-        throw new IllegalArgumentException("Invalid file name '${args.fileName}'. Only letters, numbers, hyphens, underscores, and periods are allowed. Cannot start with a period.")
-    }
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required.")
+    if (args.content == null) throw new IllegalArgumentException("content is required.")
     String fileName = args.fileName.toString()
+    _filesRequireRootName(fileName, "hub_write_file")
     String content = args.content.toString()
 
     byte[] existingBytes = null
+    String downloadError = "the hub returned no content"
     try { existingBytes = downloadHubFile(fileName) }
-    catch (Exception e) {
-        // File doesn't exist or can't be read — that's fine, proceed with write
-        mcpLog("debug", "file-manager", "No existing file '${fileName}' to back up: ${e.message}")
+    catch (Exception e) { downloadError = e.message }
+    if (existingBytes == null) {
+        // A failed download is not proof the file is new: overwriting a file whose content could
+        // not be copied first would lose it, so only a name the listing lacks is created.
+        String kind = _filesRootEntryKind(fileName)
+        if (kind == "dir") return _filesFolderResult(fileName)
+        if (kind != null) {
+            mcpLog("warn", "file-manager", "Write of '${fileName}' refused: its current content could not be read (${downloadError})")
+            String cause = kind == FILES_KIND_UNKNOWN
+                ? "The File Manager listing also failed, so whether '${fileName}' exists is unknown."
+                : "'${fileName}' exists but its content could not be downloaded (${downloadError})."
+            return [
+                success: false,
+                fileName: fileName,
+                error: "Could not read the current '${fileName}' to take its backup copy; nothing was written.".toString(),
+                note: "${cause} Retry in a moment, write the content under a new name, or download the current file from directDownload first. ${FILES_GUIDE_POINTER}".toString(),
+                directDownload: _filesDownloadUrl(fileName)
+            ]
+        }
+        mcpLog("debug", "file-manager", "No existing file '${fileName}' to back up")
     }
     // Compare the bytes that will be written, not decoded text: invalid UTF-8 in the existing
     // file decodes to replacement characters that incoming text can match while the bytes differ.
     byte[] incomingBytes = content.getBytes("UTF-8")
     if (existingBytes != null && existingBytes.length == incomingBytes.length && (existingBytes as List) == (incomingBytes as List)) {
-        // A retry after a dropped response lands here: writing the same bytes again (or taking
-        // another backup copy of them) would only add side effects to a write that already landed.
+        // Same bytes again: a rewrite or another backup copy would only add side effects, and
+        // the idempotent hint promises none.
         mcpLog("info", "file-manager", "Existing '${fileName}' already matches the incoming content -- nothing written")
         return [
             success: true,
@@ -237,8 +283,9 @@ def toolWriteFile(args) {
             mcpLogError("file-manager", "Could not back up existing '${fileName}' before overwriting", e)
             return [
                 success: false,
-                error: "Could not back up existing '${fileName}' before overwriting: ${e.message}",
-                note: "Nothing was written; '${fileName}' still holds its previous content. Retry once File Manager accepts writes."
+                fileName: fileName,
+                error: "Could not back up existing '${fileName}' before overwriting: ${e.message}".toString(),
+                note: "Nothing was written; '${fileName}' still holds its previous content. Retry once File Manager accepts writes.".toString()
             ]
         }
         mcpLog("info", "file-manager", "Backed up existing '${fileName}' to '${backupFileName}' before overwriting (${existingBytes.length} bytes)")
@@ -268,15 +315,20 @@ def toolWriteFile(args) {
         mcpLogError("file-manager", "Failed to write file '${fileName}'", e)
         return [
             success: false,
-            error: "Failed to write file '${fileName}': ${e.message}"
+            fileName: fileName,
+            error: "Failed to write file '${fileName}': ${e.message}",
+            note: backupFileName
+                ? "Its previous content is kept in the backup copy '${backupFileName}'. Read '${fileName}' to see what it holds now before retrying.".toString()
+                : "Nothing was written. Retry once File Manager accepts writes."
         ]
     }
 }
 
 def toolDeleteFile(args) {
     requireDestructiveConfirm(args.confirm)
-    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required.")
     String fileName = args.fileName.toString()
+    _filesRequireRootName(fileName, "hub_delete_file")
     String missingError = "File '${fileName}' does not exist in File Manager; nothing was deleted."
 
     // Skip auto-backup for files that are already backups (prevent infinite backup chains)
@@ -285,15 +337,26 @@ def toolDeleteFile(args) {
 
     // deleteHubFile does not fail for a missing name, so existence is checked first: through the
     // backup download for a normal file, and through the listing when that download fails or
-    // when no download is taken.
+    // when no download is taken. A failed listing proves nothing, so the delete goes ahead.
     String backupFileName = null
+    boolean existenceUnknown = false
     if (!isBackupFile) {
         byte[] bytes = null
         try { bytes = downloadHubFile(fileName) }
         catch (Exception e) { mcpLog("debug", "file-manager", "Could not download '${fileName}' before deletion: ${e.message}") }
         if (bytes == null) {
-            if (_filesRootFileExists(fileName) == false) return _filesMissing(fileName, missingError)
-            mcpLog("warn", "file-manager", "Could not back up '${fileName}' before deletion: its content could not be downloaded")
+            String kind = _filesRootEntryKind(fileName)
+            if (kind == "dir") return _filesFolderResult(fileName)
+            if (kind == null) {
+                // The name may be gone because an earlier delete of it landed; its copy shows where.
+                String base = _filesBackupNameParts(fileName)[0]
+                return _filesMissing(fileName, missingError,
+                    "An earlier call may already have deleted it; its backup copy is listed by hub_list_files(filter: '${base}_backup_').")
+            }
+            existenceUnknown = kind == FILES_KIND_UNKNOWN
+            mcpLog("warn", "file-manager", existenceUnknown
+                ? "Could not check whether '${fileName}' exists before deletion: its download and the listing both failed"
+                : "Could not back up '${fileName}' before deletion: its content could not be downloaded")
         } else {
             try {
                 backupFileName = _filesWriteBackupCopy(fileName, bytes)
@@ -303,7 +366,10 @@ def toolDeleteFile(args) {
             }
         }
     } else {
-        if (_filesRootFileExists(fileName) == false) return _filesMissing(fileName, missingError)
+        String kind = _filesRootEntryKind(fileName)
+        if (kind == "dir") return _filesFolderResult(fileName)
+        if (kind == null) return _filesMissing(fileName, missingError)
+        existenceUnknown = kind == FILES_KIND_UNKNOWN
         mcpLog("debug", "file-manager", "Skipping auto-backup for '${fileName}' -- file is itself a backup")
     }
 
@@ -327,7 +393,12 @@ def toolDeleteFile(args) {
             // Pruned only after the delete landed, so a failed delete keeps every older copy.
             _filesReportCopyRetention(result, fileName, _filesPruneBackupCopies(fileName, backupFileName))
         }
-        if (!backupFileName && !isBackupFile) {
+        if (existenceUnknown) {
+            // The listing could not say whether the name exists, so nothing proves a file went away.
+            String failed = isBackupFile ? "the File Manager listing failed" : "its download and the File Manager listing both failed"
+            result.message = "Could not check whether '${fileName}' exists: ${failed}. The hub was asked to delete it; it may not have existed.".toString()
+            result.warning = "${isBackupFile ? '' : 'No backup copy was taken. '}Check with hub_list_files whether '${fileName}' is still listed.".toString()
+        } else if (!backupFileName && !isBackupFile) {
             result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
         }
         result.putAll(deletionDetails)
@@ -341,10 +412,11 @@ def toolDeleteFile(args) {
         mcpLogError("file-manager", "Failed to delete file '${fileName}'", e)
         return [
             success: false,
-            message: "Failed to delete file '${fileName}': ${e.message}",
             fileName: fileName,
             error: "Failed to delete '${fileName}': ${e.message}",
-            suggestion: "Check that the file exists. Use 'hub_list_files' to see available files."
+            note: backupFileName
+                ? "Its backup copy '${backupFileName}' was taken first. Check with hub_list_files whether '${fileName}' is still listed before retrying.".toString()
+                : "Check with hub_list_files whether '${fileName}' is still listed before retrying."
         ]
     }
 }
@@ -370,7 +442,7 @@ def _getAllToolDefinitions_partFiles() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    fileName: [type: "string", description: "The exact file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy')"],
+                    fileName: [type: "string", description: "The exact root file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy'); a folder or a name with '/' is refused."],
                     offset: [type: "integer", description: "Character offset to start from, 0 or more. Default 0."],
                     length: [type: "integer", description: "Max chars, 1-60000 (default 30000)."]
                 ],
@@ -379,11 +451,11 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_write_file",
-            description: "⚠️ Create or overwrite a text file in the hub's File Manager. An existing file is OVERWRITTEN wholesale after a backup copy is taken (backupFile in the result; the newest ${FILE_BACKUP_COPIES} copies per file are kept); identical content writes nothing. Requires confirm=true and a hub backup from the last 24 hours — confirm with the user first.",
+            description: "⚠️ Create or overwrite a text file in the hub's File Manager. An existing file is OVERWRITTEN wholesale after a backup copy is taken (backupFile in the result; the newest ${FILE_BACKUP_COPIES} copies per file are kept); identical content writes nothing; if the current content cannot be read, nothing is written. Requires confirm=true and a hub backup from the last 24 hours — confirm with the user first.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    fileName: [type: "string", description: "The file name to write (e.g., 'my-config.json'). Only A-Za-z0-9, hyphens, underscores, and periods allowed."],
+                    fileName: [type: "string", description: "The root file name to write (e.g., 'my-config.json'): letters, numbers, hyphens, underscores and periods only, not starting with a period; a name with '/' is refused."],
                     content: [type: "string", description: "The text content to write."],
                     confirm: [type: "boolean", description: "Must be true: the user approved the write."]
                 ],
@@ -396,7 +468,7 @@ def _getAllToolDefinitions_partFiles() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    fileName: [type: "string", description: "The exact file name to delete"],
+                    fileName: [type: "string", description: "The exact root file name to delete; a folder or a name with '/' is refused."],
                     confirm: [type: "boolean", description: "Must be true: the user approved the deletion."]
                 ],
                 required: ["fileName", "confirm"]

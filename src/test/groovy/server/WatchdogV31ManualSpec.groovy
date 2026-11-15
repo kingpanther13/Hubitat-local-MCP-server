@@ -500,6 +500,162 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         file.content.length() == 30000
     }
 
+    // A File Manager listing in the shape live hubs send.
+    private static String fileManagerJson(List entries) {
+        groovy.json.JsonOutput.toJson([backupSelection: [excludedFiles: 0], files: entries, path: null, freeSpace: 1006527975])
+    }
+
+    def "adminReadFile says a missing file does not exist"() {
+        given:
+        script.metaClass.downloadHubFile = { String fn -> throw new RuntimeException(fn) }
+        script.metaClass.hubGet = { String p, Map q -> fileManagerJson([[id: '1', type: 'file', name: 'other.txt', size: '1', date: '1', backupIncluded: true]]) }
+
+        when:
+        def r = script.adminReadFile([fileName: 'missing.txt'])
+
+        then:
+        r.success == false
+        r.error == "File 'missing.txt' does not exist in File Manager."
+    }
+
+    def "adminReadFile reports a folder name as a folder"() {
+        given:
+        script.metaClass.downloadHubFile = { String fn -> throw new RuntimeException(fn) }
+        script.metaClass.hubGet = { String p, Map q -> fileManagerJson([[id: '2', type: 'dir', name: 'webcore', size: '0']]) }
+
+        when:
+        def r = script.adminReadFile([fileName: 'webcore'])
+
+        then:
+        r.success == false
+        r.error == "'webcore' is a folder, not a file."
+        r.note == "This server has no folder listing; open the folder in Hubitat > Settings > File Manager."
+        !r.note.contains('hub_list_files')
+    }
+
+    @Unroll
+    def "adminReadFile refuses #args before reading the file"() {
+        given:
+        script.metaClass.downloadHubFile = { String fn -> throw new AssertionError('must not read') }
+
+        when:
+        script.adminReadFile([fileName: 'notes.txt'] + args)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains(message)
+
+        where:
+        args                          | message
+        [offset: -1]                  | 'offset must be an integer from 0 to'
+        [length: 60001]               | 'length must be an integer from 1 to 60000'
+        [length: 1.5]                 | 'length must be an integer from 1 to 60000'
+        [fileName: 'webcore/x.js']    | "'webcore/x.js' names a file in a subfolder; hub_read_file acts on root files only. Open the 'webcore' folder in Hubitat > Settings > File Manager."
+        [fileName: 'my file.txt']     | "Invalid file name 'my file.txt'"
+        [fileName: '.hidden']         | "Invalid file name '.hidden'"
+    }
+
+    @Unroll
+    def "adminWriteFile refuses #fileName before touching the hub"() {
+        given:
+        script.metaClass.downloadHubFile = { String fn -> throw new AssertionError('must not read') }
+        script.metaClass.uploadHubFile = { String fn, byte[] bytes -> throw new AssertionError('must not write') }
+
+        when:
+        script.adminWriteFile([fileName: fileName, content: 'x', confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == message
+        !e.message.contains('hub_list_files')
+
+        where:
+        fileName         | message
+        'webcore/x.js'   | "'webcore/x.js' names a file in a subfolder. hub_write_file writes root files only; it cannot write into a subfolder."
+        'my file.txt'    | "Invalid file name 'my file.txt'. Only letters, numbers, hyphens, underscores and periods; cannot start with a period."
+    }
+
+    def "adminReadFile accepts a name starting with an underscore or hyphen, as the hub does"() {
+        given:
+        script.metaClass.downloadHubFile = { String fn -> fn.getBytes('UTF-8') }
+
+        expect:
+        script.adminReadFile([fileName: '_under.txt']).content == '_under.txt'
+        script.adminReadFile([fileName: '-dash.txt']).content == '-dash.txt'
+    }
+
+    def "hub_write_file is declared destructive: it overwrites with no backup copy"() {
+        given:
+        def a = script.getAdminToolDefinitions().find { it.name == 'hub_write_file' }.annotations
+
+        expect:
+        a.readOnlyHint == false
+        a.destructiveHint == true
+        a.idempotentHint == true
+        a.openWorldHint == false
+    }
+
+    def "adminReadFile accepts a whole number sent as a decimal"() {
+        given:
+        script.metaClass.downloadHubFile = { String fn -> '0123456789'.getBytes('UTF-8') }
+
+        expect:
+        script.adminReadFile([fileName: 'nums.txt', offset: 1.0, length: 3.0]).content == '123'
+    }
+
+    def "adminWriteFile writes nothing when the content already matches"() {
+        given:
+        def uploads = []
+        script.metaClass.downloadHubFile = { String fn -> 'same'.getBytes('UTF-8') }
+        script.metaClass.uploadHubFile = { String fn, byte[] bytes -> uploads << fn }
+
+        when:
+        def r = script.adminWriteFile([fileName: 'notes.txt', content: 'same', confirm: true])
+
+        then:
+        r.success == true
+        r.unchanged == true
+        uploads.isEmpty()
+    }
+
+    @Unroll
+    def "adminWriteFile whose download throws #outcome when #why"() {
+        given:
+        def uploads = []
+        script.metaClass.downloadHubFile = { String fn -> throw new RuntimeException('transient') }
+        script.metaClass.uploadHubFile = { String fn, byte[] bytes -> uploads << fn }
+        script.metaClass.hubGet = { String p, Map q -> fileManagerJson(entries) }
+
+        when:
+        def r = script.adminWriteFile([fileName: 'notes.txt', content: 'new', confirm: true])
+
+        then:
+        r.success == succeeded
+        r.error == error
+        uploads == expectedUploads
+
+        where:
+        why                    | entries                                                           | outcome           | succeeded | error                                                      | expectedUploads
+        'the file is listed'   | [[id: '1', type: 'file', name: 'notes.txt', size: '3', date: '1']] | 'overwrites it'   | true      | null                                                       | ['notes.txt']
+        'it is a folder'       | [[id: '2', type: 'dir', name: 'notes.txt', size: '0']]            | 'is refused'      | false     | "'notes.txt' is a folder, not a file."                     | []
+        'it is not listed'     | []                                                                | 'creates it'      | true      | null                                                       | ['notes.txt']
+    }
+
+    def "adminWriteFile whose download and listing both fail still writes (this copy keeps no backup)"() {
+        given:
+        def uploads = []
+        script.metaClass.downloadHubFile = { String fn -> throw new RuntimeException('transient') }
+        script.metaClass.uploadHubFile = { String fn, byte[] bytes -> uploads << fn }
+        script.metaClass.hubGet = { String p, Map q -> throw new RuntimeException('down') }
+
+        when:
+        def r = script.adminWriteFile([fileName: 'notes.txt', content: 'new', confirm: true])
+
+        then:
+        r.success == true
+        uploads == ['notes.txt']
+    }
+
     @Unroll
     def "adminGetSource auto-saves to the cache only when noSave is not set (noSave=#noSave -> saved=#saved)"() {
         given:

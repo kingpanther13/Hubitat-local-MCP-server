@@ -173,7 +173,7 @@ Defaults: 30 executions within 60 seconds. Configurable in app settings.
 - `hub_write_file` auto-backs up existing file before overwriting
 - `hub_delete_file` auto-backs up file before deletion
 - Both require the Write master ON + confirm + a recent backup
-- File names must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
+- File names must match `^[A-Za-z0-9_-][A-Za-z0-9._-]*$` (no spaces, no leading period)
 - Files persist on hub even if MCP is uninstalled
 
 ---

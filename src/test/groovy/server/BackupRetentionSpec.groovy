@@ -480,7 +480,7 @@ class BackupRetentionSpec extends ToolSpecBase {
 
     // ---------- File Manager listing shapes ----------
 
-    def 'the File Manager listing is read from every shape hub_list_files accepts'() {
+    def 'the root file list is read from every listing shape _fileManagerListing accepts'() {
         given:
         hubGet.register('/hub/fileManager/json') { params -> JsonOutput.toJson(body) }
 

@@ -13055,8 +13055,8 @@ def updated() {}
     def test_write_file_keeps_newest_backup_copies(self) -> None:
         # hub_write_file copies the previous content to <name>_backup_<ts><ext> before an
         # overwrite and keeps only the newest five copies of that file name (issue #517). The
-        # copy name carries milliseconds, so back-to-back writes never share one. The same file
-        # covers the File Manager refusals and listing shape from issue #561.
+        # copy name carries milliseconds, so back-to-back writes never share one. The File Manager
+        # refusals and listing shape ride along here so they need no fixture of their own.
         name = f"{PREFIX}517_copy_cap_{int(time.time())}.txt"
         missing = f"{PREFIX}561_missing_{int(time.time())}.txt"
         stem = name[:-len(".txt")] + "_backup_"
@@ -13084,10 +13084,66 @@ def updated() {}
                         f"list download base: {sorted(listed)}"
                     self._expect_tool_refusal("hub_read_file", {"fileName": name, "offset": -1},
                                               "offset must be an integer")
-                    self._expect_tool_refusal("hub_read_file", {"fileName": missing},
-                                              "does not exist in File Manager")
-                    self._expect_tool_refusal("hub_delete_file", {"fileName": missing, "confirm": True},
-                                              "nothing was deleted")
+                    # A missing file is a runtime refusal reached after the hub answered, not a validation one.
+                    missing_read = self.client.call_tool_failure("hub_read_file", {"fileName": missing})
+                    assert "does not exist in File Manager" in str(missing_read.get("error")), \
+                        f"a missing file was not refused as missing on read: {missing_read}"
+                    missing_delete = self.client.call_tool_failure("hub_delete_file", {"fileName": missing, "confirm": True})
+                    assert "nothing was deleted" in str(missing_delete.get("error")), \
+                        f"a missing file was not refused as missing on delete: {missing_delete}"
+                    self._expect_tool_refusal("hub_read_file", {"fileName": name, "length": 70000},
+                                              "length must be an integer from 1 to 60000")
+                    missing_copy = self.client.call_tool_failure("hub_delete_file", {
+                        "fileName": f"{PREFIX}561_missing_backup_20260101-000000.txt", "confirm": True})
+                    assert "nothing was deleted" in str(missing_copy.get("error")) \
+                        and "An earlier call" not in str(missing_copy.get("note")), \
+                        f"a missing backup-named file was not refused as missing: {missing_copy}"
+                    for tool, extra, needle in (
+                            ("hub_read_file", {}, "hub_read_file acts on root files only. List the folder with hub_list_files(folder: 'webcore')"),
+                            ("hub_delete_file", {"confirm": True}, "hub_delete_file acts on root files only. List the folder with hub_list_files(folder: 'webcore')"),
+                            ("hub_write_file", {"content": "x", "confirm": True}, "hub_write_file writes root files only; it cannot write into a subfolder")):
+                        self._expect_tool_refusal(tool, {"fileName": f"webcore/{name}", **extra}, needle)
+                    for tool, extra in (("hub_read_file", {}), ("hub_delete_file", {"confirm": True}),
+                                        ("hub_write_file", {"content": "x", "confirm": True})):
+                        self._expect_tool_refusal(tool, {"fileName": "my file.txt", **extra}, "Invalid file name 'my file.txt'")
+                    # A leading underscore is a name the hub holds, so all three tools must take it. It
+                    # falls outside the PREFIX purge, so this leg removes the file and its copy itself.
+                    underscored = f"_{PREFIX}561_underscore.txt"
+                    try:
+                        made = self.client.call_tool("hub_write_file", {"fileName": underscored, "content": "u", "confirm": True})
+                        assert made.get("success") is True, f"a name starting with '_' was not written: {made}"
+                        back = self.client.call_tool("hub_read_file", {"fileName": underscored})
+                        assert back.get("content") == "u", f"a name starting with '_' was not read back: {back}"
+                    finally:
+                        for _ in range(2):
+                            listed = self.client.call_tool("hub_read_files", {"tool": "hub_list_files", "args": {"filter": underscored.rsplit(".", 1)[0]}})
+                            for f in listed.get("files") or []:
+                                self.client.call_tool("hub_delete_file", {"fileName": f["name"], "confirm": True})
+                    self._expect_tool_refusal("hub_list_files", {"folder": "a b"},
+                                              "relative File Manager folder")
+                    decimal = self.client.call_tool("hub_read_file", {"fileName": name, "length": 3.0})
+                    assert decimal.get("success") is True and decimal.get("content") == "ver", \
+                        f"a whole-number length sent as 3.0 was not accepted: {decimal}"
+                    folder, cursor = None, ""
+                    for _ in range(100):
+                        root = self.client.call_tool("hub_read_files", {"tool": "hub_list_files", "args": {"cursor": cursor}})
+                        # Only a folder whose name passes the file-name check reaches the folder refusal.
+                        folder = next((f.get("name") for f in root.get("files") or [] if f.get("type") == "dir"
+                                       and re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]*", str(f.get("name")))), None)
+                        cursor = root.get("nextCursor")
+                        if folder or not cursor:
+                            break
+                    if folder is None:
+                        print("    [SKIP] folder-name legs: the root listing on this hub has no type:'dir' entry with a valid file name")
+                    else:
+                        # The write leg is safe on any hub: the hub itself refuses to overwrite a folder.
+                        # So is the delete leg: the hub ignores a delete of a folder name, so even a
+                        # regressed refusal could not remove the folder.
+                        for tool, extra in (("hub_read_file", {}), ("hub_write_file", {"content": "x", "confirm": True}),
+                                            ("hub_delete_file", {"confirm": True})):
+                            refused = self.client.call_tool_failure(tool, {"fileName": folder, **extra})
+                            assert refused.get("error") == f"'{folder}' is a folder, not a file.", \
+                                f"{tool} did not refuse folder {folder!r} as a folder: {refused}"
                 if i > 0:
                     assert copy_name.match(str(res.get("backupFile", ""))), f"write {i} made no backup copy: {res}"
                     assert res.get("backupRetention") == "copies" and "newest 5" in str(res.get("backupRetentionNote")), \
@@ -14773,8 +14829,6 @@ def updated() {}
             if not isinstance(page, dict) or page.get("response_too_large"):
                 return names, False
             page_names = [f.get("name") for f in page.get("files", [])]
-            if not page_names and (page.get("message") or page.get("error")):
-                return names, False  # an empty page that reports a problem is not evidence
             names.extend(n for n in page_names if isinstance(n, str))
             nxt = page.get("nextCursor")
             if not nxt:
@@ -14815,20 +14869,19 @@ def updated() {}
         fname = f"{PREFIX}bundle_export_{bid}.zip"
 
         def _list_files_once() -> tuple[list, bool]:
-            # One paginated enumeration -> (names, authoritative). Under peak load
-            # hub_list_files can fail (an isError result), a relay 504 is equally
-            # inconclusive, and a
-            # NO-CURSOR listing on a file-heavy hub trips the 120KB size guard into a
-            # response_too_large envelope that reads as a false authoritative-empty.
+            # One paginated enumeration -> (names, authoritative). hub_list_files can fail under
+            # peak load, a relay 504 is equally inconclusive, and a NO-CURSOR listing on a
+            # file-heavy hub trips the 120KB size guard into a response_too_large envelope that
+            # reads as a false authoritative-empty.
             # The exact export name is unique, so filter on the hub before paginating;
             # _poll_export still compares the exact name because filter is substring-based.
-            # Only a listing that enumerated every filtered page (or a clean, marker-free
-            # empty one) is evidence of presence/absence.
+            # Only a listing that enumerated every filtered page (or a clean empty one) is
+            # evidence of presence/absence.
             return self._list_all_file_names(fname)
 
         def _poll_export(window: float) -> str:
             # 'found' | 'absent' (>=1 authoritative listing, file in none of them)
-            # | 'inconclusive' (every read degraded/504 for the whole window).
+            # | 'inconclusive' (every read failed or hit a 504 for the whole window).
             deadline = time.time() + window
             saw_authoritative = False
             while time.time() < deadline:

@@ -312,11 +312,11 @@ Exception: `toolCreateHubBackup` checks `confirm` directly without requiring a p
 - All operations are fully local — no cloud involvement
 
 **File Manager Tools** (4 tools):
-- `hub_list_files` — lists files via `/hub/fileManager/json` internal API endpoint (size and date as numbers, free space, backup inclusion, one `downloadUrlBase`), optionally narrowed by a `filter` name substring or a `folder`; available under the Read master
-- `hub_read_file` — reads file via `downloadHubFile()` in chunks (`offset`, `length` up to 60000 characters; every chunk downloads the whole file); a missing file is reported as not existing; available under the Read master
-- `hub_write_file` — writes via `uploadHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`; the newest 5 copies per file name are kept); content identical to the file's current bytes writes nothing (`unchanged: true`)
+- `hub_list_files` — lists files via `/hub/fileManager/json` internal API endpoint (size and date as numbers, free space, backup inclusion, one `downloadUrlBase`), optionally narrowed by a `filter` name substring or a `folder` (no spaces: the hub cannot create or list such a folder); available under the Read master
+- `hub_read_file` — reads file via `downloadHubFile()` in chunks (`offset`, `length` up to 60000 characters, whole-number decimals such as 3.0 accepted; every chunk downloads the whole file); a missing file is reported as not existing; available under the Read master
+- `hub_write_file` — writes via `uploadHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`; the newest 5 copies per file name are kept); content identical to the file's current bytes writes nothing (`unchanged: true`); when the current content cannot be downloaded, the write goes ahead only if the listing shows no such name, and is otherwise refused with nothing written
 - `hub_delete_file` — deletes via `deleteHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up file before deletion (same 5-copy cap); a file that does not exist is refused and nothing is deleted
-- File name validation: must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
+- File name validation (read, write and delete): must match `^[A-Za-z0-9_-][A-Za-z0-9._-]*$`, the characters the hub's own upload accepts (no spaces, no leading period; a leading `_` or `-` is fine). The tools act on root files only: a name with `/` is refused before any hub call, and a folder name is refused as a folder
 
 **Device Authorization Safety** (v0.7.2+):
 - Device tools require AI to confirm before using non-exact device matches

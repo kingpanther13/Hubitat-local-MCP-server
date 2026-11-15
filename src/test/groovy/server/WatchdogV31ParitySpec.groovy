@@ -188,6 +188,11 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
         given:
         Map uploaded = [:]
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> uploaded[name] = new String(bytes, 'UTF-8') }
+        // A new file: no download, and the listing (in the hub's own shape) does not hold the name.
+        script.metaClass.downloadHubFile = { String name -> throw new RuntimeException(name) }
+        script.metaClass.hubGet = { String path, Map query ->
+            groovy.json.JsonOutput.toJson([backupSelection: [excludedFiles: 0], files: [], path: null, freeSpace: 1006527975])
+        }
         when:
         def result = script.executeAdminTool('hub_write_file', [fileName: 'e2e-deadman-v2.json',
             content: '{"armed":false,"intent":"disarm"}', confirm: true])

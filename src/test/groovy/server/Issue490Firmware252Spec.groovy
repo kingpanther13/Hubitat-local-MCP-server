@@ -1436,8 +1436,10 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/fileManager/json') { p ->
-            JsonOutput.toJson([backupSelection: [excludedFiles: 1], freeSpace: 991530715,
-                               files: [[type: 'dir', name: 'sub', size: '0'], [type: 'file', name: 'a.js', size: '10', date: '1', backupIncluded: false]]])
+            JsonOutput.toJson([backupSelection: [excludedFiles: 1],
+                               files: [[id: '-8042247494160655236', type: 'dir', name: 'sub', size: '0'],
+                                       [id: '676497121135832461', type: 'file', name: 'a.js', size: '10', date: '1794719017781', backupIncluded: false]],
+                               path: 'webcore', freeSpace: 991530715])
         }
 
         when:
@@ -1471,7 +1473,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     def "an empty folder listing says the folder may not exist"() {
         given:
         settingsMap.enableRead = true
-        hubGet.register('/hub/fileManager/json') { p -> JsonOutput.toJson([files: [], freeSpace: 5]) }
+        hubGet.register('/hub/fileManager/json') { p -> JsonOutput.toJson([backupSelection: [excludedFiles: 0], files: [], path: 'webcoer', freeSpace: 5]) }
 
         when:
         def r = script.toolListFiles([folder: 'webcoer'])
@@ -1490,7 +1492,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.calls.isEmpty()
 
         where:
-        folder << ['../etc', 'a/../b', 'a//b', 'x;rm']
+        folder << ['../etc', 'a/../b', 'a//b', 'x;rm', 'a b']
     }
 
     // ---------------- apps, dependents, events ----------------
