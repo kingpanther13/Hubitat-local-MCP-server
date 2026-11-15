@@ -1676,6 +1676,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v5.1.11** - docs: the PR author flips a draft to ready-for-review, not the maintainer; ci: document retrying one ephemeral e2e kind by re-running its two jobs; feat: room tools by id, and set a room's devices via hub_update_room. PRs: [#588](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/588), [#589](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/589), [#582](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/582)
 - **v5.1.10** - feat: return the new bundle id on install, and delete a bundle's code with hub_delete_bundle. PRs: [#580](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/580)
 - **v5.1.9** - fix: return success:false tool results with isError: true. PRs: [#585](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/585)
 - **v5.1.8** - docs: support current stable firmware only; feat: one save path and one delete path for code create and delete. PRs: [#583](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/583), [#579](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/579)
