@@ -13978,6 +13978,28 @@ def updated() {}
         # May be empty list, but should not error
         assert result is not None, "hub_list_rooms returned None"
 
+    ROOM_SHORT_NAME = "Z9"
+
+    def _recover_short_rename_room(self, listed: dict) -> None:
+        """A run killed while the lifecycle room had its short name left a record of that room's id.
+        Delete the room only when that id still carries the short name, then drop the record."""
+        try:
+            raw = self.client.call_tool("hub_manage_files", {"tool": "hub_read_file", "args": {
+                "fileName": self.ROOM_SHORT_RENAME_FILE}})
+        except McpError:   # no record: the last run finished the short-name leg
+            return
+        try:
+            record = json.loads(raw.get("content") or "{}") if isinstance(raw, dict) else {}
+        except ValueError:
+            record = {}
+        rid = str(record.get("roomId") or "")
+        for r in (listed.get("rooms", []) if isinstance(listed, dict) else []):
+            if rid and str(r.get("id")) == rid and r.get("name") == record.get("name"):
+                self.client.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {
+                    "roomId": rid, "confirm": True}})
+        self.client.call_tool("hub_manage_files", {"tool": "hub_delete_file", "args": {
+            "fileName": self.ROOM_SHORT_RENAME_FILE, "confirm": True}})
+
     @test("system_tools")
     def test_manage_rooms_create_read_update_delete(self) -> None:
         """Validate the full McpRoomsLib-backed Rooms flow live.
@@ -14012,6 +14034,7 @@ def updated() {}
                         })
                     except Exception as exc:
                         print(f"  [WARN] rooms flow pre-sweep: delete {r.get('id')} failed: {exc}")
+            self._recover_short_rename_room(pre)
 
             # The restore baseline is read after the pre-sweep: a device a crashed run left in a
             # fixture room is in no room now, and the finally must not restore it to a deleted room.
@@ -14063,7 +14086,11 @@ def updated() {}
 
             # A name under 3 characters, which /room/updateName refuses, saves through /room/save
             # and keeps the device; then the fixture name goes back on so the sweep can find it.
-            short = "Z9"
+            short = self.ROOM_SHORT_NAME
+            wr = self.client.call_tool("hub_manage_files", {"tool": "hub_write_file", "args": {
+                "fileName": self.ROOM_SHORT_RENAME_FILE, "content": json.dumps({"roomId": room_id, "name": short}),
+                "confirm": True}})
+            assert wr.get("success") is True, f"could not record room {room_id} before the short rename: {wr}"
             short_res = self.client.call_tool("hub_manage_rooms", {
                 "tool": "hub_update_room",
                 "args": {"roomId": room_id, "name": short, "confirm": True},
@@ -14079,6 +14106,8 @@ def updated() {}
             })
             assert restored.get("success") is True and (restored.get("room") or {}).get("previousName") == short, \
                 f"hub_update_room did not rename back from {short!r}: {restored}"
+            self.client.call_tool("hub_manage_files", {"tool": "hub_delete_file", "args": {
+                "fileName": self.ROOM_SHORT_RENAME_FILE, "confirm": True}})
 
             # hub_update_room(deviceIds): the list is wholesale -- [] empties the room...
             emptied = self.client.call_tool("hub_manage_rooms", {
@@ -15949,19 +15978,41 @@ def updated() {}
                 f"Replacement must reject device access before lookup or confirmation: {error}"
             )
 
+    ROOM_SHORT_RENAME_FILE = "e2e-room-short-rename.json"
+
+    def _rooms_named(self, name: str) -> list:
+        listed = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+        return [r for r in (listed.get("rooms", []) if isinstance(listed, dict) else []) if r.get("name") == name]
+
+    def _delete_rooms_named(self, name: str) -> None:
+        """Pre-sweep: a fixture room a killed run left behind would fail the duplicate-name check."""
+        for r in self._rooms_named(name):
+            self.client.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {
+                "roomId": str(r.get("id")), "confirm": True}})
+
+    def _create_owned_room(self, name: str, device_ids: list) -> str:
+        """Create a BAT_E2E_ room; if the response is lost after the save, find it by its name."""
+        try:
+            created = self.client.call_tool("hub_manage_rooms", {"tool": "hub_create_room", "args": {
+                "name": name, "deviceIds": device_ids, "confirm": True}})
+        except McpError:
+            found = self._rooms_named(name)
+            if len(found) != 1:
+                raise
+            return str(found[0].get("id"))
+        room_id = str((created.get("room") or {}).get("id") or "")
+        assert created.get("success") is True and room_id, f"fixture room {name} not created: {created}"
+        return room_id
+
     def _room_selection_boundary_checks(self, unauth: str) -> None:
         """With the bypass OFF, room writes refuse to add an unselected device before any save."""
         needle = f"deviceIds {unauth} is outside the MCP device selection"
         name = f"{PREFIX}RoomSelection"
+        self._delete_rooms_named(name)
         self._expect_tool_refusal("hub_manage_rooms", {"tool": "hub_create_room", "args": {
             "name": name, "deviceIds": [unauth], "confirm": True}}, needle)
-        listed = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
-        rooms = listed.get("rooms", []) if isinstance(listed, dict) else []
-        assert not any(r.get("name") == name for r in rooms), f"a refused hub_create_room saved {name}: {listed}"
-        created = self.client.call_tool("hub_manage_rooms", {"tool": "hub_create_room", "args": {
-            "name": name, "confirm": True}})
-        room_id = str((created.get("room") or {}).get("id") or "")
-        assert created.get("success") is True and room_id, f"empty room for the selection check not created: {created}"
+        assert not self._rooms_named(name), f"a refused hub_create_room saved {name}"
+        room_id = self._create_owned_room(name, [])
         try:
             self._expect_tool_refusal("hub_manage_rooms", {"tool": "hub_update_room", "args": {
                 "roomId": room_id, "deviceIds": [unauth], "confirm": True}}, needle)
@@ -15973,6 +16024,37 @@ def updated() {}
                     "roomId": room_id, "confirm": True}})
             except Exception as exc:
                 self._fixture_reset_failures.append(f"room selection check: deleting room {room_id} failed: {exc}")
+
+    def _room_delete_selection_check(self, unauth: str, _set_bypass) -> None:
+        """Entered with the bypass ON: put the unselected device in a fixture room, then with the
+        bypass OFF deleting that room is refused, since it would unassign the device."""
+        name = f"{PREFIX}RoomDeleteSelection"
+        self._delete_rooms_named(name)
+        listed = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+        source = next((r for r in (listed.get("rooms", []) if isinstance(listed, dict) else [])
+                       if unauth in [str(i) for i in (r.get("deviceIds") or [])]), None)
+        room_id = self._create_owned_room(name, [unauth])
+        try:
+            _set_bypass(False)
+            try:
+                self._expect_tool_refusal("hub_manage_rooms", {"tool": "hub_delete_room", "args": {
+                    "roomId": room_id, "confirm": True}},
+                    f"deviceIds {unauth} is outside the MCP device selection, so deleting this room would unassign it")
+                assert [str(r.get("id")) for r in self._rooms_named(name)] == [room_id], \
+                    f"a refused hub_delete_room removed room {room_id}"
+            finally:
+                _set_bypass(True)
+        finally:
+            try:
+                if source:
+                    self.client.call_tool("hub_manage_rooms", {"tool": "hub_update_room", "args": {
+                        "roomId": str(source.get("id")), "deviceIds": [str(i) for i in source.get("deviceIds") or []],
+                        "confirm": True}})
+                self.client.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {
+                    "roomId": room_id, "confirm": True}})
+            except Exception as exc:
+                self._fixture_reset_failures.append(f"room delete selection check: restoring device {unauth} "
+                                                    f"or deleting room {room_id} failed: {exc}")
 
     def _bypass_boundary_checks(self, unauth, _set_bypass) -> None:
         """Boundary + bypass-reach assertions for test_bypass_device_allowlist_reaches_unlisted_device.
@@ -16019,6 +16101,7 @@ def updated() {}
             assert on.get("success") is True, f"enabling bypass did not succeed: {on}"
             assert on.get("updated") == {"bypassDeviceAllowlist": True}, f"updated field mismatch: {on}"
             flipped = True
+            self._room_delete_selection_check(unauth, _set_bypass)
             inventory = self.client.call_tool("hub_list_devices", {
                 "scope": "all", "labelFilter": f"{SCAFFOLD_PREFIX}Configuration_StandaloneBypass",
             })

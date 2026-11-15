@@ -274,36 +274,44 @@ def test_device_replace_boundary_requires_access_denial_for_both_positions(denia
 
 
 class _FakeRoomGateway:
-    """The room calls _room_selection_boundary_checks makes while the bypass is off: a write that adds
-    the unselected device is refused before anything is saved, and an empty room comes and goes."""
+    """The room calls of the bypass boundary checks. While the bypass is off, a write that adds the
+    unselected device, or deletes a room holding it, is refused before anything changes."""
 
     def __init__(self, unauth):
         self.unauth = unauth
         self.rooms = {}
         self.calls = []
 
-    def call(self, arguments):
+    def call(self, arguments, bypass):
         tool, args = arguments["tool"], arguments.get("args", {})
         self.calls.append(tool)
-        if self.unauth in args.get("deviceIds", []):
+        if not bypass and self.unauth in args.get("deviceIds", []):
             raise et.McpToolError(tool, f"deviceIds {self.unauth} is outside the MCP device selection. Select "
                                         "the device for MCP or turn on Bypass Device Allowlist.")
         if tool == "hub_create_room":
             room_id = str(70 + len(self.calls))
-            self.rooms[room_id] = args["name"]
-            return {"success": True, "room": {"id": room_id, "name": args["name"], "deviceIds": []}}
+            self.rooms[room_id] = {"name": args["name"], "deviceIds": list(args.get("deviceIds", []))}
+            return {"success": True, "room": {"id": room_id, "name": args["name"], "deviceIds": args.get("deviceIds", [])}}
         if tool == "hub_list_rooms":
-            return {"rooms": [{"id": rid, "name": name} for rid, name in self.rooms.items()]}
+            return {"rooms": [{"id": rid, **room} for rid, room in self.rooms.items()]}
         if tool == "hub_get_room":
-            return {"id": args["roomId"], "name": self.rooms[args["roomId"]], "deviceCount": 0, "devices": []}
+            room = self.rooms[args["roomId"]]
+            return {"id": args["roomId"], "name": room["name"], "deviceCount": len(room["deviceIds"]), "devices": []}
         if tool == "hub_delete_room":
+            if not bypass and self.unauth in self.rooms[args["roomId"]]["deviceIds"]:
+                raise et.McpToolError(tool, f"deviceIds {self.unauth} is outside the MCP device selection, so "
+                                            "deleting this room would unassign it.")
             del self.rooms[args["roomId"]]
             return {"success": True}
         raise AssertionError(f"Unexpected room call: {arguments}")
 
 
-ROOM_SELECTION_CALLS = ["hub_create_room", "hub_list_rooms", "hub_create_room", "hub_update_room",
-                        "hub_get_room", "hub_delete_room"]
+# _room_selection_boundary_checks with the bypass off, then _room_delete_selection_check, which
+# opens the bypass-ON section and turns the bypass off and on again around its refused delete.
+ROOM_SELECTION_CALLS = ["hub_list_rooms", "hub_create_room", "hub_list_rooms", "hub_create_room",
+                        "hub_update_room", "hub_get_room", "hub_delete_room",
+                        "hub_list_rooms", "hub_list_rooms", "hub_create_room", "hub_delete_room",
+                        "hub_list_rooms", "hub_delete_room"]
 
 
 @pytest.mark.parametrize("rejection", ["unknown", "wrong-code", "wrong-name", "unavailable", "accepted"])
@@ -337,8 +345,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                 raise et.McpToolError("hub_delete_logs", "Job dev10Once.x belongs to device 10, which is outside "
                                       "this server's device access, so it cannot be deleted here.")
             if name == "hub_manage_rooms":
-                assert not bypass
-                return rooms.call(arguments)
+                return rooms.call(arguments, bypass)
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -416,7 +423,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     assert denied_tools == ["hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
                             "hub_update_device", "hub_call_device_command",
                             "hub_list_device_dependents"] + (["hub_get_device"] if rejection == "unknown" else [])
-    assert bypass_changes == [True, False]
+    assert bypass_changes == [True, False, True, False]
     assert rooms.calls == ROOM_SELECTION_CALLS and rooms.rooms == {}
 
 
@@ -444,8 +451,7 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
                 raise et.McpToolError("hub_delete_logs", "Job dev10Once.x belongs to device 10, which is outside "
                                       "this server's device access, so it cannot be deleted here.")
             if name == "hub_manage_rooms":
-                assert not bypass
-                return rooms.call(arguments)
+                return rooms.call(arguments, bypass)
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -489,7 +495,7 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
     assert denied_tools == ["hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
                             "hub_update_device", "hub_call_device_command",
                             "hub_list_device_dependents"]
-    assert bypass_changes == [True, False]
+    assert bypass_changes == [True, False, True, False]
     assert rooms.calls == ROOM_SELECTION_CALLS and rooms.rooms == {}
 
 
