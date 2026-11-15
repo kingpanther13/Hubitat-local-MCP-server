@@ -16030,52 +16030,70 @@ def updated() {}
                     "roomId": room_id, "confirm": True}})
             except Exception as exc:
                 self._fixture_reset_failures.append(f"room selection check: deleting room {room_id} failed: {exc}")
-        self._room_stale_device_checks()
 
     ROOM_NO_DEVICE_ID = "999999999"
 
-    def _room_stale_device_checks(self) -> None:
-        """With the bypass OFF: a deleted device the hub's room list keeps reads as no longer on the hub,
-        refuses a short rename (which re-sends the list), and may be dropped or deleted with its room."""
+    def _room_stale_device_checks(self, _set_bypass) -> None:
+        """Entered with the bypass ON: two devices outside the MCP selection go into fixture rooms and are
+        deleted. With the bypass OFF the ids the room list keeps read as no longer on the hub, refuse a
+        short rename (which re-sends the list), and may be dropped or deleted with their room."""
         name_a, name_b = f"{PREFIX}RoomStaleA", f"{PREFIX}RoomStaleB"
         self._delete_rooms_named(name_a)
         self._delete_rooms_named(name_b)
-        dnis = []
+        made = []
+        kept_dni = None
         room_a = room_b = None
         try:
-            kept, dni, _ = self._rm_disposable_switch("RoomStaleKeep")
-            dnis.append(dni)
-            gone_a, dni_a, _ = self._rm_disposable_switch("RoomStaleGoneA")
-            dnis.append(dni_a)
-            gone_b, dni_b, _ = self._rm_disposable_switch("RoomStaleGoneB")
-            dnis.append(dni_b)
+            kept, kept_dni, _ = self._rm_disposable_switch("RoomStaleKeep")
+            type_id = self._driver_type_id("Virtual Switch")
+            for suffix in ("A", "B"):
+                created = self.client.call_tool("hub_manage_devices", {"tool": "hub_create_device", "args": {
+                    "deviceTypeId": type_id, "label": f"{PREFIX}RoomStaleGone{suffix}", "confirm": True}})
+                assert created.get("deviceId"), f"could not create the stale-device fixture: {created}"
+                made.append(str(created["deviceId"]))
+            gone_a, gone_b = made
+            # A created device joins the selection; removing only these ids restores the prior set,
+            # which may have been empty.
+            removed = self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings", "args": {
+                "settings": {"selectedDevices": {"mode": "remove", "ids": list(made), "allowEmpty": True}},
+                "confirm": True}})
+            scope = removed.get("selectedDevices") or {}
+            assert removed.get("success") is True and not set(made) & set(scope.get("authorizedDeviceIds") or []), \
+                f"could not take the stale-device fixtures out of the MCP selection: {removed}"
             room_a = self._create_owned_room(name_a, [kept, gone_a])
             room_b = self._create_owned_room(name_b, [gone_b])
-            self._rm_delete_device(dni_a)
-            self._rm_delete_device(dni_b)
+            for dev in list(made):
+                deleted = self.client.call_tool("hub_manage_destructive_ops", {"tool": "hub_delete_device", "args": {
+                    "deviceId": dev, "confirm": True}})
+                assert deleted.get("success") is True, f"could not delete stale-device fixture {dev}: {deleted}"
+                made.remove(dev)
 
-            got = self.client.call_tool("hub_manage_rooms", {"tool": "hub_get_room", "args": {"roomId": room_a}})
-            row = next((d for d in (got.get("devices") or []) if str(d.get("id")) == gone_a), None)
-            assert row and row.get("onHub") is False and row.get("label") == "(device no longer on the hub)", \
-                f"hub_get_room must show deleted device {gone_a} as no longer on the hub: {got}"
+            _set_bypass(False)
+            try:
+                got = self.client.call_tool("hub_manage_rooms", {"tool": "hub_get_room", "args": {"roomId": room_a}})
+                row = next((d for d in (got.get("devices") or []) if str(d.get("id")) == gone_a), None)
+                assert row and row.get("onHub") is False and row.get("label") == "(device no longer on the hub)", \
+                    f"hub_get_room must show deleted device {gone_a} as no longer on the hub: {got}"
 
-            failed = self.client.call_tool_failure("hub_manage_rooms", {"tool": "hub_update_room", "args": {
-                "roomId": room_a, "name": "Z8", "confirm": True}})
-            assert f"The room still lists device {gone_a}, which is no longer on the hub" in str(failed.get("error")) \
-                and "3 or more characters" in str(failed.get("note")), \
-                f"a short rename of a room holding deleted device {gone_a} must name it: {failed}"
-            assert [str(r.get("id")) for r in self._rooms_named(name_a)] == [room_a], \
-                f"a refused short rename changed room {room_a}'s name"
+                failed = self.client.call_tool_failure("hub_manage_rooms", {"tool": "hub_update_room", "args": {
+                    "roomId": room_a, "name": "Z8", "confirm": True}})
+                assert f"The room still lists device {gone_a}, which is no longer on the hub" in str(failed.get("error")) \
+                    and "3 or more characters" in str(failed.get("note")), \
+                    f"a short rename of a room holding deleted device {gone_a} must name it: {failed}"
+                assert [str(r.get("id")) for r in self._rooms_named(name_a)] == [room_a], \
+                    f"a refused short rename changed room {room_a}'s name"
 
-            dropped = self.client.call_tool("hub_manage_rooms", {"tool": "hub_update_room", "args": {
-                "roomId": room_a, "deviceIds": [kept], "confirm": True}})
-            assert dropped.get("success") is True and (dropped.get("room") or {}).get("unassignedDeviceIds") == [gone_a], \
-                f"dropping deleted device {gone_a} with the bypass off must succeed: {dropped}"
-            deleted = self.client.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {
-                "roomId": room_b, "confirm": True}})
-            assert deleted.get("success") is True, \
-                f"deleting a room holding only deleted device {gone_b} with the bypass off must succeed: {deleted}"
-            room_b = None
+                dropped = self.client.call_tool("hub_manage_rooms", {"tool": "hub_update_room", "args": {
+                    "roomId": room_a, "deviceIds": [kept], "confirm": True}})
+                assert dropped.get("success") is True and (dropped.get("room") or {}).get("unassignedDeviceIds") == [gone_a], \
+                    f"dropping unselected deleted device {gone_a} with the bypass off must succeed: {dropped}"
+                deleted = self.client.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {
+                    "roomId": room_b, "confirm": True}})
+                assert deleted.get("success") is True, \
+                    f"deleting a room holding only unselected deleted device {gone_b} with the bypass off must succeed: {deleted}"
+                room_b = None
+            finally:
+                _set_bypass(True)
         finally:
             for rid in (room_a, room_b):
                 if not rid:
@@ -16085,13 +16103,17 @@ def updated() {}
                         "roomId": rid, "confirm": True}})
                 except Exception as exc:
                     self._fixture_reset_failures.append(f"room stale-device check: deleting room {rid} failed: {exc}")
-            for dni in dnis:
-                if dni not in self.created_device_dnis:
-                    continue
+            for dev in made:
                 try:
-                    self._rm_delete_device(dni)
+                    self.client.call_tool("hub_manage_destructive_ops", {"tool": "hub_delete_device", "args": {
+                        "deviceId": dev, "confirm": True}})
                 except Exception as exc:
-                    self._fixture_reset_failures.append(f"room stale-device check: deleting device {dni} failed: {exc}")
+                    self._fixture_reset_failures.append(f"room stale-device check: deleting device {dev} failed: {exc}")
+            if kept_dni in self.created_device_dnis:
+                try:
+                    self._rm_delete_device(kept_dni)
+                except Exception as exc:
+                    self._fixture_reset_failures.append(f"room stale-device check: deleting device {kept_dni} failed: {exc}")
 
     def _room_delete_selection_check(self, unauth: str, _set_bypass) -> None:
         """Entered with the bypass ON: put the unselected device in a fixture room, then with the
@@ -16129,6 +16151,7 @@ def updated() {}
             except Exception as exc:
                 self._fixture_reset_failures.append(f"room delete selection check: restoring device {unauth} "
                                                     f"or deleting room {room_id} failed: {exc}")
+        self._room_stale_device_checks(_set_bypass)
 
     def _bypass_boundary_checks(self, unauth, _set_bypass) -> None:
         """Device-access boundary and bypass-reach assertions; entered with the bypass OFF, the ON baseline is restored by the enclosing finally."""

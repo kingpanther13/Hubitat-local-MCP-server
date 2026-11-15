@@ -274,17 +274,44 @@ def test_device_replace_boundary_requires_access_denial_for_both_positions(denia
 
 
 class _FakeRoomGateway:
-    """In-memory hub_manage_rooms and virtual devices: with the bypass off, a write adding the unselected
-    device or an unknown id, dropping the unselected device, or deleting a room holding it, is refused
-    before anything changes; a deleted device stays in its room, as on the hub."""
+    """In-memory hub_manage_rooms plus the device calls its checks make: with the bypass off, a write adding
+    an unselected device or an unknown id, dropping an unselected device still on the hub, or deleting a
+    room holding one, is refused before anything changes; a deleted device stays in its room, as on the hub."""
 
     def __init__(self, unauth):
         self.unauth = unauth
         self.on_hub = {unauth}
         self.children = set()
+        self.selected = set()
         self.rooms = {}
         self.calls = []
+        self.device_calls = []
         self.devices_made = 0
+
+    def _authorized(self, dev_id):
+        return dev_id in self.children or dev_id in self.selected
+
+    def device_admin(self, name, arguments):
+        tool, args = arguments["tool"], arguments.get("args", {})
+        self.device_calls.append(tool)
+        if tool == "hub_create_device":
+            assert args["label"].startswith(et.PREFIX) and args["confirm"] is True
+            self.devices_made += 1
+            dev_id = str(600 + self.devices_made)
+            self.on_hub.add(dev_id)
+            self.selected.add(dev_id)
+            return {"success": True, "deviceId": dev_id}
+        if tool == "hub_update_mcp_settings":
+            scope = args["settings"]["selectedDevices"]
+            assert scope["mode"] == "remove"
+            self.selected -= set(scope["ids"])
+            return {"success": True, "selectedDevices": {"mode": "remove", "removed": scope["ids"],
+                                                         "authorizedDeviceIds": sorted(self.selected)}}
+        if tool == "hub_delete_device":
+            self.on_hub.discard(args["deviceId"])
+            self.selected.discard(args["deviceId"])
+            return {"success": True}
+        raise AssertionError(f"Unexpected device call: {name} {arguments}")
 
     def virtual_device(self, arguments):
         if arguments["action"] == "create":
@@ -303,8 +330,8 @@ class _FakeRoomGateway:
         if unknown:
             raise et.McpToolError(tool, f"No device has id {unknown[0]} on the hub. Use hub_list_devices for device ids.")
         for ids, consequence in ((added, verb), (removed, "this update cannot remove")):
-            if self.unauth in ids:
-                raise et.McpToolError(tool, f"Device {self.unauth} is outside the MCP device selection, so "
+            if ids:
+                raise et.McpToolError(tool, f"Device {ids[0]} is outside the MCP device selection, so "
                                             f"{consequence} it. Select it in the MCP app's device list, or turn on "
                                             "Bypass Device Allowlist.")
 
@@ -314,7 +341,7 @@ class _FakeRoomGateway:
         if tool == "hub_create_room":
             ids = list(args.get("deviceIds", []))
             if not bypass:
-                self._refuse_selection(tool, "a room cannot be created with", [i for i in ids if i not in self.children], [])
+                self._refuse_selection(tool, "a room cannot be created with", [i for i in ids if not self._authorized(i)], [])
             room_id = str(70 + len(self.calls))
             self.rooms[room_id] = {"name": args["name"], "deviceIds": ids}
             return {"success": True, "room": {"id": room_id, "name": args["name"], "deviceIds": ids}}
@@ -336,8 +363,8 @@ class _FakeRoomGateway:
             added = [i for i in ids if i not in room["deviceIds"]]
             dropped = [i for i in room["deviceIds"] if i not in ids]
             if not bypass:
-                self._refuse_selection(tool, "this update cannot add", [i for i in added if i not in self.children],
-                                       [i for i in dropped if i in self.on_hub and i not in self.children])
+                self._refuse_selection(tool, "this update cannot add", [i for i in added if not self._authorized(i)],
+                                       [i for i in dropped if i in self.on_hub and not self._authorized(i)])
             room["deviceIds"] = ids
             result = {"id": args["roomId"], "deviceIds": ids}
             if dropped:
@@ -351,23 +378,26 @@ class _FakeRoomGateway:
                        else {"id": i, "label": f"Dev {i}"} for i in room["deviceIds"]]
             return {"id": args["roomId"], "name": room["name"], "deviceCount": len(devices), "devices": devices}
         if tool == "hub_delete_room":
-            if not bypass and self.unauth in self.rooms[args["roomId"]]["deviceIds"]:
-                raise et.McpToolError(tool, f"Device {self.unauth} is outside the MCP device selection, so "
+            held = [i for i in self.rooms[args["roomId"]]["deviceIds"] if i in self.on_hub and not self._authorized(i)]
+            if not bypass and held:
+                raise et.McpToolError(tool, f"Device {held[0]} is outside the MCP device selection, so "
                                             "deleting this room would unassign it.")
             del self.rooms[args["roomId"]]
             return {"success": True}
         raise AssertionError(f"Unexpected room call: {arguments}")
 
 
-# _room_selection_boundary_checks with the bypass off (its stale-device leg included), then
-# _room_delete_selection_check, which opens the bypass-ON section and turns the bypass off and on
-# again around its refused update and delete.
+# _room_selection_boundary_checks with the bypass off, then _room_delete_selection_check, which opens
+# the bypass-ON section and turns the bypass off and on again around its refused update and delete,
+# then the stale-device leg, which does the same around its checks.
+STALE_DEVICE_CALLS = ["hub_create_device", "hub_create_device", "hub_update_mcp_settings",
+                      "hub_delete_device", "hub_delete_device"]
 ROOM_SELECTION_CALLS = ["hub_list_rooms", "hub_create_room", "hub_list_rooms", "hub_create_room", "hub_list_rooms",
                         "hub_create_room", "hub_update_room", "hub_update_room", "hub_get_room", "hub_delete_room",
-                        "hub_list_rooms", "hub_list_rooms", "hub_create_room", "hub_create_room", "hub_get_room",
-                        "hub_update_room", "hub_list_rooms", "hub_update_room", "hub_delete_room", "hub_delete_room",
                         "hub_list_rooms", "hub_list_rooms", "hub_create_room", "hub_update_room", "hub_delete_room",
-                        "hub_list_rooms", "hub_delete_room"]
+                        "hub_list_rooms", "hub_delete_room",
+                        "hub_list_rooms", "hub_list_rooms", "hub_create_room", "hub_create_room", "hub_get_room",
+                        "hub_update_room", "hub_list_rooms", "hub_update_room", "hub_delete_room", "hub_delete_room"]
 
 
 @pytest.mark.parametrize("rejection", ["unknown", "wrong-code", "wrong-name", "unavailable", "accepted"])
@@ -405,6 +435,8 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                 return rooms.call(arguments, bypass)
             if name == "hub_manage_virtual_device":
                 return rooms.virtual_device(arguments)
+            if name in ("hub_manage_devices", "hub_manage_mcp", "hub_manage_destructive_ops"):
+                return rooms.device_admin(name, arguments)
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -467,6 +499,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     runner = object.__new__(et.TestRunner)
     runner.client = FakeClient()
     runner.created_device_dnis = []
+    runner._driver_type_ids = {"Virtual Switch": "9"}
     if rejection == "unknown":
         runner._bypass_boundary_checks("10", set_bypass)
     else:
@@ -483,18 +516,25 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     assert denied_tools == ["hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
                             "hub_update_device", "hub_call_device_command",
                             "hub_list_device_dependents"] + (["hub_get_device"] if rejection == "unknown" else [])
-    assert bypass_changes == [True, False, True, False]
+    assert bypass_changes == [True, False, True, False, True, False]
     assert rooms.calls == ROOM_SELECTION_CALLS and rooms.rooms == {}
-    assert rooms.children == set() and runner.created_device_dnis == []
+    assert rooms.device_calls == STALE_DEVICE_CALLS
+    assert rooms.children == set() and rooms.on_hub == {"10"} and runner.created_device_dnis == []
 
 
 def test_room_stale_device_checks_fail_and_clean_up_when_a_deleted_device_cannot_be_dropped():
+    bypass = True
+    bypass_changes = []
+    cleanup_bypass = []
+
     class _RefusesDrop(_FakeRoomGateway):
-        def call(self, arguments, bypass):
+        def call(self, arguments, bypass_on):
             if arguments["tool"] == "hub_update_room" and "deviceIds" in arguments.get("args", {}):
                 self.calls.append("hub_update_room")
-                raise et.McpToolError("hub_update_room", "Device 502 is outside the MCP device selection")
-            return super().call(arguments, bypass)
+                raise et.McpToolError("hub_update_room", "Device 602 is outside the MCP device selection")
+            if arguments["tool"] == "hub_delete_room":
+                cleanup_bypass.append(bypass_on)
+            return super().call(arguments, bypass_on)
 
     rooms = _RefusesDrop("10")
 
@@ -503,19 +543,58 @@ def test_room_stale_device_checks_fail_and_clean_up_when_a_deleted_device_cannot
 
         def call_tool(self, name, arguments=None, *, flat=False):
             if name == "hub_manage_rooms":
-                return rooms.call(arguments, False)
+                return rooms.call(arguments, bypass)
             if name == "hub_manage_virtual_device":
                 return rooms.virtual_device(arguments)
+            if name in ("hub_manage_devices", "hub_manage_mcp", "hub_manage_destructive_ops"):
+                return rooms.device_admin(name, arguments)
+            raise AssertionError(f"Unexpected call: {name} {arguments}")
+
+    def set_bypass(value):
+        nonlocal bypass
+        bypass = value
+        bypass_changes.append(value)
+        return {"success": True, "updated": {"bypassDeviceAllowlist": value}}
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = FakeClient()
+    runner.created_device_dnis = []
+    runner._fixture_reset_failures = []
+    runner._driver_type_ids = {"Virtual Switch": "9"}
+    with pytest.raises(et.McpToolError, match="outside the MCP device selection"):
+        runner._room_stale_device_checks(set_bypass)
+    assert bypass_changes == [False, True] and bypass is True
+    assert rooms.device_calls == STALE_DEVICE_CALLS and rooms.selected == set()
+    assert rooms.rooms == {} and cleanup_bypass == [True, True]
+    assert rooms.children == set() and rooms.on_hub == {"10"} and runner.created_device_dnis == []
+    assert runner._fixture_reset_failures == []
+
+
+def test_room_stale_device_checks_clean_up_a_device_still_selected_when_setup_fails():
+    rooms = _FakeRoomGateway("10")
+
+    class FakeClient:
+        def call_tool(self, name, arguments=None, *, flat=False):
+            if name == "hub_manage_rooms":
+                return rooms.call(arguments, True)
+            if name == "hub_manage_virtual_device":
+                return rooms.virtual_device(arguments)
+            if name == "hub_manage_mcp":
+                return {"success": False, "error": "Developer Mode is off"}
+            if name in ("hub_manage_devices", "hub_manage_destructive_ops"):
+                return rooms.device_admin(name, arguments)
             raise AssertionError(f"Unexpected call: {name} {arguments}")
 
     runner = object.__new__(et.TestRunner)
     runner.client = FakeClient()
     runner.created_device_dnis = []
     runner._fixture_reset_failures = []
-    with pytest.raises(et.McpToolError, match="outside the MCP device selection"):
-        runner._room_stale_device_checks()
-    assert rooms.rooms == {} and rooms.children == set() and runner.created_device_dnis == []
-    assert runner._fixture_reset_failures == []
+    runner._driver_type_ids = {"Virtual Switch": "9"}
+    with pytest.raises(AssertionError, match="out of the MCP selection"):
+        runner._room_stale_device_checks(lambda value: pytest.fail("the bypass must not change before setup completes"))
+    assert rooms.device_calls == ["hub_create_device", "hub_create_device", "hub_delete_device", "hub_delete_device"]
+    assert rooms.on_hub == {"10"} and rooms.children == set() and rooms.rooms == {}
+    assert runner.created_device_dnis == [] and runner._fixture_reset_failures == []
 
 
 @pytest.mark.parametrize("native_label", ["Native original", ""])
@@ -547,6 +626,8 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
                 return rooms.call(arguments, bypass)
             if name == "hub_manage_virtual_device":
                 return rooms.virtual_device(arguments)
+            if name in ("hub_manage_devices", "hub_manage_mcp", "hub_manage_destructive_ops"):
+                return rooms.device_admin(name, arguments)
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -581,6 +662,7 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
     runner = object.__new__(et.TestRunner)
     runner.client = FakeClient()
     runner.created_device_dnis = []
+    runner._driver_type_ids = {"Virtual Switch": "9"}
     error_type = et.McpError if failure == "exception" else AssertionError
     with pytest.raises(error_type, match=r"Reply lost|rename did not succeed"):
         runner._bypass_boundary_checks("10", set_bypass)
@@ -591,8 +673,9 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
     assert denied_tools == ["hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
                             "hub_update_device", "hub_call_device_command",
                             "hub_list_device_dependents"]
-    assert bypass_changes == [True, False, True, False]
+    assert bypass_changes == [True, False, True, False, True, False]
     assert rooms.calls == ROOM_SELECTION_CALLS and rooms.rooms == {}
+    assert rooms.device_calls == STALE_DEVICE_CALLS and rooms.on_hub == {"10"}
 
 
 def test_validation_log_expectation_uses_reactive_gateway_tool_and_exact_reason():
