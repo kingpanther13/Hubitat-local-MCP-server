@@ -8,37 +8,7 @@ import spock.lang.Unroll
 import support.TestDevice
 import support.ToolSpecBase
 
-/**
- * Spec for the room tools (libraries/mcp-rooms-lib.groovy):
- *
- * - toolListRooms   -> hub_list_rooms   (read)
- * - toolGetRoom     -> hub_get_room     (read; one room's devices by id)
- * - toolCreateRoom  -> hub_create_room  (Write master + confirm + 24h backup)
- * - toolUpdateRoom  -> hub_update_room  (Write master + confirm + 24h backup)
- * - toolDeleteRoom  -> hub_delete_room  (Write master + confirm + 24h backup)
- *
- * Mocking strategy: see docs/testing.md "Which interception point to use".
- * httpPost is intercepted via a permanent `_ *` stub in setupSpec() that dispatches to a
- * per-feature @Shared Closure handler (httpPostHandler); postJson() installs one that records
- * every POST and answers with a JSON body. getRooms / getHubSecurityCookie are purely dynamic,
- * stubbed per-test on script.metaClass. GETs (the Devices page, /room/updateName, /room/delete/<id>)
- * are registered per feature on hubGet, which records every call, so each write's request count
- * is pinned: create, a device-list update and a rename to a name under 3 characters make exactly
- * one POST /room/save, any other name-only update one GET /room/updateName, delete one
- * GET /room/delete/<id>.
- *
- * Destructive tools require (the Write master gates centrally at executeTool and
- * defaults ON, so it needs no seed; requireDestructiveConfirm needs confirm + 24h backup):
- *   stateMap.lastBackupTimestamp    = current 'now' (1234567890000L)
- *   args.confirm                    = true
- * enableWrite() also turns the device-allowlist bypass on, so the write features below use
- * arbitrary device ids; the device-selection features turn it off and select devices themselves.
- *
- * Dispatch features fire the same tool through {@code mcpDriver.callTool}, @Unroll'd across
- * useGateways true/false, and through the gateways themselves, so the production envelope path
- * (JSON-RPC parse -> tools/call -> gateway routing -> error mapping -> response wrapping) is
- * covered alongside the tool internals.
- */
+/** Room tools (libraries/mcp-rooms-lib.groovy): httpPost via the setupSpec dispatcher, GETs via hubGet; see docs/testing.md. */
 class ToolRoomsSpec extends ToolSpecBase {
 
     int getRoomsCalls = 0
@@ -55,6 +25,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         return mcpDriver.callTool(gateway, [tool: tool, args: args])
     }
 
+    /** Also turns the allowlist bypass on, so arbitrary device ids pass; the selection features turn it off. */
     private void enableWrite() {
         settingsMap.enableWrite = true
         settingsMap.bypassDeviceAllowlist = true
@@ -73,8 +44,14 @@ class ToolRoomsSpec extends ToolSpecBase {
         settingsMap.selectedDevices = ids.collect { new TestDevice(id: it, name: "dev${it}", label: "Dev ${it}") }
     }
 
+    /** The hub's /hub2/devicesList tree: {devices: [{key, data, children}]}. */
     private void registerDevicesPage(List<Map> nodes) {
-        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: nodes.collect { [data: it] }]) }
+        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: nodes.collect { [key: "DEV-${it.id}".toString(), data: it, children: []] }]) }
+    }
+
+    /** A Devices page listing just these ids. */
+    private void devicesOnHub(List ids) {
+        registerDevicesPage(ids.collect { [id: it as Integer, name: "Dev ${it}".toString(), currentStates: []] })
     }
 
     /** Records every POST (path + parsed body) and answers each with {@code reply} as JSON. */
@@ -123,6 +100,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         installGetRoomsStub([
             [id: 2, name: 'Kitchen', deviceIds: [100, 101, 102]],
             [id: 1, name: 'Bedroom', deviceIds: [200]],
+            [id: 4, name: 'attic', deviceIds: []],
             [id: 3, name: 'Living Room', deviceIds: []]
         ])
 
@@ -133,10 +111,10 @@ class ToolRoomsSpec extends ToolSpecBase {
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.count == 3
-        inner.rooms*.name == ['Bedroom', 'Kitchen', 'Living Room']
-        inner.rooms*.deviceCount == [1, 3, 0]
-        inner.rooms[0] == [id: '1', name: 'Bedroom', deviceCount: 1, deviceIds: ['200']]
+        inner.count == 4
+        inner.rooms*.name == ['attic', 'Bedroom', 'Kitchen', 'Living Room']
+        inner.rooms*.deviceCount == [0, 1, 3, 0]
+        inner.rooms[1] == [id: '1', name: 'Bedroom', deviceCount: 1, deviceIds: ['200']]
         hubGet.calls.empty
 
         where:
@@ -157,10 +135,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     def "hub_list_rooms cursor pagination opt-in (#174)"() {
-        // Representative spec for the cursor-helper rollout: every tool that wires
-        // _paginateList behaves identically -- no cursor returns the full list, cursor=''
-        // emits a bounded page with total + nextCursor, last page omits nextCursor,
-        // non-numeric/out-of-range cursors throw IllegalArgumentException.
+        // _paginateList contract: no cursor -> full list; '' -> bounded page with total+nextCursor; last page omits nextCursor; bad cursor throws.
         given: '150 rooms -> 2 pages of 100 + 50'
         installGetRoomsStub((0..<150).collect { i -> [id: i + 1, name: "Room-${String.format('%03d', i)}", deviceIds: []] })
 
@@ -199,7 +174,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     // -------- hub_get_room: one room by id --------
 
-    def "hub_get_room builds device rows from the Devices page and flags ids it cannot serve as not-accessible"() {
+    def "hub_get_room builds device rows from the Devices page and flags ids it cannot serve"() {
         given: 'a room with a page device MCP can reach, an id missing from the page, and a page device MCP cannot reach'
         installGetRoomsStub([
             [id: 6, name: 'Hall', deviceIds: [300]],
@@ -224,11 +199,9 @@ class ToolRoomsSpec extends ToolSpecBase {
         known.name == 'den_light'
         known.currentStates == [switch: 'on', level: '40']
 
-        and: 'the missing and the unauthorized ids keep the not-accessible row'
-        ['999', '200'].every { id ->
-            def row = result.devices.find { it.id == id }
-            row.label == '(device not accessible via MCP)' && row.name == 'unknown' && row.accessible == false && !row.containsKey('currentStates')
-        }
+        and: 'the unauthorized page device is not accessible; the id missing from the page is no longer on the hub'
+        result.devices.find { it.id == '200' } == [id: '200', label: '(device not accessible via MCP)', name: 'unknown', accessible: false]
+        result.devices.find { it.id == '999' } == [id: '999', label: '(device no longer on the hub)', name: 'unknown', onHub: false, metadataUnavailable: true]
     }
 
     def "hub_get_room serves every page device when the allowlist bypass is on, and omits empty states"() {
@@ -243,8 +216,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         then: 'an unlabelled device reads its name as both label and name'
         result.devices[1] == [id: '200', label: 'Den Fan', name: 'Den Fan']
 
-        and: 'a reachable device the page does not list is unknown, not inaccessible'
-        result.devices[0] == [id: '999', label: "(device not on the hub's Devices page)", name: 'unknown', accessible: true, metadataUnavailable: true]
+        and: 'an id the page does not list is no longer on the hub'
+        result.devices[0] == [id: '999', label: '(device no longer on the hub)', name: 'unknown', onHub: false, metadataUnavailable: true]
     }
 
     def "hub_get_room marks a device whose page entry carries no states as unknown, not stateless"() {
@@ -288,6 +261,27 @@ class ToolRoomsSpec extends ToolSpecBase {
         result.note == "Retry; if it persists check the hub's Devices page. See hub_get_tool_guide(section='rooms')."
     }
 
+    @Unroll
+    def "hub_get_room reports an id the Devices page does not list as no longer on the hub (#label)"() {
+        given: 'the room list keeps the id of deleted device 7'
+        installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [100, 7]]])
+        childDevicesList << new TestDevice(id: 100, name: 'den_light', label: 'Den Light')
+        if (selected) childDevicesList << new TestDevice(id: 7, name: 'gone', label: 'Gone')
+        registerDevicesPage([[id: 100, name: 'Den Light', currentStates: []]])
+
+        when:
+        def result = script.toolGetRoom([roomId: '7'])
+
+        then:
+        result.devices.find { it.id == '7' } == [id: '7', label: '(device no longer on the hub)', name: 'unknown', onHub: false, metadataUnavailable: true]
+        result.devices.find { it.id == '100' } == [id: '100', label: 'Den Light', name: 'Den Light']
+
+        where:
+        label          | selected
+        'selected'     | true
+        'not selected' | false
+    }
+
     def "hub_get_room on a room with no devices does not read the Devices page"() {
         given:
         installGetRoomsStub([[id: 7, name: 'Den', deviceIds: []]])
@@ -319,7 +313,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.deviceCount == 2
         inner.devices.find { it.id == '100' }.currentStates == [switch: 'on']
-        inner.devices.find { it.id == '999' }.accessible == false
+        inner.devices.find { it.id == '999' }.onHub == false
 
         where:
         useGateways << [true, false]
@@ -548,7 +542,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         where:
         label                       | args                                     | needle
-        'a blank name'              | [name: '  ']                             | 'Room name is required'
+        'a blank name'              | [name: '  ']                             | 'Room name is required.'
         'a non-numeric device id'   | [name: 'Den', deviceIds: ['100', 'abc']] | "deviceIds must be numeric device ids; got 'abc'"
         'a device id past int'      | [name: 'Den', deviceIds: ['99999999999']] | "deviceIds must be numeric device ids; got '99999999999'"
         'deviceIds that is no list' | [name: 'Den', deviceIds: '100']          | 'deviceIds must be an array'
@@ -630,6 +624,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         enableWrite()
         installGetRoomsStub([[id: 5, name: 'Old Room', deviceIds: [300]]])
         postJson([error: 'Invalid room or device ids'])
+        devicesOnHub([])
         hubGet.register('/room/delete/5') { throw new RuntimeException('HTTP 500: boom') }
 
         when:
@@ -648,8 +643,12 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         where:
         [tool, label, args, errorNeedle, useGateways] << [
-            ['hub_create_room', 'a hub refusal', [name: 'Garage', deviceIds: ['99999'], confirm: true], 'The hub refused to create room'],
-            ['hub_update_room', 'a hub refusal', [roomId: '5', deviceIds: ['99999'], confirm: true], 'The hub refused to update room 5: Invalid room or device ids'],
+            ['hub_create_room', 'a hub refusal', [name: 'Garage', deviceIds: ['99999'], confirm: true],
+             "The hub refused to create room 'Garage': Invalid room or device ids. No device has id 99999 on the hub."],
+            ['hub_update_room', 'a hub refusal', [roomId: '5', deviceIds: ['99999'], confirm: true],
+             'The hub refused to update room 5: Invalid room or device ids. No device has id 99999 on the hub.'],
+            ['hub_update_room', 'a short-rename refusal', [roomId: '5', name: 'Z', confirm: true],
+             'The room still lists device 300, which is no longer on the hub'],
             ['hub_delete_room', 'a failed delete request', [roomId: '5', confirm: true], "Could not delete room 'Old Room' (5): HTTP 500: boom"]
         ].collectMany { row -> [true, false].collect { gw -> row + [gw] } }
     }
@@ -793,27 +792,55 @@ class ToolRoomsSpec extends ToolSpecBase {
     // -------- the MCP device selection --------
 
     @Unroll
-    def "hub_create_room with the bypass off refuses #label before any request"() {
-        given: 'device 100 selected, 200 a child of this app, 300 neither'
+    def "hub_create_room with the bypass off refuses #label before any save"() {
+        given: 'device 100 selected, 200 a child of this app, 300 and 301 on the hub but neither'
         enableWrite()
         selectOnly([100])
         childDevicesList << new TestDevice(id: 200, name: 'child', label: 'Child')
         installGetRoomsStub([])
+        devicesOnHub([100, 200, 300, 301])
         def posts = postJson([roomId: 77])
 
         when:
         script.toolCreateRoom([name: 'Garage', deviceIds: ids, confirm: true])
 
-        then:
+        then: 'the Devices page is read once, only because some id is outside the selection'
         def ex = thrown(IllegalArgumentException)
-        ex.message.startsWith(needle)
-        ex.message.contains('Bypass Device Allowlist')
+        ex.message == message
         posts.empty
+        hubGet.calls*.path == ['/hub2/devicesList']
 
         where:
-        label              | ids                         | needle
-        'an unselected id' | ['100', '200', '300']       | 'deviceIds 300 is outside the MCP device selection'
-        'two of them'      | ['301', '100', '300', '301'] | 'deviceIds 301, 300 are outside the MCP device selection'
+        label                       | ids                          | message
+        'an unselected id'          | ['100', '200', '300']        | "Device 300 is outside the MCP device selection, so a room cannot be created with it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist."
+        'two of them'               | ['301', '100', '300', '301'] | "Devices 301, 300 are outside the MCP device selection, so a room cannot be created with them. Select them in the MCP app's device list, or turn on Bypass Device Allowlist."
+        'an id no device has'       | ['100', '99999']             | 'No device has id 99999 on the hub. Use hub_list_devices for device ids.'
+        'two such ids beside one unselected' | ['300', '99998', '99999'] | 'No devices have ids 99998, 99999 on the hub. Use hub_list_devices for device ids.'
+    }
+
+    @Unroll
+    def "with the bypass off and the Devices page unreadable, #tool treats every id outside the selection as unselected"() {
+        given: 'no /hub2/devicesList fixture, so the inventory read fails'
+        enableWrite()
+        selectOnly([100])
+        installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [100, 7]]])
+        def posts = postJson([roomId: 77])
+        hubGet.register('/room/delete/8') { '' }
+
+        when:
+        call.call(script)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message == message
+        posts.empty
+        hubGet.calls*.path == ['/hub2/devicesList']
+
+        where:
+        tool              | call                                                                                    | message
+        'hub_create_room' | { sc -> sc.toolCreateRoom([name: 'Garage', deviceIds: ['99999'], confirm: true]) }     | "Device 99999 is outside the MCP device selection, so a room cannot be created with it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist."
+        'hub_update_room' | { sc -> sc.toolUpdateRoom([roomId: '8', deviceIds: ['100', '99999'], confirm: true]) } | "Device 99999 is outside the MCP device selection, so this update cannot add it. Device 7 is outside the MCP device selection, so this update cannot remove it. Select them in the MCP app's device list, or turn on Bypass Device Allowlist. A device hub_get_room shows with accessible=false stays in the list you send."
+        'hub_delete_room' | { sc -> sc.toolDeleteRoom([roomId: '8', confirm: true]) }                              | "Device 7 is outside the MCP device selection, so deleting this room would unassign it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist."
     }
 
     @Unroll
@@ -829,9 +856,10 @@ class ToolRoomsSpec extends ToolSpecBase {
         when:
         def result = script.toolCreateRoom([name: 'Garage', deviceIds: ids, confirm: true])
 
-        then:
+        then: 'every id is authorized (or nothing is checked), so the Devices page is not read'
         result.success == true
         posts*.body*.deviceIds == [ids.collect { it as Integer }]
+        hubGet.calls.empty
 
         where:
         bypass | ids
@@ -841,10 +869,11 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     @Unroll
     def "hub_update_room with the bypass off checks only the ids whose membership changes: #label"() {
-        given: 'room 8 holds 600 (not selected) and 100 (selected); 101 is selected, 700 is not'
+        given: 'room 8 holds 600 (not selected), 100 (selected) and 7 (a deleted device); 101 is selected, 700 is not'
         enableWrite()
         selectOnly([100, 101])
-        installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [600, 100]]])
+        installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [600, 100, 7]]])
+        devicesOnHub([100, 101, 600, 700])
         def posts = postJson([roomId: 8])
         registerUpdateName([success: true, message: null])
 
@@ -857,17 +886,20 @@ class ToolRoomsSpec extends ToolSpecBase {
         }
 
         then:
-        refused ? (outcome instanceof IllegalArgumentException && outcome.message.startsWith(refused)) : outcome.success == true
+        refused ? (outcome instanceof IllegalArgumentException && outcome.message == refused) : outcome.success == true
         posts.size() == saves
+        hubGet.calls.count { it.path == '/hub2/devicesList' } == reads
 
         where:
-        label                                    | args                                              | refused                                                  | saves
-        'a rename keeps the unselected device'   | [name: 'Study']                                   | null                                                     | 0
-        're-sending it with a selected addition' | [name: 'Study', deviceIds: ['600', '100', '101']] | null                                                     | 1
-        'dropping a selected device'             | [deviceIds: ['600']]                              | null                                                     | 1
-        'dropping the unselected device'         | [deviceIds: ['100']]                              | 'deviceIds 600 is outside the MCP device selection'      | 0
-        'adding an unselected device'            | [deviceIds: ['600', '100', '700']]                | 'deviceIds 700 is outside the MCP device selection'      | 0
-        'both at once'                           | [deviceIds: ['100', '700']]                       | 'deviceIds 700, 600 are outside the MCP device selection' | 0
+        label                                    | args                                                   | refused | saves | reads
+        'a rename keeps the unselected device'   | [name: 'Study']                                        | null    | 0     | 0
+        're-sending it with a selected addition' | [name: 'Study', deviceIds: ['600', '100', '7', '101']] | null    | 1     | 0
+        'dropping a selected device'             | [deviceIds: ['600', '7']]                              | null    | 1     | 0
+        'dropping the deleted device'            | [deviceIds: ['600', '100']]                            | null    | 1     | 1
+        'dropping the unselected device'         | [deviceIds: ['100', '7']]                              | "Device 600 is outside the MCP device selection, so this update cannot remove it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist. A device hub_get_room shows with accessible=false stays in the list you send." | 0 | 1
+        'adding an unselected device'            | [deviceIds: ['600', '100', '7', '700']]                | "Device 700 is outside the MCP device selection, so this update cannot add it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist." | 0 | 1
+        'both at once'                           | [deviceIds: ['100', '7', '700']]                       | "Device 700 is outside the MCP device selection, so this update cannot add it. Device 600 is outside the MCP device selection, so this update cannot remove it. Select them in the MCP app's device list, or turn on Bypass Device Allowlist. A device hub_get_room shows with accessible=false stays in the list you send." | 0 | 1
+        'adding an id no device has'             | [deviceIds: ['600', '100', '7', '99999']]              | 'No device has id 99999 on the hub. Use hub_list_devices for device ids.' | 0 | 1
     }
 
     def "hub_update_room with the bypass on moves any device"() {
@@ -895,6 +927,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         selectOnly([100])
         settingsMap.bypassDeviceAllowlist = bypass
         installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [100]]])
+        devicesOnHub([100, 700])
         def posts = postJson([roomId: tool == 'hub_create_room' ? 77 : 8])
 
         when:
@@ -907,26 +940,54 @@ class ToolRoomsSpec extends ToolSpecBase {
             assert !response.result.isError && inner.success == true && posts.size() == 1
         } else {
             assert response.result.isError == true
-            assert inner.error.contains('deviceIds 700 is outside the MCP device selection')
+            assert inner.error.contains(needle)
             assert posts.empty
         }
 
         where:
-        [tool, args, bypass, useGateways] << [
-            ['hub_create_room', [name: 'Garage', deviceIds: ['700'], confirm: true]],
-            ['hub_update_room', [roomId: '8', deviceIds: ['100', '700'], confirm: true]]
+        [tool, args, needle, bypass, useGateways] << [
+            ['hub_create_room', [name: 'Garage', deviceIds: ['700'], confirm: true],
+             'Device 700 is outside the MCP device selection, so a room cannot be created with it.'],
+            ['hub_update_room', [roomId: '8', deviceIds: ['100', '700'], confirm: true],
+             'Device 700 is outside the MCP device selection, so this update cannot add it.']
         ].collectMany { row -> [[false, true], [true, false]].combinations().collect { row + it } }
         outcome = bypass ? 'saves' : 'refuses'
     }
 
     @Unroll
+    def "#tool via dispatch with the bypass off refuses an id no device has (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        selectOnly([100])
+        installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [100]]])
+        devicesOnHub([100])
+        def posts = postJson([roomId: 8])
+
+        when:
+        def response = dispatchRoomTool(tool, args, useGateways)
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('No device has id 99999 on the hub. Use hub_list_devices for device ids.')
+        posts.empty
+
+        where:
+        [tool, args, useGateways] << [
+            ['hub_create_room', [name: 'Garage', deviceIds: ['99999'], confirm: true]],
+            ['hub_update_room', [roomId: '8', deviceIds: ['100', '99999'], confirm: true]]
+        ].collectMany { row -> [true, false].collect { gw -> row + [gw] } }
+    }
+
+    @Unroll
     def "hub_delete_room with bypass=#bypass #verdict a room holding #label"() {
-        given: 'device 100 selected, 200 a child of this app, 300 neither'
+        given: 'device 100 selected, 200 a child of this app, 300 neither, 7 deleted from the hub'
         enableWrite()
         selectOnly([100])
         settingsMap.bypassDeviceAllowlist = bypass
         childDevicesList << new TestDevice(id: 200, name: 'child', label: 'Child')
         installGetRoomsStub([[id: 5, name: 'Office', deviceIds: ids]])
+        if (pageReadable) devicesOnHub([100, 200, 300])
         hubGet.register('/room/delete/5') { '' }
 
         when:
@@ -938,21 +999,24 @@ class ToolRoomsSpec extends ToolSpecBase {
         }
 
         then:
+        hubGet.calls.count { it.path == '/hub2/devicesList' } == reads
         if (refused) {
             assert outcome instanceof IllegalArgumentException
-            assert outcome.message == "deviceIds ${refused} is outside the MCP device selection, so deleting this room would unassign it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist."
-            assert hubGet.calls.empty
+            assert outcome.message == "Device ${refused} is outside the MCP device selection, so deleting this room would unassign it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist."
+            assert !hubGet.calls*.path.contains('/room/delete/5')
         } else {
             assert outcome.success == true && outcome.devicesUnassigned == ids.size()
-            assert hubGet.calls*.path == ['/room/delete/5']
+            assert hubGet.calls*.path.contains('/room/delete/5')
         }
 
         where:
-        label                       | bypass | ids             | refused
-        'an unselected device'      | false  | [100, 300]      | '300'
-        'selected and child only'   | false  | [100, 200]      | null
-        'no devices'                | false  | []              | null
-        'an unselected device'      | true   | [100, 300]      | null
+        label                                     | bypass | ids        | pageReadable | refused | reads
+        'an unselected device'                    | false  | [100, 300] | true         | '300'   | 1
+        'a deleted device'                        | false  | [100, 7]   | true         | null    | 1
+        'a deleted device, page unreadable'       | false  | [100, 7]   | false        | '7'     | 1
+        'selected and child only'                 | false  | [100, 200] | true         | null    | 0
+        'no devices'                              | false  | []         | true         | null    | 0
+        'an unselected device'                    | true   | [100, 300] | true         | null    | 0
         verdict = refused ? 'refuses' : 'deletes'
     }
 
@@ -964,6 +1028,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         selectOnly([100])
         settingsMap.bypassDeviceAllowlist = bypass
         installGetRoomsStub([[id: 5, name: 'Office', deviceIds: [100, 700]]])
+        devicesOnHub([100, 700])
         hubGet.register('/room/delete/5') { '' }
 
         when:
@@ -976,8 +1041,8 @@ class ToolRoomsSpec extends ToolSpecBase {
             assert !response.result.isError && inner.success == true && hubGet.calls*.path == ['/room/delete/5']
         } else {
             assert response.result.isError == true
-            assert inner.error.contains('deviceIds 700 is outside the MCP device selection, so deleting this room would unassign it')
-            assert hubGet.calls.empty
+            assert inner.error.contains('Device 700 is outside the MCP device selection, so deleting this room would unassign it')
+            assert !hubGet.calls*.path.contains('/room/delete/5')
         }
 
         where:
@@ -1030,8 +1095,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         ex.message.contains('SAFETY CHECK FAILED')
     }
 
-    def "hub_update_room reports the hub's refusal of a device id as a structured failure"() {
-        given:
+    def "hub_update_room reports the hub's refusal of a device id when the Devices page cannot name it"() {
+        given: 'no /hub2/devicesList fixture, so the ids cannot be looked up'
         enableWrite()
         installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [600]]])
         def posts = postJson([error: 'Invalid room or device ids'])
@@ -1044,7 +1109,57 @@ class ToolRoomsSpec extends ToolSpecBase {
         result.success == false
         !result.containsKey('isError')
         result.error == 'The hub refused to update room 8: Invalid room or device ids'
-        result.note.startsWith('Nothing was saved.')
+        result.note == "Nothing was saved. Check the device ids with hub_list_devices. See hub_get_tool_guide(section='rooms')."
+    }
+
+    @Unroll
+    def "#tool names the ids no device has when the hub refuses the save (#label)"() {
+        given:
+        enableWrite()
+        installGetRoomsStub([[id: 8, name: 'Office', deviceIds: [600]]])
+        devicesOnHub([600])
+        def posts = postJson([error: 'Invalid room or device ids'])
+
+        when:
+        def result = tool == 'hub_create_room'
+            ? script.toolCreateRoom([name: 'Garage', deviceIds: ids, confirm: true])
+            : script.toolUpdateRoom([roomId: '8', deviceIds: ids, confirm: true])
+
+        then:
+        posts.size() == 1
+        result.success == false
+        result.error == "The hub refused to ${action}: Invalid room or device ids. ${named}".toString()
+        result.note == "Nothing was saved. Send deviceIds without ${pronoun}; hub_list_devices lists device ids. See hub_get_tool_guide(section='rooms').".toString()
+
+        where:
+        tool              | label    | ids                      | action                 | named                                         | pronoun
+        'hub_create_room' | 'one'    | ['600', '99999']         | "create room 'Garage'" | 'No device has id 99999 on the hub.'          | 'it'
+        'hub_update_room' | 'one'    | ['600', '99999']         | 'update room 8'        | 'No device has id 99999 on the hub.'          | 'it'
+        'hub_update_room' | 'two'    | ['99998', '600', '99999'] | 'update room 8'       | 'No devices have ids 99998, 99999 on the hub.' | 'them'
+    }
+
+    @Unroll
+    def "hub_update_room explains a refused short rename by the deleted devices the room still lists (#label)"() {
+        given: 'the room list keeps deleted devices 7 and 8 beside device 600'
+        enableWrite()
+        installGetRoomsStub([[id: 8, name: 'Office', deviceIds: roomIds]])
+        if (pageReadable) devicesOnHub([600])
+        def posts = postJson([error: 'Invalid room or device ids'])
+
+        when:
+        def result = script.toolUpdateRoom([roomId: '8', name: 'Z', confirm: true])
+
+        then: 'the save re-sent the room\'s own list; the caller sent no ids, so the note does not tell them to check any'
+        posts*.body == [[roomId: 8, name: 'Z', deviceIds: roomIds]]
+        result.success == false
+        result.error == error
+        result.note == note + " See hub_get_tool_guide(section='rooms')."
+
+        where:
+        label                | roomIds     | pageReadable | error | note
+        'one deleted device' | [600, 7]    | true         | 'The hub refused to rename room 8: Invalid room or device ids. The room still lists device 7, which is no longer on the hub, so a rename to a name under 3 characters (which re-sends the device list) cannot be saved.' | 'Nothing was saved. Rename it to a name of 3 or more characters, or first send deviceIds without device 7.'
+        'two'                | [7, 600, 8] | true         | 'The hub refused to rename room 8: Invalid room or device ids. The room still lists devices 7, 8, which are no longer on the hub, so a rename to a name under 3 characters (which re-sends the device list) cannot be saved.' | 'Nothing was saved. Rename it to a name of 3 or more characters, or first send deviceIds without devices 7, 8.'
+        'page unreadable'    | [600, 7]    | false        | 'The hub refused to rename room 8: Invalid room or device ids' | 'Nothing was saved.'
     }
 
     @Unroll

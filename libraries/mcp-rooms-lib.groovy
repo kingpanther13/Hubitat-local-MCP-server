@@ -22,13 +22,14 @@ def toolGetRoom(args) {
     boolean redact = _redactsCredentials()
     def devices = []
     for (id in roomIds) {
-        if (authorized != null && !authorized.contains(id)) {
-            devices << [id: id, label: "(device not accessible via MCP)", name: "unknown", accessible: false]
-            continue
-        }
+        // The hub's room list keeps a deleted device's id; the Devices page is the hub's inventory.
         Map rec = pageById.get(id)
         if (!rec) {
-            devices << [id: id, label: "(device not on the hub's Devices page)", name: "unknown", accessible: true, metadataUnavailable: true]
+            devices << [id: id, label: "(device no longer on the hub)", name: "unknown", onHub: false, metadataUnavailable: true]
+            continue
+        }
+        if (authorized != null && !authorized.contains(id)) {
+            devices << [id: id, label: "(device not accessible via MCP)", name: "unknown", accessible: false]
             continue
         }
         def devInfo = [id: id, label: rec.label, name: rec.name]
@@ -69,9 +70,9 @@ private Map _listRoomSummaries(cursor) {
 }
 
 private Map _requireRoom(roomId) {
-    // getRooms() is the in-process room list, not a hub request. Every tool that takes a roomId checks
-    // it here first: GET /room/delete/<id> answers 200 for an unknown id, and /room/save answers success
-    // for one without changing anything.
+    // getRooms() is the in-process room list, not a hub request. An unknown id must be refused before
+    // any request: GET /room/delete/<id> answers 200 for one, and /room/save answers success without
+    // changing anything.
     String rid = roomId?.toString()?.trim()
     if (!rid) throw new IllegalArgumentException("roomId is required: the room id from hub_list_rooms.")
     def rooms = (getRooms() ?: []).findAll { it != null }
@@ -94,20 +95,45 @@ private List _roomDeviceIds(deviceIds) {
     }.unique()
 }
 
-private void _requireRoomDevicesSelected(Collection ids, boolean deleting = false) {
-    // While the allowlist bypass is off, a room write may move only devices MCP may configure, the same
-    // boundary hub_update_device keeps. On update only ids whose membership changes are checked, so a
-    // rename or a re-send that keeps an unselected device in its room still works. Deleting a room
-    // unassigns every device in it.
-    if (!ids) return
+private void _requireRoomDevicesSelected(String mode, Collection added, Collection removed) {
+    // Ids whose room membership the write changes. While the allowlist bypass is off each must be a
+    // device MCP may configure, the boundary hub_update_device keeps. An id the hub's inventory does
+    // not hold is no device: one being added is refused as unknown, one being removed (a deleted
+    // device the room list kept) has nothing to protect.
     Set authorized = _mcpAuthorizedIds(getChildDevices() ?: [])
     if (authorized == null) return
-    List outside = ids.collect { it.toString() }.unique().findAll { !authorized.contains(it) }
-    if (outside) {
-        String one = outside.size() == 1 ? 'it' : 'them'
-        String what = deleting ? "deleting this room would unassign ${one}" : "this room write cannot add or remove ${one}"
-        String tail = deleting ? "" : " A device hub_get_room shows with accessible=false stays in the list you send."
-        throw new IllegalArgumentException("deviceIds ${outside.join(', ')} ${outside.size() == 1 ? 'is' : 'are'} outside the MCP device selection, so ${what}. Select ${one} in the MCP app's device list, or turn on Bypass Device Allowlist.${tail}")
+    List addOut = (added ?: []).collect { it.toString() }.unique().findAll { !authorized.contains(it) }
+    List dropOut = (removed ?: []).collect { it.toString() }.unique().findAll { !authorized.contains(it) }
+    if (!addOut && !dropOut) return
+    Set onHub = _roomIdsOnHub(addOut + dropOut)
+    if (onHub != null) {
+        List unknown = addOut.findAll { !onHub.contains(it) }
+        if (unknown) {
+            throw new IllegalArgumentException("${unknown.size() == 1 ? 'No device has id' : 'No devices have ids'} ${unknown.join(', ')} on the hub. Use hub_list_devices for device ids.".toString())
+        }
+        dropOut = dropOut.findAll { onHub.contains(it) }
+    }
+    List sentences = []
+    if (addOut) sentences << _roomOutsideSentence(addOut, mode == 'create' ? 'a room cannot be created with' : 'this update cannot add')
+    if (dropOut) sentences << _roomOutsideSentence(dropOut, mode == 'delete' ? 'deleting this room would unassign' : 'this update cannot remove')
+    if (!sentences) return
+    String them = (addOut.size() + dropOut.size()) == 1 ? 'it' : 'them'
+    String tail = mode == 'update' && dropOut ? " A device hub_get_room shows with accessible=false stays in the list you send." : ""
+    throw new IllegalArgumentException("${sentences.join(' ')} Select ${them} in the MCP app's device list, or turn on Bypass Device Allowlist.${tail}".toString())
+}
+
+private String _roomOutsideSentence(List ids, String consequence) {
+    boolean one = ids.size() == 1
+    return "${one ? 'Device' : 'Devices'} ${ids.join(', ')} ${one ? 'is' : 'are'} outside the MCP device selection, so ${consequence} ${one ? 'it' : 'them'}.".toString()
+}
+
+private Set _roomIdsOnHub(Collection ids) {
+    // The ids the hub's Devices page lists; null when it cannot be read.
+    try {
+        return _readDevicesPage(ids.collect { it.toString() } as Set).collect { it.id } as Set
+    } catch (IllegalStateException e) {
+        mcpLog("warn", "room", "The hub's device list could not be read to check device ids: ${e.message}")
+        return null
     }
 }
 
@@ -135,9 +161,10 @@ private Map _roomFailure(String error, String note) {
             note: "${note} See hub_get_tool_guide(section='rooms').".toString()]
 }
 
-private Map _saveRoom(roomId, String name, List deviceIds, String action) {
+private Map _saveRoom(roomId, String name, List deviceIds, String action, boolean resentIds = false) {
     // One POST /room/save, the call the hub's Rooms page makes. The hub answers {roomId} on success
     // and {error} (HTTP 200) for a bad device id. Returns [roomId] or [failure: <structured error>].
+    // resentIds: the device list is the room's own, not one the caller sent.
     def parsed
     try {
         parsed = hubInternalPostJson("/room/save", groovy.json.JsonOutput.toJson([roomId: roomId, name: name, deviceIds: deviceIds]), 30)
@@ -146,8 +173,7 @@ private Map _saveRoom(roomId, String name, List deviceIds, String action) {
             "The hub may still have saved it; check with hub_list_rooms before retrying.")]
     }
     if (parsed instanceof Map && parsed.error) {
-        return [failure: _roomFailure("The hub refused to ${action}: ${parsed.error}".toString(),
-            "Nothing was saved. Check the device ids with hub_list_devices.")]
+        return [failure: _roomSaveRefusal(action, parsed.error.toString(), deviceIds, resentIds)]
     }
     def savedId = (parsed instanceof Map && !parsed._unparseable) ? parsed.roomId : null
     if (savedId == null) {
@@ -158,14 +184,32 @@ private Map _saveRoom(roomId, String name, List deviceIds, String action) {
     return [roomId: savedId.toString()]
 }
 
+private Map _roomSaveRefusal(String action, String reason, List deviceIds, boolean resentIds) {
+    // The hub's refusal names no id, so the ones its inventory lacks are looked up (best effort).
+    Set onHub = deviceIds ? _roomIdsOnHub(deviceIds) : null
+    List gone = onHub == null ? [] : deviceIds.collect { it.toString() }.findAll { !onHub.contains(it) }
+    String error = "The hub refused to ${action}: ${reason}"
+    if (!gone) {
+        return _roomFailure(error, deviceIds && !resentIds ? "Nothing was saved. Check the device ids with hub_list_devices." : "Nothing was saved.")
+    }
+    boolean one = gone.size() == 1
+    String ids = gone.join(', ')
+    if (resentIds) {
+        return _roomFailure("${error}. The room still lists ${one ? 'device' : 'devices'} ${ids}, which ${one ? 'is' : 'are'} no longer on the hub, so a rename to a name under 3 characters (which re-sends the device list) cannot be saved.".toString(),
+            "Nothing was saved. Rename it to a name of 3 or more characters, or first send deviceIds without ${one ? 'device' : 'devices'} ${ids}.".toString())
+    }
+    return _roomFailure("${error}. ${one ? 'No device has id' : 'No devices have ids'} ${ids} on the hub.".toString(),
+        "Nothing was saved. Send deviceIds without ${one ? 'it' : 'them'}; hub_list_devices lists device ids.".toString())
+}
+
 def toolCreateRoom(args) {
     requireDestructiveConfirm(args.confirm)
     String name = args.name?.toString()?.trim()
-    if (!name) throw new IllegalArgumentException("Room name is required")
+    if (!name) throw new IllegalArgumentException("Room name is required.")
     List deviceIds = args.deviceIds == null ? [] : _roomDeviceIds(args.deviceIds)
     List rooms = (getRooms() ?: []).findAll { it != null }
     _requireUniqueRoomName(rooms, name, null)
-    _requireRoomDevicesSelected(deviceIds)
+    _requireRoomDevicesSelected("create", deviceIds, [])
     List moved = _roomMovedDevices(rooms, deviceIds, null)
 
     def saved = _saveRoom(0, name, deviceIds, "create room '${name}'")
@@ -230,9 +274,9 @@ private Map _updateRoomLocked(roomIdArg, String newName, List newIds) {
     Map updated = [id: roomId, name: finalName]
     if (finalName != oldName) updated.previousName = oldName
     if (newIds == null && finalName.length() < 3) {
-        // /room/updateName refuses names under 3 characters and /room/save takes them; the lock keeps
-        // the re-sent device list from undoing another update.
-        def saved = _saveRoom(roomId as Integer, finalName, currentIds, "rename room ${roomId}")
+        // /room/updateName refuses names under 3 characters and /room/save takes them. The re-sent
+        // device list can undo a concurrent room change; the lock covers only other hub_update_room calls.
+        def saved = _saveRoom(roomId as Integer, finalName, currentIds, "rename room ${roomId}", true)
         if (saved.failure) return saved.failure
     } else if (newIds == null) {
         Map failure = _renameRoom(roomId, finalName)
@@ -240,7 +284,7 @@ private Map _updateRoomLocked(roomIdArg, String newName, List newIds) {
     } else {
         List added = newIds - currentIds
         List dropped = currentIds - newIds
-        _requireRoomDevicesSelected(added + dropped)
+        _requireRoomDevicesSelected("update", added, dropped)
         List moved = _roomMovedDevices(found.rooms, added, roomId)
         def saved = _saveRoom(roomId as Integer, finalName, newIds, "update room ${roomId}")
         if (saved.failure) return saved.failure
@@ -259,7 +303,7 @@ def toolDeleteRoom(args) {
     String roomId = room.id.toString()
     String roomName = room.name
     int deviceCount = room.deviceIds?.size() ?: 0
-    _requireRoomDevicesSelected(room.deviceIds ?: [], true)
+    _requireRoomDevicesSelected("delete", [], room.deviceIds ?: [])
 
     // GET, as the hub's Rooms page does (POST answers 405); the hub answers an empty 200.
     try {
@@ -292,7 +336,7 @@ def _getAllToolDefinitions_partRooms() {
         ],
         [
             name: "hub_get_room",
-            description: "Read one room by id: its name and each device's label and current states. Read-only.[[FLAT_TRIM]] A device outside the MCP device selection comes back with accessible=false and no states. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
+            description: "Read one room by id: its name and each device's label and current states. Read-only.[[FLAT_TRIM]] A device outside the MCP device selection comes back with accessible=false and no states; an id with onHub=false belongs to a deleted device the hub's room list kept. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -303,7 +347,7 @@ def _getAllToolDefinitions_partRooms() {
         ],
         [
             name: "hub_create_room",
-            description: "Create a room, optionally with devices (each moves out of its current room). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Returns the new room's id, and movedDevices for devices taken from another room. Room names must be unique. Devices outside the MCP device selection are refused unless Bypass Device Allowlist is on. To move devices into an existing room use hub_update_room instead. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
+            description: "Create a room, optionally with devices (each moves out of its current room). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Returns the new room's id, and movedDevices for devices taken from another room. Room names must be unique. Devices outside the MCP device selection are refused unless Bypass Device Allowlist is on, and an id that is no device on the hub is refused. To move devices into an existing room use hub_update_room instead. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -316,7 +360,7 @@ def _getAllToolDefinitions_partRooms() {
         ],
         [
             name: "hub_update_room",
-            description: "Rename a room and/or replace its device list, by id; an omitted field keeps its value. deviceIds is the FULL list: a device left out becomes unassigned, an added one leaves its previous room. Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Send room updates one at a time, never in parallel. Start from hub_get_room(roomId) and keep its accessible=false devices in the list: adding or removing a device outside the MCP device selection is refused unless Bypass Device Allowlist is on. After a rename, automations or dashboards that name the room may need updating. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
+            description: "Rename a room and/or replace its device list, by id; an omitted field keeps its value. deviceIds is the FULL list: a device left out becomes unassigned, an added one leaves its previous room. Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] Send room updates one at a time, never in parallel. Start from hub_get_room(roomId), keep its accessible=false devices in the list and leave out its onHub=false ids (deleted devices, which the hub refuses to save): adding or removing a device outside the MCP device selection is refused unless Bypass Device Allowlist is on. After a rename, automations or dashboards that name the room may need updating. See hub_get_tool_guide(section='rooms').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [

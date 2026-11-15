@@ -505,7 +505,7 @@ All routes require the Write master. Validation runs before mutation; runtime fa
 | Tool | Access Gate | Description |
 |------|------------|-------------|
 | `hub_list_rooms` | Read master | All rooms with IDs, names, device ids via `getRooms()` (cursor-pageable) |
-| `hub_get_room` | Read master | One room by `roomId`: its devices with labels and current states from the Devices page |
+| `hub_get_room` | Read master | One room by `roomId`: its devices with labels and current states from the Devices page; an id the page does not list (a deleted device) is marked `onHub: false` |
 | `hub_create_room` | Write master + confirm | Creates room via `POST /room/save` with `roomId: 0`; the new id comes from the response's `roomId`; devices taken from another room are reported in `movedDevices` |
 | `hub_delete_room` | Write master + confirm | Deletes room via `GET /room/delete/<id>` (POST answers 405). Devices become unassigned |
 | `hub_update_room` | Write master + confirm | A name-only update uses `GET /room/updateName?id=&name=` (a name under 3 characters goes through `POST /room/save` with the room's current `deviceIds`, since `/room/updateName` refuses it); with `deviceIds` it is `POST /room/save` with the existing `roomId`, the new or current `name`, and the new `deviceIds` (a wholesale device list). Updates are serialized in-process |
@@ -518,7 +518,8 @@ All routes require the Write master. Validation runs before mutation; runtime fa
 - `getRooms()` is a built-in Hubitat SDK method returning `[[id:1, name:"Bedroom", deviceIds:[5, 6]], ...]`
 - `/room/save` answers `{"roomId": <id>}` on success and `{"error": "Invalid room or device ids"}` (HTTP 200) for an unknown device id; an answer without `roomId` is reported as a failure. It also answers success for a `roomId` that does not exist without changing anything, and `GET /room/delete/<id>` answers 200 for an unknown id, so update and delete check the id against `getRooms()` first; no write re-reads the room list afterwards
 - `/room/updateName` answers `{"success":true,"message":null}`, or `success:false` with `"Room not found"` or `"Room name is too short"` (under 3 characters; `/room/save` accepts such a name)
-- While Bypass Device Allowlist is off, create refuses any device outside the MCP device selection, update refuses one whose membership changes, and delete refuses a room that holds one, before any request
+- `getRooms()` keeps a deleted device's id in its room, and `/room/save` refuses a list holding it (`Invalid room or device ids`); a refused save looks the sent ids up on `/hub2/devicesList` and names the ones not on the hub. A rename to a name under 3 characters re-sends the room's list, so it fails while the room holds such an id
+- While Bypass Device Allowlist is off, create refuses any device outside the MCP device selection, update refuses one whose membership changes, and delete refuses a room that holds one, before any request. Only then is `/hub2/devicesList` read: an id it does not list is refused as unknown when added, and allowed when removed or deleted with its room
 - The hub allows duplicate room names; create and rename refuse them
 - Form-encoded bodies return 500 — the endpoint strictly requires JSON
 
