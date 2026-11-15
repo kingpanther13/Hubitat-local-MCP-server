@@ -6090,7 +6090,7 @@ def getGatewayConfig() {
             description: "Manage Hubitat dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards: list, view, create or copy, update, and delete. Easy update REPLACES the config wholesale (read it first with hub_get_dashboard); legacy update edits name, authorized devices, or the tile layout (grid, background, colors) either wholesale or via granular tile ops. Delete is destructive (confirm + recent backup). Reads are also in hub_read_dashboards.",
             tools: ["hub_list_dashboards", "hub_get_dashboard", "hub_create_dashboard", "hub_update_dashboard", "hub_delete_dashboard"],
             summaries: [
-                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). No args",
+                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). Args: cursor?",
                 hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: dashboardId",
                 hub_create_dashboard: "Create an Easy or empty legacy dashboard, or copy one. Args: name, type?, deviceIds, options? | sourceId, name?",
                 hub_update_dashboard: "Update by id: Easy wholesale, or legacy name/deviceIds/layout (or tile ops). Args: dashboardId, name?, deviceIds?, options?/layout?/addTiles?/updateTiles?/removeTileIds?/setOptions?",
@@ -6108,7 +6108,7 @@ def getGatewayConfig() {
             description: "Read-only dashboard inspection: list dashboards (Easy and legacy Hubitat®) and view one dashboard's full config -- Easy tiles/navigation/theme/devices, or a legacy dashboard's authorized devices and tile layout (grid, colors). Create/copy/update/delete live in hub_manage_dashboards.",
             tools: ["hub_list_dashboards", "hub_get_dashboard"],
             summaries: [
-                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). No args",
+                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). Args: cursor?",
                 hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: dashboardId"
             ],
             searchHints: [
@@ -12436,7 +12436,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 **Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard. These always return one page: `hub_list_backups` (scope=source), with `hasMore: true` and `nextCursor` when more backups follow; `hub_list_drivers(include='all')`, whose full catalog is too large for one response through the cloud relay; and `hub_list_devices` in `format='context'` when `limit` is unset. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
 - 25: `hub_list_hpm_packages`.
-- 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices` in `format='context'` when `limit` is unset (the other formats are unpaged until a `cursor` or a positive `limit` is given).
+- 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_dashboards`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices` in `format='context'` when `limit` is unset (the other formats are unpaged until a `cursor` or a positive `limit` is given).
 - 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs` (50 per tab when several are listed), `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
 - `hub_get_device` and `hub_get_tool_guide` page oversized responses automatically.
 
@@ -12867,7 +12867,7 @@ Reference for the dashboard tools (hub_list_dashboards, hub_get_dashboard, hub_c
 
 ### hub_list_dashboards
 
-Read-only; each entry carries `id`, `name`, and `type`. Easy entries also carry their tile/theme config and `localOnly`; legacy entries add only `deviceIds`. A list built from the dashboard parents' child apps (when the hub's own list is unreadable) carries id + name + type only; `partial: true` marks a list that may be missing dashboards.
+Read-only; each entry carries `id`, `name`, and `type`. Easy entries also carry their tile/theme config and `localOnly`; legacy entries add only `deviceIds`. A list built from the dashboard parents' child apps (when the hub's own list is unreadable) carries id + name + type only; `partial: true` marks a list that may be missing dashboards. With `cursor` (page size 50) the result also carries `total`, the whole list's size; `count` is the page's.
 
 ### hub_get_dashboard
 

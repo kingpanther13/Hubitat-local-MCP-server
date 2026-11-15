@@ -5605,6 +5605,26 @@ class TestRunner:
         listed_all = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})
         assert listed_all.get("source") == "dashboard-all", \
             f"hub_list_dashboards fell back to the child-app list: {listed_all.get('source')} {listed_all.get('note')}"
+        # Cursor paging: "" starts at the first page and nextCursor walks the rest; the pages together
+        # are the uncursored list, each page reports the whole list's size as total.
+        all_ids = [str(d.get("id")) for d in listed_all.get("dashboards") or []]
+        assert dash_id in all_ids, f"the new dashboard is missing from hub_list_dashboards: {all_ids}"
+        paged_ids: list[str] = []
+        page_cursor: str | None = ""
+        pages = 0
+        while page_cursor is not None:
+            dash_page = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {"cursor": page_cursor}})
+            pages += 1
+            assert pages <= 100, f"hub_list_dashboards nextCursor never ended: {dash_page.get('nextCursor')}"
+            rows = dash_page.get("dashboards")
+            assert isinstance(rows, list) and dash_page.get("total") == len(all_ids), \
+                f"a paged hub_list_dashboards lacks its rows or the whole list's total: {dash_page}"
+            assert len(rows) <= 50 and dash_page.get("count") == len(rows), f"a dashboard page is not at most 50 rows: {dash_page}"
+            paged_ids += [str(d.get("id")) for d in rows]
+            page_cursor = dash_page.get("nextCursor")
+        assert paged_ids == all_ids, f"the dashboard pages {paged_ids} do not add up to the whole list {all_ids}"
+        self._expect_tool_refusal("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {"cursor": "banana"}},
+                                  "cursor")
 
         # UPDATE (wholesale): flip a tile toggle and confirm it took -- the U in the CRUD cycle.
         # The full config read above is what makes the wholesale round-trip possible.
@@ -5727,29 +5747,49 @@ class TestRunner:
 
     def _legacy_tile_editor_keys(self, dash_id: str) -> None:
         """The tile editor's own keys are stored: a global-variable tile showing a BAT_E2E_ hub
-        variable, and a linkName on an existing tile. The variable's tile is removed before the
-        variable is deleted."""
-        var_name = f"{PREFIX}DashVar_{_run_artifact_suffix()}"
+        variable, and a linkName on an existing tile. A second global-variable tile in the same cell
+        showing another variable is a different tile and is stored too; an identical retry of one is
+        skipped. The variables' tiles are removed before the variables are deleted."""
+        suffix = _run_artifact_suffix()
+        var_name = f"{PREFIX}DashVar_{suffix}"
+        var_name_2 = f"{PREFIX}DashVar2_{suffix}"
         self._create_variable(var_name, "String", "dashboard")
         try:
+            self._create_variable(var_name_2, "String", "dashboard2")
             current = ((self._read_dashboard(dash_id) or {}).get("layout") or {}).get("tiles") or []
             assert current, f"dashboard {dash_id} has no tile to give a linkName: {current}"
             first_id = current[0]["id"]
+            var_tiles = [{"template": "global-variable", "col": 4, "row": 4, "globalVar": v} for v in (var_name, var_name_2)]
             added = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_update_dashboard", "args": {
                 "dashboardId": dash_id,
                 "updateTiles": [{"id": first_id, "linkName": "Docs"}],
-                "addTiles": [{"template": "global-variable", "col": 4, "row": 4, "globalVar": var_name}]}})
+                "addTiles": var_tiles}})
             assert added.get("success") is True and added.get("applied") == ["updateTiles", "addTiles"], \
                 f"the tile editor keys were refused: {added}"
+            assert not added.get("warnings"), f"two tiles in one cell with different variables were skipped: {added}"
             saved = ((self._read_dashboard(dash_id) or {}).get("layout") or {}).get("tiles") or []
-            var_tile = next((t for t in saved if t.get("template") == "global-variable"), None)
-            assert var_tile is not None and var_tile.get("globalVar") == var_name, f"globalVar was not stored: {saved}"
+            ours = {var_name, var_name_2}
+            var_saved = [t for t in saved if t.get("template") == "global-variable" and t.get("globalVar") in ours]
+            assert sorted(t["globalVar"] for t in var_saved) == sorted(ours) and \
+                all(str(t.get("col")) == "4" and str(t.get("row")) == "4" for t in var_saved), \
+                f"both global-variable tiles in the same cell were not stored: {saved}"
             assert next(t for t in saved if t.get("id") == first_id).get("linkName") == "Docs", \
                 f"linkName was not stored: {saved}"
+            # An identical retry of one of them adds nothing.
+            retried = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_update_dashboard", "args": {
+                "dashboardId": dash_id, "addTiles": [var_tiles[1]]}})
+            assert retried.get("success") is True and \
+                any("identical tile already exists" in str(w) for w in retried.get("warnings") or []), \
+                f"an identical tile retry was not skipped with a warning: {retried}"
+            after_retry = ((self._read_dashboard(dash_id) or {}).get("layout") or {}).get("tiles") or []
+            assert len(after_retry) == len(saved), \
+                f"an identical tile retry changed the tile count from {len(saved)} to {len(after_retry)}: {after_retry}"
+            var_tile_ids = [t["id"] for t in after_retry if t.get("template") == "global-variable" and t.get("globalVar") in ours]
             removed = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_update_dashboard", "args": {
-                "dashboardId": dash_id, "removeTileIds": [var_tile["id"]]}})
-            assert removed.get("success") is True, f"removing the global-variable tile failed: {removed}"
+                "dashboardId": dash_id, "removeTileIds": var_tile_ids}})
+            assert removed.get("success") is True, f"removing the global-variable tiles failed: {removed}"
         finally:
+            self._delete_variable_safe(var_name_2, inline=True)
             self._delete_variable_safe(var_name, inline=True)
 
     def _overlapping_legacy_updates(self, dash_id: str) -> None:
@@ -5885,12 +5925,16 @@ class TestRunner:
         # An addTiles key outside the tile fields is refused, named, before the save -- and before the
         # rename and the device write sent in the same call.
         layout_before_typo = (self._read_dashboard(dash_id) or {}).get("layout")
+        assert isinstance(layout_before_typo, dict), \
+            f"the layout read before the typo refusal was partial or had no layout: {layout_before_typo!r}"
         self._expect_tool_refusal("hub_manage_dashboards", {
             "tool": "hub_update_dashboard",
             "args": {"dashboardId": dash_id, "name": f"{dash_name}_Typo", "deviceIds": [],
                      "addTiles": [{"template": "clock", "colum": 2, "row": 1}]}},
             "addTiles: unknown tile key colum")
         after_typo = self._read_dashboard(dash_id) or {}
+        assert isinstance(after_typo.get("layout"), dict), \
+            f"the layout read after the typo refusal was partial or had no layout: {after_typo}"
         assert after_typo.get("layout") == layout_before_typo, f"the refused addTiles changed the layout: {after_typo}"
         assert after_typo.get("name") == dash_name, f"the refused update renamed the dashboard: {after_typo}"
         assert after_typo.get("deviceIds") == [str(switch_id)], \
@@ -5901,11 +5945,15 @@ class TestRunner:
 
         # A partial wholesale layout is refused by the hub; the note says to send the whole object.
         layout_before = (self._read_dashboard(dash_id) or {}).get("layout")
+        assert isinstance(layout_before, dict), \
+            f"the layout read before the partial-layout refusal was partial or had no layout: {layout_before!r}"
         partial = self.client.call_tool_failure("hub_manage_dashboards", {"tool": "hub_update_dashboard", "args": {
             "dashboardId": dash_id, "layout": {"cols": 4, "rows": 4, "tiles": []}}})
         assert "the whole object hub_get_dashboard returns" in str(partial.get("note")), \
             f"the refused partial layout did not name the whole-object rule: {partial}"
         layout_after = (self._read_dashboard(dash_id) or {}).get("layout")
+        assert isinstance(layout_after, dict), \
+            f"the layout read after the partial-layout refusal was partial or had no layout: {layout_after!r}"
         assert layout_after == layout_before, f"the refused partial layout changed the layout: {layout_after}"
 
         # The listed legacy entry carries no Easy-only fields.

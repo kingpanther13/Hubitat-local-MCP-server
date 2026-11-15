@@ -5,7 +5,16 @@ library(name: "McpDashboardsLib", namespace: "mcp", author: "kingpanther13", des
 @groovy.transform.Field static final Object DASHBOARD_UPDATE_LOCK = new Object()
 
 def toolListDashboards(args = null) {
-    return _dashboardFailureNote(_readDashboards().out)
+    def cursor = args?.cursor
+    Map out = _readDashboards().out
+    if (cursor != null && out.dashboards instanceof List) {
+        def paged = _paginateList(out.dashboards, cursor, 50, "hub_list_dashboards")
+        out.total = out.dashboards.size()
+        out.dashboards = paged.page
+        out.count = paged.page.size()
+        if (paged.nextCursor != null) out.nextCursor = paged.nextCursor
+    }
+    return _dashboardFailureNote(out)
 }
 
 def toolGetDashboard(args) {
@@ -1226,7 +1235,9 @@ def _getAllToolDefinitions_partDashboards() {
             description: "List the hub's dashboards -- Easy Dashboards and legacy Hubitat® Dashboards -- with id, name and type ('easy' or 'legacy').[[FLAT_TRIM]] Easy entries also carry their tile/theme config. Read one in full with hub_get_dashboard. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
-                properties: [:]
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ]
             ]
         ],
         [

@@ -4021,6 +4021,8 @@ def test_driver_catalog_stops_when_next_cursor_never_ends():
             return {"drivers": [{"id": 1}], "source": "hub_api", "nextCursor": "1"}
     with pytest.raises(AssertionError, match="never ended"):
         _driver_catalog_runner(Endless())._driver_catalog("all")
+
+
 def _dashboard_ids_runner(listed):
     runner = object.__new__(et.TestRunner)
     runner.client = SimpleNamespace(call_tool=lambda gateway, args: listed)

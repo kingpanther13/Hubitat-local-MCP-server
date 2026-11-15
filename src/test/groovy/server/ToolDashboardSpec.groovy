@@ -366,6 +366,113 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.note != null
     }
 
+    def "list pages by cursor: none returns all, '' the first 50, nextCursor the rest, a bad cursor is refused"() {
+        given: '120 dashboards on /dashboard/all'
+        hubGet.register('/dashboard/all') { params ->
+            JsonOutput.toJson((1..120).collect { easyRow(1000 + it, "Dash ${it}".toString()) })
+        }
+
+        when: 'no cursor: the whole list, no paging keys'
+        def all = script.toolListDashboards([:])
+
+        then:
+        all.count == 120
+        all.dashboards.size() == 120
+        !all.containsKey('nextCursor')
+        !all.containsKey('total')
+        all.source == 'dashboard-all'
+
+        when: 'the first page'
+        def p1 = script.toolListDashboards([cursor: ''])
+
+        then:
+        p1.dashboards*.id == (1..50).collect { (1000 + it).toString() }
+        p1.count == 50
+        p1.total == 120
+        p1.nextCursor == '50'
+        p1.source == 'dashboard-all'
+
+        when: 'following nextCursor to the end'
+        def p2 = script.toolListDashboards([cursor: p1.nextCursor])
+        def p3 = script.toolListDashboards([cursor: p2.nextCursor])
+
+        then: 'the pages together are the whole list, and the last page has no nextCursor'
+        p2.count == 50
+        p2.nextCursor == '100'
+        p3.count == 20
+        p3.total == 120
+        !p3.containsKey('nextCursor')
+        (p1.dashboards + p2.dashboards + p3.dashboards)*.id == all.dashboards*.id
+
+        when: 'a non-numeric cursor'
+        script.toolListDashboards([cursor: 'banana'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('cursor')
+        ex.message.contains('hub_list_dashboards')
+
+        when: 'a cursor past the end'
+        script.toolListDashboards([cursor: '999'])
+
+        then:
+        def far = thrown(IllegalArgumentException)
+        far.message.contains('out of range')
+    }
+
+    def "the child-app fallback list pages too, keeping its source, note and partial flag"() {
+        given: '/dashboard/all empty; 60 Easy Dashboard children plus one malformed node'
+        hubGet.register('/dashboard/all') { params -> '[]' }
+        def kids = (1..60).collect { [data: [id: 2000 + it, name: "Kid ${it}".toString(), type: 'Easy Dashboard'], children: []] }
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([apps: [[data: [id: 19, name: 'Easy Dashboards', type: 'Easy Dashboard Parent'], children: kids + ['junk']]]])
+        }
+
+        when:
+        def p1 = script.toolListDashboards([cursor: ''])
+        def p2 = script.toolListDashboards([cursor: p1.nextCursor])
+
+        then:
+        p1.source == 'child-apps'
+        p1.count == 50
+        p1.total == 60
+        p1.nextCursor == '50'
+        p1.partial == true
+        p1.note.contains('child apps')
+        p2.count == 10
+        p2.total == 60
+        !p2.containsKey('nextCursor')
+        p2.partial == true
+        (p1.dashboards + p2.dashboards)*.id == (1..60).collect { (2000 + it).toString() }
+    }
+
+    def "a cursor on a failed list read returns the failure, not a paging error"() {
+        given: 'both reads fail'
+        hubGet.register('/dashboard/all') { params -> throw new RuntimeException('endpoint down') }
+
+        when:
+        def r = script.toolListDashboards([cursor: '50'])
+
+        then:
+        r.success == false
+        !r.containsKey('total')
+        !r.containsKey('nextCursor')
+    }
+
+    def "single-dashboard reads use the whole list, not a page"() {
+        given: '60 dashboards; the one asked for is past the first page'
+        hubGet.register('/dashboard/all') { params ->
+            JsonOutput.toJson((1..60).collect { easyRow(1000 + it, "Dash ${it}".toString()) })
+        }
+
+        when:
+        def r = script.toolGetDashboard([dashboardId: '1055'])
+
+        then:
+        r.success != false
+        r.name == 'Dash 55'
+    }
+
     // ---------- hub_get_dashboard: one dashboard in full ----------
 
     def "get filters the list by id"() {
@@ -1093,6 +1200,28 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         then:
         mcpDriver.parseInner(resp).count == 2
+    }
+
+    def "hub_list_dashboards via dispatch pages with a cursor and refuses a bad one as a tool error"() {
+        given:
+        hubGet.register('/dashboard/all') { params ->
+            JsonOutput.toJson((1..55).collect { easyRow(1000 + it, "Dash ${it}".toString()) })
+        }
+
+        when:
+        def first = mcpDriver.parseInner(mcpDriver.callTool('hub_list_dashboards', [cursor: '']))
+        def last = mcpDriver.parseInner(mcpDriver.callTool('hub_list_dashboards', [cursor: first.nextCursor]))
+        def bad = mcpDriver.callTool('hub_list_dashboards', [cursor: 'banana'])
+
+        then:
+        first.count == 50
+        first.total == 55
+        first.nextCursor == '50'
+        last.count == 5
+        !last.containsKey('nextCursor')
+        bad.error == null
+        bad.result.isError == true
+        (mcpDriver.parseInner(bad).error as String).contains('cursor')
     }
 
     def "hub_get_dashboard via dispatch returns the one dashboard"() {
