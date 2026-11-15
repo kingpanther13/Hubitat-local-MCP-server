@@ -5606,7 +5606,8 @@ class TestRunner:
         assert listed_all.get("source") == "dashboard-all", \
             f"hub_list_dashboards fell back to the child-app list: {listed_all.get('source')} {listed_all.get('note')}"
         # Cursor paging: "" starts at the first page and nextCursor walks the rest; the pages together
-        # are the uncursored list, each page reports the whole list's size as total.
+        # are the uncursored list, each page reports the whole list's size as total. A test hub usually
+        # holds fewer than 50 dashboards, so the walk across pages is proven in ToolDashboardSpec.
         all_ids = [str(d.get("id")) for d in listed_all.get("dashboards") or []]
         assert dash_id in all_ids, f"the new dashboard is missing from hub_list_dashboards: {all_ids}"
         paged_ids: list[str] = []
@@ -5616,7 +5617,11 @@ class TestRunner:
             dash_page = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {"cursor": page_cursor}})
             pages += 1
             assert pages <= 100, f"hub_list_dashboards nextCursor never ended: {dash_page.get('nextCursor')}"
+            assert dash_page.get("source") == "dashboard-all", \
+                f"a paged hub_list_dashboards fell back to the child-app list: {dash_page.get('source')} {dash_page.get('note')}"
             rows = dash_page.get("dashboards")
+            if len(all_ids) <= 50:
+                assert "nextCursor" not in dash_page, f"a list of {len(all_ids)} dashboards offered a second page: {dash_page}"
             assert isinstance(rows, list) and dash_page.get("total") == len(all_ids), \
                 f"a paged hub_list_dashboards lacks its rows or the whole list's total: {dash_page}"
             assert len(rows) <= 50 and dash_page.get("count") == len(rows), f"a dashboard page is not at most 50 rows: {dash_page}"
@@ -5625,6 +5630,8 @@ class TestRunner:
         assert paged_ids == all_ids, f"the dashboard pages {paged_ids} do not add up to the whole list {all_ids}"
         self._expect_tool_refusal("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {"cursor": "banana"}},
                                   "cursor")
+        self._expect_tool_refusal("hub_read_dashboards", {"tool": "hub_list_dashboards",
+                                                          "args": {"cursor": str(len(all_ids))}}, "out of range")
 
         # UPDATE (wholesale): flip a tile toggle and confirm it took -- the U in the CRUD cycle.
         # The full config read above is what makes the wholesale round-trip possible.
