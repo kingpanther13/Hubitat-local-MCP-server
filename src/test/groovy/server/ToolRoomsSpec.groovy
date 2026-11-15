@@ -838,9 +838,9 @@ class ToolRoomsSpec extends ToolSpecBase {
 
         where:
         tool              | call                                                                                    | message
-        'hub_create_room' | { sc -> sc.toolCreateRoom([name: 'Garage', deviceIds: ['99999'], confirm: true]) }     | "Device 99999 is outside the MCP device selection, so a room cannot be created with it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist."
-        'hub_update_room' | { sc -> sc.toolUpdateRoom([roomId: '8', deviceIds: ['100', '99999'], confirm: true]) } | "Device 99999 is outside the MCP device selection, so this update cannot add it. Device 7 is outside the MCP device selection, so this update cannot remove it. Select them in the MCP app's device list, or turn on Bypass Device Allowlist. A device hub_get_room shows with accessible=false stays in the list you send."
-        'hub_delete_room' | { sc -> sc.toolDeleteRoom([roomId: '8', confirm: true]) }                              | "Device 7 is outside the MCP device selection, so deleting this room would unassign it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist."
+        'hub_create_room' | { sc -> sc.toolCreateRoom([name: 'Garage', deviceIds: ['99999'], confirm: true]) }     | "Device 99999 is outside the MCP device selection, so a room cannot be created with it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist. The hub's device list could not be read to rule out a deleted device; retry if it no longer exists."
+        'hub_update_room' | { sc -> sc.toolUpdateRoom([roomId: '8', deviceIds: ['100', '99999'], confirm: true]) } | "Device 99999 is outside the MCP device selection, so this update cannot add it. Device 7 is outside the MCP device selection, so this update cannot remove it. Select them in the MCP app's device list, or turn on Bypass Device Allowlist. A device hub_get_room shows with accessible=false stays in the list you send. The hub's device list could not be read to rule out a deleted device; retry if any no longer exist."
+        'hub_delete_room' | { sc -> sc.toolDeleteRoom([roomId: '8', confirm: true]) }                              | "Device 7 is outside the MCP device selection, so deleting this room would unassign it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist. The hub's device list could not be read to rule out a deleted device; retry if it no longer exists."
     }
 
     @Unroll
@@ -893,8 +893,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         where:
         label                                    | args                                                   | refused | saves | reads
         'a rename keeps the unselected device'   | [name: 'Study']                                        | null    | 0     | 0
-        're-sending it with a selected addition' | [name: 'Study', deviceIds: ['600', '100', '7', '101']] | null    | 1     | 0
-        'dropping a selected device'             | [deviceIds: ['600', '7']]                              | null    | 1     | 0
+        're-sending it with a selected addition' | [name: 'Study', deviceIds: ['600', '100', '101']]      | null    | 1     | 1
+        'dropping a selected device'             | [deviceIds: ['600']]                                   | null    | 1     | 1
         'dropping the deleted device'            | [deviceIds: ['600', '100']]                            | null    | 1     | 1
         'dropping the unselected device'         | [deviceIds: ['100', '7']]                              | "Device 600 is outside the MCP device selection, so this update cannot remove it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist. A device hub_get_room shows with accessible=false stays in the list you send." | 0 | 1
         'adding an unselected device'            | [deviceIds: ['600', '100', '7', '700']]                | "Device 700 is outside the MCP device selection, so this update cannot add it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist." | 0 | 1
@@ -1002,7 +1002,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         hubGet.calls.count { it.path == '/hub2/devicesList' } == reads
         if (refused) {
             assert outcome instanceof IllegalArgumentException
-            assert outcome.message == "Device ${refused} is outside the MCP device selection, so deleting this room would unassign it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist."
+            assert outcome.message == "Device ${refused} is outside the MCP device selection, so deleting this room would unassign it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist." +
+                (pageReadable ? '' : " The hub's device list could not be read to rule out a deleted device; retry if it no longer exists.")
             assert !hubGet.calls*.path.contains('/room/delete/5')
         } else {
             assert outcome.success == true && outcome.devicesUnassigned == ids.size()

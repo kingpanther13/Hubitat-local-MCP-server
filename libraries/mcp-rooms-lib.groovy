@@ -119,6 +119,7 @@ private void _requireRoomDevicesSelected(String mode, Collection added, Collecti
     if (!sentences) return
     String them = (addOut.size() + dropOut.size()) == 1 ? 'it' : 'them'
     String tail = mode == 'update' && dropOut ? " A device hub_get_room shows with accessible=false stays in the list you send." : ""
+    if (onHub == null) tail += " The hub's device list could not be read to rule out a deleted device; retry if ${them == 'it' ? 'it no longer exists' : 'any no longer exist'}."
     throw new IllegalArgumentException("${sentences.join(' ')} Select ${them} in the MCP app's device list, or turn on Bypass Device Allowlist.${tail}".toString())
 }
 
@@ -164,7 +165,7 @@ private Map _roomFailure(String error, String note) {
 private Map _saveRoom(roomId, String name, List deviceIds, String action, boolean resentIds = false) {
     // One POST /room/save, the call the hub's Rooms page makes. The hub answers {roomId} on success
     // and {error} (HTTP 200) for a bad device id. Returns [roomId] or [failure: <structured error>].
-    // resentIds: the device list is the room's own, not one the caller sent.
+    // resentIds: the list is the room's own, so a refusal must not be blamed on ids the caller sent.
     def parsed
     try {
         parsed = hubInternalPostJson("/room/save", groovy.json.JsonOutput.toJson([roomId: roomId, name: name, deviceIds: deviceIds]), 30)

@@ -14310,6 +14310,7 @@ def updated() {}
                 ({"name": name_c, "deviceIds": "12", "confirm": True}, "deviceids must be an array"),
                 ({"name": name_c, "deviceIds": ["abc"], "confirm": True}, "deviceids must be numeric"),
                 ({"name": name_c, "deviceIds": ["99999999999"], "confirm": True}, "deviceids must be numeric"),
+                ({"name": "  ", "confirm": True}, "room name is required."),
             ):
                 try:
                     self.client.call_tool("hub_manage_rooms", {"tool": "hub_create_room", "args": args})
@@ -16068,6 +16069,10 @@ def updated() {}
                 assert deleted.get("success") is True, f"could not delete stale-device fixture {dev}: {deleted}"
                 made.remove(dev)
 
+            # A two-character name cannot carry the fixture prefix; pick one no room has, so the
+            # duplicate-name check cannot refuse it first.
+            short_name = next(n for n in ("Z8", "Y8", "X8", "W8") if not self._rooms_named(n))
+
             _set_bypass(False)
             try:
                 got = self.client.call_tool("hub_manage_rooms", {"tool": "hub_get_room", "args": {"roomId": room_a}})
@@ -16076,7 +16081,7 @@ def updated() {}
                     f"hub_get_room must show deleted device {gone_a} as no longer on the hub: {got}"
 
                 failed = self.client.call_tool_failure("hub_manage_rooms", {"tool": "hub_update_room", "args": {
-                    "roomId": room_a, "name": "Z8", "confirm": True}})
+                    "roomId": room_a, "name": short_name, "confirm": True}})
                 assert f"The room still lists device {gone_a}, which is no longer on the hub" in str(failed.get("error")) \
                     and "3 or more characters" in str(failed.get("note")), \
                     f"a short rename of a room holding deleted device {gone_a} must name it: {failed}"

@@ -396,7 +396,8 @@ ROOM_SELECTION_CALLS = ["hub_list_rooms", "hub_create_room", "hub_list_rooms", "
                         "hub_create_room", "hub_update_room", "hub_update_room", "hub_get_room", "hub_delete_room",
                         "hub_list_rooms", "hub_list_rooms", "hub_create_room", "hub_update_room", "hub_delete_room",
                         "hub_list_rooms", "hub_delete_room",
-                        "hub_list_rooms", "hub_list_rooms", "hub_create_room", "hub_create_room", "hub_get_room",
+                        "hub_list_rooms", "hub_list_rooms", "hub_create_room", "hub_create_room", "hub_list_rooms",
+                        "hub_get_room",
                         "hub_update_room", "hub_list_rooms", "hub_update_room", "hub_delete_room", "hub_delete_room"]
 
 
