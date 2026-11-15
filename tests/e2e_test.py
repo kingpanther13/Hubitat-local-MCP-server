@@ -5884,14 +5884,14 @@ class TestRunner:
 
         # An addTiles key outside the tile fields is refused, named, before the save -- and before the
         # rename and the device write sent in the same call.
+        layout_before_typo = (self._read_dashboard(dash_id) or {}).get("layout")
         self._expect_tool_refusal("hub_manage_dashboards", {
             "tool": "hub_update_dashboard",
             "args": {"dashboardId": dash_id, "name": f"{dash_name}_Typo", "deviceIds": [],
                      "addTiles": [{"template": "clock", "colum": 2, "row": 1}]}},
             "addTiles: unknown tile key colum")
         after_typo = self._read_dashboard(dash_id) or {}
-        assert len((after_typo.get("layout") or {}).get("tiles") or []) == len(rlayout.get("tiles") or []), \
-            f"the refused addTiles changed the layout: {after_typo}"
+        assert after_typo.get("layout") == layout_before_typo, f"the refused addTiles changed the layout: {after_typo}"
         assert after_typo.get("name") == dash_name, f"the refused update renamed the dashboard: {after_typo}"
         assert after_typo.get("deviceIds") == [str(switch_id)], \
             f"the refused update changed the authorized devices: {after_typo}"
@@ -5900,13 +5900,13 @@ class TestRunner:
         self._legacy_tile_editor_keys(dash_id)
 
         # A partial wholesale layout is refused by the hub; the note says to send the whole object.
-        tiles_before = ((self._read_dashboard(dash_id) or {}).get("layout") or {}).get("tiles") or []
+        layout_before = (self._read_dashboard(dash_id) or {}).get("layout")
         partial = self.client.call_tool_failure("hub_manage_dashboards", {"tool": "hub_update_dashboard", "args": {
             "dashboardId": dash_id, "layout": {"cols": 4, "rows": 4, "tiles": []}}})
         assert "the whole object hub_get_dashboard returns" in str(partial.get("note")), \
             f"the refused partial layout did not name the whole-object rule: {partial}"
-        tiles_after = ((self._read_dashboard(dash_id) or {}).get("layout") or {}).get("tiles") or []
-        assert len(tiles_after) == len(tiles_before), f"the refused partial layout changed the tiles: {tiles_after}"
+        layout_after = (self._read_dashboard(dash_id) or {}).get("layout")
+        assert layout_after == layout_before, f"the refused partial layout changed the layout: {layout_after}"
 
         # The listed legacy entry carries no Easy-only fields.
         listed = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})

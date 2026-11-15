@@ -1824,6 +1824,33 @@ class ToolDashboardSpec extends ToolSpecBase {
         !r.warnings
     }
 
+    @Unroll
+    def "update legacy: an addTiles differing only in #key is NOT deduped as identical"() {
+        given:
+        enableWrite()
+        registerLegacyStatus('700')
+        registerLegacyLayout('700', [cols: 4, rows: 6, tiles: [
+            [id: 0, template: 'global-variable', col: 2, row: 2, colSpan: 1, rowSpan: 1, (key): first]]])
+        def posts = captureLayoutPosts()
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700',
+            addTiles: [[template: 'global-variable', col: 2, row: 2, (key): second]]])
+
+        then:
+        r.success == true
+        posts[0].body.tiles*.get(key) == [first, second]
+        !r.warnings
+
+        where:
+        key               | first        | second
+        'globalVar'       | 'tStr'       | 'tNum'
+        'linkName'        | 'Docs'       | 'Help'
+        'bgImage'         | 'http://a/1' | 'http://a/2'
+        'hideUnit'        | true         | false
+        'refreshInterval' | 30           | 60
+    }
+
     def "update legacy: an addTiles identical to an existing tile is skipped with a warning (retry-safe)"() {
         given:
         enableWrite()
