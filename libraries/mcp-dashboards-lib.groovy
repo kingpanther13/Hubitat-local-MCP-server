@@ -24,11 +24,11 @@ private Map _dashboardFailureNote(Map result) {
     return result + [note: !note ? guide : (note.contains(guide) ? note : note + " " + guide)]
 }
 
-// One read of the hub's dashboard list: [out: <the public list result>, records: <the raw rows>].
+// One read of the hub's dashboard list: [out: <the public list result>, records: <one row per
+// dashboard>]. records are the raw /dashboard/all rows, which carry the legacy accessToken and so never
+// leave this library; on the child-app fallback they are the same id + name + type summaries as out.
 // /dashboard/all returns [] unless given the page-global pinToken from /dashboard/select, and the hub
-// honours that token only in the session (HUBSESSION cookie) that served the page, so scrape it and
-// list in its session; if still empty, fall back to the dashboard parents' child apps. The raw rows
-// carry the legacy accessToken, so they never leave this library.
+// honours that token only in the session (HUBSESSION cookie) that served the page.
 private Map _readDashboards() {
     def page = _fetchDashboardPinToken()
     def q = page?.token ? [pinToken: page.token] : [:]
@@ -154,22 +154,29 @@ private String _requireDashboardId(rawId, String param, String verbNote) {
     return s
 }
 
+private Map _dashboardRecord(String id, Map read) {
+    return (read.records ?: []).find { r -> (r.installedAppId ?: r.id)?.toString() == id }
+}
+
+// The failure for an id that is not in an already-read dashboard list.
+private Map _dashboardNotFound(String id, Map read) {
+    def available = (read.out.dashboards ?: []).collect { it.id }.findAll { it != null }
+    if (read.out.partial) {
+        return [success: false, error: "Dashboard '${id}' was not among the dashboards read, but the dashboard list was incomplete, so it may still exist.",
+                availableIds: available, partial: true,
+                note: "Part of the hub's app inventory had an unexpected shape. Retry, or check the hub's Dashboards page."]
+    }
+    return [success: false, error: "No dashboard found with id '${id}'.",
+            availableIds: available,
+            note: available.isEmpty()
+                ? "The list returned no dashboards; check the hub's Dashboards page."
+                : "Call hub_list_dashboards to see valid ids."]
+}
+
 // The full read of one dashboard from an already-read list (no single-dashboard endpoint exists).
 private Map _getDashboard(String id, Map read) {
-    def rec = (read.records ?: []).find { r -> (r.installedAppId ?: r.id)?.toString() == id }
-    if (rec == null) {
-        def available = (read.out.dashboards ?: []).collect { it.id }.findAll { it != null }
-        if (read.out.partial) {
-            return [success: false, error: "Dashboard '${id}' was not among the dashboards read, but the dashboard list was incomplete, so it may still exist.",
-                    availableIds: available, partial: true,
-                    note: "Part of the hub's app inventory had an unexpected shape. Retry, or check the hub's Dashboards page."]
-        }
-        return [success: false, error: "No dashboard found with id '${id}'.",
-                availableIds: available,
-                note: available.isEmpty()
-                    ? "The list returned no dashboards; check the hub's Dashboards page."
-                    : "Call hub_list_dashboards to see valid ids."]
-    }
+    def rec = _dashboardRecord(id, read)
+    if (rec == null) return _dashboardNotFound(id, read)
     boolean fromAll = read.out.source == "dashboard-all"
     Map summary = fromAll ? _summarizeDashboard(rec) : rec
     if (summary.type == "legacy") return _getLegacyDashboard(id, summary, fromAll ? rec : null)
@@ -191,9 +198,11 @@ private Map _getDashboard(String id, Map read) {
 // page. GET returns the layout JSON (tiles + grid + colors); POST replaces it and echoes it back.
 
 // Read /installedapp/statusJson/<id>. TRI-STATE: null when the read FAILED (the dashboard's kind is
-// then unknown, and an Easy write at a legacy id would misfire); else [present, legacy] plus, for a
-// legacy dashboard, label and, when readable, accessToken / deviceIds / localAccess. statusJson
+// then unknown, and an Easy write at a legacy id would misfire); else [present, legacy, easy] plus,
+// for a legacy dashboard, label and, when readable, accessToken / deviceIds / localAccess. statusJson
 // answers {} (not 404) for a removed or never-existing id, so present:false is a definitive "gone".
+// A present app that is neither kind may still be an Easy Dashboard under another app name, so
+// _notADashboard settles it from the dashboard list.
 private Map _dashboardStatus(String id) {
     def parsed
     try {
@@ -206,12 +215,18 @@ private Map _dashboardStatus(String id) {
     if (!(parsed instanceof Map)) return null
     def ia = parsed.installedApp
     boolean present = ia instanceof Map && !ia.isEmpty()
-    if (!present || ia.name?.toString() != "Dashboard" || ia.systemAppType != true) return [present: present, legacy: false]
-    def out = [present: true, legacy: true, label: ia.label]
+    boolean systemApp = present && ia.systemAppType == true
+    if (!systemApp || ia.name?.toString() != "Dashboard") {
+        return [present: present, legacy: false, easy: systemApp && ia.name?.toString() == "Easy Dashboard"]
+    }
+    def out = [present: true, legacy: true, easy: false, label: ia.label]
     def token = (parsed.appState ?: []).find { it?.name?.toString() == "accessToken" }
     if (token?.value != null) out.accessToken = token.value.toString()
+    // The hub lists devicesPicked only once devices have been picked, so a readable page without it
+    // means none; an entry without its device list is unreadable and leaves deviceIds unset.
     def devices = (parsed.appSettings ?: []).find { it?.name?.toString() == "devicesPicked" }
-    if (devices?.deviceIdsForDeviceList != null) out.deviceIds = _normalizeDeviceIdList(devices.deviceIdsForDeviceList)
+    if (devices == null) out.deviceIds = []
+    else if (devices.deviceIdsForDeviceList != null) out.deviceIds = _normalizeDeviceIdList(devices.deviceIdsForDeviceList)
     def la = (parsed.appSettings ?: []).find { it?.name?.toString() == "localAccess" }
     if (la != null) out.localAccess = la.value?.toString() != "false"
     return out
@@ -222,6 +237,20 @@ private String _lanAccessHint(Map status) {
     if (status?.localAccess == true) return ""
     if (status?.localAccess == false) return " Note: this dashboard has 'Allow LAN access' disabled, which can block its layout endpoint."
     return " If this dashboard has 'Allow LAN access' disabled, that can block its layout endpoint."
+}
+
+// Null when a present app is a dashboard; else the failure to return before any write. A
+// non-dashboard id gets hub_get_dashboard's not-found answer, read from the same dashboard list.
+private Map _notADashboard(String id, Map status, String verb) {
+    if (status.legacy == true || status.easy == true) return null
+    def read = _readDashboards()
+    if (read.out.success == false) {
+        return [success: false, id: id,
+                error: "Could not confirm that app ${id} is a dashboard (the dashboard list was unreadable), so no ${verb} was attempted.",
+                note: read.out.note ?: "Transient hub error (details logged); retry."]
+    }
+    if (_dashboardRecord(id, read) != null) return null
+    return _dashboardNotFound(id, read) + [id: id]
 }
 
 // Render the dashboard page to mint the requestToken the layout endpoint demands. Every page load
@@ -243,16 +272,16 @@ private Map _legacyLayoutFetch(String id, String accessToken) {
     return (parsed instanceof Map) ? parsed : null
 }
 
-// Save a layout wholesale. The endpoint echoes the saved layout back (with `name` re-stamped from
-// the app label); only an echo carrying a tiles List confirms the save, so anything else returns null.
+// Save a layout wholesale: [sent: false] when no requestToken could be minted (nothing was posted),
+// else [sent: true, saved: <echo>]. The endpoint echoes the saved layout back (with `name` re-stamped
+// from the app label); only an echo carrying a tiles List confirms the save, so saved is otherwise null.
+// A transport error throws.
 private Map _legacyLayoutPost(String id, String accessToken, Map layout) {
     def rt = _legacyMintRequestToken(id, accessToken)
-    if (!rt) {
-        throw new IllegalStateException("Could not mint a dashboard requestToken (the dashboard page render failed); the layout was not saved.")
-    }
+    if (!rt) return [sent: false]
     def resp = hubInternalPostJson("/apps/api/${id}/dashboard/${id}/layout",
         groovy.json.JsonOutput.toJson(layout), 420, false, [access_token: accessToken, requestToken: rt])
-    return (resp instanceof Map && resp.tiles instanceof List) ? resp : null
+    return [sent: true, saved: (resp instanceof Map && resp.tiles instanceof List) ? resp : null]
 }
 
 // Full legacy read: id, name, authorized deviceIds, and the layout. The /dashboard/all row carries
@@ -283,7 +312,8 @@ private Map _getLegacyDashboard(String id, Map summary, Map rec) {
 }
 
 // Read one Easy dashboard's full config from /installedapp/configure/json/<id> (no token): tile
-// toggles (as "true"/"false"), navigationSelection, dashboardPin/hsmPin, devicesPicked ({id:name}). No theme.
+// toggles and localOnly (as "true"/"false"), navigationSelection, dashboardPin/hsmPin, devicesPicked
+// ({id:name}). No theme.
 private Map _dashboardConfigFromApp(String id) {
     try {
         def raw = hubInternalGet("/installedapp/configure/json/${id}")
@@ -296,6 +326,7 @@ private Map _dashboardConfigFromApp(String id) {
             if (s.containsKey(k)) out.put(k, s.get(k)?.toString() == "true")
         }
         if (s.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(s.navigationSelection)
+        if (s.containsKey("localOnly")) out.localOnly = s.localOnly?.toString() == "true"
         if (s.devicesPicked instanceof Map) out.deviceIds = s.devicesPicked.keySet().collect { it.toString() }
         // app-config returns "" for an unset PIN ("null" and "None" are treated as unset too).
         if (_dashboardRealValue(s.dashboardPin)) out.dashboardPin = s.dashboardPin
@@ -324,16 +355,40 @@ private Map _createDashboard(Map args) {
     def deviceCsv = _dashboardDeviceCsv(args.deviceIds, true)
     def q = _buildDashboardConfigQuery(args, deviceCsv)
     _requireDashboardDevicesSelected(deviceCsv.split(",") as List, "this dashboard write", "add")
-    // CREATE-ONLY: the hub's editor sends version=2.0 on create (and drops it on update).
-    q.version = "2.0"
     _requireUnprotectedEasyDashboardParent()
+    Map created
     try {
-        return _dashboardWriteResult(hubInternalGet("/dashboard/create", q), "create", null)
+        // CREATE-ONLY: the hub's editor sends version=2.0 on create (and drops it on update).
+        created = _dashboardWriteResult(hubInternalGet("/dashboard/create", q + [version: "2.0"]), "create", null)
     } catch (Exception e) {
         mcpLogError("dashboard", "create dashboard failed", e)
         return [success: false, outcomeUnknown: true, error: "Failed to confirm dashboard creation: ${e.message}",
                 note: "A dashboard may have been created. Inspect hub_list_dashboards before retrying; retrying blindly may create a duplicate."]
     }
+    return created.success == true ? _applyEasyCreateOnlyOffSettings(created, q) : created
+}
+
+// The hub's create stores showEdit and showNavigation as true whatever it is sent, so a create that
+// asked for either off re-sends the same config as an update. The dashboard exists either way, so a
+// failed follow-up stays a success with a warning naming the two settings.
+private Map _applyEasyCreateOnlyOffSettings(Map created, Map q) {
+    def off = ["showEdit", "showNavigation"].findAll { q.get(it) == "false" }
+    if (!off) return created
+    String failure = null
+    if (created.id == null) {
+        failure = "the create answer carried no dashboard id"
+    } else {
+        try {
+            def upd = _dashboardWriteResult(hubInternalGet("/dashboard/update", q + [id: created.id.toString()]), "update", created.id.toString())
+            if (upd.success != true) failure = upd.error ?: "the hub reported failure"
+        } catch (Exception e) {
+            mcpLogError("dashboard", "follow-up update after dashboard create failed", e)
+            failure = e.message
+        }
+    }
+    if (failure == null) return created + [offAfterCreate: off]
+    def warnings = (created.warnings ?: []) + ["The dashboard was created with ${off.join(' and ')} on: the hub's create turns ${off.size() == 1 ? 'it' : 'them'} on, and the follow-up update that turns ${off.size() == 1 ? 'it' : 'them'} off failed (${failure}). Set ${off.size() == 1 ? 'it' : 'them'} with hub_update_dashboard."]
+    return created + [warnings: warnings]
 }
 
 private void _requireUnprotectedEasyDashboardParent() {
@@ -372,8 +427,7 @@ private String _dashboardTypeArg(raw) {
 
 // Find the legacy "Hubitat® Dashboard" parent's installed-app id. When the built-in parent isn't
 // installed, bootstrap it through the hub's Add Built-In App link (GET /installedapp/sysApp/<type
-// name>, the same flow the RM-family parent discovery uses). The parent is a self-installing
-// singleton (installOnOpen), so the GET can never duplicate it.
+// name>). The parent is a self-installing singleton (installOnOpen), so the GET can never duplicate it.
 private Integer _legacyDashboardParentId() {
     def node = _findLegacyDashboardParent()
     if (node == null) {
@@ -393,8 +447,8 @@ private Integer _legacyDashboardParentId() {
         }
         if (node != null) {
             if (node.installed != true) {
-                // installOnOpen normally self-installs the singleton; commit defensively when a
-                // firmware surfaces it install-pending (same belt-and-braces as the RM bootstrap).
+                // installOnOpen normally self-installs the singleton; commit it when it surfaces
+                // install-pending.
                 try { _commitUserAppInstall(node.id.toString().toInteger(), null) } catch (Exception e) {
                     mcpLog("warn", "dashboard", "legacy dashboard parent install commit unverified: ${e.message}")
                 }
@@ -524,17 +578,20 @@ private Map _copyDashboard(Map args) {
     }
     _requireDashboardDevicesSelected(src.deviceIds, "a copy of dashboard ${sourceId}", "authorize")
     def opts = [:]
-    (_dashboardTileKeys() + ["theme", "navigationSelection", "dashboardPin", "hsmPin"]).each { k ->
+    (_dashboardTileKeys() + ["theme", "navigationSelection", "dashboardPin", "hsmPin", "localOnly"]).each { k ->
         if (src.containsKey(k)) opts.put(k, src.get(k))
     }
     def created = _createDashboard([name: name, deviceIds: src.deviceIds, options: opts])
     if (created.success == true) {
         def ok = [success: true, id: created.id, sourceId: sourceId, type: "easy", name: name,
                   message: "Copied dashboard ${sourceId} into a new dashboard${created.id ? ' (' + created.id + ')' : ''}."]
+        if (created.offAfterCreate) ok.offAfterCreate = created.offAfterCreate
+        def warnings = (created.warnings ?: []) as List
         // The app-config fallback read carries no theme, so the copy fell back to the default.
         if (!src.containsKey("theme")) {
-            ok.warnings = ["The source dashboard's theme could not be read, so the copy uses the default 'legacy' theme. Set it with hub_update_dashboard."]
+            warnings << "The source dashboard's theme could not be read, so the copy uses the default 'legacy' theme. Set it with hub_update_dashboard."
         }
+        if (warnings) ok.warnings = warnings
         return ok
     }
     def out = [success: false, sourceId: sourceId, error: created.error ?: "creating the copy failed",
@@ -567,9 +624,9 @@ private Map _copyLegacyDashboard(String sourceId, Map src, String name) {
     String saveError
     if (status?.legacy == true && status.accessToken) {
         try {
-            if (_legacyLayoutPost(newId, status.accessToken, new LinkedHashMap(src.layout as Map)) == null) {
-                saveError = "the layout endpoint did not echo a saved layout (outcome unconfirmed)"
-            }
+            def post = _legacyLayoutPost(newId, status.accessToken, new LinkedHashMap(src.layout as Map))
+            if (!post.sent) saveError = "Could not mint a dashboard requestToken (the dashboard page render failed), so the layout was not saved."
+            else if (post.saved == null) saveError = "the layout endpoint did not echo a saved layout (outcome unconfirmed)"
         } catch (Exception e) { saveError = e.message }
     } else {
         saveError = "the new dashboard's access token was unreadable"
@@ -614,6 +671,8 @@ private Map _updateDashboardLocked(String updateId, Map args) {
                 error: "No dashboard found with id '${updateId}', so no update was attempted.",
                 note: "Call hub_list_dashboards to see valid ids."]
     }
+    def notDashboard = _notADashboard(updateId, status, "update")
+    if (notDashboard != null) return notDashboard
     if (status.legacy == true) {
         return _updateLegacyDashboard(updateId, status, args)
     }
@@ -624,42 +683,46 @@ private Map _updateDashboardLocked(String updateId, Map args) {
     if (!args.name?.toString()?.trim()) {
         throw new IllegalArgumentException("name is required. Update REPLACES the dashboard's config wholesale (there is no server-side read-merge), so pass the full desired config every time.")
     }
-    // Update is wholesale + requires the full device set, so a caller can't silently blank devices.
+    // Update is wholesale and requires the full device set, so an omitted list never blanks the devices.
     def deviceCsv = _dashboardDeviceCsv(args.deviceIds, true)
-    // A wholesale replace would CLEAR an omitted dashboardPin/hsmPin, so re-send the stored one. A
-    // read returns PINs masked while Hide passwords and credentials is on; passing that back keeps it.
+    // A wholesale replace would CLEAR an omitted dashboardPin/hsmPin and turn localOnly off, so re-send
+    // the stored values. A read returns PINs masked while Hide passwords and credentials is on;
+    // passing that back keeps the stored PIN.
     String pinMarker = _appConfigRedactedMarker()
     args = [:] + args
     def opts = (args.options instanceof Map) ? args.options.findAll { k, v -> !(k in ["dashboardPin", "hsmPin"] && v?.toString() == pinMarker) } : [:]
     ["dashboardPin", "hsmPin"].each { k -> if (args[k]?.toString() == pinMarker) args.remove(k) }
-    def missingPins = ["dashboardPin", "hsmPin"].findAll { k -> !opts.containsKey(k) && !args.containsKey(k) }
-    boolean pinPreserveFailed = false
+    def kept = ["dashboardPin", "hsmPin", "localOnly"].findAll { k -> !opts.containsKey(k) && !args.containsKey(k) }
     boolean selectionGate = _mcpAuthorizedIds(getChildDevices() ?: []) != null
-    def cur = (missingPins || selectionGate) ? _dashboardConfigFromApp(updateId) : null
-    if (missingPins) {
-        if (cur != null) {
-            missingPins.each { k -> if (cur.containsKey(k)) opts.put(k, cur.get(k)) }
-        } else {
-            // Couldn't read the current config: the wholesale update will CLEAR an omitted PIN. Flag it.
-            pinPreserveFailed = true
-        }
-    }
+    def cur = (kept || selectionGate) ? _dashboardConfigFromApp(updateId) : null
+    if (cur != null) kept.each { k -> if (cur.containsKey(k)) opts.put(k, cur.get(k)) }
     args.options = opts
     def q = _buildDashboardConfigQuery(args, deviceCsv)
     if (selectionGate) {
-        if (cur?.deviceIds == null) {
+        if (cur == null) {
             return [success: false, id: updateId,
                     error: "Could not read the dashboard's current device list to check it against the MCP device selection, so no update was attempted.",
                     note: "Transient hub error (details logged); retry."]
         }
-        _requireDashboardDevicesSelected(_dashboardChangedDeviceIds(cur.deviceIds, deviceCsv.split(",") as List), "this dashboard write", "add or remove")
+        // A readable config without devicesPicked has no devices.
+        _requireDashboardDevicesSelected(_dashboardChangedDeviceIds(cur.deviceIds ?: [], deviceCsv.split(",") as List),
+            "this dashboard write", "add or remove", true)
     }
     q.id = updateId
     try {
         def result = _dashboardWriteResult(hubInternalGet("/dashboard/update", q), "update", updateId)
-        if (pinPreserveFailed && result.success == true) {
-            result.pinPreserveFailed = true
-            result.note = "Update applied, but the current config couldn't be read to preserve an omitted PIN -- if this dashboard had a dashboardPin/hsmPin it was cleared; re-set it with another update if needed."
+        if (cur == null && kept && result.success == true) {
+            def pins = kept.findAll { it != "localOnly" }
+            def lost = []
+            if (pins) {
+                result.pinPreserveFailed = true
+                lost << "any ${pins.join(' or ')} it had is cleared"
+            }
+            if (kept.contains("localOnly")) {
+                result.localOnlyPreserveFailed = true
+                lost << "'Local access only' is off"
+            }
+            result.note = "Update applied, but the current config couldn't be read to keep the omitted settings: ${lost.join(', and ')}. Re-set them with another update if needed."
         }
         return result
     } catch (Exception e) {
@@ -721,7 +784,7 @@ private Map _updateLegacyDashboard(String id, Map status, Map args) {
             return failed("Could not read the dashboard's current device list to check it against the MCP device selection. Nothing was changed.",
                 "Retry; if it persists, open the dashboard's app page once.")
         }
-        _requireDashboardDevicesSelected(_dashboardChangedDeviceIds(status.deviceIds, newDeviceIds), "this dashboard write", "add or remove")
+        _requireDashboardDevicesSelected(_dashboardChangedDeviceIds(status.deviceIds, newDeviceIds), "this dashboard write", "add or remove", true)
     }
     if (hasName) {
         def newName = args.name.toString().trim()
@@ -746,11 +809,17 @@ private Map _updateLegacyDashboard(String id, Map status, Map args) {
         applied << "deviceIds"
     }
     if (newLayout != null) {
-        Map saved
-        try { saved = _legacyLayoutPost(id, status.accessToken, newLayout) } catch (Exception e) {
+        String wholeLayout = hasWholesale ? " A wholesale layout must be the whole object hub_get_dashboard returns as layout (every top-level field, not only cols, rows and tiles)." : ""
+        Map post
+        try { post = _legacyLayoutPost(id, status.accessToken, newLayout) } catch (Exception e) {
             mcpLogError("dashboard", "legacy layout save failed", e)
-            return failed("Layout save failed: ${e.message}", "The layout may be unchanged; verify with hub_get_dashboard.")
+            return failed("Layout save failed: ${e.message}", "The layout may be unchanged; verify with hub_get_dashboard." + wholeLayout + _lanAccessHint(status))
         }
+        if (!post.sent) {
+            return failed("Could not mint a dashboard requestToken (the dashboard page render failed), so the layout was not saved.",
+                "Retry; if it persists, check hub connectivity." + _lanAccessHint(status))
+        }
+        Map saved = post.saved
         if (saved == null) return failed("The layout endpoint did not echo a saved layout; outcome unconfirmed.", "Verify with hub_get_dashboard.")
         // One entry per op, in the order they are applied within the single save.
         applied.addAll(hasWholesale ? ["layout"] : ["removeTileIds", "updateTiles", "addTiles", "setOptions"].findAll { it in granular })
@@ -763,7 +832,7 @@ private Map _updateLegacyDashboard(String id, Map status, Map args) {
 }
 
 // Apply the granular ops to a copy of the current layout: removals, then updates, then adds, then
-// options. Pure: it writes nothing, so every validation throw lands before the caller's first write.
+// options. Pure: it writes nothing and throws IllegalArgumentException for a bad op.
 private Map _applyLegacyLayoutOps(Map current, Map args, Map status, List warnings) {
     def layout = new LinkedHashMap(current)
     def tiles = (layout.tiles instanceof List) ? layout.tiles.findAll { it instanceof Map }.collect { new LinkedHashMap(it as Map) } : []
@@ -843,18 +912,19 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map status, List warnin
     return layout
 }
 
-// A tile key outside this set would be stored verbatim and silently ignored by the dashboard, so a
-// typo is refused before anything is saved. An addTiles id is tolerated because it is reassigned.
+// The keys the hub's tile editor saves on a tile. Any other key would be stored verbatim and ignored
+// by the dashboard, so a typo is refused before anything is saved. An addTiles id is tolerated
+// because it is reassigned.
 private void _requireKnownTileKeys(Map spec, String op) {
-    def allowed = ["id", "template", "device", "col", "row", "colSpan", "rowSpan", "templateExtra"]
+    def allowed = ["id", "template", "device", "col", "row", "colSpan", "rowSpan", "templateExtra",
+                   "globalVar", "linkName", "bgImage", "hideUnit", "refreshInterval"]
     def unknown = spec.keySet().collect { it?.toString() }.findAll { !(it in allowed) }
     if (unknown) {
         throw new IllegalArgumentException("${op}: unknown tile key${unknown.size() == 1 ? '' : 's'} ${unknown.join(', ')}. Allowed keys: ${allowed.join(', ')}.")
     }
 }
 
-// Tile ids are small integers assigned at add time; normalize whatever shape the caller (or a
-// JSON round-trip) delivers.
+// Tile ids are small integers assigned at add time; accept a number or a numeric string.
 private Integer _tileIdOf(tile) {
     def raw = (tile instanceof Map) ? tile.id : tile
     if (raw == null) return null
@@ -869,8 +939,8 @@ private Integer _requireTileId(raw, String op) {
     return id
 }
 
-// A tile bound to a device the dashboard hasn't authorized renders empty -- warn (don't block; the
-// caller may authorize afterward via deviceIds).
+// A tile bound to a device the dashboard hasn't authorized renders empty. Warn rather than refuse,
+// since the device can be authorized afterwards through deviceIds.
 private void _warnUnauthorizedTileDevice(Map tile, Map status, List warnings) {
     def dev = tile.device?.toString()
     if (dev && dev ==~ /\d+/ && status.deviceIds != null && !status.deviceIds.contains(dev)) {
@@ -896,6 +966,8 @@ private Map _deleteDashboard(Map args) {
                 note: "Transient hub error (details logged); retry."]
     }
     if (!status.present) return absent
+    def notDashboard = _notADashboard(dashId, status, "delete")
+    if (notDashboard != null) return notDashboard
     def out = [id: dashId]
     String hubError = null
     if (status.legacy) {
@@ -915,8 +987,8 @@ private Map _deleteDashboard(Map args) {
             mcpLogError("dashboard", "delete dashboard request failed; verifying by effect", e)
             hubError = "the delete request failed (${e.message})"
         }
-        // /dashboard/delete answers success:false even on a real delete, so only statusJson below can
-        // prove a removal; a success:true answer is accepted as-is.
+        // /dashboard/delete answers success:false even on a real delete, so a success:false answer is
+        // checked against statusJson below; a success:true answer is taken at its word.
         if (parsed instanceof Map && parsed.success == true) return out + [success: true, message: "Dashboard ${dashId} deleted."]
         if (parsed instanceof Map) hubError = parsed.message ?: parsed.error
     }
@@ -940,16 +1012,17 @@ private Map _deleteDashboard(Map args) {
 
 // A dashboard's deviceIds authorizes it to show and control those devices, so while the allowlist
 // bypass is off it may gain or lose only devices MCP may configure, the boundary hub_update_device
-// keeps. Updates pass only the ids whose membership changes, so a rename or a re-send that keeps an
-// unselected device still works.
-private void _requireDashboardDevicesSelected(Collection ids, String write, String verb) {
+// keeps. Throws for any of ids outside the selection; keptIdsPass adds that an id the dashboard
+// already has passes, for a check given only the ids whose membership changes.
+private void _requireDashboardDevicesSelected(Collection ids, String write, String verb, boolean keptIdsPass = false) {
     if (!ids) return
     Set authorized = _mcpAuthorizedIds(getChildDevices() ?: [])
     if (authorized == null) return
     List outside = ids.collect { it.toString() }.unique().findAll { !authorized.contains(it) }
     if (outside) {
         boolean one = outside.size() == 1
-        throw new IllegalArgumentException("deviceIds ${outside.join(', ')} ${one ? 'is' : 'are'} outside the MCP device selection, so ${write} cannot ${verb} ${one ? 'it' : 'them'}. Select ${one ? 'it' : 'them'} in the MCP app's device list, or turn on Bypass Device Allowlist. An id hub_get_dashboard returns stays in the list you send.")
+        throw new IllegalArgumentException("deviceIds ${outside.join(', ')} ${one ? 'is' : 'are'} outside the MCP device selection, so ${write} cannot ${verb} ${one ? 'it' : 'them'}. Select ${one ? 'it' : 'them'} in the MCP app's device list, or turn on Bypass Device Allowlist." +
+            (keptIdsPass ? " An id hub_get_dashboard returns stays in the list you send." : ""))
     }
 }
 
@@ -974,14 +1047,16 @@ private Map _summarizeDashboard(Map raw) {
         // version, and only the Easy endpoints produce those.
         type: raw.version?.toString()?.startsWith("1") ? "legacy" : "easy"
     ]
-    // Config fields (when present) pass through so a read round-trips back through hub_update_dashboard.
-    (_dashboardTileKeys() + ["theme"]).each { k ->
-        if (raw.containsKey(k)) out.put(k, raw.get(k))
-    }
-    if (raw.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(raw.navigationSelection)
     // /dashboard/all gives deviceIds as a JSON array of numbers; normalize to a list of id strings (a
     // JSON-array string such as "[8,1,9]" is accepted too).
     if (raw.containsKey("deviceIds")) out.deviceIds = _normalizeDeviceIdList(raw.deviceIds)
+    // A legacy row carries the Easy config keys too, with values that mean nothing for it.
+    if (out.type == "legacy") return out
+    // Config fields (when present) pass through so a read round-trips back through hub_update_dashboard.
+    (_dashboardTileKeys() + ["theme", "localOnly"]).each { k ->
+        if (raw.containsKey(k)) out.put(k, raw.get(k))
+    }
+    if (raw.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(raw.navigationSelection)
     if (_dashboardRealValue(raw.dashboardPin)) out.dashboardPin = raw.dashboardPin
     if (_dashboardRealValue(raw.hsmPin)) out.hsmPin = raw.hsmPin
     return out
@@ -1044,9 +1119,9 @@ private _dashboardPublic(result) {
     return result
 }
 
-// Build the /dashboard/create|update query. Booleans serialize as "true"/"false"; theme empty == legacy.
-// Tile/nav/pin values are read from the `options` object first, else the same-named top-level arg.
-// The query carries no id: /dashboard/create takes none, and /dashboard/update's id is set separately.
+// Build the /dashboard/create|update query, without an id. Booleans serialize as "true"/"false";
+// theme empty == legacy; localOnly is sent only when given. Tile/nav/pin/localOnly values are read
+// from the `options` object first, else the same-named top-level arg.
 private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
     def opts = (args.options instanceof Map) ? args.options : [:]
     def opt = { String k -> opts.containsKey(k) ? opts.get(k) : args.get(k) }
@@ -1062,6 +1137,8 @@ private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
         }
         q.put(k, v != null ? v.toString() : "")
     }
+    def localOnly = opt("localOnly")
+    if (localOnly != null) q.localOnly = (localOnly == true || localOnly.toString().toLowerCase() == "true") ? "true" : "false"
     q.navigationSelection = _dashboardNavSelectionCsv(opt("navigationSelection"))
     q.theme = _dashboardTheme(opt("theme"))
     return q
@@ -1166,7 +1243,7 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_update_dashboard",
-            description: "Update a dashboard by id. Easy Dashboard: wholesale config replace -- read it with hub_get_dashboard and pass the FULL config back (name + deviceIds required; omitted fields revert to default). Legacy Hubitat® Dashboard: edit its name, deviceIds (authorized devices) and/or layout. PRE-FLIGHT: 1) hub_get_dashboard to confirm the id and read the current config 2) tell the user what will change.[[FLAT_TRIM]] Legacy layout edits are EITHER `layout` (wholesale) OR the granular ops removeTileIds / updateTiles / addTiles / setOptions, applied in that order in one save; an already-gone removal and an identical add are skipped with a warning. Args for the other kind are rejected. While Bypass Device Allowlist is off, a device added to or dropped from deviceIds must be in the MCP device selection. Send updates one at a time; a change made on the hub's Dashboards page between the read and the save is overwritten. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
+            description: "Update a dashboard by id. Easy Dashboard: wholesale config replace -- read it with hub_get_dashboard and pass the FULL config back (name + deviceIds required; omitted fields revert to default, except an omitted PIN, which is kept: pass \"\" to clear one). Legacy Hubitat® Dashboard: edit its name, deviceIds (authorized devices) and/or layout. PRE-FLIGHT: 1) hub_get_dashboard to confirm the id and read the current config 2) tell the user what will change.[[FLAT_TRIM]] Legacy layout edits are EITHER `layout` (wholesale) OR the granular ops removeTileIds / updateTiles / addTiles / setOptions, applied in that order in one save; an already-gone removal and an identical add are skipped with a warning. Args for the other kind are rejected. An omitted options.localOnly is kept too. While Bypass Device Allowlist is off, a device added to or dropped from deviceIds must be in the MCP device selection. Send updates one at a time; a change made on the hub's Dashboards page between the read and the save is overwritten. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1174,7 +1251,7 @@ def _getAllToolDefinitions_partDashboards() {
                     name: [type: "string", description: "Display name (Easy) or app label (legacy)."],
                     deviceIds: [type: "array", description: "Full device id set. Required (>=1) for Easy; replaces a legacy dashboard's authorized devices.", items: [type: "string"]],
                     options: [type: "object", description: "Easy-only. Same keys as hub_create_dashboard.options."],
-                    layout: [type: "object", description: "Legacy-only. Wholesale layout replace."],
+                    layout: [type: "object", description: "Legacy-only. Wholesale layout replace: the whole layout object hub_get_dashboard returns, edited (every top-level field, not only cols/rows/tiles)."],
                     setOptions: [type: "object", description: "Legacy-only. Merge top-level layout fields (cols, rows, bgColor, iconSize, fontSize, gridGap)."],
                     addTiles: [type: "array", description: "Legacy-only. Tiles to add; each needs template, col, row.", items: [type: "object"]],
                     updateTiles: [type: "array", description: "Legacy-only. Tile edits, each {id, ...fields-to-change}.", items: [type: "object"]],
@@ -1204,7 +1281,8 @@ def _readOnlyToolNames_partDashboards() {
 }
 
 def _idempotentWriteToolNames_partDashboards() {
-    // Retry-safe writes: update = wholesale (same args -> same state); delete = no-op once gone.
+    // Retry-safe writes: an Easy update and a wholesale layout replace set the same state again; the
+    // legacy granular ops skip an identical add and an already-gone removal; delete is a no-op once gone.
     // create (including a copy) makes ANOTHER dashboard, so it is NOT idempotent.
     return ["hub_update_dashboard", "hub_delete_dashboard"]
 }

@@ -4021,3 +4021,22 @@ def test_driver_catalog_stops_when_next_cursor_never_ends():
             return {"drivers": [{"id": 1}], "source": "hub_api", "nextCursor": "1"}
     with pytest.raises(AssertionError, match="never ended"):
         _driver_catalog_runner(Endless())._driver_catalog("all")
+def _dashboard_ids_runner(listed):
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace(call_tool=lambda gateway, args: listed)
+    return runner
+
+
+def test_dashboard_ids_returns_every_listed_id():
+    runner = _dashboard_ids_runner({"dashboards": [{"id": 4}, {"id": "9"}, {"name": "no id"}], "count": 3})
+    assert runner._dashboard_ids() == {"4", "9"}
+
+
+@pytest.mark.parametrize("listed, needle", [
+    ({"dashboards": [{"id": 4}], "partial": True}, "incomplete inventory"),
+    ({"response_too_large": True, "note": "over the cap"}, "incomplete inventory"),
+    ({"success": False, "error": "list down"}, "hub_list_dashboards failed"),
+])
+def test_dashboard_ids_refuses_a_list_the_no_write_check_cannot_trust(listed, needle):
+    with pytest.raises(AssertionError, match=needle):
+        _dashboard_ids_runner(listed)._dashboard_ids()
