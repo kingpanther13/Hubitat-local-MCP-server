@@ -308,7 +308,7 @@ Use `.github/pull_request_template.md` — keep every section.
 
 - **Title prefix** matches the ticked `## Type of change` box: `feat:` / `fix:` / `chore:` / `refactor:` / `docs:` / `test:` / `ci:` (`build:` reserved for Dependabot).
 - **`## Release Notes`** drives `packageManifest.json` `releaseNotes` (what HPM users see in the update prompt) via `.github/scripts/release_bump.py`. Strongly recommended; write user-facing bullets. If you skip the section the PR title is the fallback. The bot warns on a present-but-unbulleted section.
-- **Open as draft** (`gh pr create --draft`); the maintainer flips to ready-for-review.
+- **Open as draft** (`gh pr create --draft`); the PR's author flips it to ready-for-review when it is ready. An AI agent should never flip it without the explicit approval of the author.
 - **Verify the PR body has both required headings** before claiming the PR is ready (`<N>` = PR number):
 
   ```bash

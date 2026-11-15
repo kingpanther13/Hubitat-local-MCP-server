@@ -44,7 +44,7 @@ Use [`.github/pull_request_template.md`](.github/pull_request_template.md) and k
 - **Testing** — how you verified the change.
 - **Checklist** — unit tests, sandbox lint, `./gradlew test`, tested BAT revision and results or an explicit pending-execution note, doc updates.
 
-Open the PR as a draft (`gh pr create --draft`). The maintainer flips it to ready-for-review once it looks good.
+Open the PR as a draft (`gh pr create --draft`). The author flips it to ready-for-review when it is ready. An AI agent should never flip it without the explicit approval of the author.
 
 ### Title prefixes
 
