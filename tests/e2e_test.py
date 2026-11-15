@@ -14002,18 +14002,7 @@ def updated() {}
 
     @test("system_tools")
     def test_manage_rooms_create_read_update_delete(self) -> None:
-        """Validate the full McpRoomsLib-backed Rooms flow live.
-
-        Exercises all five room tools against the real hub through the deployed app:
-        create WITH a device (the id comes back from the hub's save answer),
-        hub_get_room(roomId) renders it, hub_update_room renames (the name-only path, and a
-        name under 3 characters),
-        then replaces the device list wholesale (empty, then the device again), a second
-        room takes the device and both writes report it in movedDevices, hub_list_rooms
-        reflects each change, and hub_delete_room unassigns the device. The device's
-        original room is restored in the finally. cleanup()'s room sweep reclaims a strand
-        if this crashes mid-way.
-        """
+        """All five room tools live: create with a device, read, rename (3+ and under 3 characters), set the device list, movedDevices, delete; the device's room is restored in the finally."""
         dev_id = self.get_first_device_id()
         name = f"{PREFIX}RoomLib"
         renamed = f"{PREFIX}RoomLib2"
@@ -14194,26 +14183,17 @@ def updated() {}
 
     @test("system_tools")
     def test_manage_rooms_error_contracts(self) -> None:
-        """Validate the McpRoomsLib tools' error/validation contracts live.
-
-        The round-trip proves the happy paths; this proves the failure modes traverse
-        the MCP transport correctly on a real hub: unknown room id on read and update,
-        cursor with roomId, an update with nothing to change, a blank name, deviceIds that
-        is not a list, a non-numeric or out-of-range device id, a device id the hub refuses
-        and a name the hub's rename refuses (runtime failures, raised as isError results),
-        the duplicate-name and rename-collision guards, and
-        the confirm safety gate on the destructive room writes (create + delete). These are unit-covered in ToolRoomsSpec; here we confirm the same
-        contracts end-to-end. Self-cleaning (finally + Layer-6 sweep).
-        """
+        """Room tool refusals live: unknown ids, stale argument names, deviceIds validation, hub refusals (success:false), duplicate names, and the confirm gate."""
         name_a = f"{PREFIX}RoomErrA"
         name_b = f"{PREFIX}RoomErrB"
+        name_c = f"{PREFIX}RoomErrC"
         ghost_id = "999999999"
         created_ids = []
         try:
             # Pre-sweep same-named strands from a doubly-crashed prior run.
             pre = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
             for r in (pre.get("rooms", []) if isinstance(pre, dict) else []):
-                if r.get("name") in (name_a, name_b):
+                if r.get("name") in (name_a, name_b, name_c):
                     try:
                         self.client.call_tool("hub_manage_rooms", {
                             "tool": "hub_delete_room",
@@ -14228,13 +14208,16 @@ def updated() {}
                 assert False, "hub_get_room(roomId) on a non-existent room should have raised"
             except McpError as e:
                 assert "no room has id" in str(e).lower(), f"hub_get_room(roomId) error was not a not-found: {e}"
+            # ...and on delete.
+            try:
+                self.client.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {
+                    "roomId": ghost_id, "confirm": True}})
+                assert False, "hub_delete_room on a non-existent room should have raised"
+            except McpError as e:
+                assert f"No room has id '{ghost_id}'. Call hub_list_rooms for room ids." in str(e), \
+                    f"hub_delete_room error was not a not-found: {e}"
 
-            # 2) confirm safety gate: hub_create_room without confirm -> refused, no room created.
-            # `confirm` is a REQUIRED schema param (the convention for every destructive tool), so a
-            # missing confirm is refused by the dispatch's required-param check. That surfaces as an
-            # isError result ("Missing required parameter: confirm"), which call_tool raises as
-            # McpToolError; a raised McpError/-32602 is also acceptable. The load-bearing guarantee
-            # is refusal + no room.
+            # 2) confirm is a required param, so the gateway pre-check refuses its absence; the guarantee is refusal + no room.
             refused = False
             detail = None
             try:
@@ -14288,9 +14271,12 @@ def updated() {}
             except McpError as e:
                 assert "already exists" in str(e).lower(), f"collision-rename error unexpected: {e}"
 
-            # 5) update validation before any write: unknown room id, nothing to change, blank name,
-            # deviceIds not a list, non-numeric device id; hub_get_room takes no cursor.
+            # 5) update validation before any write: unknown room id, stale argument names, nothing to
+            # change, blank name, deviceIds not a list, a non-numeric or out-of-range device id;
+            # hub_get_room takes no cursor.
             for args, needle in (
+                ({"roomId": id_b, "room": id_b, "confirm": True}, "unknown hub_update_room argument: room"),
+                ({"roomId": id_b, "newName": f"{PREFIX}RoomGhost", "confirm": True}, "unknown hub_update_room argument: newname"),
                 ({"roomId": ghost_id, "name": f"{PREFIX}RoomGhost", "confirm": True}, "no room has id"),
                 ({"roomId": id_b, "confirm": True}, "pass name, deviceids, or both"),
                 ({"roomId": id_b, "name": "   ", "confirm": True}, "name must not be blank"),
@@ -14303,14 +14289,12 @@ def updated() {}
                     assert False, f"hub_update_room({args}) should have raised"
                 except McpError as e:
                     assert needle in str(e).lower(), f"hub_update_room({args}) error unexpected: {e}"
-            # A hub refusal is a runtime failure, not a validation refusal: a numeric device id the
-            # hub does not know is refused by /room/save.
-            for args, needle in (
-                ({"roomId": id_b, "deviceIds": ["999999999"], "confirm": True},
-                 f"The hub refused to update room {id_b}"),
-            ):
-                failed = self.client.call_tool_failure("hub_manage_rooms", {"tool": "hub_update_room", "args": args})
-                assert needle in str(failed.get("error")), f"hub_update_room({args}) failed, but not with {needle!r}: {failed}"
+            # A hub refusal is a runtime failure, not a validation refusal: with the bypass on, a
+            # numeric device id the hub does not know is refused by /room/save, and the error names it.
+            failed = self.client.call_tool_failure("hub_manage_rooms", {"tool": "hub_update_room", "args": {
+                "roomId": id_b, "deviceIds": [ghost_id], "confirm": True}})
+            needle = f"The hub refused to update room {id_b}: Invalid room or device ids. No device has id {ghost_id} on the hub."
+            assert needle in str(failed.get("error")), f"hub_update_room refusal did not name {ghost_id}: {failed}"
             try:
                 self.client.call_tool("hub_manage_rooms", {"tool": "hub_get_room", "args": {"roomId": id_b, "cursor": ""}})
                 assert False, "hub_get_room(roomId, cursor) should have raised"
@@ -14320,6 +14304,23 @@ def updated() {}
             assert survivor.get("name") == name_b, f"roomB changed after refused updates: {survivor}"
             assert survivor.get("deviceCount") == 0 and not survivor.get("devices"), \
                 f"roomB's device list changed after refused updates: {survivor}"
+
+            # 5b) create validation before any write, and the hub's refusal of an unknown device id.
+            for args, needle in (
+                ({"name": name_c, "deviceIds": "12", "confirm": True}, "deviceids must be an array"),
+                ({"name": name_c, "deviceIds": ["abc"], "confirm": True}, "deviceids must be numeric"),
+                ({"name": name_c, "deviceIds": ["99999999999"], "confirm": True}, "deviceids must be numeric"),
+            ):
+                try:
+                    self.client.call_tool("hub_manage_rooms", {"tool": "hub_create_room", "args": args})
+                    assert False, f"hub_create_room({args}) should have raised"
+                except McpError as e:
+                    assert needle in str(e).lower(), f"hub_create_room({args}) error unexpected: {e}"
+            failed = self.client.call_tool_failure("hub_manage_rooms", {"tool": "hub_create_room", "args": {
+                "name": name_c, "deviceIds": [ghost_id], "confirm": True}})
+            needle = f"The hub refused to create room '{name_c}': Invalid room or device ids. No device has id {ghost_id} on the hub."
+            assert needle in str(failed.get("error")), f"hub_create_room refusal did not name {ghost_id}: {failed}"
+            assert not self._rooms_named(name_c), f"a refused hub_create_room saved {name_c}"
 
             # 6) confirm safety gate on delete: hub_delete_room without confirm -> refused, room survives.
             # Same refusal shape as the create gate above: a missing REQUIRED confirm comes back as an
@@ -14344,7 +14345,7 @@ def updated() {}
                 for r in (still.get("rooms", []) if isinstance(still, dict) else [])
             ), "roomA must survive a no-confirm delete attempt"
 
-            print("    ROOMS_LIB_ERRORS not-found + validation + hub refusals + confirm-gate + duplicate + collision OK")
+            print("    ROOMS_LIB_ERRORS not-found + stale args + validation + hub refusals + confirm-gate + duplicate + collision OK")
         finally:
             for rid in created_ids:
                 try:
@@ -16005,43 +16006,116 @@ def updated() {}
         return room_id
 
     def _room_selection_boundary_checks(self, unauth: str) -> None:
-        """With the bypass OFF, room writes refuse to add an unselected device before any save."""
-        needle = f"deviceIds {unauth} is outside the MCP device selection"
+        """With the bypass OFF, room writes refuse an unselected or unknown device before any save."""
+        outside = f"Device {unauth} is outside the MCP device selection"
+        unknown = f"No device has id {self.ROOM_NO_DEVICE_ID} on the hub. Use hub_list_devices for device ids."
         name = f"{PREFIX}RoomSelection"
         self._delete_rooms_named(name)
-        self._expect_tool_refusal("hub_manage_rooms", {"tool": "hub_create_room", "args": {
-            "name": name, "deviceIds": [unauth], "confirm": True}}, needle)
-        assert not self._rooms_named(name), f"a refused hub_create_room saved {name}"
+        for ids, needle in (([unauth], f"{outside}, so a room cannot be created with it."),
+                            ([self.ROOM_NO_DEVICE_ID], unknown)):
+            self._expect_tool_refusal("hub_manage_rooms", {"tool": "hub_create_room", "args": {
+                "name": name, "deviceIds": ids, "confirm": True}}, needle)
+            assert not self._rooms_named(name), f"a refused hub_create_room saved {name}"
         room_id = self._create_owned_room(name, [])
         try:
-            self._expect_tool_refusal("hub_manage_rooms", {"tool": "hub_update_room", "args": {
-                "roomId": room_id, "deviceIds": [unauth], "confirm": True}}, needle)
+            for ids, needle in (([unauth], f"{outside}, so this update cannot add it."),
+                                ([self.ROOM_NO_DEVICE_ID], unknown)):
+                self._expect_tool_refusal("hub_manage_rooms", {"tool": "hub_update_room", "args": {
+                    "roomId": room_id, "deviceIds": ids, "confirm": True}}, needle)
             got = self.client.call_tool("hub_manage_rooms", {"tool": "hub_get_room", "args": {"roomId": room_id}})
-            assert got.get("deviceCount") == 0, f"a refused hub_update_room moved {unauth}: {got}"
+            assert got.get("deviceCount") == 0, f"a refused hub_update_room changed the room's devices: {got}"
         finally:
             try:
                 self.client.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {
                     "roomId": room_id, "confirm": True}})
             except Exception as exc:
                 self._fixture_reset_failures.append(f"room selection check: deleting room {room_id} failed: {exc}")
+        self._room_stale_device_checks()
+
+    ROOM_NO_DEVICE_ID = "999999999"
+
+    def _room_stale_device_checks(self) -> None:
+        """With the bypass OFF: a deleted device the hub's room list keeps reads as no longer on the hub,
+        refuses a short rename (which re-sends the list), and may be dropped or deleted with its room."""
+        name_a, name_b = f"{PREFIX}RoomStaleA", f"{PREFIX}RoomStaleB"
+        self._delete_rooms_named(name_a)
+        self._delete_rooms_named(name_b)
+        dnis = []
+        room_a = room_b = None
+        try:
+            kept, dni, _ = self._rm_disposable_switch("RoomStaleKeep")
+            dnis.append(dni)
+            gone_a, dni_a, _ = self._rm_disposable_switch("RoomStaleGoneA")
+            dnis.append(dni_a)
+            gone_b, dni_b, _ = self._rm_disposable_switch("RoomStaleGoneB")
+            dnis.append(dni_b)
+            room_a = self._create_owned_room(name_a, [kept, gone_a])
+            room_b = self._create_owned_room(name_b, [gone_b])
+            self._rm_delete_device(dni_a)
+            self._rm_delete_device(dni_b)
+
+            got = self.client.call_tool("hub_manage_rooms", {"tool": "hub_get_room", "args": {"roomId": room_a}})
+            row = next((d for d in (got.get("devices") or []) if str(d.get("id")) == gone_a), None)
+            assert row and row.get("onHub") is False and row.get("label") == "(device no longer on the hub)", \
+                f"hub_get_room must show deleted device {gone_a} as no longer on the hub: {got}"
+
+            failed = self.client.call_tool_failure("hub_manage_rooms", {"tool": "hub_update_room", "args": {
+                "roomId": room_a, "name": "Z8", "confirm": True}})
+            assert f"The room still lists device {gone_a}, which is no longer on the hub" in str(failed.get("error")) \
+                and "3 or more characters" in str(failed.get("note")), \
+                f"a short rename of a room holding deleted device {gone_a} must name it: {failed}"
+            assert [str(r.get("id")) for r in self._rooms_named(name_a)] == [room_a], \
+                f"a refused short rename changed room {room_a}'s name"
+
+            dropped = self.client.call_tool("hub_manage_rooms", {"tool": "hub_update_room", "args": {
+                "roomId": room_a, "deviceIds": [kept], "confirm": True}})
+            assert dropped.get("success") is True and (dropped.get("room") or {}).get("unassignedDeviceIds") == [gone_a], \
+                f"dropping deleted device {gone_a} with the bypass off must succeed: {dropped}"
+            deleted = self.client.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {
+                "roomId": room_b, "confirm": True}})
+            assert deleted.get("success") is True, \
+                f"deleting a room holding only deleted device {gone_b} with the bypass off must succeed: {deleted}"
+            room_b = None
+        finally:
+            for rid in (room_a, room_b):
+                if not rid:
+                    continue
+                try:
+                    self.client.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {
+                        "roomId": rid, "confirm": True}})
+                except Exception as exc:
+                    self._fixture_reset_failures.append(f"room stale-device check: deleting room {rid} failed: {exc}")
+            for dni in dnis:
+                if dni not in self.created_device_dnis:
+                    continue
+                try:
+                    self._rm_delete_device(dni)
+                except Exception as exc:
+                    self._fixture_reset_failures.append(f"room stale-device check: deleting device {dni} failed: {exc}")
 
     def _room_delete_selection_check(self, unauth: str, _set_bypass) -> None:
         """Entered with the bypass ON: put the unselected device in a fixture room, then with the
-        bypass OFF deleting that room is refused, since it would unassign the device."""
+        bypass OFF dropping it from that room, or deleting the room, is refused."""
         name = f"{PREFIX}RoomDeleteSelection"
         self._delete_rooms_named(name)
         listed = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
         source = next((r for r in (listed.get("rooms", []) if isinstance(listed, dict) else [])
                        if unauth in [str(i) for i in (r.get("deviceIds") or [])]), None)
         room_id = self._create_owned_room(name, [unauth])
+        outside = f"Device {unauth} is outside the MCP device selection"
         try:
             _set_bypass(False)
             try:
+                self._expect_tool_refusal("hub_manage_rooms", {"tool": "hub_update_room", "args": {
+                    "roomId": room_id, "deviceIds": [], "confirm": True}},
+                    f"{outside}, so this update cannot remove it.")
                 self._expect_tool_refusal("hub_manage_rooms", {"tool": "hub_delete_room", "args": {
                     "roomId": room_id, "confirm": True}},
-                    f"deviceIds {unauth} is outside the MCP device selection, so deleting this room would unassign it")
-                assert [str(r.get("id")) for r in self._rooms_named(name)] == [room_id], \
-                    f"a refused hub_delete_room removed room {room_id}"
+                    f"{outside}, so deleting this room would unassign it.")
+                held = self._rooms_named(name)
+                assert [str(r.get("id")) for r in held] == [room_id] \
+                    and [str(i) for i in (held[0].get("deviceIds") or [])] == [unauth], \
+                    f"a refused hub_update_room or hub_delete_room changed room {room_id}: {held}"
             finally:
                 _set_bypass(True)
         finally:
@@ -16057,9 +16131,7 @@ def updated() {}
                                                     f"or deleting room {room_id} failed: {exc}")
 
     def _bypass_boundary_checks(self, unauth, _set_bypass) -> None:
-        """Boundary + bypass-reach assertions for test_bypass_device_allowlist_reaches_unlisted_device.
-
-        Split out only so the caller can guarantee the ON-baseline restore in a finally."""
+        """Device-access boundary and bypass-reach assertions; entered with the bypass OFF, the ON baseline is restored by the enclosing finally."""
         def assert_device_logs_available():
             for _ in range(3):
                 logs = self.client.call_tool("hub_get_logs", {"deviceId": unauth, "limit": 5})
