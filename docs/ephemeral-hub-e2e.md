@@ -65,9 +65,13 @@ These steps describe hold mode, where the test run drives the hub. The default
 6. `e2e` decrypts the session, masks it, reads `hub_get_info` once to mask the hub's identity,
    checks out the head, runs both scripts and uploads their redacted logs.
 
-There is no teardown call: the hub ends with the test run. To retry a pull request, push a commit
-or close and reopen the PR so both workflows start again. Re-running only the test run gets no
-hub. To retry a push or dispatch, use **Re-run all jobs**.
+There is no teardown call: the hub ends with the test run. To retry one kind on a pull request,
+re-run that kind's `e2e (ephemeral hub, <kind>)` job in the test run, then right away re-run
+`Request ephemeral hub (<kind>)` in the request run. The request job pairs with the test run still
+in progress and the public key of its new attempt, so a hub boots for that attempt. Re-running only
+the test run gets no hub: it fails once it sees the request run stay finished. Pushing a commit or
+closing and reopening the PR also restarts both workflows. To retry a push or dispatch, use
+**Re-run all jobs**.
 
 ## Provider-run suite
 
@@ -124,8 +128,8 @@ run, but `pull_request_target` runs regardless of it, so the request workflow ga
 reviewer-protected `e2e-approval` environment otherwise. No hub boots and none of the PR's code
 runs until a maintainer approves both: **Approve workflows to run** on the PR, then **Review
 deployments** on the request run. The request side waits 10 minutes for the test run to start and
-the test run 35 minutes for results, so approve the two together; after a timeout, push a commit
-or close and reopen the PR. A rejected deployment fails `e2e`.
+the test run 35 minutes for results, so approve the two together; after a timeout, re-run both
+jobs as described above. A rejected deployment fails `e2e`.
 
 The hub is disposable and serves only the test run that requested it. The job that runs PR code
 holds no secrets. Its token can only read this repository's contents and Actions artifacts and
