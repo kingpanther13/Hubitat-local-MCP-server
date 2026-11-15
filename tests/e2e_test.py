@@ -13110,8 +13110,8 @@ def updated() {}
                     # falls outside the PREFIX purge, so this leg removes the file and its copy itself.
                     underscored = f"_{PREFIX}561_underscore.txt"
                     try:
-                        made = self.client.call_tool("hub_write_file", {"fileName": underscored, "content": "u", "confirm": True})
-                        assert made.get("success") is True, f"a name starting with '_' was not written: {made}"
+                        written = self.client.call_tool("hub_write_file", {"fileName": underscored, "content": "u", "confirm": True})
+                        assert written.get("success") is True, f"a name starting with '_' was not written: {written}"
                         back = self.client.call_tool("hub_read_file", {"fileName": underscored})
                         assert back.get("content") == "u", f"a name starting with '_' was not read back: {back}"
                     finally:
