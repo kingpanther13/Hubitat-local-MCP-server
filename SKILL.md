@@ -518,7 +518,7 @@ All routes require the Write master. Validation runs before mutation; runtime fa
 - `getRooms()` is a built-in Hubitat SDK method returning `[[id:1, name:"Bedroom", deviceIds:[5, 6]], ...]`
 - `/room/save` answers `{"roomId": <id>}` on success and `{"error": "Invalid room or device ids"}` (HTTP 200) for an unknown device id; an answer without `roomId` is reported as a failure. It also answers success for a `roomId` that does not exist without changing anything, and `GET /room/delete/<id>` answers 200 for an unknown id, so update and delete check the id against `getRooms()` first; no write re-reads the room list afterwards
 - `/room/updateName` answers `{"success":true,"message":null}`, or `success:false` with `"Room not found"` or `"Room name is too short"` (under 3 characters; `/room/save` accepts such a name)
-- While Bypass Device Allowlist is off, create refuses any device outside the MCP device selection and update refuses one whose membership changes, before any request
+- While Bypass Device Allowlist is off, create refuses any device outside the MCP device selection, update refuses one whose membership changes, and delete refuses a room that holds one, before any request
 - The hub allows duplicate room names; create and rename refuse them
 - Form-encoded bodies return 500 — the endpoint strictly requires JSON
 

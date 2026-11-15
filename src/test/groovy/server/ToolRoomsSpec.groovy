@@ -919,6 +919,72 @@ class ToolRoomsSpec extends ToolSpecBase {
         outcome = bypass ? 'saves' : 'refuses'
     }
 
+    @Unroll
+    def "hub_delete_room with bypass=#bypass #verdict a room holding #label"() {
+        given: 'device 100 selected, 200 a child of this app, 300 neither'
+        enableWrite()
+        selectOnly([100])
+        settingsMap.bypassDeviceAllowlist = bypass
+        childDevicesList << new TestDevice(id: 200, name: 'child', label: 'Child')
+        installGetRoomsStub([[id: 5, name: 'Office', deviceIds: ids]])
+        hubGet.register('/room/delete/5') { '' }
+
+        when:
+        def outcome
+        try {
+            outcome = script.toolDeleteRoom([roomId: '5', confirm: true])
+        } catch (IllegalArgumentException e) {
+            outcome = e
+        }
+
+        then:
+        if (refused) {
+            assert outcome instanceof IllegalArgumentException
+            assert outcome.message == "deviceIds ${refused} is outside the MCP device selection, so deleting this room would unassign it. Select it in the MCP app's device list, or turn on Bypass Device Allowlist."
+            assert hubGet.calls.empty
+        } else {
+            assert outcome.success == true && outcome.devicesUnassigned == ids.size()
+            assert hubGet.calls*.path == ['/room/delete/5']
+        }
+
+        where:
+        label                       | bypass | ids             | refused
+        'an unselected device'      | false  | [100, 300]      | '300'
+        'selected and child only'   | false  | [100, 200]      | null
+        'no devices'                | false  | []              | null
+        'an unselected device'      | true   | [100, 300]      | null
+        verdict = refused ? 'refuses' : 'deletes'
+    }
+
+    @Unroll
+    def "hub_delete_room via dispatch with bypass=#bypass #outcome a room holding an unselected device (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        selectOnly([100])
+        settingsMap.bypassDeviceAllowlist = bypass
+        installGetRoomsStub([[id: 5, name: 'Office', deviceIds: [100, 700]]])
+        hubGet.register('/room/delete/5') { '' }
+
+        when:
+        def response = dispatchRoomTool('hub_delete_room', [roomId: '5', confirm: true], useGateways)
+
+        then:
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        if (bypass) {
+            assert !response.result.isError && inner.success == true && hubGet.calls*.path == ['/room/delete/5']
+        } else {
+            assert response.result.isError == true
+            assert inner.error.contains('deviceIds 700 is outside the MCP device selection, so deleting this room would unassign it')
+            assert hubGet.calls.empty
+        }
+
+        where:
+        [bypass, useGateways] << [[false, true], [true, false]].combinations()
+        outcome = bypass ? 'deletes' : 'refuses'
+    }
+
     def "hub_update_room holds its own lock, not the write reservation lock"() {
         expect:
         script.ROOM_UPDATE_LOCK != null

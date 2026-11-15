@@ -94,16 +94,20 @@ private List _roomDeviceIds(deviceIds) {
     }.unique()
 }
 
-private void _requireRoomDevicesSelected(Collection ids) {
+private void _requireRoomDevicesSelected(Collection ids, boolean deleting = false) {
     // While the allowlist bypass is off, a room write may move only devices MCP may configure, the same
     // boundary hub_update_device keeps. On update only ids whose membership changes are checked, so a
-    // rename or a re-send that keeps an unselected device in its room still works.
+    // rename or a re-send that keeps an unselected device in its room still works. Deleting a room
+    // unassigns every device in it.
     if (!ids) return
     Set authorized = _mcpAuthorizedIds(getChildDevices() ?: [])
     if (authorized == null) return
     List outside = ids.collect { it.toString() }.unique().findAll { !authorized.contains(it) }
     if (outside) {
-        throw new IllegalArgumentException("deviceIds ${outside.join(', ')} ${outside.size() == 1 ? 'is' : 'are'} outside the MCP device selection, so this room write cannot add or remove ${outside.size() == 1 ? 'it' : 'them'}. Select ${outside.size() == 1 ? 'it' : 'them'} in the MCP app's device list, or turn on Bypass Device Allowlist. A device hub_get_room shows with accessible=false stays in the list you send.")
+        String one = outside.size() == 1 ? 'it' : 'them'
+        String what = deleting ? "deleting this room would unassign ${one}" : "this room write cannot add or remove ${one}"
+        String tail = deleting ? "" : " A device hub_get_room shows with accessible=false stays in the list you send."
+        throw new IllegalArgumentException("deviceIds ${outside.join(', ')} ${outside.size() == 1 ? 'is' : 'are'} outside the MCP device selection, so ${what}. Select ${one} in the MCP app's device list, or turn on Bypass Device Allowlist.${tail}")
     }
 }
 
@@ -255,6 +259,7 @@ def toolDeleteRoom(args) {
     String roomId = room.id.toString()
     String roomName = room.name
     int deviceCount = room.deviceIds?.size() ?: 0
+    _requireRoomDevicesSelected(room.deviceIds ?: [], true)
 
     // GET, as the hub's Rooms page does (POST answers 405); the hub answers an empty 200.
     try {
@@ -325,7 +330,7 @@ def _getAllToolDefinitions_partRooms() {
         ],
         [
             name: "hub_delete_room",
-            description: """⚠️ DESTRUCTIVE: Permanently deletes a room by id. Its devices become unassigned (not deleted). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]]
+            description: """⚠️ DESTRUCTIVE: Permanently deletes a room by id. Its devices become unassigned (not deleted). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]] While Bypass Device Allowlist is off, a room holding a device outside the MCP device selection is refused.
 
 PRE-FLIGHT: 1) Backup <24h 2) Verify the room with hub_get_room(roomId) 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]""",
             inputSchema: [
