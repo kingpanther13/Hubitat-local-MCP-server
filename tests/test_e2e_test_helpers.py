@@ -3682,3 +3682,70 @@ def test_uptime_seconds_reads_hub_uptime_text(text, expected):
 ])
 def test_limiter_retry_is_chosen_by_status_or_refusal_text(exc, expected):
     assert et._limiter_retry_applies(exc) is expected
+
+
+# TestRunner._recover_short_rename_room: the record of a room a killed run left with its short name
+class _ShortRenameClient:
+    def __init__(self, files, rooms, read_error=None):
+        self.files, self.rooms, self.read_error, self.calls = files, rooms, read_error, []
+
+    def call_tool(self, name, arguments=None, **_):
+        tool, args = arguments["tool"], arguments.get("args", {})
+        self.calls.append(tool)
+        if tool == "hub_list_files":
+            if self.files is None:
+                raise et.McpError("list failed")
+            return {"files": [{"name": n} for n in self.files]}
+        if tool == "hub_read_file":
+            if self.read_error:
+                raise self.read_error
+            return {"success": True, "content": self.files[args["fileName"]]}
+        if tool == "hub_delete_file":
+            del self.files[args["fileName"]]
+            return {"success": True}
+        if tool == "hub_delete_room":
+            del self.rooms[args["roomId"]]
+            return {"success": True}
+        raise AssertionError(f"Unexpected call: {name} {arguments}")
+
+
+def _short_rename_runner(client):
+    runner = object.__new__(et.TestRunner)
+    runner.client = client
+    return runner
+
+
+def _listed(rooms):
+    return {"rooms": [{"id": rid, "name": name} for rid, name in rooms.items()]}
+
+
+def test_short_rename_recovery_deletes_only_the_recorded_room_that_still_has_the_short_name():
+    name = et.TestRunner.ROOM_SHORT_RENAME_FILE
+    client = _ShortRenameClient({name: json.dumps({"roomId": "7", "name": "Z9"})}, {"7": "Z9", "8": "Z9"})
+    _short_rename_runner(client)._recover_short_rename_room(_listed(client.rooms))
+    assert client.rooms == {"8": "Z9"} and client.files == {}
+
+
+def test_short_rename_recovery_keeps_a_recorded_room_renamed_since():
+    name = et.TestRunner.ROOM_SHORT_RENAME_FILE
+    client = _ShortRenameClient({name: json.dumps({"roomId": "7", "name": "Z9"})}, {"7": "Kitchen"})
+    _short_rename_runner(client)._recover_short_rename_room(_listed(client.rooms))
+    assert client.rooms == {"7": "Kitchen"} and client.files == {}
+
+
+def test_short_rename_recovery_returns_when_a_complete_listing_has_no_record():
+    client = _ShortRenameClient({}, {"7": "Z9"})
+    _short_rename_runner(client)._recover_short_rename_room(_listed(client.rooms))
+    assert client.calls == ["hub_list_files"] and client.rooms == {"7": "Z9"}
+
+
+@pytest.mark.parametrize("failure", ["listing", "read"])
+def test_short_rename_recovery_stops_and_keeps_the_record_when_it_cannot_be_read(failure):
+    name = et.TestRunner.ROOM_SHORT_RENAME_FILE
+    record = json.dumps({"roomId": "7", "name": "Z9"})
+    client = _ShortRenameClient(None if failure == "listing" else {name: record}, {"7": "Z9"},
+                                read_error=et.McpError("transient") if failure == "read" else None)
+    with pytest.raises((AssertionError, et.McpError)):
+        _short_rename_runner(client)._recover_short_rename_room(_listed(client.rooms))
+    assert client.rooms == {"7": "Z9"}
+    assert "hub_delete_file" not in client.calls and "hub_write_file" not in client.calls

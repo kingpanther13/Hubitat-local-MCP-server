@@ -13982,16 +13982,16 @@ def updated() {}
 
     def _recover_short_rename_room(self, listed: dict) -> None:
         """A run killed while the lifecycle room had its short name left a record of that room's id.
-        Delete the room only when that id still carries the short name, then drop the record."""
-        try:
-            raw = self.client.call_tool("hub_manage_files", {"tool": "hub_read_file", "args": {
-                "fileName": self.ROOM_SHORT_RENAME_FILE}})
-        except McpError:   # no record: the last run finished the short-name leg
+        Delete the room only when that id still carries the short name, then drop the record.
+        Only a complete file listing proves there is no record; any other failure stops the test,
+        so the record is never overwritten while its room may still exist."""
+        names, authoritative = self._list_all_file_names(self.ROOM_SHORT_RENAME_FILE)
+        if self.ROOM_SHORT_RENAME_FILE not in names:
+            assert authoritative, "could not list hub files to check for a short-rename room record"
             return
-        try:
-            record = json.loads(raw.get("content") or "{}") if isinstance(raw, dict) else {}
-        except ValueError:
-            record = {}
+        raw = self.client.call_tool("hub_manage_files", {"tool": "hub_read_file", "args": {
+            "fileName": self.ROOM_SHORT_RENAME_FILE}})
+        record = json.loads(raw.get("content") or "")
         rid = str(record.get("roomId") or "")
         for r in (listed.get("rooms", []) if isinstance(listed, dict) else []):
             if rid and str(r.get("id")) == rid and r.get("name") == record.get("name"):
