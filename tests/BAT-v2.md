@@ -4568,7 +4568,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 }
 ```
 
-**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_create_dashboard)` with `name='BAT Dash Create'`, `deviceIds=[<id>]`, `showClockTile=true`, no `confirm` needed (create needs only the Write master). The response returns `success=true` and (when the hub provides it) the new dashboard `id`. A follow-up `hub_get_dashboard(dashboardId=N)` returns the dashboard with `showClockTile` truthy and the device present. The dashboard also appears in `hub_list_dashboards`.
+**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_create_dashboard)` with `name='BAT Dash Create'`, `deviceIds=[<id>]`, `options={showClockTile:true}`, no `confirm` needed (create needs only the Write master). The response returns `success=true` and (when the hub provides it) the new dashboard `id`. A follow-up `hub_get_dashboard(dashboardId=N)` returns the dashboard with `showClockTile` truthy and the device present. The dashboard also appears in `hub_list_dashboards`.
 
 **Failure modes**: the AI sends `deviceIds` as an empty list (rejected as an `isError: true` validation result — an Easy Dashboard needs ≥1 device). The booleans go over the wire as JSON booleans instead of the strings "true"/"false" (wire-format break — the dashboard's tile would not toggle). `hub_update_dashboard` or `hub_get_dashboard` called without a `dashboardId` (rejected as an `isError: true` validation result). The list comes back empty after a successful create (the dashboard page token may be unreadable — the list then falls back to the child-app enumeration, which carries id + name only). With Bypass Device Allowlist off, a device that is not selected in the MCP app (and not created by it) is rejected as an `isError: true` validation result naming its id, before anything is written; the BAT virtual switch is MCP-created, so it is always accepted.
 
@@ -4584,7 +4584,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 }
 ```
 
-**Expected**: because `hub_update_dashboard` replaces the config WHOLESALE (no server-side read-merge), the correct flow is `hub_get_dashboard(dashboardId=N)` first to capture the full current config, then `hub_update_dashboard(dashboardId=N, name='BAT Dash Renamed', deviceIds=[<id>], theme='dark', showClockTile=true, ...)` carrying every field. The read-back shows the new name, `theme='dark'`, the device present, and the clock tile still on.
+**Expected**: because `hub_update_dashboard` replaces the config WHOLESALE (no server-side read-merge), the correct flow is `hub_get_dashboard(dashboardId=N)` first to capture the full current config, then `hub_update_dashboard(dashboardId=N, name='BAT Dash Renamed', deviceIds=[<id>], options={theme:'dark', showClockTile:true, ...})` carrying every field (config fields go inside `options`). The read-back shows the new name, `theme='dark'`, the device present, and the clock tile still on.
 
 **Failure modes**: the AI calls update with only `name` + `theme` and omits `deviceIds`/`showClockTile` (rejected as an `isError: true` validation result for missing deviceIds; or, if a future caller bypassed the guard, the clock tile and devices would silently revert to defaults — the wholesale-replace trap the description warns about). update called without a `dashboardId` or without a `name` (both rejected as `isError: true` validation results).
 

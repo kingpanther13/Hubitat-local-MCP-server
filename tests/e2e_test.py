@@ -5647,7 +5647,7 @@ class TestRunner:
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_update_dashboard",
                 "args": {"dashboardId": dash_id, "name": dash_name, "deviceIds": upd_devices, "options": upd_options}}),
-            lambda: bool((self._read_dashboard(dash_id) or {}).get("showClockTile")) == new_clock,
+            lambda: (self._read_dashboard(dash_id) or {}).get("showClockTile") is new_clock,
             "update dashboard",
         )
         if uw["relayDropped"]:
@@ -5656,7 +5656,7 @@ class TestRunner:
             assert isinstance(uw["response"], dict) and uw["response"].get("success"), \
                 f"hub_update_dashboard failed: {uw['response']}"
             reread = self._read_dashboard(dash_id)
-            assert bool(reread.get("showClockTile")) == new_clock, \
+            assert reread.get("showClockTile") is new_clock, \
                 f"hub_update_dashboard reported success but showClockTile didn't change: {reread}"
         # The masked PIN passed back through the update kept the stored one.
         try:
@@ -5760,9 +5760,9 @@ class TestRunner:
         suffix = _run_artifact_suffix()
         var_name = f"{PREFIX}DashVar_{suffix}"
         var_name_2 = f"{PREFIX}DashVar2_{suffix}"
-        self._create_variable(var_name, "String", "dashboard")
+        self._create_hub_variable_visible(var_name, "String", "dashboard")
         try:
-            self._create_variable(var_name_2, "String", "dashboard2")
+            self._create_hub_variable_visible(var_name_2, "String", "dashboard2")
             current = ((self._read_dashboard(dash_id) or {}).get("layout") or {}).get("tiles") or []
             assert current, f"dashboard {dash_id} has no tile to give a linkName: {current}"
             first_id = current[0]["id"]

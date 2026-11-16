@@ -12903,7 +12903,7 @@ Update by id; the behavior depends on the dashboard's kind.
 **Pre-flight:** 1) read the dashboard with `hub_get_dashboard` to confirm the target id and its current config (an Easy update is wholesale); 2) tell the user what will change.
 
 **Easy Dashboard** — wholesale config replace:
-- **Read `hub_get_dashboard` first** and pass the FULL config back; this is a wholesale replace, not a partial patch. `name` and `deviceIds` (>=1) are required; any omitted field reverts to its default (see `hub_create_dashboard`), except an omitted PIN or `localOnly`, which is read and re-sent (the result flags `pinPreserveFailed` / `localOnlyPreserveFailed` when it could not be read). Pass `dashboardPin: ""` or `hsmPin: ""` to clear a PIN.
+- **Read `hub_get_dashboard` first** and pass the FULL config back; this is a wholesale replace, not a partial patch. `name` and `deviceIds` (>=1) are required; any omitted field reverts to its default (see `hub_create_dashboard`), except an omitted PIN or `localOnly`, which is read and re-sent; if the current config can't be read, the update is refused with nothing changed. Pass `dashboardPin: ""` or `hsmPin: ""` to clear a PIN.
 - `options`: same keys as `hub_create_dashboard.options`. Every config field goes inside `options`; only `name` and `deviceIds` are top level.
 - Passing any legacy-only arg (`layout`, `setOptions`, `addTiles`, `updateTiles`, `removeTileIds`) at an Easy Dashboard is rejected.
 
