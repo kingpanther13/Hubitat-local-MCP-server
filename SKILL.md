@@ -116,14 +116,14 @@ Read gateways (`hub_read_*`, every sub-tool read-only):
 | `hub_read_files` | 2 | File Manager list + read (read-only) |
 | `hub_read_rooms` | 2 | Room list + one room by id (read-only) |
 | `hub_read_rules` | 6 | Custom-engine rule get/test, native rule list, rule health, Visual Rules Builder rule list/read (read-only) |
-| `hub_read_variables` | 3 | Hub connector and rule engine variable list/get (+ opt-in dependents) + change history (read-only) |
+| `hub_read_variables` | 3 | Hub and rule engine variable list/get (connector and Hub Mesh details, + opt-in dependents) + change history (read-only) |
 | `hub_read_dashboards` | 2 | Dashboard list + one dashboard's full config by id, covering both Easy and legacy Hubitat® Dashboards (read-only) |
 
 Manage gateways (`hub_manage_*`, contain at least one write):
 | Gateway | Tools | Domain |
 |---------|-------|--------|
 | `hub_manage_custom_rules` | 8 | Custom-engine rule get/create/update/delete/test/export/import/clone |
-| `hub_manage_variables` | 8 | Hub connector and rule engine variables (CRUD + connector + history + Hub Mesh variable share/link/unlink) |
+| `hub_manage_variables` | 8 | Hub and rule engine variables (CRUD + connector + history + Hub Mesh variable share/link/unlink) |
 | `hub_manage_rooms` | 5 | Room CRUD (list, get, create, update name and devices, delete) |
 | `hub_manage_destructive_ops` | 4 | Hub reboot, shutdown, device deletion, and destructive ops by target via `hub_call_destructive_ops` (radio reset/wipe + firmware, network disconnect, cloud-controller disable/enable) (write) |
 | `hub_manage_backup` | 4 | Backup management — list code + whole-hub DB backups (+ auto-backup schedule), get code-backup source, restore (apps/drivers/rule snapshots), delete whole-hub DB backups (write) |

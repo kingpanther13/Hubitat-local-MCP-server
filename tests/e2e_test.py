@@ -12234,6 +12234,9 @@ def updated() {}
         assert got.get("source") == "hub", f"created variable not visible in the hub namespace: {got}"
         assert got.get("value") == "round-trip-v1", f"hub variable value mismatch: {got}"
         assert got.get("type"), f"hub variable read-back carries no type metadata: {got}"
+        # The Hub Variables page adds the Hub Mesh state; a local, unshared variable reads false for both.
+        assert got.get("meshShared") is False and got.get("linked") is False and "detailsError" not in got, \
+            f"hub_get_variable did not carry the Hub Variables page details: {got}"
 
         # DELETE -- response carries deleted/previousValue; the gone-check below binds
         # the real effect, so a relay 504 skips the response-shape assertions.
@@ -12264,25 +12267,46 @@ def updated() {}
         except (McpToolError, McpError) as exc:
             assert "not found" in str(exc).lower(), f"unexpected error after delete: {exc}"
 
-        # The delete must leave nothing armed on the Hub Variables page: a same-named variable
-        # created afterwards survives the page's next render (includeDependents renders it).
+        # A same-named variable can be created again right after the delete and keeps its value.
         recreated = self.client.call_tool("hub_manage_variables", {
             "tool": "hub_create_variable",
             "args": {"name": var_name, "type": "String", "value": "round-trip-v2", "confirm": True}})
         assert recreated.get("success") is True, f"re-creating {var_name} after its delete failed: {recreated}"
         dependents = self.client.call_tool("hub_read_variables", {
             "tool": "hub_get_variable", "args": {"name": var_name, "includeDependents": True}})
-        assert not dependents.get("dependentsError"), \
-            f"the dependents read did not render the Hub Variables page, so the check below proves nothing: {dependents}"
-        survived = self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_get_variable", "args": {"name": var_name}})
-        assert survived.get("value") == "round-trip-v2", \
-            f"the re-created {var_name} did not survive a render of the Hub Variables page after the earlier delete: {survived}"
+        assert not dependents.get("dependentsError"), f"the dependents read of {var_name} failed: {dependents}"
+        assert dependents.get("value") == "round-trip-v2", \
+            f"the re-created {var_name} does not hold its new value: {dependents}"
         self._delete_variable_safe(var_name)
         if var_name in self.created_variable_names:
             self.created_variable_names.remove(var_name)
 
-        # Malformed suffixes must be rejected before the wizard creates anything.
+        # The hub refuses a value its type cannot hold; its own reason comes back and nothing is created.
+        bad_value_name = f"{PREFIX}HubVar_BadValue"
+        self.created_variable_names.append(bad_value_name)
+        try:
+            try:
+                bad_value = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_variable",
+                    "args": {"name": bad_value_name, "type": "Number", "value": "abc", "confirm": True}})
+            except McpToolError as exc:
+                assert "does not match the variable type" in str(exc) and "Nothing was changed" in str(exc), \
+                    f"a refused create did not carry the hub's reason: {exc}"
+            else:
+                raise AssertionError(f"a Number created from text was not refused with isError: {bad_value}")
+            assert not self._hub_variable_visible_in_bulk(bad_value_name), "a refused create left a variable behind"
+        finally:
+            self._delete_variable_safe(bad_value_name)
+
+        # A misspelt key in a bulk item fails that item by name, before anything is sent.
+        typo = self.client.call_tool_failure("hub_manage_variables", {
+            "tool": "hub_create_variable",
+            "args": {"variables": [{"nmae": f"{PREFIX}HubVar_Typo", "type": "String", "value": "x"}], "confirm": True}})
+        assert typo.get("createdCount") == 0 and typo.get("failedCount") == 1, f"bulk typo counts are wrong: {typo}"
+        assert "unknown key(s): nmae" in str((typo.get("results") or [{}])[0].get("error")), \
+            f"the bulk typo was not named: {typo}"
+
+        # Malformed suffixes must be rejected before anything is created.
         bad_dt_name = f"{PREFIX}HubVar_DT_Invalid"
         self.created_variable_names.append(bad_dt_name)
         try:
@@ -12452,9 +12476,8 @@ def updated() {}
 
     @test("hub_variables")
     def test_hub_get_variable_dependents_round_trip(self) -> None:
-        # hub_get_variable(includeDependents=true) answers "which apps reference this hub variable" by
-        # driving the Settings > Hub Variables "Show In Use Apps" reveal (the same in-use registry that
-        # gates hub_delete_variable). An RM rule that references the variable registers as a consumer;
+        # hub_get_variable(includeDependents=true) answers "which apps reference this hub variable" from
+        # the Hub Variables page's in-use registry (the same registry that gates hub_delete_variable). An RM rule that references the variable registers as a consumer;
         # an unreferenced variable has none; an unknown name is a validation error.
         # The reference is a Variable TRIGGER (a single-page trigger reveal), NOT a setVariable action:
         # multi-step ACTION-editor reveals are the path issue #479 tears down on 4.4.5+, so a trigger
@@ -12539,6 +12562,8 @@ def updated() {}
                 assert created["response"].get("success") is True, f"hub_create_connector failed: {created}"
             linked = read()
             assert linked.get("deviceId") is not None, f"no connector linked to {var_name}: {linked}"
+            assert linked.get("connectorType") == "Variable" and linked.get("connectorLabel"), \
+                f"hub_get_variable did not report the connector type and label: {linked}"
 
             removed = self._soft_write(
                 lambda: self.client.call_tool("hub_manage_variables", {
@@ -12551,6 +12576,7 @@ def updated() {}
                     f"the standing connector should keep this removal from being the hub's last: {removed}"
             cleared = read()
             assert cleared.get("deviceId") is None, f"connector still linked to {var_name}: {cleared}"
+            assert "connectorType" not in cleared, f"a removed connector still reports a type: {cleared}"
         finally:
             self._delete_variable_safe(var_name)
 
@@ -13461,8 +13487,11 @@ def updated() {}
         result = self.client.call_tool("hub_manage_variables", {
             "tool": "hub_list_variables",
         })
-        # Should return a list or dict with variables
-        assert result is not None, "hub_list_variables returned None"
+        assert isinstance(result, dict) and isinstance(result.get("hubVariables"), list), \
+            f"hub_list_variables returned no hubVariables list: {str(result)[:400]}"
+        # Both reads behind the listing answered: the variable inventory and the Hub Variables page.
+        assert "hubVariablesError" not in result and "detailsError" not in result, \
+            f"hub_list_variables reported a failed read: {result.get('hubVariablesError') or result.get('detailsError')}"
 
     @test("system_tools")
     def test_get_hub_info(self) -> None:

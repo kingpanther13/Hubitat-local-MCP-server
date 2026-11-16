@@ -110,6 +110,7 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         atomicStateMap.requiredParamsByTool = [hub_get_room: ['obsolete']]
         atomicStateMap.requiredParamsByToolFingerprint = 'old'
         atomicStateMap.predClearPending = ['10': 'generation-10']
+        atomicStateMap.hubVarsAppId = 1424
         atomicStateMap.capturedDeviceStates = [saved: [devices: [[id: '1']]]]
         stateMap.toolSearchCorpus = ['legacy state corpus']
         stateMap.requiredParamsByTool = [hub_get_room: ['obsolete']]
@@ -127,6 +128,7 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         !atomicStateMap.containsKey('requiredParamsByTool')
         !atomicStateMap.containsKey('requiredParamsByToolFingerprint')
         !atomicStateMap.containsKey('predClearPending')
+        !atomicStateMap.containsKey('hubVarsAppId')
         atomicStateMap.capturedDeviceStates.saved.devices == [[id: '1']]
         !stateMap.containsKey('toolSearchCorpus')
         !stateMap.containsKey('requiredParamsByTool')

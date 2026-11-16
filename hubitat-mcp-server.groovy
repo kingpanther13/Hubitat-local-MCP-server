@@ -5643,7 +5643,7 @@ def _cleanupRetiredToolState() {
         try {
             ['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
              'toolSearchCorpusFingerprint', 'requiredParamsByTool',
-             'requiredParamsByToolFingerprint', 'predClearPending'].each { key ->
+             'requiredParamsByToolFingerprint', 'predClearPending', 'hubVarsAppId'].each { key ->
                 if (atomicState.containsKey(key)) atomicState.remove(key)
                 if (state.containsKey(key)) state.remove(key)
             }
@@ -5686,16 +5686,16 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_variables: [
-            description: "Manage hub variables (every type: Number, Decimal, String, Boolean, DateTime), their connector devices, and rule-engine variables. Full read/write CRUD via the modern Hub Variable API + wizard; observe changes via hub_list_variable_changes.",
+            description: "Manage hub variables (every type: Number, Decimal, String, Boolean, DateTime), their connector devices, and rule-engine variables. Full read/write CRUD via the Hub Variable API and the hub's Hub Variables page; observe changes via hub_list_variable_changes.",
             tools: ["hub_list_variables", "hub_get_variable", "hub_set_variable", "hub_create_variable", "hub_delete_variable", "hub_create_connector", "hub_delete_connector", "hub_list_variable_changes"],
             summaries: [
-                hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables. Args: type, cursor",
-                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable. Args: name, includeDependents?",
+                hub_list_variables: "List all hub variables (with type, connector and Hub Mesh sharing) and rule-engine variables. Args: type, cursor",
+                hub_get_variable: "Get a variable's value + metadata (type, connector, Hub Mesh sharing). includeDependents=true also lists the apps that reference a hub variable. Args: name, includeDependents?",
                 hub_set_variable: "Set an existing variable's value, or add to a Number/Decimal hub variable atomically. Falls back to rule_engine namespace when no hub var matches. Args: name, value | increment",
                 hub_create_variable: "Create a new hub variable, or several at once. Single: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true. Bulk: variables=[{name,type,value},...], confirm=true (mutually exclusive with the single form). A String value must be non-empty",
-                hub_delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if rules reference it]",
-                hub_create_connector: "Create a virtual-device connector for an existing hub variable. For Number/Decimal vars, connectorType picks the device type (Dimmer|Variable|Volume|ColorTemp|Humidity|Illuminance, default Variable). Args: name, connectorType?, confirm=true",
-                hub_delete_connector: "Remove the connector device for a hub variable (variable itself unchanged). Args: name, confirm=true",
+                hub_delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if apps or rules use it]",
+                hub_create_connector: "Create a virtual-device connector for an existing hub variable. connectorType picks a device type the hub offers for it (Number/Decimal: Dimmer|Variable|Volume|ColorTemp|Humidity|Illuminance; default Variable). Args: name, connectorType?, confirm=true",
+                hub_delete_connector: "Remove the connector device for a hub variable (variable itself unchanged). Args: name, confirm=true, [force=true if apps use it]",
                 hub_list_variable_changes: "Recent hub-variable changes from the retained 200-entry history. Args: name (optional filter), sinceMs (optional), limit (optional)"
             ],
             searchHints: [
@@ -6023,8 +6023,8 @@ def getGatewayConfig() {
             description: "Read-only hub-variable inspection: list all variables (with type/connector linkage), get one variable's value + metadata (optionally the apps that reference it), and watch the recent change timeline. All operations are read-only; variable create/set/delete and connectors live in hub_manage_variables.",
             tools: ["hub_list_variables", "hub_get_variable", "hub_list_variable_changes"],
             summaries: [
-                hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables. Args: type, cursor",
-                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable. Args: name, includeDependents?",
+                hub_list_variables: "List all hub variables (with type, connector and Hub Mesh sharing) and rule-engine variables. Args: type, cursor",
+                hub_get_variable: "Get a variable's value + metadata (type, connector, Hub Mesh sharing). includeDependents=true also lists the apps that reference a hub variable. Args: name, includeDependents?",
                 hub_list_variable_changes: "Recent hub-variable changes from the retained 200-entry history. Args: name?, sinceMs?, limit?"
             ],
             searchHints: [
@@ -7255,16 +7255,6 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
 
 
 // ===== /hub2/hubData diagnostics: pending platform update + hub health alerts =====
-
-
-/**
- * hub_delete_connector: delete the connector device that backs a hub variable.
- * Reuses the existing hub_delete_device path (the connector is a regular hub
- * device once created) -- Hubitat's UI does the same: open the connector
- * device's page, click Remove Device.
- *
- * The hub variable itself is NOT deleted; only the connector linkage.
- */
 
 
 // Helper method for child apps to get variable values. Issue #92: switched
@@ -12767,28 +12757,35 @@ Exports to the same JSON format Hubitat's UI Export button produces. Three use c
         visual_rule_reference: _vrbGuideSection(),
         variables: '''## Hub Variables
 
-Reference for the hub-variable tools (hub_get_variable, hub_create_variable, hub_delete_variable, hub_create_connector). Per-tool details below.
+Reference for the hub-variable tools (hub_list_variables, hub_get_variable, hub_create_variable, hub_delete_variable, hub_create_connector, hub_delete_connector). Per-tool details below. Creates, deletes and connector changes go through the hub's own Hub Variables page, one request each, and every write is read back.
 
 When the hub cannot complete a create or delete, the result is `success:false` with `error` and `note`. The note says whether nothing changed or the hub may have applied part of it; in the second case, read the variable with hub_get_variable before retrying.
 
 ### hub_get_variable
 
-The returned `source` field says which one matched (the hub-variable namespace is searched first, then rule-engine variables). For hub variables it also returns metadata: `type`, plus `deviceId`/`attribute` when a connector is linked.
+The returned `source` field says which one matched (the hub-variable namespace is searched first, then rule-engine variables). For hub variables it also returns metadata: `type`, plus `deviceId`/`attribute` when a connector is linked, and the same connector and Hub Mesh fields as `hub_list_variables`.
 
-**`includeDependents=true` — which apps reference a HUB variable.** Opt-in (off by default) because it costs an extra hub read, and on older firmware a click of the Settings → Hub Variables wizard reveal. Run it before renaming or deleting a hub variable to see what would break — the same registry that gates `hub_delete_variable`'s reference-safety refusal (deleting anyway needs `force=true`).
+**`includeDependents=true` — which apps reference a HUB variable.** Opt-in (off by default) to keep the response small. Run it before renaming or deleting a hub variable to see what would break — the same registry that gates `hub_delete_variable`'s reference-safety refusal (deleting anyway needs `force=true`).
 
-- **Source:** the hub's own in-use registry. Current firmware serves it as JSON from the Hub Variables page's data endpoint: each variable lists the apps that use it directly and the apps that use its connector device. Older firmware without that endpoint has no pure-GET dependents document, so the fold reads the Hub Variables page, clicks the per-variable "Show In Use Apps" reveal, and parses the revealed app list. The reveal is a transient wizard-UI toggle (dismissed afterward), not a data change — `hub_get_variable` stays read-only either way.
-- **Result:** `appsUsing` is an array of `{id, label}` (the installed-app id and its user-visible label, e.g. `{"id":"21","label":"MyRule"}`), plus `count` and `coverageNote`. On current firmware `appsUsing` also includes apps that use the variable's connector device (each app once), and `connectorAppsUsing` lists those connector users on their own. The full list is returned (no separate cursor on this tool); consumer lists for one variable are small.
-- **Empty vs unknown:** `appsUsing:[]`, `count:0` means the hub variable is registered but no app currently references it. `includeDependents` applies only to hub variables; it is ignored for a rule-engine variable (no hub in-use registry), so no `appsUsing` field appears. If the registry cannot be read (or, on older firmware, the reveal did not render or renders in-use yet lists no consumers), the response carries a case-specific `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
+- **Source:** the hub's own in-use registry, read from the Hub Variables page's data: each variable lists the apps that use it directly and the apps that use its connector device. The read changes nothing.
+- **Result:** `appsUsing` is an array of `{id, label}` (the installed-app id and its user-visible label, e.g. `{"id":"21","label":"MyRule"}`), plus `count` and `coverageNote`. `appsUsing` also includes apps that use the variable's connector device (each app once), and `connectorAppsUsing` lists those connector users on their own. The full list is returned (no separate cursor on this tool); consumer lists for one variable are small.
+- **Empty vs unknown:** `appsUsing:[]`, `count:0` means no app currently references the hub variable. `includeDependents` applies only to hub variables; it is ignored for a rule-engine variable (no hub in-use registry), so no `appsUsing` field appears. If the registry cannot be read, the response carries `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
 - **Coverage caveat:** only apps that register Hub Variable use with the hub appear (Rule Machine, Room Lighting, Thermostat Scheduler, and other registering apps — what the page shows in orange). Apps that never register their use, such as webCoRE pistons, are not covered; `coverageNote` says so.
 
 ### hub_set_variable: increment
 
 `increment` (a number, negative to subtract) adds to a Number or Decimal hub variable in one hub operation (the platform's addValueToGlobalVar), so two clients incrementing at once cannot lose an update the way a read-then-set can. Send it alone (not with `value` or `mesh_shared`). The result carries `previousValue` and the new `value`, read just before and just after the add, so another client's change in between shows in them; a Number variable rounds a fractional result. A variable linked from another hub over Hub Mesh cannot be incremented here. Because a retried increment adds again, check `value` before retrying a call whose response was lost.
 
-### hub_list_variables: type
+### hub_list_variables
 
 `type` (Number, Decimal, String, Boolean, DateTime) lists only hub variables of that type; rule-engine variables are left out of a filtered listing.
+
+Each hub variable row carries `name`, `value`, `type`, `deviceId`/`attribute` (its connector device, null without one) and `source:"hub"`, plus from the Hub Variables page:
+- `connectorType` and `connectorLabel` when a connector exists;
+- `meshShared` — this hub shares the variable over Hub Mesh;
+- `linked` — the variable is a Hub Mesh mirror of another hub's variable, with `sourceHubName` naming that hub.
+
+If that page cannot be read, the rows keep their other fields and the response carries `detailsError` (`hub_get_variable` does the same). Which apps use a variable is read one variable at a time with `hub_get_variable(includeDependents=true)`.
 
 ### hub_create_variable
 
@@ -12798,11 +12795,11 @@ For DateTime, pass hub-local `yyyy-MM-ddTHH:mm` or `{date,time}`. Supplied offse
 
 **Bulk form:**
 - `variables=[{name,type,value}, ...]` — mutually exclusive with the single form (i.e. mutually exclusive with `name`/`type`/`value`).
-- Bulk items are created sequentially; each succeeds or fails independently and the result reports per-item status.
+- Bulk items are created in order; each succeeds or fails independently and the result reports per-item status. An item may carry only `name`, `type` and `value`; any other key fails that item and is named in its `error`.
 
 **Why create first (vs hub_set_variable):**
 - Use this before `hub_set_variable` for a name that doesn't exist yet — Hubitat's `setGlobalVar` cannot create, only update.
-- Creation isn't exposed via the public app API, so the tool uses the hub's own Hub Variables page: one create request on current firmware, the Settings → Hub Variables wizard on older firmware. Either way it reads the variable back and fails if it did not appear; on current firmware it also fails when the stored type or value differs from the request.
+- Creation isn't exposed via the public app API, so the tool sends one create request to the hub's own Hub Variables page, reads the variable back, and fails if it did not appear or its stored type or value differs from the request. When the hub refuses the value (for example text for a Number), the error carries the hub's reason and nothing is created.
 
 **Constraints:**
 - Name must not contain any of these characters: `' " \\ ~ [ : ] < >`. (This applies to the single-form `name` and to each bulk item's `name`.)
@@ -12818,7 +12815,7 @@ Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale
 DESTRUCTIVE, no undo; requires `confirm=true` plus a backup <24h. Detects whether the name is a hub variable or a rule_engine variable. Deleting a hub variable also deletes its connector device when one exists (`connectorDeleted` in the response).
 
 **Why the reference-safety refusal matters:** deleting a variable something still uses silently breaks it — null lookups → false conditions, and a literal `%varname%` left in substitutions. Without `force=true` the tool refuses when:
-- the hub's own in-use registry marks a hub variable as used (what Settings → Hub Variables shows in orange; Rule Machine and other registering apps appear there). On current firmware this includes apps that use the variable's connector device, and the refusal names each app as `label (id=N)`;
+- the hub's own in-use registry marks a hub variable as used (what Settings → Hub Variables shows in orange; Rule Machine and other registering apps appear there). This includes apps that use the variable's connector device, and the refusal names each app as `label (id=N)`;
 - that registry cannot be read, since unknown is not the same as unused. The refusal includes the reason, and a forced delete returns it in `platformInUseError`;
 - one of this server's child rules names the variable, quoted or as a `%name%` substitution.
 
@@ -12832,13 +12829,13 @@ Audit/debug what changed a hub variable and when, without polling hub_get_variab
 
 ### hub_create_connector
 
-`connectorType` picks the connector device type; the default is `Variable`. On current firmware the hub lists the types it offers for each variable, and a `connectorType` it does not offer is refused before anything is created (the error lists the offered types). When `connectorType` is omitted and `Variable` is not offered, the first offered type is used. The full Number/Decimal set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance. Older firmware only shows a type chooser for Number/Decimal vars and ignores `connectorType` for String/Boolean/DateTime.
+`connectorType` picks the connector device type; the default is `Variable`. The hub lists the types it offers for each variable, and a `connectorType` it does not offer is refused before anything is created (the error lists the offered types). When `connectorType` is omitted and `Variable` is not offered, the first offered type is used. The full Number/Decimal set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance.
 
 ### hub_delete_connector
 
 Deletes the connector DEVICE backing a hub variable. DESTRUCTIVE and not undoable — the connector device is removed, but the hub variable itself and its value are unchanged. `confirm=true` required. No-op if the variable has no connector.
 
-On current firmware the hub reports which apps use the connector device. Without `force=true` the tool refuses when any app does, naming each as `label (id=N)`, and also when that use cannot be read (the refusal says why). Pass `force=true` to delete anyway; the result's `brokenConsumers` lists the apps that used it. When that use could not be read, the result has `consumersUnknown: true` instead. Older firmware deletes the device without this check.
+The hub reports which apps use the connector device. Without `force=true` the tool refuses when any app does, naming each as `label (id=N)`, and also when that use cannot be read (the refusal says why). Pass `force=true` to delete anyway; the result's `brokenConsumers` lists the apps that used it. When that use could not be read, the result has `consumersUnknown: true` instead. On a hub with the auto-generated Easy Mobile Dashboards, every connector is used by dashboards such as "All Devices" and "Devices without room", so its delete needs `force=true`.
 
 ### Hub Mesh: sharing and linking hub variables
 

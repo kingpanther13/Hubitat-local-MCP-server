@@ -400,7 +400,7 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_variables` | List all hub connector and rule engine variables |
+| `hub_list_variables` | List all hub variables (type, connector, Hub Mesh sharing) and rule engine variables |
 | `hub_get_variable` | Get a variable value and metadata; `includeDependents=true` also lists the apps that reference a hub variable (in-use registry) |
 | `hub_list_variable_changes` | Latest 200 subscribed hub-variable changes, retained across restarts |
 
@@ -457,7 +457,7 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_variables` | List all hub connector and rule engine variables (also in `hub_read_variables`) |
+| `hub_list_variables` | List all hub variables (type, connector, Hub Mesh sharing) and rule engine variables (also in `hub_read_variables`) |
 | `hub_get_variable` | Get a variable value and metadata; `includeDependents=true` lists the apps that reference it — a pre-delete/rename preview (also in `hub_read_variables`) |
 | `hub_set_variable` | Set a variable value |
 | `hub_create_variable` | Create a new hub variable |

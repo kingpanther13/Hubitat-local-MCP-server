@@ -28,7 +28,6 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         script.metaClass.getAllGlobalVars = { -> variables.collectEntries { name, row -> [name, row.sdk] } }
         script.metaClass.pauseExecution = { Long millis -> }
         script.metaClass.backupItemSource = { String type, String id -> [:] }
-        script.metaClass._findHubVariablesAppId = { -> throw new AssertionError('Supported native endpoint must not open the wizard') }
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30 ->
             requests << [method: 'GET', path: path]
             if (path == '/hub2/hubMeshJson') return JsonOutput.toJson(meshJson)
@@ -154,13 +153,12 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         then:
         !result.success
         result.error.contains('the hub accepted the create')
-        !result.error.contains('wizard')
         result.note.contains('hub_get_variable')
         posts().size() == 1
         !variables.containsKey('Missing')
     }
 
-    def 'POST error never retries through the legacy wizard'() {
+    def 'a POST the hub answers with an error body is a failure'() {
         given:
         postResponse = [success: false, error: 'Rejected']
         when:
@@ -219,7 +217,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         posts().size() == 1
     }
 
-    def 'native dependents list direct and connector users once each without opening a wizard'() {
+    def 'native dependents list direct and connector users once each'() {
         given:
         seed('Counter', 'Number', 1, [[id: 81, label: 'Heating'], [id: 82, label: 'Dashboard']], [[id: 82, label: 'Dashboard']])
         when:
@@ -477,14 +475,15 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         variables.keySet() == ['First', 'Last'] as Set
     }
 
-    def 'empty Hub Variables body fails instead of opening the wizard (#label)'() {
+    def 'empty Hub Variables body is a model-read failure (#label)'() {
         given:
+        seed('Counter')
         modelBody = body
         when:
-        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        def result = script.toolCreateConnector([confirm: true, name: 'Counter'])
         then:
         !result.success
-        result.error == 'hub_create_variable: Could not read the Hub Variables model: Hub Variables returned an empty response'
+        result.error == 'hub_create_connector: Could not read the Hub Variables model: Hub Variables returned an empty response'
         result.note.startsWith('Nothing was changed')
         posts().isEmpty()
 
@@ -495,18 +494,19 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         'blank' | '  '
     }
 
-    def 'Hub Variables endpoint failure other than 404 is raised, not routed to the wizard (#status)'() {
+    def 'every Hub Variables endpoint failure, 404 included, is a model-read failure (#status)'() {
         given:
+        seed('Counter')
         endpointFailure = new HttpFailure(status)
         when:
-        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        def result = script.toolCreateConnector([confirm: true, name: 'Counter'])
         then:
         !result.success
-        result.error == "hub_create_variable: Could not read the Hub Variables model: HTTP ${status}".toString()
+        result.error == "hub_create_connector: Could not read the Hub Variables model: HTTP ${status}".toString()
         posts().isEmpty()
 
         where:
-        status << [500, 302, null]
+        status << [404, 500, 302, null]
     }
 
     def 'unreadable Hub Variables model is reported (#label)'() {
@@ -523,60 +523,20 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         where:
         label            | body                    | expected
         'malformed JSON' | '{"variables": ['       | 'Could not read the Hub Variables JSON model'
+        'login page'     | '<html><title>Login</title></html>' | 'Could not read the Hub Variables JSON model'
         'JSON array'     | '[1, 2]'                | 'Hub Variables returned an unexpected JSON model'
         'no variables'   | '{"variables": "none"}' | 'Hub Variables returned an unexpected JSON model'
     }
 
-    def 'a create reads the model once and validates none of its rows'() {
+    def 'a create sends its POST without reading the Hub Variables page'() {
         given:
         modelBody = '{"variables": [{"name": "Counter"}, "not-a-row", 7]}'
         when:
         def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
         then:
         result.success
-        requests.count { it.method == 'GET' && it.path == '/hub2/variables' } == 1
+        requests.findAll { it.method == 'GET' }.isEmpty()
         posts()*.path == ['/hub2/variables/create']
-    }
-
-    def 'a page that is not the variables model is not the native endpoint (#label)'() {
-        given:
-        modelBody = body
-        when:
-        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
-        then: 'the create reads the model the connector path reads, and reports it the same way'
-        !result.success
-        result.error == "hub_create_variable: Could not read the Hub Variables model: ${expected}".toString()
-        posts().isEmpty()
-
-        where:
-        label          | body                                 | expected
-        'login page'   | '<html><title>Login</title></html>'  | 'Could not read the Hub Variables JSON model'
-        'JSON array'   | '[1, 2]'                             | 'Hub Variables returned an unexpected JSON model'
-        'no variables' | '{"variables": "none"}'              | 'Hub Variables returned an unexpected JSON model'
-    }
-
-    def 'endpoint 404 creates through existing wizard primitives'() {
-        given:
-        endpointFailure = new HttpFailure(404)
-        Map pending = [:]
-        List clicks = []
-        script.metaClass._findHubVariablesAppId = { -> 1424 }
-        script.metaClass._primeHubVarsWizard = { Integer id, String reason -> }
-        script.metaClass._hubVarsFormFields = { Integer id -> ['hbVar', 'varType', 'varValue'] as Set }
-        script.metaClass._rmClickAppButton = { Integer id, String button, String attribute, String page -> clicks << button; [status: 200] }
-        script.metaClass._rmWriteSettingOnPage = { Integer id, String page, String key, Object value, List applied, String typeHint = null, List skipped = null ->
-            if (key == 'hbVar') pending.name = value
-            if (key == 'varType') pending.type = value
-            if (key == 'varValue') seed(pending.name.toString(), pending.type.toString(), value)
-            applied << key
-        }
-        when:
-        def result = script.toolCreateVariable([confirm: true, name: 'Legacy', type: 'Number', value: 4])
-        then:
-        result.success
-        variables.Legacy.sdk.value == 4
-        clicks == ['moreVar']
-        posts().isEmpty()
     }
 
     def 'via dispatch: native create and delete succeed through the tools/call envelope'() {
@@ -630,9 +590,10 @@ class NativeHubVariablesSpec extends ToolSpecBase {
 
     def 'via dispatch: a native runtime failure returns the structured error'() {
         given:
+        seed('Counter')
         modelBody = ''
         when:
-        def response = mcpDriver.callTool('hub_create_variable', [confirm: true, name: 'Counter', type: 'Number', value: 3])
+        def response = mcpDriver.callTool('hub_create_connector', [confirm: true, name: 'Counter'])
         then:
         response.error == null
         response.result.isError

@@ -165,11 +165,8 @@ def toolGetVariableHistory(args) {
 }
 
 def toolListVariables(args = null) {
-    // Modern Hub Variable API (issue #92): getAllGlobalVars() sees every hub
-    // variable, not just the connector-exposed subset that the legacy
-    // getAllGlobalConnectorVariables() returned. Each entry is shaped like
-    // [name, type, value, deviceId, attribute] — deviceId/attribute populated
-    // when the variable has a Connector device, null otherwise.
+    // getAllGlobalVars() sees every hub variable and carries the typed values; the Hub Variables page
+    // model adds the connector and Hub Mesh fields for the rows returned.
     def hubVariables = []
     String hubVarsError = null
     try {
@@ -209,6 +206,7 @@ def toolListVariables(args = null) {
 
     def cursor = args?.cursor
     def paged = _paginateList(hubVariables, cursor, 100, "hub_list_variables")
+    String detailsError = paged.page ? _mergeHubVarDetails(paged.page) : null
     // Both per-list totals are always emitted so a caller can distinguish "1000 hub
     // vars + 0 rule vars" from "0 hub vars + 1000 rule vars" without needing cursor
     // context. `total` is the legacy summed field; the per-list fields are the
@@ -221,6 +219,7 @@ def toolListVariables(args = null) {
         total: hubVariables.size() + ruleVariables.size()
     ]
     if (hubVarsError) result.hubVariablesError = hubVarsError
+    if (detailsError) result.detailsError = detailsError
     if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
     return result
 }
@@ -255,48 +254,68 @@ def toolGetVariable(args) {
 
     if (found == null) throw new IllegalArgumentException("Variable not found: ${name}")
 
-    // The in-use registry is hub-variable-only, so dependents apply only when the lookup resolved to a
-    // hub variable -- a rule-engine variable gets no dependents fields.
-    if (includeDependents && found.source == "hub") _attachHubVarDependents(found, name)
+    // The Hub Variables model and its in-use registry cover hub variables only.
+    if (found.source == "hub") _attachHubVarDetails(found, name, includeDependents)
     return found
 }
 
-// Opt-in: attach the apps that reference this HUB variable (its in-use registry) to a hub_get_variable
-// response. Opt-in because it costs an extra hub read, and on older firmware a click of the Settings >
-// Hub Variables "Show In Use Apps" reveal (a transient UI toggle, dismissed afterward). Reports every
-// failure IN the response -- it must never fail the whole hub_get_variable call.
-private void _attachHubVarDependents(Map found, String name) {
+// The model's connector and Hub Mesh fields, as the tools name them. Absent model fields stay absent
+// rather than reading as false.
+private Map _hubVarDetails(Map row) {
+    Map details = [:]
+    if (row.connectorId != null) {
+        details.connectorType = row.connectorType
+        details.connectorLabel = row.connectorLabel
+    }
+    if (row.meshEnabled instanceof Boolean) details.meshShared = row.meshEnabled
+    if (row.linked instanceof Boolean) details.linked = row.linked
+    if (row.linked == true && row.sourceName) details.sourceHubName = row.sourceName.toString()
+    return details
+}
+
+// Adds the model's fields to the listed rows in one read. Returns the read error, or null; the listing
+// itself never fails on it.
+private String _mergeHubVarDetails(List rows) {
+    Map byName
+    try {
+        byName = _hubVarsNativeModel().variables.findAll { it instanceof Map }.collectEntries { [(it.name?.toString()): it] }
+    } catch (Exception e) {
+        mcpLog("warn", "hub-vars", "hub_list_variables: Hub Variables model read failed: ${e.message}")
+        return _hubVarsModelError(e)
+    }
+    rows.each { row ->
+        Map modelRow = byName[row.name?.toString()]
+        if (modelRow != null) row.putAll(_hubVarDetails(modelRow))
+    }
+    return null
+}
+
+// One model read serves the details and, when asked, the in-use registry. Every failure is reported in
+// the response; none fails the hub_get_variable call.
+private void _attachHubVarDetails(Map found, String name, boolean includeDependents) {
+    Map row = null
+    String readError = null
+    try { row = _hubVarsNativeRow(_hubVarsNativeModel(), name) }
+    catch (Exception e) {
+        readError = e.message ?: e.class.simpleName
+        mcpLog("warn", "hub-vars", "hub_get_variable: Hub Variables model read failed for '${name}': ${readError}")
+    }
+    if (row != null) found.putAll(_hubVarDetails(row))
+    else found.detailsError = "Could not read the connector and Hub Mesh details: ${readError}".toString()
+    if (!includeDependents) return
+
     found.coverageNote = _hubVarDependentsCoverageNote()
     try {
-        def nativeModel = _hubVarsNativeModel()
-        if (nativeModel != null) {
-            Map apps = _hubVarsNativeAppsUsing(_hubVarsNativeRow(nativeModel, name))
-            found.appsUsing = apps.all
-            found.connectorAppsUsing = apps.connector
-            found.count = apps.all.size()
-            return
-        }
+        if (row == null) throw new IllegalStateException(readError)
+        Map apps = _hubVarsNativeAppsUsing(row)
+        found.appsUsing = apps.all
+        found.connectorAppsUsing = apps.connector
+        found.count = apps.all.size()
     } catch (Exception e) {
         mcpLog("warn", "hub-vars", "hub_get_variable includeDependents: in-use registry read failed for '${name}': ${e.message}")
         found.dependentsError = "Could not read the hub's in-use registry: ${e.message}"
         found.dependentsNote = "Retry; if it persists, read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."
-        return
     }
-    Integer hubVarsAppId = null
-    try { hubVarsAppId = _findHubVariablesAppId() }
-    catch (Exception e) {
-        found.dependentsError = "Could not resolve the Hub Variables system app: ${e.message}"
-        found.dependentsNote = "Check that Hub Variables is enabled (Settings > Hub Variables), then retry. See hub_get_tool_guide(section='variables')."
-        return
-    }
-    def res = _hubVarInUseApps(hubVarsAppId, name)
-    if (res.error) {
-        found.dependentsError = res.error
-        found.dependentsNote = res.note
-        return
-    }
-    found.appsUsing = res.apps
-    found.count = res.apps.size()
 }
 
 // Hub variable name validation. Hubitat's UI rejects ' " \ ~ [ : ] < > and
@@ -333,105 +352,8 @@ private String _validateHubVarType(String type) {
     return match  // canonical casing
 }
 
-// Wizard-priming for the Hub Variables system app. Verified on firmware
-// 2.5.0.126: clicks via _rmClickAppButton silently no-op unless the app's
-// wizard state is "warmed" first. The configure-json + statusJson GET pair
-// reliably primes it; a single bare GET does not.
-//
-// Non-private so test specs can override via script.metaClass.
-def _primeHubVarsWizard(Integer appId, String context) {
-    try {
-        hubInternalGet("/installedapp/configure/json/${appId}")
-        hubInternalGet("/installedapp/statusJson/${appId}")
-    } catch (Exception e) {
-        mcpLog("debug", "hub-vars", "${context}: _primeHubVarsWizard for ${appId} threw ${e.class.simpleName}: ${e.message}")
-    }
-}
-
-// Non-private so test specs can override via script.metaClass — internal calls
-// from this script's other methods would bypass the metaClass dispatch on a
-// private method and hit the real implementation, which makes mocking the
-// hub-side discovery painful in unit tests.
-def _findHubVariablesAppId() {
-    // Stage 1: atomicState cache.
-    def cached = atomicState.hubVarsAppId
-    if (cached != null) {
-        try { return cached.toString().toInteger() } catch (NumberFormatException e) {
-            mcpLog("warn", "hub-vars", "Invalid cached hubVarsAppId '${cached}' -- rediscovering")
-            atomicState.remove("hubVarsAppId")
-        }
-    }
-
-    // Stage 2: name-addressed direct alias -- a single redirect chain, no
-    // payload walking. Safe to probe: hubVariables is a singleton, so the
-    // chain's create hop is get-or-create and never strands a transient
-    // instance.
-    def directId = _resolveDirectAppId("hubVariables")
-    if (directId != null) {
-        atomicState.hubVarsAppId = directId
-        mcpLog("info", "hub-vars", "Discovered Hub Variables app id: ${directId} (via /installedapp/direct/hubVariables)")
-        return directId
-    }
-
-    // Stage 3: /hub2/appsList walk.
-    try {
-        def responseText = hubInternalGet("/hub2/appsList")
-        if (responseText) {
-            def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-            def found = null
-            def recurse
-            recurse = { node ->
-                def d = node?.data
-                if (found == null && d?.type == "Hub Variables" && d?.id != null) {
-                    found = d
-                }
-                node?.children?.each { c -> recurse(c) }
-            }
-            (parsed?.apps ?: []).each { a -> recurse(a) }
-            if (found?.id != null) {
-                def id = found.id.toString().toInteger()
-                // The feed's type label is the only evidence on this path, so
-                // confirm via configure/json before caching -- a wrong cached id
-                // would break every wizard-driving tool until manually cleared.
-                // Best-effort: a definitive name mismatch rejects; a fetch error
-                // must NOT discard an otherwise name-keyed match (transient HTTP
-                // trouble would lock the tools out entirely).
-                def verified = true
-                try {
-                    def cfgText = hubInternalGet("/installedapp/configure/json/${id}")
-                    if (cfgText) {
-                        def cfg = new groovy.json.JsonSlurper().parseText(cfgText)
-                        if (cfg?.app?.appType?.name != "Hub Variables") verified = false
-                    }
-                } catch (Exception e) {
-                    mcpLog("debug", "hub-vars", "_findHubVariablesAppId: verify fetch for ${id} threw ${e.class.simpleName}: ${e.message}")
-                }
-                if (verified) {
-                    atomicState.hubVarsAppId = id
-                    mcpLog("info", "hub-vars", "Discovered Hub Variables app id: ${id} (via /hub2/appsList)")
-                    return id
-                }
-                mcpLog("warn", "hub-vars", "appsList candidate ${id} failed configure/json verification -- not caching")
-            }
-        }
-    } catch (Exception e) {
-        mcpLog("debug", "hub-vars", "_findHubVariablesAppId: /hub2/appsList walk threw ${e.class.simpleName}: ${e.message}")
-    }
-
-    throw new IllegalStateException(
-        "Hub Variables system app not found via the /installedapp/direct/hubVariables redirect chain " +
-        "OR the /hub2/appsList walk. This should not happen on a normally-functioning hub -- the app " +
-        "is system-installed. Check that Hub Variables is enabled (Settings > Hub Variables).")
-}
-
-def _hubVarsNativeModel() {
-    def raw
-    try { raw = hubInternalGet("/hub2/variables") }
-    catch (Exception e) {
-        // Only a 404 means firmware without the endpoint; any other failure must not fall back to the wizard.
-        if (_httpStatusOf(e) == 404) return null
-        throw e
-    }
+private Map _hubVarsNativeModel() {
+    def raw = hubInternalGet("/hub2/variables")
     if (!raw?.toString()?.trim()) throw new IllegalStateException("Hub Variables returned an empty response")
     def model
     try { model = new groovy.json.JsonSlurper().parseText(raw.toString()) }
@@ -440,11 +362,6 @@ def _hubVarsNativeModel() {
         throw new IllegalStateException("Hub Variables returned an unexpected JSON model")
     }
     return model
-}
-
-boolean _hubVarsNativeAvailable() {
-    // A create needs only a valid native variables model, not a login or error page.
-    _hubVarsNativeModel() != null
 }
 
 private Map _hubVarsNativeRow(Map model, String name) {
@@ -472,7 +389,7 @@ private String _hubVarsConsumerText(List apps) {
     return apps.collect { "${it.label} (id=${it.id})" }.join(", ")
 }
 
-// A native-path runtime failure in the structured error contract; validation still throws.
+// A runtime failure in the structured error contract; validation still throws.
 private Map _hubVarsNativeFailure(String tool, String error, boolean nothingChanged = false) {
     String text = error.startsWith(tool) ? error : "${tool}: ${error}"
     mcpLog("warn", "hub-vars", text)
@@ -485,11 +402,37 @@ private String _hubVarsModelError(Exception e) {
     return "Could not read the Hub Variables model: ${e.message ?: e.class.simpleName}"
 }
 
+// The hub applies these POSTs before it answers, so callers read the result back once.
 private void _hubVarsNativePost(String action, Map body) {
-    def response = hubInternalPostJson("/hub2/variables/${action}", groovy.json.JsonOutput.toJson(body))
+    def response
+    try { response = hubInternalPostJson("/hub2/variables/${action}", groovy.json.JsonOutput.toJson(body)) }
+    catch (Exception e) { throw new IllegalStateException("Hub Variables ${action} failed: ${_hubVarsHubMessage(e)}", e) }
     if (response instanceof Map && (response.error || response.success == false || response._unparseable)) {
         throw new IllegalStateException("Hub Variables ${action} failed: ${response.message ?: response.error ?: 'invalid response'}")
     }
+}
+
+// A refused write answers 400 with {"message": ...}; that reason is what the caller can act on.
+private String _hubVarsHubMessage(Exception e) {
+    def message = null
+    try {
+        def resp = e.response
+        def data = resp?.data
+        if (data instanceof Map) message = data.message
+        else if (data != null) {
+            String text = _readRespText(resp)
+            def parsed = null
+            try { parsed = text ? new groovy.json.JsonSlurper().parseText(text) : null } catch (Exception ignored) { }
+            message = (parsed instanceof Map) ? parsed.message : text
+        }
+    } catch (Exception ignored) { }
+    return (message ?: e.message ?: e.class.simpleName).toString().take(200)
+}
+
+// A 4xx answer means the hub refused the write, so nothing changed.
+private boolean _hubVarsRefused(Exception e) {
+    Integer status = (e.cause instanceof Exception) ? _httpStatusOf((Exception) e.cause) : null
+    return status != null && status >= 400 && status < 500
 }
 
 def toolCreateVariable(args) {
@@ -518,9 +461,7 @@ def toolCreateVariable(args) {
     }
 
     // Bulk form: variables=[{name,type,value}, ...]. Mutually exclusive with
-    // the single name/type/value form. Each item is created SEQUENTIALLY --
-    // the older-firmware create wizard has a known post-write race that makes
-    // rapid/parallel creates spuriously fail, so the loop never parallelizes.
+    // the single name/type/value form.
     if (args.variables != null) {
         if (args.name != null || args.type != null || args.value != null) {
             throw new IllegalArgumentException(
@@ -535,8 +476,7 @@ def toolCreateVariable(args) {
     def value = args.value
     _validateInitialValue(name, type, value)
 
-    // Refuse to silently overwrite an existing variable — the UI's "Create"
-    // path can't either; the wizard only progresses when the name is novel.
+    // Refuse to silently overwrite an existing variable; hub_set_variable changes values.
     try {
         def existing = getGlobalVar(name)
         if (existing != null) {
@@ -549,13 +489,9 @@ def toolCreateVariable(args) {
         mcpLog("debug", "hub-vars", "hub_create_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
 
-    boolean hasNative
-    try { hasNative = _hubVarsNativeAvailable() }
-    catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", _hubVarsModelError(e), true) }
-    if (!hasNative) return _createOneVariable(_findHubVariablesAppId(), name, type, value)
-    try { return _createOneVariable(null, name, type, value) }
+    try { return _createOneVariable(name, type, value) }
     catch (IllegalArgumentException e) { throw e }
-    catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", e.message ?: e.class.simpleName) }
+    catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", e.message ?: e.class.simpleName, _hubVarsRefused(e)) }
 }
 
 // Hub Mesh: create a LOCAL linked variable from one a peer hub shares (GET
@@ -710,30 +646,28 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
     ]
 }
 
-// Bulk create driver: requires a non-empty List at the batch level, picks the
-// create path (native, or the wizard's app id) ONCE, then creates each item sequentially. Per-item
-// try/catch so one failure never aborts the rest -- a malformed (non-Map) item or
-// a bad name/type/value fails only itself and carries its own `error`.
+// Bulk create driver: requires a non-empty List at the batch level, then creates each item in order.
+// Per-item try/catch so one failure never aborts the rest -- a malformed item or a bad name/type/value
+// fails only itself and carries its own `error`.
 private Map _createVariablesBulk(variables) {
     if (!(variables instanceof List) || variables.isEmpty()) {
         throw new IllegalArgumentException("variables must be a non-empty array of {name, type, value} objects.")
     }
 
-    boolean hasNative
-    try { hasNative = _hubVarsNativeAvailable() }
-    catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", _hubVarsModelError(e), true) }
-    def appId = hasNative ? null : _findHubVariablesAppId()
     def results = []
     int createdCount = 0
     int failedCount = 0
 
     variables.eachWithIndex { item, idx ->
-        // A malformed (non-Map) item fails only itself, never the whole batch --
-        // same per-item isolation as a bad name/type/value below.
         def itemName = (item instanceof Map) ? item.name?.toString()?.trim() : null
         try {
             if (!(item instanceof Map)) {
                 throw new IllegalArgumentException("variables[${idx}] must be an object with name, type, and value.")
+            }
+            // Unknown keys first, so a misspelt key is named rather than reported as a missing field.
+            def unknown = item.keySet().findAll { !(it in ["name", "type", "value"]) }
+            if (unknown) {
+                throw new IllegalArgumentException("variables[${idx}] has unknown key(s): ${unknown.join(', ')}. Each item takes name, type and value.")
             }
             _validateHubVarName(itemName)
             def itemType = _validateHubVarType(item.type?.toString())
@@ -749,7 +683,7 @@ private Map _createVariablesBulk(variables) {
                     "Hub variable '${itemName}' already exists (type=${existing.type}). Use hub_set_variable to change the value, or pick a different name.")
             }
 
-            def created = _createOneVariable(appId, itemName, itemType, item.value)
+            def created = _createOneVariable(itemName, itemType, item.value)
             results << [name: itemName, success: true, type: created.type, value: created.value]
             createdCount++
         } catch (Exception e) {
@@ -785,33 +719,6 @@ private void _validateInitialValue(String name, String type, value) {
     }
 }
 
-// Names of the inputs the Hub Variables form shows now, or null when the page cannot be read.
-// Non-private so specs can stub it.
-def _hubVarsFormFields(Integer appId) {
-    try {
-        return (_rmCollectInputSchema(_rmFetchConfigJson(appId, "hubVar")?.configPage) ?: [:]).keySet() as Set
-    } catch (Exception e) {
-        mcpLog("debug", "hub-vars", "_hubVarsFormFields(${appId}) could not read the form: ${e.message}")
-        return null
-    }
-}
-
-// Hub Variables button clicks land asynchronously (live: a read right after the click can still show
-// the old form, and the change appears a moment later). Wait for the form to show the click's effect,
-// clicking once more if it never does. A form that cannot be read counts as landed.
-private boolean _hubVarsClickAndWait(Integer appId, String button, String stateAttribute, Closure landed) {
-    for (int attempt = 0; attempt < 2; attempt++) {
-        _rmClickAppButton(appId, button, stateAttribute, "hubVar")
-        for (int poll = 0; poll < 12; poll++) {
-            def fields = _hubVarsFormFields(appId)
-            if (fields == null || landed(fields)) return true
-            try { pauseExecution(250) } catch (Exception ignored) { }
-        }
-        _primeHubVarsWizard(appId, "hub vars ${button} retry")
-    }
-    return false
-}
-
 // Canonical hub DateTime text for a create value: the format RM stores, in hub-local time. Accepts
 // "yyyy-MM-ddTHH:mm[:ss[.fraction]][offset]", a space instead of T, or {date,time}; any
 // offset in the input is ignored, as the UI's date and time pickers are hub-local.
@@ -843,89 +750,34 @@ private String _dateTimeVariableValue(String name, value) {
     return when.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ", zone)
 }
 
-// Shared per-variable create core. A null `appId` means the hub serves /hub2/variables, so one
-// native create POST is sent; otherwise it drives the Hub Variables wizard (prime -> moreVar ->
-// name/type/value or DateTime date/time + Done). Then verifies the variable landed and subscribes
-// to its change event. Throws on validation or verification failure.
-private Map _createOneVariable(Integer appId, String name, String type, value) {
-    def applied = []
-    def skipped = []
-
+// Shared per-variable create core: one native create POST, one read-back that must match the request,
+// then a subscription to the variable's change event. Throws on validation, a refused POST, or a
+// read-back that disagrees.
+private Map _createOneVariable(String name, String type, value) {
     // Validate a DateTime value before any hub write, so a bad value writes nothing.
     String dtValue = (type == "DateTime") ? _dateTimeVariableValue(name, value) : null
-    if (appId == null) {
-        def nativeType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][type]
-        def body = [name: name, type: nativeType, value: dtValue ?: value.toString()]
-        if (dtValue != null) { body.mode = "datetime"; body.date = dtValue.take(10); body.time = dtValue.substring(11, 16) }
-        _hubVarsNativePost("create", body)
-        applied << "native create"
-    } else {
-        _primeHubVarsWizard(appId, "hub_create_variable pre-moreVar")
-        if (!_hubVarsClickAndWait(appId, "moreVar", "moreVar") { it.contains("hbVar") }) {
-            throw new IllegalStateException("hub_create_variable: the Hub Variables create form did not open, so '${name}' was not created. Retry the call.")
-        }
-        _rmWriteSettingOnPage(appId, "hubVar", "hbVar",   name, applied, "text", skipped)
-        _rmWriteSettingOnPage(appId, "hubVar", "varType", type, applied, "enum", skipped)
-        if (dtValue != null) {
-            // Date and time go in one POST, as the UI sends them. The form then either commits or waits
-            // for its Done button (both seen live); the value is checked, and set if needed, below.
-            def dtCfg = _rmFetchConfigJson(appId, "hubVar")
-            def dtSchema = _rmCollectInputSchema(dtCfg?.configPage)
-            def missing = ["varDate", "varTime"].findAll { !dtSchema?.containsKey(it) }
-            if (missing) {
-                throw new IllegalStateException("hub_create_variable: the Hub Variables form did not offer ${missing.join(' and ')} for DateTime variable '${name}', so it was not created.")
-            }
-            def dtBody = _rmBuildSettingsBody(appId, [varDate: dtValue.substring(0, 10), varTime: dtValue.substring(11, 16)], dtSchema)
-            dtBody.formAction = "update"
-            dtBody.currentPage = "hubVar"
-            dtBody.pageBreadcrumbs = _rmPageBreadcrumbs(appId, "hubVar", '["mainPage"]')
-            if (dtCfg?.app?.version != null) dtBody.version = dtCfg.app.version.toString()
-            _rmPostSettings(appId, dtBody)
-            applied.addAll(["varDate", "varTime"])
-            if (_hubVarsFormFields(appId)?.contains("dateTimeDone")) {
-                _primeHubVarsWizard(appId, "hub_create_variable DateTime pre-Done")
-                _hubVarsClickAndWait(appId, "dateTimeDone", null) { !it.contains("dateTimeDone") }
-            }
-        } else {
-            _rmWriteSettingOnPage(appId, "hubVar", "varValue", value, applied, "textarea", skipped)
-        }
-    }
+    def expectedType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][type]
+    def body = [name: name, type: expectedType, value: dtValue ?: value.toString()]
+    if (dtValue != null) { body.mode = "datetime"; body.date = dtValue.take(10); body.time = dtValue.substring(11, 16) }
+    _hubVarsNativePost("create", body)
 
-    // Verify the variable landed. The wizard commits on the varValue write (DateTime: on the
-    // date/time POST or its Done click); either path's var becomes visible to getGlobalVar
-    // shortly after. Check immediately, then retry with bounded backoff.
     def created = null
-    // A Done click commits asynchronously, so a DateTime create gets a longer window (live: ~3s).
-    int verifyAttempts = (dtValue != null) ? 16 : 8
-    for (int attempt = 0; attempt < verifyAttempts; attempt++) {
-        try { created = getGlobalVar(name) } catch (Exception e) {
-            mcpLog("debug", "hub-vars", "hub_create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
-        }
-        if (created != null) break
-        // Only wait after a missing read; DateTime commits receive a longer window.
-        if (attempt < verifyAttempts - 1) {
-            try { pauseExecution(300) } catch (Exception e) { mcpLog("debug", "hub-vars", "pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
-        }
-    }
-    if (appId == null && created != null) {
-        def expectedType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][type]
-        boolean matches = created.type?.toString()?.toLowerCase() == expectedType
-        if (dtValue == null) {
-            if (type in ["Number", "Decimal"]) {
-                try { matches = matches && new BigDecimal(created.value.toString()).compareTo(new BigDecimal(value.toString())) == 0 }
-                catch (Exception ignored) { matches = false }
-            } else { matches = matches && created.value?.toString() == value.toString() }
-        }
-        if (!matches) throw new IllegalStateException(
-            "hub_create_variable: '${name}' exists, but reads type=${created.type}, value=${created.value}; " +
-            "requested type=${expectedType}, value=${value}. Repair it with hub_set_variable, or delete it with hub_delete_variable before creating it again.")
+    try { created = getGlobalVar(name) } catch (Exception e) {
+        mcpLog("debug", "hub-vars", "hub_create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
     if (created == null) {
-        throw new IllegalStateException(appId == null ?
-            "hub_create_variable: the hub accepted the create, but '${name}' is not visible via getGlobalVar." :
-            "hub_create_variable: wizard completed but '${name}' is not visible via getGlobalVar. " +
-            "Settings applied: ${applied.join(', ')}. Skipped: ${skipped}")
+        throw new IllegalStateException("hub_create_variable: the hub accepted the create, but '${name}' is not visible via getGlobalVar.")
     }
+    boolean matches = created.type?.toString()?.toLowerCase() == expectedType
+    if (dtValue == null) {
+        if (type in ["Number", "Decimal"]) {
+            try { matches = matches && new BigDecimal(created.value.toString()).compareTo(new BigDecimal(value.toString())) == 0 }
+            catch (Exception ignored) { matches = false }
+        } else { matches = matches && created.value?.toString() == value.toString() }
+    }
+    if (!matches) throw new IllegalStateException(
+        "hub_create_variable: '${name}' exists, but reads type=${created.type}, value=${created.value}; " +
+        "requested type=${expectedType}, value=${value}. Repair it with hub_set_variable, or delete it with hub_delete_variable before creating it again.")
     // Compare date and hour:minute only: RM stores local time, and its offset text is not ours to match.
     if (dtValue != null && created.value?.toString()?.take(16) != dtValue.take(16)) {
         try { setGlobalVar(name, dtValue) } catch (Exception e) {
@@ -987,53 +839,25 @@ def toolCreateConnector(args) {
     def nativeModel
     try { nativeModel = _hubVarsNativeModel() }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_connector", _hubVarsModelError(e), true) }
-    def chosenType = requestedType?.trim() ?: "Variable"
-    if (nativeModel != null) {
-        def row
-        try { row = _hubVarsNativeRow(nativeModel, name) }
-        catch (Exception e) { return _hubVarsNativeFailure("hub_create_connector", e.message ?: e.class.simpleName, true) }
-        if (!(row.connectorOptions instanceof List) || row.connectorOptions.isEmpty()) {
-            return _hubVarsNativeFailure("hub_create_connector", "Hub Variables did not offer connector types for '${name}'", true)
-        }
-        chosenType = requestedType ?: (row.connectorOptions.contains("Variable") ? "Variable" : row.connectorOptions[0].toString())
-        if (!row.connectorOptions.contains(chosenType)) {
-            throw new IllegalArgumentException("Unsupported connector type '${chosenType}' for '${name}'. The hub offers: ${row.connectorOptions.join(', ')}. See hub_get_tool_guide(section='variables').")
-        }
-        try { _hubVarsNativePost("createConnector", [name: name, connectorType: chosenType]) }
-        catch (Exception e) { return _hubVarsNativeFailure("hub_create_connector", e.message ?: e.class.simpleName) }
-    } else {
-        def appId = _findHubVariablesAppId()
-        _primeHubVarsWizard(appId, "hub_create_connector pre-click")
-        _rmClickAppButton(appId, name, "createCon", "hubVar")
-
-        // For Number/Decimal vars Hubitat opens a chooser sub-wizard requiring
-        // a 'capab' enum pick (Dimmer / Variable / etc.); for String/Boolean/
-        // DateTime the click commits the connector immediately and the capab
-        // input isn't in the schema, so the write is a schema-skip no-op.
-        // Prime the wizard fresh (the chooser sub-page is its own wizard step
-        // and benefits from the same priming as the parent click).
-        def applied = []
-        def skipped = []
-        _primeHubVarsWizard(appId, "hub_create_connector pre-capab")
-        _rmWriteSettingOnPage(appId, "hubVar", "capab", chosenType, applied, "enum", skipped)
+    def row
+    try { row = _hubVarsNativeRow(nativeModel, name) }
+    catch (Exception e) { return _hubVarsNativeFailure("hub_create_connector", e.message ?: e.class.simpleName, true) }
+    if (!(row.connectorOptions instanceof List) || row.connectorOptions.isEmpty()) {
+        return _hubVarsNativeFailure("hub_create_connector", "Hub Variables did not offer connector types for '${name}'", true)
     }
+    def chosenType = requestedType ?: (row.connectorOptions.contains("Variable") ? "Variable" : row.connectorOptions[0].toString())
+    if (!row.connectorOptions.contains(chosenType)) {
+        throw new IllegalArgumentException("Unsupported connector type '${chosenType}' for '${name}'. The hub offers: ${row.connectorOptions.join(', ')}. See hub_get_tool_guide(section='variables').")
+    }
+    try { _hubVarsNativePost("createConnector", [name: name, connectorType: chosenType]) }
+    catch (Exception e) { return _hubVarsNativeFailure("hub_create_connector", e.message ?: e.class.simpleName, _hubVarsRefused(e)) }
 
-    def after
-    for (int v = 0; v < 8; v++) {
-        try { after = getGlobalVar(name) } catch (Exception e) { after = null }
-        if (after?.deviceId != null) break
-        // Check-FIRST (see hub_create_variable's verify loop): zero happy-path sleep.
-        if (v < 7) {
-            try { pauseExecution(300) } catch (Exception e) { mcpLog("debug", "hub-vars", "pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
-        }
+    def after = null
+    try { after = getGlobalVar(name) } catch (Exception e) {
+        mcpLog("debug", "hub-vars", "hub_create_connector: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
     if (after?.deviceId == null) {
-        if (nativeModel != null) {
-            return _hubVarsNativeFailure("hub_create_connector", "the hub accepted the '${chosenType}' connector create, but '${name}' still has no deviceId.")
-        }
-        throw new IllegalStateException(
-            "hub_create_connector: wizard completed but '${name}' still has no deviceId. " +
-            "Tried capab='${chosenType}' (only relevant for Number/Decimal). The connector did not bake.")
+        return _hubVarsNativeFailure("hub_create_connector", "the hub accepted the '${chosenType}' connector create, but '${name}' still has no deviceId.")
     }
 
     mcpLog("info", "hub-vars", "Created connector for '${name}' (deviceId=${after.deviceId}, attribute=${after.attribute}, capab=${chosenType})")
@@ -1073,54 +897,31 @@ def toolRemoveConnector(args) {
     try { nativeModel = _hubVarsNativeModel() }
     catch (Exception e) { return _hubVarsNativeFailure("hub_delete_connector", _hubVarsModelError(e), true) }
     List connectorApps = null
-    if (nativeModel != null) {
-        String registryError = null
-        try { connectorApps = _hubVarsNativeConsumers(_hubVarsNativeRow(nativeModel, name), "connectorUsedBy") }
-        catch (IllegalStateException e) {
-            registryError = e.message
-            mcpLog("warn", "hub-vars", "hub_delete_connector: connector in-use read failed for '${name}': ${e.message}")
-        }
-        if (!force && connectorApps == null) {
-            throw new IllegalArgumentException("Could not read which apps use the connector for '${name}' (${registryError}), so whether deleting it breaks an app is unknown. Retry, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables').")
-        }
-        if (!force && connectorApps) {
-            throw new IllegalArgumentException("The connector for '${name}' is in use by ${_hubVarsConsumerText(connectorApps)}. Deleting it breaks those apps. Update or remove them first, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables').")
-        }
-        try { _hubVarsNativePost("removeConnector", [name: name, acknowledgeUse: force]) }
-        catch (Exception e) { return _hubVarsNativeFailure("hub_delete_connector", e.message ?: e.class.simpleName) }
-    } else {
-        def res = toolDeleteDevice([deviceId: deviceId.toString(), confirm: true])
-        if (res?.success != true) {
-            throw new IllegalStateException(
-                "hub_delete_connector: toolDeleteDevice failed for deviceId=${deviceId}: ${res?.error ?: 'unknown error'}")
-        }
+    String registryError = null
+    try { connectorApps = _hubVarsNativeConsumers(_hubVarsNativeRow(nativeModel, name), "connectorUsedBy") }
+    catch (IllegalStateException e) {
+        registryError = e.message
+        mcpLog("warn", "hub-vars", "hub_delete_connector: connector in-use read failed for '${name}': ${e.message}")
+    }
+    if (!force && connectorApps == null) {
+        throw new IllegalArgumentException("Could not read which apps use the connector for '${name}' (${registryError}), so whether deleting it breaks an app is unknown. Retry, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables').")
+    }
+    if (!force && connectorApps) {
+        throw new IllegalArgumentException("The connector for '${name}' is in use by ${_hubVarsConsumerText(connectorApps)}. Deleting it breaks those apps. Update or remove them first, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables').")
+    }
+    try { _hubVarsNativePost("removeConnector", [name: name, acknowledgeUse: force]) }
+    catch (Exception e) { return _hubVarsNativeFailure("hub_delete_connector", e.message ?: e.class.simpleName, _hubVarsRefused(e)) }
+
+    // A removal the hub accepted but did not apply must never report success.
+    def after
+    try { after = getGlobalVar(name) }
+    catch (Exception e) { return _hubVarsNativeFailure("hub_delete_connector", "could not verify '${name}' connector removal: ${e.message}") }
+    if (after == null) return _hubVarsNativeFailure("hub_delete_connector", "'${name}' is no longer readable after connector removal")
+    if (after.deviceId != null) {
+        return _hubVarsNativeFailure("hub_delete_connector", "the hub accepted the connector removal, but variable '${name}' still has deviceId=${after.deviceId}")
     }
 
-    // Verify the deviceId linkage is cleared, so a removal the hub accepted but did not apply
-    // never reports success.
-    def after = null
-    for (int v = 0; v < 8; v++) {
-        try { after = getGlobalVar(name) }
-        catch (Exception e) {
-            if (nativeModel != null) return _hubVarsNativeFailure("hub_delete_connector", "could not verify '${name}' connector removal: ${e.message}")
-            after = null
-        }
-        if (nativeModel != null && after == null) return _hubVarsNativeFailure("hub_delete_connector", "'${name}' is no longer readable after connector removal")
-        if (after?.deviceId == null) break
-        // Check-FIRST (see hub_create_variable's verify loop): zero happy-path sleep.
-        if (v < 7) {
-            try { pauseExecution(300) } catch (Exception e) { mcpLog("debug", "hub-vars", "pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
-        }
-    }
-    if (after?.deviceId != null) {
-        if (nativeModel != null) {
-            return _hubVarsNativeFailure("hub_delete_connector", "the hub accepted the connector removal, but variable '${name}' still has deviceId=${after.deviceId}")
-        }
-        throw new IllegalStateException(
-            "hub_delete_connector: device ${deviceId} delete returned success but variable '${name}' still has deviceId=${after.deviceId}")
-    }
-
-    boolean forcedPastUse = force && nativeModel != null && (connectorApps == null || connectorApps)
+    boolean forcedPastUse = force && (connectorApps == null || connectorApps)
     String forcedNote = forcedPastUse ? " (forced; connector in-use: ${connectorApps == null ? 'unreadable' : _hubVarsConsumerText(connectorApps)})" : ""
     mcpLog(forcedNote ? "warn" : "info", "hub-vars", "Removed connector for '${name}' (deviceId=${deviceId})${forcedNote}")
     def result = [
@@ -1129,7 +930,7 @@ def toolRemoveConnector(args) {
         deviceId: deviceId,
         deviceDeleted: true,
         brokenConsumers: (force && connectorApps) ? connectorApps : null,
-        consumersUnknown: (force && nativeModel != null && connectorApps == null) ?: null,
+        consumersUnknown: (force && connectorApps == null) ?: null,
         message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged."
     ]
     if (_hubVarsNoConnectorLeft()) result.note = _hubVarsLastConnectorNote()
@@ -1342,9 +1143,9 @@ def toolDeleteHubVariable(args) {
     def force = args?.force == true
 
     // Source detection: hub vs rule_engine namespace. Hub vars are deleted
-    // through the Hub Variables system app's wizard; rule_engine vars are a
-    // map in state we can rewrite directly. The child-rule scan applies to
-    // both; a hub var is also checked against the hub's in-use registry.
+    // through the hub's Hub Variables page; rule_engine vars are a map in
+    // state we can rewrite directly. The child-rule scan applies to both; a
+    // hub var is also checked against the hub's in-use registry.
     def hubVar = null
     try { hubVar = getGlobalVar(varName) }
     catch (Exception e) {
@@ -1386,13 +1187,10 @@ def toolDeleteHubVariable(args) {
     }
     // Rule Machine and the other apps that register Hub Variable use with the hub are
     // not MCP children, so ask the hub itself. Unreadable means unknown, not unused.
-    def hubVarsAppId = null
     Boolean platformInUse = null
     List registryApps = null
     String registryError = null
     def linkedMirrorRow = null
-    def nativeModel = null
-    boolean nativeRead = false
     if (isHubVar) {
         // A linked mirror's display name is DECORATED ("<sourceVar> on <peer>") -- the caller passes that,
         // so match localLinkedHubVariables[].name against varName (the create/link read-back instead keys
@@ -1405,15 +1203,8 @@ def toolDeleteHubVariable(args) {
             linkedMirrorRow = meshRows.find { it instanceof Map && it.name?.toString() == varName }
         }
         try {
-            nativeModel = _hubVarsNativeModel()
-            nativeRead = true
-            if (nativeModel != null) {
-                registryApps = _hubVarsNativeAppsUsing(_hubVarsNativeRow(nativeModel, varName)).all
-                platformInUse = !registryApps.isEmpty()
-            } else {
-                hubVarsAppId = _findHubVariablesAppId()
-                platformInUse = _hubVarPlatformInUse(hubVarsAppId, varName)
-            }
+            registryApps = _hubVarsNativeAppsUsing(_hubVarsNativeRow(_hubVarsNativeModel(), varName)).all
+            platformInUse = !registryApps.isEmpty()
         } catch (Exception e) {
             registryError = e.message ?: e.class.simpleName
             mcpLog("warn", "hub-vars", "hub_delete_variable: platform in-use check failed: ${e.class.simpleName}: ${e.message}")
@@ -1438,10 +1229,8 @@ def toolDeleteHubVariable(args) {
             // refusal is only the mesh-link registration, not a real consumer. requireDestructiveConfirm
             // (confirm + recent backup) still applied above; force is NOT required for the clean case.
         } else if (platformInUse != false && !force) {
-            String usedBy = registryApps ? "is in use by ${_hubVarsConsumerText(registryApps)}" :
-                "is registered as in use by at least one app (Settings > Hub Variables shows it in orange; click its name to see which)"
             throw new IllegalArgumentException(platformInUse ?
-                "Hub Variable '${varName}' ${usedBy}. Deleting it breaks those apps, which is why the hub's own delete prompt warns. Update or remove the consuming apps first, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables')." :
+                "Hub Variable '${varName}' is in use by ${_hubVarsConsumerText(registryApps)}. Deleting it breaks those apps, which is why the hub's own delete prompt warns. Update or remove the consuming apps first, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables')." :
                 "Could not read the hub's in-use registry for Hub Variable '${varName}'${registryError ? " (${registryError})" : ''}, so whether an app uses it is unknown. Check Settings > Hub Variables (an in-use variable is shown in orange), then retry, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables').")
         }
     }
@@ -1458,58 +1247,19 @@ def toolDeleteHubVariable(args) {
     }
 
     if (isHubVar) {
-        // Hub-namespace deletion: one native remove POST, or on older firmware the wizard's deleteGV +
-        // delConfirm clicks. Either way Hubitat also deletes the connector device when one exists,
+        // One native remove POST. Hubitat also deletes the connector device when one exists,
         // surfacing the resulting deviceId in the audit log so the caller knows what else disappeared.
         def previousValue = hubVar.value
         def previousType  = hubVar.type
         def hadConnector  = hubVar.deviceId != null
-        if (!nativeRead) {
-            try { nativeModel = _hubVarsNativeModel() }
-            catch (Exception e) { return _hubVarsNativeFailure("hub_delete_variable", _hubVarsModelError(e), true) }
-        }
-        def appId = nativeModel != null ? null : (hubVarsAppId ?: _findHubVariablesAppId())
-        // Wizard: the two clicks only arm the delete (state deleteGV + deleteConfirm); the hub performs it
-        // on the page's next render, which the UI gets from its reload after the click. Render it here so
-        // the delete runs now -- an armed delete left behind would remove a same-named variable created
-        // later, the next time anything renders the page.
-        def stillThere = null
-        for (int attempt = 0; attempt < 2; attempt++) {
-            if (nativeModel != null) {
-                // One POST; the second pass only extends the readback window. A mesh mirror acknowledges
-                // use because the hub counts the mesh link itself as one; inUseByApps gated it above.
-                if (attempt == 0) {
-                    try { _hubVarsNativePost("remove", [name: varName, acknowledgeUse: force || linkedMirrorRow != null]) }
-                    catch (Exception e) { return _hubVarsNativeFailure("hub_delete_variable", e.message ?: e.class.simpleName) }
-                }
-            } else {
-                _primeHubVarsWizard(appId, "hub_delete_variable pre-click attempt-${attempt + 1}")
-                _rmClickAppButton(appId, varName, "deleteGV", "hubVar")
-                _rmClickAppButton(appId, "delConfirm", null, "hubVar")
-                try { hubInternalGet("/installedapp/configure/json/${appId}/hubVar") } catch (Exception renderExc) {
-                    mcpLog("warn", "hub-vars", "hub_delete_variable: rendering the Hub Variables page after the confirm failed (${renderExc.message})")
-                }
-            }
-            // Brief pause + verification. If the var is gone, we're done.
-            for (int v = 0; v < 8; v++) {
-                try { stillThere = getGlobalVar(varName) }
-                catch (Exception e) {
-                    if (nativeModel != null) return _hubVarsNativeFailure("hub_delete_variable", "could not verify whether '${varName}' was deleted: ${e.message}")
-                    stillThere = null
-                }
-                if (stillThere == null) break
-                // Check-FIRST (see hub_create_variable's verify loop): zero happy-path sleep.
-                if (v < 7) {
-                    try { pauseExecution(300) } catch (Exception e) { mcpLog("debug", "hub-vars", "pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
-                }
-            }
-            if (stillThere == null) break
-        }
-        if (stillThere != null) {
-            if (nativeModel != null) return _hubVarsNativeFailure("hub_delete_variable", "the hub accepted the delete, but '${varName}' still exists in getGlobalVar.")
-            throw new IllegalStateException(
-                "hub_delete_variable: wizard completed but '${varName}' still exists in getGlobalVar after 2 click-sequence attempts.")
-        }
+        // A mesh mirror acknowledges use because the hub counts the mesh link itself as one;
+        // inUseByApps gated it above.
+        try { _hubVarsNativePost("remove", [name: varName, acknowledgeUse: force || linkedMirrorRow != null]) }
+        catch (Exception e) { return _hubVarsNativeFailure("hub_delete_variable", e.message ?: e.class.simpleName, _hubVarsRefused(e)) }
+        def stillThere
+        try { stillThere = getGlobalVar(varName) }
+        catch (Exception e) { return _hubVarsNativeFailure("hub_delete_variable", "could not verify whether '${varName}' was deleted: ${e.message}") }
+        if (stillThere != null) return _hubVarsNativeFailure("hub_delete_variable", "the hub accepted the delete, but '${varName}' still exists in getGlobalVar.")
 
         def prevStr = previousValue?.toString()
         def auditValue = prevStr == null ? "null" : (prevStr.length() > 80 ? "${prevStr.take(80)} [truncated, original length: ${prevStr.length()}]" : prevStr)
@@ -1530,7 +1280,7 @@ def toolDeleteHubVariable(args) {
             meshNote = " (mesh unlink; source '${linkedMirrorRow.sourceVarName}' on ${srcHub} untouched)"
         }
         String registryState = platformInUse == null ? "unreadable${registryError ? ": ${registryError}" : ''}" :
-            (registryApps ? _hubVarsConsumerText(registryApps) : 'true')
+            _hubVarsConsumerText(registryApps)
         def registryNote = (platformInUse != false && !unlinked) ? " (forced; hub in-use registry: ${registryState})" : ""
         mcpLog("warn", "developer-mode", "hub_delete_variable: removed hub var '${varName}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${registryNote}${consumerNote}${meshNote}")
         return [
@@ -1567,37 +1317,6 @@ def toolDeleteHubVariable(args) {
     return [success: true, name: varName, deleted: true, source: "rule_engine", previousValue: previousValue, brokenConsumers: consumers ?: null]
 }
 
-// How the Hub Variables page marks this variable: the hub renders a "Show In Use Apps" button for a
-// registered variable and a plain table row otherwise. Returns a distinguishing status so callers can
-// tell an unreadable page apart from a variable that simply is not listed:
-//   "inUse"      - the Show-In-Use marker is present
-//   "notInUse"   - the plain <td>var</td> row is present (registered, no consumers)
-//   "unreadable" - appId/var missing, the GET threw, or the page body was empty
-//   "notListed"  - the page read fine but names neither marker (the variable is not on the page)
-String _hubVarPlatformInUseStatus(Integer hubVarsAppId, String varName) {
-    if (hubVarsAppId == null || !varName) return "unreadable"
-    def text
-    try { text = hubInternalGet("/installedapp/configure/json/${hubVarsAppId}")?.toString() }
-    catch (Exception e) { return "unreadable" }
-    if (!text) return "unreadable"
-    def escaped = varName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "&#39;").replace('"', "&quot;")
-    def forms = [varName, escaped].unique()
-    if (forms.any { text.contains("Show In Use Apps for ${it}'".toString()) }) return "inUse"
-    if (forms.any { text.contains("<td>${it}</td>".toString()) }) return "notInUse"
-    return "notListed"
-}
-
-// Whether the Hub Variables page marks this variable as in use. Thin Boolean wrapper over
-// _hubVarPlatformInUseStatus: true (in use), false (listed but not in use), null (unreadable OR not
-// listed -- both collapse to "unknown" for callers that only need the tri-state).
-Boolean _hubVarPlatformInUse(Integer hubVarsAppId, String varName) {
-    switch (_hubVarPlatformInUseStatus(hubVarsAppId, varName)) {
-        case "inUse": return true
-        case "notInUse": return false
-        default: return null
-    }
-}
-
 String _hubVarDeleteCoverageNote() {
     return "Checked the hub's in-use registry and this server's own rules. Apps that do not register Hub Variable use with the hub, such as webCoRE pistons, are not covered."
 }
@@ -1606,127 +1325,13 @@ String _hubVarDependentsCoverageNote() {
     return "Lists apps that register Hub Variable use with the hub -- what Settings > Hub Variables shows in orange (Rule Machine, Room Lighting, Thermostat Scheduler, and other registering apps). Apps that do not register their use, such as webCoRE pistons, are not covered."
 }
 
-// Apps that reference a hub variable. Returns a Map: [apps: [[id,label],...]] on success (apps is []
-// only when the variable is registered but has no listed consumers), or [error, note] when the registry
-// could not be read or trusted (UNKNOWN -- never proof of "no consumers"). The wizard renders the
-// consuming apps only after the per-variable "Show In Use Apps" reveal is clicked, so: read the page
-// (the reveal link appears only for an in-use variable), click the reveal, re-fetch, then parse the
-// revealed <a> anchors. The reveal is a transient wizard-UI toggle (like _primeHubVarsWizard), not a
-// data mutation -- dismissed with a best-effort cancelDel click so the page returns to its plain table.
-Map _hubVarInUseApps(Integer hubVarsAppId, String varName) {
-    if (hubVarsAppId == null || !varName) {
-        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}'.",
-                note: "The Settings > Hub Variables app could not be located; verify it is enabled and retry. See hub_get_tool_guide(section='variables')."]
-    }
-    String inUseStatus = _hubVarPlatformInUseStatus(hubVarsAppId, varName)
-    if (inUseStatus == "unreadable") {
-        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}' (the Hub Variables page was unreadable).",
-                note: "Retry; if it persists, read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."]
-    }
-    if (inUseStatus == "notListed") {
-        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}' (the variable is not listed on the Hub Variables page).",
-                note: "Verify it exists (hub_list_variables) and retry. See hub_get_tool_guide(section='variables')."]
-    }
-    if (inUseStatus == "notInUse") return [apps: []]   // registered but no consumers
-
-    // The reveal panel is a single shared wizard toggle, so a parallel includeDependents call for a
-    // different variable can race its panel into our re-fetch. Only trust a panel whose marker names
-    // THIS variable (match raw and escaped forms, like _hubVarPlatformInUse). A panel naming another
-    // variable -> not our panel -> keep polling -> fall through to UNKNOWN.
-    def escaped = varName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "&#39;").replace('"', "&quot;")
-    def markerForms = [varName, escaped].unique().collect { "<b>${it}</b> is in use by these apps".toString() }
-
-    def apps = []
-    boolean panelForThisVar = false
-    boolean clickFailed = false
-    try {
-        _primeHubVarsWizard(hubVarsAppId, "hub_get_variable includeDependents reveal")
-        _rmClickAppButton(hubVarsAppId, varName, "inUse", "hubVar")
-        // The reveal click lands asynchronously: a single re-fetch right after the click can still
-        // return the unrevealed table. Poll the re-fetch with a bounded retry until this variable's
-        // panel marker appears; only then are the parsed anchors trustworthy.
-        for (int poll = 0; poll < 8 && !panelForThisVar; poll++) {
-            if (poll > 0) { try { pauseExecution(250) } catch (Exception ignored) { } }
-            // Decode the JSON page before scanning. The hub embeds the rendered HTML inside the
-            // configPage JSON, so JSON string escapes (\", \n, ...) would otherwise leak into the
-            // captured labels. Parse first, then regex-scan the real HTML (older firmware / a raw-HTML
-            // body falls back to the raw text).
-            def html = _hubVarRevealHtml(hubInternalGet("/installedapp/configure/json/${hubVarsAppId}")?.toString())
-            if (!html) continue
-            if (!markerForms.any { html.contains(it) }) continue   // not our panel yet (or another var's)
-            panelForThisVar = true
-            apps = _parseHubVarConsumerAnchors(html)
-        }
-    } catch (Exception e) {
-        clickFailed = true
-        mcpLog("warn", "variables", "hub_get_variable includeDependents: reveal/parse threw ${e.class.simpleName}: ${e.message}")
-    } finally {
-        try { _rmClickAppButton(hubVarsAppId, "cancelDel", null, "hubVar") }
-        catch (Exception e) {
-            mcpLog("warn", "variables", "hub_get_variable includeDependents: reveal dismiss (cancelDel) failed: ${e.class.simpleName}: ${e.message}")
-        }
-    }
-
-    if (clickFailed) {
-        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}' (the reveal click or page re-read failed).",
-                note: "Retry; if it persists, read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."]
-    }
-    if (!panelForThisVar) {
-        mcpLog("warn", "variables", "hub_get_variable includeDependents: reveal panel for '${varName}' never rendered after polling")
-        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}' (the reveal panel did not render).",
-                note: "Retry (the reveal lands asynchronously); if it persists, read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."]
-    }
-    if (apps.isEmpty()) {
-        // The registry marked the variable in use and its panel rendered, yet no consumer anchors
-        // parsed -- a contradiction, so report UNKNOWN rather than a false "no consumers".
-        mcpLog("warn", "variables", "hub_get_variable includeDependents: '${varName}' marked in use but no consumer anchors parsed from the reveal")
-        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}' (marked in use, but no consumer apps parsed from the reveal).",
-                note: "Read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."]
-    }
-    return [apps: apps]
-}
-
-// Parse the revealed consumer anchors into [[id, label], ...]. The hub renders each as
-// <a href='/installedapp/configure/<id>' target='_blank' title='Open <label>'><label></a> with the
-// label RAW (not entity-escaped), so < > & ' in a label appear literally. The tag-bearing anchor text
-// is unparseable (a label's own < > read as tags), so read the id from the href and the label from the
-// title attribute, which is delimited by '> (the quote that closes title plus the tag's own >).
-private List _parseHubVarConsumerAnchors(String html) {
-    def apps = []
-    def m = html =~ /<a\s+href='\/installedapp\/configure\/(\d+)'[^>]*?title='Open (.*?)'>.*?<\/a>/
-    while (m.find()) {
-        apps << [id: m.group(1), label: m.group(2)?.trim()]
-    }
-    return apps
-}
-
-// Extract the rendered HTML from the Hub Variables configPage JSON so label capture scans true HTML
-// rather than JSON-escaped text. Pulls the body/paragraph descriptions out of
-// {configPage:{sections:[...]}} and joins them; falls back to the raw string when the body is not
-// that JSON shape (older firmware, or a plain-HTML response).
-private String _hubVarRevealHtml(String raw) {
-    if (!raw?.trim()) return null
-    def parsed
-    try { parsed = new groovy.json.JsonSlurper().parseText(raw) }
-    catch (Exception e) { return raw }   // not JSON -> scan as-is
-    if (!(parsed instanceof Map) || parsed.configPage == null) return raw
-    def chunks = (parsed.configPage?.sections ?: []).collectMany { sect ->
-        def fromBody = (sect?.body ?: [])
-            .findAll { it instanceof Map && it.description != null }
-            .collect { it.description.toString() }
-        def fromParagraphs = (sect?.paragraphs ?: []).collect { it?.toString() ?: "" }
-        fromBody + fromParagraphs
-    }
-    return chunks ? chunks.join("\n") : raw
-}
-
 def _getAllToolDefinitions_partVariables() {
     // The list builds in a closure so its strings live in the closure's own class: the app class is
     // near the JVM 65,535 constant-pool limit.
     def defs = { [
         [
             name: "hub_list_variables",
-            description: "List all hub variables and rule-engine variables.[[FLAT_TRIM]] Includes every type, even ones without connectors.[[/FLAT_TRIM]]",
+            description: "List all hub variables and rule-engine variables.[[FLAT_TRIM]] Includes every type, even ones without connectors. A hub variable also carries connectorType/connectorLabel when it has a connector, meshShared, and linked (with sourceHubName) for a Hub Mesh mirror of another hub's variable.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1737,12 +1342,12 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_get_variable",
-            description: "Get one variable's current value by name; includeDependents=true also lists the apps referencing a hub variable.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables; use hub_list_variables to enumerate. includeDependents reads the hub's in-use registry (using the Settings > Hub Variables wizard reveal on older firmware), returning appsUsing as {id, label} plus coverageNote; current firmware also counts apps that use the variable's connector device and lists those in connectorAppsUsing — apps that never register their use (e.g. webCoRE) are not covered, and a failed registry read is reported via dependentsError without failing the call. See hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
+            description: "Get one variable's current value by name; includeDependents=true also lists the apps referencing a hub variable.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables; use hub_list_variables to enumerate. A hub variable also returns connectorType/connectorLabel, meshShared and linked/sourceHubName. includeDependents reads the hub's in-use registry, returning appsUsing as {id, label} (including apps that use the connector device, also listed in connectorAppsUsing) plus coverageNote — apps that never register their use (e.g. webCoRE) are not covered, and a failed registry read is reported via dependentsError without failing the call. See hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Exact variable name to look up, e.g. \"vacationMode\". Case-sensitive."],
-                    includeDependents: [type: "boolean", description: "Opt-in: also list the apps that reference this hub variable.[[FLAT_TRIM]] Returns appsUsing + coverageNote. Off by default because it costs an extra hub read (a wizard reveal click on older firmware).[[/FLAT_TRIM]]", default: false]
+                    includeDependents: [type: "boolean", description: "Opt-in: also list the apps that reference this hub variable.[[FLAT_TRIM]] Returns appsUsing, connectorAppsUsing, count and coverageNote.[[/FLAT_TRIM]]", default: false]
                 ],
                 required: ["name"]
             ]
@@ -1788,7 +1393,7 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_delete_variable",
-            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\n\n**Reference safety:** for a hub variable the tool first reads the hub's own in-use registry (what Settings > Hub Variables shows in orange, covering Rule Machine and other registering apps) and refuses when it is in use or when the registry cannot be read. It also scans this server's child rules for the name, quoted or as a %name% substitution. Apps that never register use, such as webCoRE pistons, are not covered (see `coverageNote`). To proceed anyway, pass `force=true` after acknowledging the breakage; `brokenConsumers` then lists the affected child rules.\n\nThe consumer scan makes this call slow; if the transport drops, verify whether the variable still exists before retrying.[[/FLAT_TRIM]]",
+            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\n\n**Reference safety:** for a hub variable the tool first reads the hub's own in-use registry (what Settings > Hub Variables shows in orange, covering Rule Machine and other registering apps) and refuses when it is in use or when the registry cannot be read. It also scans this server's child rules for the name, quoted or as a %name% substitution. Apps that never register use, such as webCoRE pistons, are not covered (see `coverageNote`). To proceed anyway, pass `force=true` after acknowledging the breakage; `brokenConsumers` then lists the affected child rules.\n\nIf the transport drops, verify whether the variable still exists before retrying.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1806,7 +1411,7 @@ def _getAllToolDefinitions_partVariables() {
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Existing hub-variable name"],
-                    connectorType: [type: "string", description: "Optional connector type (default 'Variable').[[FLAT_TRIM]] e.g. 'Dimmer'. It must be a type the hub offers for this variable (Number/Decimal: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance); any other is refused before anything is created. When omitted and 'Variable' is not offered, the first offered type is used. Older firmware without the native Hub Variables endpoint only asks for a type on Number/Decimal vars and ignores it otherwise.[[/FLAT_TRIM]]"],
+                    connectorType: [type: "string", description: "Optional connector type (default 'Variable').[[FLAT_TRIM]] e.g. 'Dimmer'. It must be a type the hub offers for this variable (Number/Decimal: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance); any other is refused before anything is created. When omitted and 'Variable' is not offered, the first offered type is used.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true"]
                 ],
                 required: ["name", "confirm"]
