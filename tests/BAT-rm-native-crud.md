@@ -234,6 +234,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```
 
 **Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='stop')`, then `hub_get_rule_health(appId=ruleId)` and verifies `stopped == true` with `eventSubscriptionCount == 0` (0 = read fine, nothing live; null appears only when the runtime status itself was unreadable); it calls `hub_call_rule(ruleId=ruleId, action='start')`, reads health again, and verifies `stopped == false` and `eventSubscriptionCount > 0` (the rule's trigger is device-event-based).
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 6f6076d9, driven by a fresh AI client given only the prompt (a BAT_E2E_ fixture rule with a virtual switch trigger): pass -- after `hub_call_rule(action='stop')`, `hub_get_rule_health` read `stopped:true` with `eventSubscriptionCount` 1 -> 0; after `action='start'`, `stopped:false`, count 1, `ok:true`.
 
 ### T312 — Update Rule button (re-initialize)
 
