@@ -16758,6 +16758,7 @@ def toolListHubDrivers(args) {
     def cursor = args?.cursor
     def include = (args?.include ?: "user").toString().toLowerCase()
     if (!(include in ["user", "all"])) throw new IllegalArgumentException("include must be 'user' or 'all' (got '${args.include}').")
+    if (include == "all" && cursor == null) cursor = ""
     def result = [:]
     if (include == "all") {
         try {
@@ -18779,7 +18780,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 properties: [
                     include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
                     nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                    cursor: [type: "string", description: "Pagination cursor (page size 50): iterate nextCursor until it is absent. include='all' always pages (no cursor = first page); include='user' returns the whole list unless a cursor is given (\"\" for the first page)."]
                 ]
             ]
         ],
@@ -35868,7 +35869,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 **Response-size guard.** Every tool result is measured before sending. A result over 120,000 bytes on the LAN (the hub caps responses at 128 KiB), or over 99,000 bytes through the cloud relay (which drops larger responses), has its content replaced with `{response_too_large: true, truncated: true, estimatedBytes, sizeLimitBytes, tool, suggestion}`. The call itself still succeeds. On gateway calls, `tool` names the actual sub-tool. `suggestion` names the knob to narrow with (filters, limit, fields, `saveAs`, or `cursor`). Re-issue a narrower call; do not repeat the same one.
 
-**Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard; `hub_list_backups` (scope=source) is the exception and always returns one page, with `hasMore: true` and `nextCursor` when more backups follow. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
+**Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard. Two always return one page: `hub_list_backups` (scope=source), with `hasMore: true` and `nextCursor` when more backups follow, and `hub_list_drivers(include='all')`, whose full catalog is too large for one response through the cloud relay. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
 - 25: `hub_list_hpm_packages`.
 - 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices` in `format='context'` when `limit` is unset (the other formats are unpaged until a `cursor` or a positive `limit` is given).
 - 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs` (50 per tab when several are listed), `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
@@ -36101,6 +36102,7 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 `include='user'` (default) lists user-installed drivers only; `include='all'` returns the full catalog (system + virtual + user), where each entry is `{id, name, namespace, bucket}` per driver type.
 
 - For `include='all'`, each entry is tagged `bucket=system|virtual|user`.
+- `include='all'` always pages, 50 per page: a call without a cursor returns the first page with `total` and `nextCursor`; pass each `nextCursor` back until it is absent. Use `nameFilter` to find one driver without walking the pages. `include='user'` returns the whole list unless a cursor is given.
 - For an `include='all'` entry, its **id** is the driver-type id to pass to `hub_create_device`, while `hub_manage_virtual_device(customDriver={namespace, name})` takes that same entry's **namespace + name** (not the id).
 
 
