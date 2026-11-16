@@ -4658,6 +4658,13 @@ class TestRunner:
         # Resolve a built-in Virtual Switch driver-type id from the full driver catalog,
         # create from it with confirm, then delete. Skips cleanly if no such type is found.
         drivers = self._driver_catalog("all")
+        # include='all' pages even without a cursor: the first page of 50 plus the whole catalog's size.
+        first = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_drivers", "args": {"include": "all"}})
+        assert len(first.get("drivers") or []) == min(50, len(drivers)) and first.get("total") == len(drivers), \
+            f"an uncursored include='all' call did not return the first page of {len(drivers)}: " \
+            f"{ {k: v for k, v in first.items() if k != 'drivers'} }"
+        assert (first.get("nextCursor") == "50") == (len(drivers) > 50), \
+            f"an uncursored include='all' call has the wrong nextCursor for {len(drivers)} drivers: {first.get('nextCursor')!r}"
         type_id = None
         for d in drivers:
             if (d.get("name") or "") == "Virtual Switch":

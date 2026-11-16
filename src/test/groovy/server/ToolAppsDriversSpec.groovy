@@ -486,6 +486,38 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.count == 1
     }
 
+    def "hub_list_drivers include=all pages without a cursor; include=user stays whole"() {
+        given: 'sixty drivers in each list'
+        enableRead()
+        def rows = (1..60).collect { [id: it, name: "Driver ${it}".toString(), namespace: 'hubitat', type: 'sys', category: 'Switches'] }
+        hubGet.register('/device/drivers') { params -> groovy.json.JsonOutput.toJson([drivers: rows]) }
+        hubGet.register('/hub2/userDeviceTypes') { params -> groovy.json.JsonOutput.toJson(rows.collect { [id: it.id, name: it.name] }) }
+
+        when: 'include=all with no cursor'
+        def first = script.toolListHubDrivers([include: 'all'])
+
+        then: 'the first page of 50, with the whole catalog size and the next cursor'
+        first.drivers*.id == (1..50).collect { it.toString() }
+        first.count == 50
+        first.total == 60
+        first.nextCursor == '50'
+
+        when: 'its nextCursor is passed back'
+        def second = script.toolListHubDrivers([include: 'all', cursor: first.nextCursor])
+
+        then: 'the rest, and no further cursor'
+        second.drivers*.id == (51..60).collect { it.toString() }
+        !second.containsKey('nextCursor')
+
+        when: 'include=user with no cursor'
+        def user = script.toolListHubDrivers([:])
+
+        then: 'the whole list, unpaged'
+        user.drivers.size() == 60
+        !user.containsKey('nextCursor')
+        !user.containsKey('total')
+    }
+
     def "hub_list_drivers refuses an unknown include: #label"() {
         when:
         script.toolListHubDrivers(args)
