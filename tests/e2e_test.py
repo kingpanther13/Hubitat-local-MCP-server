@@ -16273,7 +16273,10 @@ def updated() {}
             self._set_device_bypass(False)
 
             def devices(dash_id: str) -> list:
-                return sorted((self._read_dashboard(dash_id) or {}).get("deviceIds") or [])
+                read = self._read_dashboard(dash_id) or {}
+                assert isinstance(read.get("deviceIds"), list), \
+                    f"dashboard {dash_id}'s device list was unreadable, so the no-change check cannot run: {read}"
+                return sorted(read["deviceIds"])
 
             outside = f"deviceIds {unauth} is outside the MCP device selection"
             kept = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_update_dashboard", "args": {

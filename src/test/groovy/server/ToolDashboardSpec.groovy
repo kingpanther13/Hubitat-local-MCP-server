@@ -530,6 +530,10 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.deviceIds.sort() == ['1', '8']
         !r.containsKey('dashboardPin')   // "" -> omitted
         !r.containsKey('hsmPin')         // "" -> omitted
+
+        and: 'the app config has no theme, and the note says so'
+        !r.containsKey('theme')
+        r.note.contains('carries no theme')
     }
 
     def "get flags partial when a child-app match can't be enriched (config read fails)"() {
@@ -1621,6 +1625,22 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.layout.cols == 6
         r.layout.tiles.size() == 2
         !r.partial
+    }
+
+    def "get legacy: a readable layout with an unreadable device list is partial, without deviceIds"() {
+        given: 'the child-app row has no devices and the status page lists devicesPicked without its device list'
+        registerLegacyChildAppList('700', 'Studio')
+        registerLegacyStatus('700', [deviceIds: null])
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+
+        when:
+        def r = script.toolGetDashboard([dashboardId: '700'])
+
+        then:
+        r.layout.tiles.size() == 2
+        !r.containsKey('deviceIds')
+        r.partial == true
+        r.note.contains('device list could not be read')
     }
 
     def "get legacy: the list row's access token and devices reach the layout without a status read, and the token never leaks"() {

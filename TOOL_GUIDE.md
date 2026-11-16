@@ -1514,6 +1514,7 @@ Read-only; each entry carries `id`, `name`, and `type`. Easy entries also carry 
 Read-only. For an Easy Dashboard: tiles, navigation, theme, devices, PINs, and `localOnly`. For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). This is the read `hub_update_dashboard` takes back: `name` and `deviceIds` go top level, and an Easy dashboard's config fields (tile toggles, `navigationSelection`, `theme`, PINs, `localOnly`) go inside `options`; sent top level they are refused as unknown arguments.
 
 - PINs read `***redacted (password)***` while Hide passwords and credentials is on; passing that back to `hub_update_dashboard` keeps the stored PIN.
+- When the dashboard list is unreadable, an Easy Dashboard is read from its app config, which carries no `theme`; the result says so in its `note`. Pass the known theme in `options` before updating, or it reverts to `legacy`. A legacy read whose device list can't be read returns `partial: true` with the layout and no `deviceIds`.
 - A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
 
 ### hub_create_dashboard

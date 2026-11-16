@@ -194,6 +194,8 @@ private Map _getDashboard(String id, Map read) {
     def full = _dashboardConfigFromApp(id)
     if (full != null) {
         if (!full.name) full.name = summary.name
+        // The app-config page carries no theme, so a read-then-update would reset it to the default.
+        full.note = "Read from the dashboard's app config because the dashboard list was unreadable; it carries no theme. Pass the dashboard's theme in options when updating, or it reverts to 'legacy'."
         return full
     }
     // The enrichment read FAILED: flag it, so "config unreadable" isn't mistaken for an all-default config.
@@ -323,7 +325,13 @@ private Map _getLegacyDashboard(String id, Map summary, Map rec) {
     try { layout = _legacyLayoutFetch(id, token) } catch (Exception e) {
         mcpLogError("dashboard", "legacy layout read failed for ${id}", e)
     }
-    if (layout instanceof Map) return out + [layout: layout]
+    if (layout instanceof Map) {
+        if (out.deviceIds == null) {
+            return out + [layout: layout, partial: true,
+                          note: "The dashboard's authorized device list could not be read (unavailable, not empty). Retry hub_get_dashboard."]
+        }
+        return out + [layout: layout]
+    }
     return out + [partial: true, note: "The dashboard's layout endpoint was unreadable (details logged); tiles/grid are unavailable, not empty. Retry hub_get_dashboard." + _lanAccessHint(status)]
 }
 
