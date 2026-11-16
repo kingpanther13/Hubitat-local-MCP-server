@@ -4326,10 +4326,7 @@ def _scan_library_block_comments(name: str, text: str) -> list[dict]:
                 "rule": "library-file-scope-block-comment", "source": line[:80],
                 "message": (
                     "File-scope /* */ or /** */ block comment in a #include library (BP20). "
-                    "The hub parser can fail with 'Internal error' on save of a library that carries "
-                    "a file-scope block comment under #include -- and the inlined Spock compile + "
-                    "release build do NOT catch it, only the live hub does. Convert it to // line "
-                    "comments (the pattern every other library uses)."
+                    "Keep block comments inside method bodies; use // line comments at file scope."
                 ),
             })
         state = _advance_triple_quote_state(line, state)
@@ -5112,7 +5109,7 @@ def check_logs_json_snapshot_guard() -> list[dict]:
 
 def check_library_no_file_scope_block_comments() -> list[dict]:
     """BP20 library hygiene: no file-scope /* */ or /** */ block comments in any
-    libraries/*.groovy (see _scan_library_block_comments for the rationale)."""
+    libraries/*.groovy; file-scope comments use //."""
     findings: list[dict] = []
     lib_dir = REPO_ROOT / "libraries"
     if not lib_dir.is_dir():
@@ -5358,7 +5355,7 @@ def main() -> int:
     # library the release build can't inline fails CI here instead of at publish time.
     all_findings.extend(check_include_library_lockstep())
 
-    # BP20: no file-scope block comments in #include libraries (hub-parser hazard).
+    # BP20: block comments in #include libraries go inside method bodies.
     all_findings.extend(check_library_no_file_scope_block_comments())
 
     # Groovy strings and GString expressions require the AST, not a raw-source regex.

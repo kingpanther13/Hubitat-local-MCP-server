@@ -284,10 +284,10 @@ HPM installs two files: the parent app with every `#include` library inlined, an
 
 The `sandbox-lint` workflow runs the builder in-PR as a build smoke, and `groovy24-parse` parses and size-checks the built `dist/` files — exactly what ships.
 
-### BP20 — library file hygiene (avoids a Hubitat parser `Internal error`)
+### BP20 — library file hygiene
 
 - The `library(...)` declaration MUST be the **first line** of the file. **Zero file-scope commentary before it.**
-- After the `library(...)` line, comments may go anywhere, `//` or `/* */`. When a library is saved the hub drops `//` comments and reads the first `library` it finds as the declaration, so a `/* */` block containing that word above the declaration fails the save with `Cannot parse library definition`. Keeping the declaration on line 1 (the bullet above) rules that out.
+- After the `library(...)` line, `//` comments may go anywhere, file scope included. Block comments (`/* */`) go inside method bodies: sandbox lint refuses one that starts at column 0. When a library is saved the hub drops `//` comments and reads the first `library` it finds as the declaration, so a `/* */` block containing that word above the declaration fails the save with `Cannot parse library definition`; keeping the declaration on line 1 (the bullet above) rules that out.
 - Use **string-literal** handler names for `subscribe`/`schedule` (never bare identifiers).
 - Do NOT move `preferences {}`, `mappings {}`, or any **file-scope** closure into a library (root-level DSL / unverified closure binding under `#include`). Method-scoped closures travel with their enclosing method through the include system.
 
