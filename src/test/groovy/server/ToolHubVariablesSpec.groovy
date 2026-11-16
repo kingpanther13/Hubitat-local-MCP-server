@@ -1928,7 +1928,21 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // ---- hub_get_variable details and includeDependents ----
 
-    def "hub_get_variable adds the connector and Hub Mesh details from the Hub Variables page"() {
+    def "a plain hub_get_variable makes no hub request"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'integer', value: 9, deviceId: 8, attribute: 'variable'] }
+        modelRows.V = modelRow('V', [connectorId: 8, connectorType: 'Variable'])
+        stubHubVarsPage()
+
+        when:
+        def result = script.toolGetVariable([name: 'V'])
+
+        then:
+        result == [name: 'V', value: 9, type: 'integer', deviceId: 8, attribute: 'variable', source: 'hub']
+        hubGet.calls.isEmpty()
+    }
+
+    def "hub_get_variable includeDependents adds the connector and Hub Mesh details from the same page read"() {
         given:
         script.metaClass.getGlobalVar = { String n -> [name: n, type: 'integer', value: 9, deviceId: 8, attribute: 'variable'] }
         modelRows.V = modelRow('V', [value: '9', meshEnabled: true, connectorId: 8, connectorLabel: 'V', connectorType: 'Variable',
@@ -1936,7 +1950,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stubHubVarsPage()
 
         when:
-        def result = script.toolGetVariable([name: 'V'])
+        def result = script.toolGetVariable([name: 'V', includeDependents: true])
 
         then: 'the typed value still comes from getGlobalVar, not the page text'
         result.value == 9
@@ -1946,10 +1960,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.meshShared == true
         result.linked == false
         !result.containsKey('sourceHubName')
-
-        and: 'dependents stay opt-in, and one page read served the call'
-        !result.containsKey('appsUsing')
-        !result.containsKey('coverageNote')
+        result.appsUsing == [[id: '2', label: 'All Devices']]
         !result.containsKey('detailsError')
         hubGet.calls*.path == ['/hub2/variables']
     }
@@ -1961,7 +1972,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stubHubVarsPage()
 
         when:
-        def result = script.toolGetVariable([name: 'T on Peer'])
+        def result = script.toolGetVariable([name: 'T on Peer', includeDependents: true])
 
         then:
         result.linked == true
@@ -2003,25 +2014,20 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         !result.containsKey('dependentsError')
     }
 
-    @spock.lang.Unroll
-    def "hub_get_variable reports an unreadable page in the response without failing the call (includeDependents=#deps)"() {
+    def "hub_get_variable includeDependents reports an unreadable page in the response without failing the call"() {
         given:
         script.metaClass.getGlobalVar = { String n -> [name: n, type: 'boolean', value: true] }
         hubGet.register('/hub2/variables') { params -> throw new RuntimeException('page down') }
 
         when:
-        def result = script.toolGetVariable([name: 'zzProbe', includeDependents: deps])
+        def result = script.toolGetVariable([name: 'zzProbe', includeDependents: true])
 
         then:
         result.value == true
         result.detailsError == 'Could not read the connector and Hub Mesh details: page down'
-        result.containsKey('dependentsError') == deps
+        result.dependentsError == "Could not read the hub's in-use registry: page down"
+        result.dependentsNote.contains("hub_get_tool_guide(section='variables')")
         !result.containsKey('appsUsing')
-        !deps || result.dependentsError == "Could not read the hub's in-use registry: page down"
-        !deps || result.dependentsNote.contains("hub_get_tool_guide(section='variables')")
-
-        where:
-        deps << [false, true]
     }
 
     @spock.lang.Unroll

@@ -12234,9 +12234,13 @@ def updated() {}
         assert got.get("source") == "hub", f"created variable not visible in the hub namespace: {got}"
         assert got.get("value") == "round-trip-v1", f"hub variable value mismatch: {got}"
         assert got.get("type"), f"hub variable read-back carries no type metadata: {got}"
-        # The Hub Variables page adds the Hub Mesh state; a local, unshared variable reads false for both.
-        assert got.get("meshShared") is False and got.get("linked") is False and "detailsError" not in got, \
-            f"hub_get_variable did not carry the Hub Variables page details: {got}"
+        # A plain get reads no page, so it carries no page details; includeDependents adds them, and a
+        # local, unshared variable reads false for both Hub Mesh fields.
+        assert "meshShared" not in got and "appsUsing" not in got, f"a plain hub_get_variable read the page: {got}"
+        detailed = self.client.call_tool("hub_read_variables", {
+            "tool": "hub_get_variable", "args": {"name": var_name, "includeDependents": True}})
+        assert detailed.get("meshShared") is False and detailed.get("linked") is False and "detailsError" not in detailed, \
+            f"hub_get_variable(includeDependents) did not carry the Hub Variables page details: {detailed}"
 
         # DELETE -- response carries deleted/previousValue; the gone-check below binds
         # the real effect, so a relay 504 skips the response-shape assertions.
@@ -12550,7 +12554,7 @@ def updated() {}
 
         def read() -> dict:
             return self.client.call_tool("hub_read_variables", {
-                "tool": "hub_get_variable", "args": {"name": var_name}})
+                "tool": "hub_get_variable", "args": {"name": var_name, "includeDependents": True}})
 
         try:
             created = self._soft_write(

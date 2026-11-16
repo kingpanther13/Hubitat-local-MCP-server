@@ -254,8 +254,9 @@ def toolGetVariable(args) {
 
     if (found == null) throw new IllegalArgumentException("Variable not found: ${name}")
 
-    // The Hub Variables model and its in-use registry cover hub variables only.
-    if (found.source == "hub") _attachHubVarDetails(found, name, includeDependents)
+    // Only includeDependents reads the Hub Variables page: a plain get is a hot path (lock checks,
+    // polling) and stays free of hub requests. The page and its registry cover hub variables only.
+    if (includeDependents && found.source == "hub") _attachHubVarDependents(found, name)
     return found
 }
 
@@ -290,9 +291,9 @@ private String _mergeHubVarDetails(List rows) {
     return null
 }
 
-// One model read serves the details and, when asked, the in-use registry. Every failure is reported in
-// the response; none fails the hub_get_variable call.
-private void _attachHubVarDetails(Map found, String name, boolean includeDependents) {
+// One page read serves the in-use registry and the connector/Hub Mesh details. Every failure is
+// reported in the response; none fails the hub_get_variable call.
+private void _attachHubVarDependents(Map found, String name) {
     Map row = null
     String readError = null
     try { row = _hubVarsNativeRow(_hubVarsNativeModel(), name) }
@@ -302,8 +303,6 @@ private void _attachHubVarDetails(Map found, String name, boolean includeDepende
     }
     if (row != null) found.putAll(_hubVarDetails(row))
     else found.detailsError = "Could not read the connector and Hub Mesh details: ${readError}".toString()
-    if (!includeDependents) return
-
     found.coverageNote = _hubVarDependentsCoverageNote()
     try {
         if (row == null) throw new IllegalStateException(readError)
@@ -1342,12 +1341,12 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_get_variable",
-            description: "Get one variable's current value by name; includeDependents=true also lists the apps referencing a hub variable.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables; use hub_list_variables to enumerate. A hub variable also returns connectorType/connectorLabel, meshShared and linked/sourceHubName. includeDependents reads the hub's in-use registry, returning appsUsing as {id, label} (including apps that use the connector device, also listed in connectorAppsUsing) plus coverageNote — apps that never register their use (e.g. webCoRE) are not covered, and a failed registry read is reported via dependentsError without failing the call. See hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
+            description: "Get one variable's current value by name; includeDependents=true also lists the apps referencing a hub variable.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables; use hub_list_variables to enumerate. includeDependents reads the hub's Hub Variables page, returning appsUsing as {id, label} (including apps that use the connector device, also listed in connectorAppsUsing), coverageNote, and the connector/Hub Mesh details connectorType/connectorLabel, meshShared and linked/sourceHubName — apps that never register their use (e.g. webCoRE) are not covered, and a failed registry read is reported via dependentsError without failing the call. See hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Exact variable name to look up, e.g. \"vacationMode\". Case-sensitive."],
-                    includeDependents: [type: "boolean", description: "Opt-in: also list the apps that reference this hub variable.[[FLAT_TRIM]] Returns appsUsing, connectorAppsUsing, count and coverageNote.[[/FLAT_TRIM]]", default: false]
+                    includeDependents: [type: "boolean", description: "Opt-in: also list the apps that reference this hub variable.[[FLAT_TRIM]] Returns appsUsing, connectorAppsUsing, count, coverageNote and the connector/Hub Mesh details. Off by default so a plain get makes no hub request.[[/FLAT_TRIM]]", default: false]
                 ],
                 required: ["name"]
             ]

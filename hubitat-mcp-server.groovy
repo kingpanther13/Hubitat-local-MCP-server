@@ -5690,7 +5690,7 @@ def getGatewayConfig() {
             tools: ["hub_list_variables", "hub_get_variable", "hub_set_variable", "hub_create_variable", "hub_delete_variable", "hub_create_connector", "hub_delete_connector", "hub_list_variable_changes"],
             summaries: [
                 hub_list_variables: "List all hub variables (with type, connector and Hub Mesh sharing) and rule-engine variables. Args: type, cursor",
-                hub_get_variable: "Get a variable's value + metadata (type, connector, Hub Mesh sharing). includeDependents=true also lists the apps that reference a hub variable. Args: name, includeDependents?",
+                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable plus its connector and Hub Mesh details. Args: name, includeDependents?",
                 hub_set_variable: "Set an existing variable's value, or add to a Number/Decimal hub variable atomically. Falls back to rule_engine namespace when no hub var matches. Args: name, value | increment",
                 hub_create_variable: "Create a new hub variable, or several at once. Single: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true. Bulk: variables=[{name,type,value},...], confirm=true (mutually exclusive with the single form). A String value must be non-empty",
                 hub_delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if apps or rules use it]",
@@ -6024,7 +6024,7 @@ def getGatewayConfig() {
             tools: ["hub_list_variables", "hub_get_variable", "hub_list_variable_changes"],
             summaries: [
                 hub_list_variables: "List all hub variables (with type, connector and Hub Mesh sharing) and rule-engine variables. Args: type, cursor",
-                hub_get_variable: "Get a variable's value + metadata (type, connector, Hub Mesh sharing). includeDependents=true also lists the apps that reference a hub variable. Args: name, includeDependents?",
+                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable plus its connector and Hub Mesh details. Args: name, includeDependents?",
                 hub_list_variable_changes: "Recent hub-variable changes from the retained 200-entry history. Args: name?, sinceMs?, limit?"
             ],
             searchHints: [
@@ -12763,9 +12763,9 @@ When the hub cannot complete a create or delete, the result is `success:false` w
 
 ### hub_get_variable
 
-The returned `source` field says which one matched (the hub-variable namespace is searched first, then rule-engine variables). For hub variables it also returns metadata: `type`, plus `deviceId`/`attribute` when a connector is linked, and the same connector and Hub Mesh fields as `hub_list_variables`.
+The returned `source` field says which one matched (the hub-variable namespace is searched first, then rule-engine variables). For hub variables it also returns metadata: `type`, plus `deviceId`/`attribute` when a connector is linked. A plain get makes no hub request.
 
-**`includeDependents=true` — which apps reference a HUB variable.** Opt-in (off by default) to keep the response small. Run it before renaming or deleting a hub variable to see what would break — the same registry that gates `hub_delete_variable`'s reference-safety refusal (deleting anyway needs `force=true`).
+**`includeDependents=true` — which apps reference a HUB variable, plus its details.** Opt-in (off by default) because it reads the hub's Hub Variables page; that one read also adds the same connector and Hub Mesh fields as `hub_list_variables` (`connectorType`/`connectorLabel`, `meshShared`, `linked`/`sourceHubName`), or `detailsError` when the page cannot be read. Run it before renaming or deleting a hub variable to see what would break — the same registry that gates `hub_delete_variable`'s reference-safety refusal (deleting anyway needs `force=true`).
 
 - **Source:** the hub's own in-use registry, read from the Hub Variables page's data: each variable lists the apps that use it directly and the apps that use its connector device. The read changes nothing.
 - **Result:** `appsUsing` is an array of `{id, label}` (the installed-app id and its user-visible label, e.g. `{"id":"21","label":"MyRule"}`), plus `count` and `coverageNote`. `appsUsing` also includes apps that use the variable's connector device (each app once), and `connectorAppsUsing` lists those connector users on their own. The full list is returned (no separate cursor on this tool); consumer lists for one variable are small.
@@ -12785,7 +12785,7 @@ Each hub variable row carries `name`, `value`, `type`, `deviceId`/`attribute` (i
 - `meshShared` — this hub shares the variable over Hub Mesh;
 - `linked` — the variable is a Hub Mesh mirror of another hub's variable, with `sourceHubName` naming that hub.
 
-If that page cannot be read, the rows keep their other fields and the response carries `detailsError` (`hub_get_variable` does the same). Which apps use a variable is read one variable at a time with `hub_get_variable(includeDependents=true)`.
+If that page cannot be read, the rows keep their other fields and the response carries `detailsError` (`hub_get_variable(includeDependents=true)` does the same). Which apps use a variable is read one variable at a time with `hub_get_variable(includeDependents=true)`.
 
 ### hub_create_variable
 
