@@ -7503,6 +7503,8 @@ def updated() {}
                     # RMUtils is refused once the hub's load limiter trips; the rule's own Pause button
                     # (a toggle) is the UI's route and is never limited.
                     print("    [LIMITER] hub_set_rule_paused refused; toggling the pausRule button instead")
+                    # A limiter refusal is not blamed on the rule id.
+                    assert "load limiter" in str(result.get("note")) and "Verify the ruleId" not in str(result.get("note")), result
                     form = self._rm_open(app_id)
                     self._rm_submit(app_id, form, control=self._rm_control(form, name="pausRule"))
                 else:
@@ -7512,6 +7514,12 @@ def updated() {}
             for paused in (True, False):
                 set_paused(paused)
                 assert self._rm_health(app_id).get("label") == label
+            # A new rule's private boolean starts true, and health reads back each value set.
+            assert self._rm_health(app_id).get("privateBoolean") is True
+            for value in (False, True):
+                result = self.client.call_tool("hub_set_rule_private_boolean", {"ruleId": app_id, "value": value})
+                assert result.get("success") is not False, result
+                self._rm_wait(lambda v=value: self._rm_health(app_id).get("privateBoolean") is v, what=f"privateBoolean={value}")
             result = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "stop"})
             assert result.get("success") is not False, result
             # The stop re-renders the rule's page, so the list shows it at once, without waiting.
@@ -7700,7 +7708,7 @@ def updated() {}
             ]
             self._rm_refuse_all(app_id, cases)
             health = self._rm_health(app_id)
-            assert health.get("ok") is not False and not health.get("orphanedActionRows"), health
+            assert health.get("ok") is not False, health
             assert missing_file not in self._rm_page(app_id), "a refused file action left a row naming the file"
         finally:
             if app_id:
@@ -7817,12 +7825,20 @@ def updated() {}
         try:
             health = self._rm_health(app_id)
             assert health.get("ok") is True and health.get("broken") is False and health.get("paused") is False, health
-            assert "ruleBuilderJson" in str(health.get("source")), health
+            # The compiled state carries the runtime flags: a new rule is not stopped, its private
+            # boolean starts true, and no action is switched off.
+            assert health.get("ruleFormat") == "rm" and health.get("stopped") is False, health
+            assert health.get("privateBoolean") is True and health.get("disabledActions") == [], health
+            assert health.get("structuralIssues") == [] and not health.get("checkErrors"), health
             listed = self.client.call_tool("hub_list_rules", {"labelFilter": f"{PREFIX}RuleHealthSrc".lower()}).get("rules", [])
             row = next(r for r in listed if str(r.get("id")) == str(app_id))
             assert row.get("type") == "Rule-5.1" and row.get("rmVersion") == "5.x", row
-            page = self._rm_health(app_id, source="configPage")
-            assert page.get("source") == "configPage" and page.get("broken") is None, page
+            # The source selector is gone; a client still sending it is told so.
+            try:
+                stale = self.client.call_tool("hub_get_rule_health", {"appId": int(app_id), "source": "configPage"})
+            except McpToolError as exc:
+                stale = _tool_error_payload(exc)
+            assert "Unknown hub_get_rule_health argument: source" in str(stale.get("error")), stale
         finally:
             self._delete_native(app_id)
         # An id no app holds is reported as not found, not read as a built-in app.
@@ -7834,13 +7850,14 @@ def updated() {}
 
     @test("native_apps")
     def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
-        # Deleting a trigger's device leaves RM's compiled rule broken; health reports it from RM's own flag.
+        # Deleting a trigger's device leaves RM's compiled rule broken; health reports it from RM's own flag
+        # without the editor being opened first.
         device_id, dni, _ = self._rm_disposable_switch("RHBrokenDev")
         app_id, _ = self._rm_rule("RHBroken", [self._rm_switch_trigger(device_id), native_log("dangling trigger")])
         try:
             assert self._rm_health(app_id).get("broken") is False
             self._rm_delete_device(dni)
-            self._rm_open(app_id, "mainPage")
+            # Health renders the rule's page itself, which is when Rule Machine flips broken.
             health = self._rm_health(app_id)
             assert health.get("broken") is True and health.get("ok") is False and health.get("ruleFormat") == "rm", health
         finally:
@@ -7878,8 +7895,8 @@ def updated() {}
             assert imported.get("success") is True and copy_id, imported
             try:
                 health = self._rm_health(copy_id)
+                # The stray row 99 is not one of the rule's actions, so it is not walked.
                 assert health.get("ok") is True and health.get("structuralIssues") == [] and not health.get("checkErrors"), health
-                assert any("action 99" in str(row) and "getIfThen" in str(row) for row in health.get("orphanedActionRows", [])), health
                 copied = self._rm_values(copy_id)
                 endif = next(k.split(".", 1)[1] for k, v in copied.items() if k.startswith("actSubType.") and v == "getEndIf")
                 self._rm_refuse_all(copy_id, [[native_delete("action", endif)]])
@@ -8695,15 +8712,39 @@ def updated() {}
 
     @test("native_apps")
     def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
-        # Deleting a local variable an action still uses is applied (RM allows it) but reported as
-        # leaving the rule broken, and the editor shows it broken.
+        # Running the rule's actions sets its local variable, which hub_list_rule_local_variables reads
+        # back at once; action 'rule' is refused on this 5.x rule. Deleting a local variable an action still uses is applied (RM allows it) but reported
+        # as leaving the rule broken, and the editor shows it broken.
         app_id, _ = self._rm_rule("RefLocal", [
             native_change("variable", operation="create", name="refLocal", type="integer", value=0),
             self._rm_variable_action("refLocal", "number", [native_field("valNumber.#", "number", 9)])])
+
+        def local_value() -> Any:
+            listed = self.client.call_tool("hub_read_rules", {"tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
+            return next((row.get("value") for row in listed.get("localVariables", []) if row.get("name") == "refLocal"), None)
+
         try:
+            listed = self.client.call_tool("hub_list_rule_local_variables", {"appId": app_id})
+            assert listed.get("total") == 1 and listed["localVariables"][0]["type"] == "integer", listed
+            assert local_value() == 0
+            # RMUtils runRule runs nothing on a Rule Machine 5.x rule, so it is refused with nothing dispatched.
+            try:
+                refused = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "rule"})
+            except McpToolError as exc:
+                refused = _tool_error_payload(exc)
+            assert "only applies to Rule Machine 4.x rules" in str(refused.get("error")) \
+                and "action:'actions'" in str(refused.get("error")), refused
+            assert local_value() == 0, "a refused runRule changed the local variable"
             ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "actions"})
             assert ran.get("success") is not False, ran
-            self._rm_wait(lambda: self._native_rule_document(app_id)["variables"]["refLocal"]["value"] == 9, what="refLocal=9")
+            self._rm_wait(lambda: local_value() == 9, what="refLocal=9 after the rule's actions ran")
+            assert self._native_rule_document(app_id)["variables"]["refLocal"]["value"] == 9
+            # An id that is not a rule is refused rather than read as a rule with no locals.
+            try:
+                missing = self.client.call_tool("hub_list_rule_local_variables", {"appId": 999999999})
+            except McpToolError as exc:
+                missing = _tool_error_payload(exc)
+            assert "App 999999999 is not a Rule Machine rule" in str(missing.get("error")), missing
             result = self._rm_call({"operation": "update", "rule_id": app_id, "confirm": True, "args": {
                 "changes": [native_change("variable", operation="delete", name="refLocal")]}})
             assert result.get("success") is False and result.get("partial") is True and "broken" in str(result).lower(), result
@@ -9770,10 +9811,11 @@ def updated() {}
     def _assert_rule_renders(self, app_id: Any) -> None:
         """Lenient health check for relay-504 soft paths: a dropped response may have committed
         a block OPENER (IF/Repeat), leaving the rule structurally unbalanced -- which the health
-        tool itself documents as EXPECTED mid-build. Broken markers, page errors, and flag poison
+        tool itself documents as EXPECTED mid-build. A broken flag, broken markers and page errors
         still fail; structural imbalance alone does not (the caller's reset/closer handles it)."""
         h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
-        assert not h.get("configPageError") and not h.get("brokenMarkers") and not h.get("multipleFlagPoison"), \
+        other = [i for i in h.get("issues") or [] if not str(i).startswith("structural imbalance")]
+        assert h.get("broken") is not True and not other, \
             f"rule is genuinely broken after the dropped response (not just mid-build imbalance): {h}"
         if h.get("ok") is False:
             print(f"    rule {app_id} renders with structural imbalance after the dropped response "
@@ -9784,8 +9826,8 @@ def updated() {}
         standalone hub_get_rule_health re-derives), keyed by app, so a following _assert_rule_healthy
         skips the extra round-trip. Cleared on a relay-dropped/soft envelope (no health) -> live fetch.
         Also cleared when the returned probe carries no verdict -- skipped:true (shed under the time
-        budget), unreadable:true (probe fetch failed), or a non-empty checkErrors (only ONE source
-        read; the verdict is half-checked): caching those would let _assert_rule_healthy pass a
+        budget), unreadable:true (probe fetch failed), or a non-empty checkErrors (a read failed;
+        the verdict is half-checked): caching those would let _assert_rule_healthy pass a
         genuinely broken rule without ever probing live."""
         health = result.get("health") if isinstance(result, dict) else None
         if (isinstance(health, dict)

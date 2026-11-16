@@ -5917,7 +5917,7 @@ def getGatewayConfig() {
                 hub_get_custom_rule: "List MCP custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
                 hub_test_custom_rule: "Dry-run an MCP custom rule without executing actions. Args: ruleId",
                 hub_list_rules: "List all native Rule Machine rules (RM 4.x + 5.x) with IDs and labels",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, plus BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source? (auto|ruleBuilderJson|configPage)",
+                hub_get_rule_health: "Read one rule's health (Rule Machine, Visual Rules Builder or a built-in classic app): broken, paused, stopped, private boolean, disabled actions, block structure and live subscription/job counts. Args: appId",
                 hub_list_rule_local_variables: "List a Rule Machine rule's local variables with their current values. Distinct from hub_list_variables (hub globals). Args: appId",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?"
             ],
@@ -5926,7 +5926,7 @@ def getGatewayConfig() {
                 hub_get_custom_rule: "read fetch inspect list show custom mcp sandbox rule automation diagnostics",
                 hub_test_custom_rule: "simulate preview validate check automation custom dry run",
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
-                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption visual rules builder button controller basic rule classic app validationErrors",
+                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action stopped paused private boolean disabled actions visual rules builder button controller basic rule classic app validationErrors",
                 hub_list_rule_local_variables: "rule local variables list allLocalVars per-rule variable name type value rule machine RM setLocalVariable",
                 hub_get_visual_rule: "visual rules builder VRB read list show inspect automation json definition when then else nodes graph"
             ]
@@ -5938,7 +5938,7 @@ def getGatewayConfig() {
                 hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
 
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
-                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start re-initializes the rule).",
+                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule (RM 4.x only) uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start re-initializes the rule).",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call (RMUtils). Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules (RMUtils). Args: ruleId (id or array of ids), value (bool)",
                 hub_set_native_app: "Create, update or drive the native forms of classic apps (Room Lighting, Button Controller and Button Rule, Basic Rule, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, user and community apps). Args: operation?, app_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas. Rule Machine rules use hub_set_rule.",
@@ -5947,7 +5947,7 @@ def getGatewayConfig() {
                 hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner (deep: child apps and pause state copy too, so a clone of an ACTIVE app lands ACTIVE). Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), stageDisabled (opt: disable clone + every descendant immediately), confirm. Returns newAppId.",
                 hub_export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: appId (alias sourceAppId), saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
                 hub_import_native_app: "Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner (the import lands ACTIVE). Args: jsonContent | fromFile, parentHintAppId (existing rule under the target parent — used to seed the cloner), newName (opt), stageDisabled (opt: disable import + every descendant immediately), confirm. Returns newAppId.",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption. Args: appId, source? (auto|ruleBuilderJson|configPage). Returns {ok, broken, source, ruleFormat, issues, ...}. Native documents perform independent compilation checks; visual writes attach health too."
+                hub_get_rule_health: "Read one rule's health (Rule Machine, Visual Rules Builder or a built-in classic app): broken, paused, stopped, private boolean, disabled actions, block structure and live subscription/job counts. Args: appId"
             ],
             searchHints: [
                 hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
@@ -5962,7 +5962,7 @@ def getGatewayConfig() {
                 hub_clone_native_app: "copy duplicate clone existing rule app appCloner template surgical edit",
                 hub_export_native_app: "export serialize download rule app json appCloner backup transfer canonical shape",
                 hub_import_native_app: "import restore upload create rule app from json appCloner backup transfer round trip",
-                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption visual rules builder button controller basic rule classic app validationErrors"
+                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action stopped paused private boolean disabled actions visual rules builder button controller basic rule classic app validationErrors"
             ]
         ],
         hub_manage_mcp: [
@@ -6065,10 +6065,10 @@ def getGatewayConfig() {
             summaries: [
                 hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (RMUtils — RM only)",
-                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule)",
+                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule; rule is RM 4.x only)",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call. Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules. Args: ruleId (id or array of ids), value (bool)",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source? (auto|ruleBuilderJson|configPage)",
+                hub_get_rule_health: "Read one rule's health (Rule Machine, Visual Rules Builder or a built-in classic app): broken, paused, stopped, private boolean, disabled actions, block structure and live subscription/job counts. Args: appId",
                 hub_list_rule_local_variables: "List a Rule Machine rule's local variables with their current values. Distinct from hub_list_variables (hub globals). Args: appId",
                 hub_delete_native_app: "Delete any classic native app incl. RM rules (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm.",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?",
@@ -6081,7 +6081,7 @@ def getGatewayConfig() {
                 hub_call_rule: "trigger fire execute run native rule machine rule stop start",
                 hub_set_rule_paused: "pause resume disable enable stop unpause rule machine rule",
                 hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
-                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger multiple flag corruption visual rules builder button controller basic rule classic app validationErrors",
+                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger stopped paused private boolean disabled actions visual rules builder button controller basic rule classic app validationErrors",
                 hub_list_rule_local_variables: "rule local variables list allLocalVars per-rule variable name type value rule machine RM setLocalVariable",
                 hub_delete_native_app: "remove delete destroy rule machine rule native app classic smartapp",
                 hub_get_visual_rule: "visual rules builder VRB read list show inspect automation json definition when then else nodes graph",
@@ -10378,9 +10378,8 @@ private Map _rmFetchStatusJson(Integer appId) {
  * health source across EVERY rule engine (issue #254 + the VRB follow-up).
  * Returns a normalized map or null when appId is not a recognized rule shape:
  *
- *   - classic Rule Machine -> [ruleFormat:"rm", broken:<bool>, paused, predicate, actionList]
- *     from GET /app/ruleBuilderJson (the real `broken` boolean + predicate/condition
- *     structure, instead of scraping rendered HTML).
+ *   - classic Rule Machine -> [ruleFormat:"rm", broken:<bool>, paused, actionList, state]
+ *     from GET /app/ruleBuilderJson (the real `broken` boolean and the whole app state).
  *   - graph Visual Rule (VRB 2.0) -> [ruleFormat:"vrb-graph", broken:<validationErrors
  *     non-empty>, validationErrors, paused, label] from GET /app/ruleBuilder20Json. VRB rules ARE
  *     rules — their validationErrors are the engine-native equivalent of RM's broken.
@@ -10388,8 +10387,7 @@ private Map _rmFetchStatusJson(Integer appId) {
  *     shape carries no error field, so there is no structured boolean to report).
  *
  * paused is the compiled Boolean or null; Visual Rule label is the raw own name
- * (graph: without its runtime pause span). Status/markup fallbacks are added by
- * the standalone health wrapper, not the embedded structural verdict.
+ * (graph: without its runtime pause span).
  *
  * SHAPE-CHECK, never status-check: /app/ruleBuilderJson serializes the raw state of
  * ANY installed app and answers HTTP 200 regardless (a nonexistent id returns {}, a
@@ -10400,17 +10398,15 @@ private Map _rmFetchStatusJson(Integer appId) {
  */
 private Map _ruleCompiledState(Integer appId) {
     // readError captures a THROWN read (auth 401/403, hub-down 5xx, timeout) so the caller can
-    // distinguish "this read failed" from "this is a clean non-rule shape". Without it, a
-    // source='ruleBuilderJson' call (which has no HTML fallback) would mis-report a 403 / hub-down
-    // as "nonexistent id / non-rule / old firmware" and misdirect recovery (silent-failure review).
+    // distinguish "this read failed" from "this is a clean non-rule shape", so a 403 or a hub-down
+    // read is not reported as a nonexistent or non-rule app.
     def text
     def readError = null
     try { text = hubInternalGet("/app/ruleBuilderJson/${appId}") } catch (Exception e) { text = null; readError = e.message }
     if (text) {
         def parsed = null
         // A non-JSON 200 (a login/redirect page, a proxy error body) is itself a read failure, not
-        // a clean "not a rule" — capture it so a source='ruleBuilderJson' caller isn't told the
-        // rule is missing when auth/connectivity returned junk (codex review).
+        // a clean "not a rule".
         try { parsed = new groovy.json.JsonSlurper().parseText(text) }
         catch (Exception e) { parsed = null; if (readError == null) readError = "ruleBuilderJson response was not JSON: ${e.message}" }
         if (parsed instanceof Map && !parsed.isEmpty()) {
@@ -10423,24 +10419,16 @@ private Map _ruleCompiledState(Integer appId) {
                         label: parsed.name?.toString()]
             }
             if (parsed.containsKey("broken")) {
-                def pred = (parsed.containsKey("hasPredicate") || parsed.containsKey("predCapabs")) ?
-                    [hasPredicate: parsed.hasPredicate == true, predCapabs: parsed.predCapabs ?: []] : null
-                // actionList is RM's own ordered array of action indices — the only display-ordered
-                // source there is (appSettings key order is arbitrary). Carried through raw so
-                // callers reuse this fetch rather than opening a second path to the endpoint.
-                // eval['0'] is the committed Required Expression's token list (the other eval keys
-                // are IF expressions in actions). An eval map without "0" has no committed expression;
-                // no eval map at all leaves it unknown (null), never a false "empty".
-                def reTokens = (parsed.eval instanceof Map) ? ((parsed.eval["0"] instanceof List) ? (parsed.eval["0"] as List).size() : 0) : null
                 // Native RM treats a never-written pause flag as false. Keep malformed
                 // flags and unrelated broken-only maps unknown rather than guessing.
                 Boolean nativePaused = parsed.paused instanceof Boolean ? parsed.paused :
                     (!parsed.containsKey("paused") && parsed.broken instanceof Boolean && parsed.capabstrue instanceof Map && parsed.capabsfalse instanceof Map ? false : null)
+                // actionList is RM's own display order (appSettings key order is arbitrary); state is the
+                // whole app state, so health reads its runtime flags and structure from this one fetch.
                 return [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
                         paused: nativePaused,
-                        predicate: pred, requiredExpressionTokens: reTokens,
                         actionList: (parsed.actionList instanceof List ? parsed.actionList : null),
-                        endpoint: "ruleBuilderJson"]
+                        state: parsed, endpoint: "ruleBuilderJson"]
             }
         }
     }
@@ -10472,8 +10460,7 @@ private Map _ruleCompiledState(Integer appId) {
  * order) tracking IF / Repeat block depth via a stack. Returns the list
  * of structural issue strings (empty list = balanced).
  *
- * Used by _rmCheckRuleHealth for post-mutation detection AND by
- * _rmDeleteAction's pre-flight refusal, which builds a projected sequence
+ * A deletion pre-flight builds a projected sequence
  * (current minus the removal) and compares projected against current with
  * a `projected - current` set diff. Any
  * NEW issue not present in current means the mutation introduces damage
@@ -10621,30 +10608,24 @@ List _rmOrderedActionIndices(Integer appId) {
 }
 
 /**
- * Every action index carrying an actType.<N> or actSubType.<N> settings row, ascending. Shared by
- * the structural walk's settings fallback and the orphan scan so the two cannot drift.
- */
-private TreeSet _rmScannedActionIndices(Map settingsByName) {
-    def scanned = [] as TreeSet
-    settingsByName?.keySet()?.each { name ->
-        def m = name?.toString() =~ /^act(?:Type|SubType)\.(\d+)$/
-        if (m.matches()) scanned << ((m[0] as List)[1] as Integer)
-    }
-    return scanned
-}
-
-/**
  * Build the structural-balance sequence for a rule. MEMBERSHIP is orderedIndices (the compiled
  * actionList) when the caller has it: appSettings retains rows the rule no longer contains, and
- * walking those makes a balanced rule read as damaged (a stale IF reports "never closed" forever)
- * — _rmOrphanedActionRows reports them separately. Without it, every index either key mentions in
- * numeric order: the pre-membership behaviour, still foolable by a stale row, but the honest best
+ * walking those makes a balanced rule read as damaged (a stale IF reports "never closed" forever).
+ * Without it, every index either key mentions in numeric order: the pre-membership behaviour, still foolable by a stale row, but the honest best
  * effort when the rule itself cannot be read.
  * VALUES always come from settings. excludeIndices (_rmDeleteAction's pre-flight) skips listed
  * indices so the walker sees the post-deletion state.
  */
 private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set), List orderedIndices = null) {
-    def indices = (orderedIndices != null) ? orderedIndices : (_rmScannedActionIndices(settingsByName) as List)
+    def indices = orderedIndices
+    if (indices == null) {
+        def scanned = [] as TreeSet
+        settingsByName?.keySet()?.each { name ->
+            def m = name?.toString() =~ /^act(?:Type|SubType)\.(\d+)$/
+            if (m.matches()) scanned << ((m[0] as List)[1] as Integer)
+        }
+        indices = scanned as List
+    }
     def sequence = []
     indices.each { idx ->
         if (excludeIndices.contains(idx)) return
@@ -10660,375 +10641,123 @@ private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIn
     sequence
 }
 
-/**
- * Settings rows carrying action content for an index the rule does not contain — a wizard write
- * that never baked, or a deleted action whose settings survived. NOT structural damage (the rule
- * runs exactly as rendered), so they are reported on their own, never in structuralIssues or
- * issues; they stay visible because they explain why a new action allocates above the gap.
- * Empty on both keys is vestigial rather than a leftover. Empty when membership is unknown: with
- * no list of the rule's own actions there is no way to tell a leftover from a live row.
- */
-private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
-    if (orderedIndices == null) return []
-    def inRule = orderedIndices as Set
-    def scanned = _rmScannedActionIndices(settingsByName)
-    def out = []
-    scanned.each { idx ->
-        if (inRule.contains(idx)) return
-        def aType = _rmActionSettingText(settingsByName, "actType", idx)
-        def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
-        if (aType == null && sType == null) return
-        out << ("action ${idx} (actType=${aType ?: 'none'}, actSubType=${sType ?: 'none'}) is present in settings but is NOT one of the rule's actions \u2014 leftover state from an interrupted write or a removed action. It does not run and does not affect block structure; the next add may REUSE index ${idx} (RM reopens a never-closed action editor pre-filled with these leftover fields) rather than allocate above it \u2014 remove the row first if a clean slot matters.".toString())
-    }
-    out
-}
-
-/**
- * Fetch the rule's appSettings and return it keyed by setting name.
- * Shared by every site that needs to read the rule's current state
- * (the structural-balance walker and the multiple-flag-poison check). One
- * statusJson GET per call site instead of one per check.
- */
+// The rule's appSettings keyed by setting name.
 private Map _rmFetchSettingsByName(Integer appId) {
     def status = _rmFetchStatusJson(appId)
     (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
 }
 
-/**
- * Classify a classic app from its configPage app-type so the health report names
- * what it inspected (ruleFormat) instead of leaving it null. Button Controller and
- * Basic Rule use the same classic configPage protocol as Rule Machine, so the
- * generic health detections (configPage.error, multiple-flag poison) apply to them.
- * Uses app.appType.name (the stable type) — NOT app.label, which becomes the user's
- * chosen name. Unknown classic apps fall to "classic-app" (honest: inspected via
- * configPage, no compiled broken boolean).
- */
-private String _classicAppFormat(Map cfg) {
-    def t = cfg?.app?.appType?.name?.toString()?.toLowerCase() ?: ""
-    if (t.startsWith("rule-") || t.contains("rule machine")) return "rm"
+// Names what a classic app's health report inspected; only Rule Machine has a compiled broken flag.
+private String _classicAppFormat(String typeName) {
+    def t = typeName?.toLowerCase() ?: ""
     if (t.contains("basic rule")) return "basic-rule"
     if (t.contains("button controller")) return "button-controller"
     return "classic-app"
 }
 
 /**
- * Inspect a rule's current state and return a structured health report —
- * works across EVERY rule engine (issue #254 + VRB follow-up). Surfaces
- * problems an LLM caller needs to see and act on without re-investigating
- * via curl.
- *
- *   PREFERRED — the rule's compiled state via _ruleCompiledState(): the
- *     classic RM `broken` boolean (+ predicate) from /app/ruleBuilderJson,
- *     OR a graph Visual Rule's validationErrors from /app/ruleBuilder20Json
- *     (VRB rules are rules too — their validationErrors are that engine's
- *     `broken` equivalent), OR a recognized classic Visual Rule (no boolean).
- *     `ruleFormat` in the result says which engine answered.
- *
- *   RETAINED (HTML / configure-json) — classic RM only: kept as a cross-check
- *     and the fallback when the compiled state is unavailable (older firmware
- *     or a different shape), AND because it detects classes the boolean does
- *     not: configPage.error (page render failure), the '*BROKEN*' label
- *     suffix, '**Broken Trigger/Action/Condition**' paragraph markers,
- *     multiple-flag DB poisoning (schema multiple vs statusJson marshal
- *     flag), and IF/Repeat block imbalance from actType.<N>/actSubType.<N>.
- *     Skipped for Visual Rules (they don't speak this protocol).
- *
- * `source` selects which paths run: "auto" (default — preferred verdict plus
- * the RM HTML detections + a cross-check), "ruleBuilderJson" (compiled state
- * only), or "configPage" (RM HTML only). Neither path is ever dropped.
- *
- * Result shape is backward-compatible with the pre-#254 contract (the RM
- * detection arrays are always present) plus the cross-engine fields broken /
- * source / ruleFormat / validationErrors; predicate is added only when read.
- *
- * hub_set_visual_rule attaches this report to its mutation responses so an LLM
- * sees broken state immediately.
+ * Health report for one installed app. Rule Machine sets its compiled `broken` flag only when the rule's page renders (a deleted trigger
+ * device leaves it false until then), so a rule's page is rendered once BEFORE its compiled state is
+ * read. Visual Rules report their engine's own verdict and have no classic page. Other built-in
+ * classic apps report what their page shows. A user or community app is not read: its page runs its
+ * own code (Hubitat Package Manager clears a pending install there) and its state is not a rule's.
+ * checkErrors records a read that failed without being evidence about the rule, so ok stays evidence-based.
  */
-// Empty health-verdict shell: the stable keys of _rmCheckRuleHealth's report with
-// nothing detected, kept beside the main report shape so the two stay in lockstep.
-private Map _rmEmptyHealthVerdict(Map overrides) {
-    def v = [ok: false, unreadable: false, broken: null, source: "none", ruleFormat: null,
-             label: null, disabled: null, paused: null, configPageError: null,
-             brokenMarkers: [], brokenMarkerCounts: [:],
-             multipleFlagPoison: [], structuralIssues: [], orphanedActionRows: [],
-             validationErrors: [], issues: [], checkErrors: []]
-    v.putAll(overrides ?: [:])
-    return v
-}
-
-Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
-    // Defensive guard against a null appId. Reading rule state for a null id
-    // would fire redundant HTTP calls (/app/ruleBuilderJson/null, /installedapp/configure/json/null)
-    // that just throw -- short-circuit instead. (Gemini review, PR #276.) The verdict is unhealthy
-    // AND unreadable: nothing was checked, so ok||unreadable gates treat it as couldn't-check.
-    if (appId == null) {
-        return _rmEmptyHealthVerdict(unreadable: true, issues: ["health check failed: appId is null"])
-    }
+Map _rmCheckRuleHealth(Integer appId) {
     def issues = []
-    def checkErrors = []           // lone-source read failures: visible diagnostics, never gate-failing evidence
-    def label = null
-    Boolean appDisabled = null     // red-X state from the configure-json app block; null = not read
-    Boolean paused = null
-    def configPageError = null
-    def brokenMarkers = []
-    def multipleFlagPoison = []
-    def structuralIssues = []
-    def orphanedActionRows = []
-    def compiledActionList = null  // the rule's own action membership; null = unknown, walker falls back
-    def validationErrors = []      // VRB graph-rule validation problems (its `broken` equivalent)
-    Boolean broken = null          // authoritative boolean: RM compiled state, or VRB validationErrors non-empty
-    def predicate = null           // compact {hasPredicate, predCapabs} from ruleBuilderJson (RM)
-    Integer requiredExpressionTokens = null   // committed Required Expression token count (RM); null = not read
-    String ruleFormat = null       // rm | vrb-graph | vrb-classic | basic-rule | button-controller | classic-app — what was inspected
-    def sourcesUsed = []
-    def compiledReadError = null   // a thrown/bad-200 compiled-state read, surfaced if the HTML path also fails
-    boolean useRuleBuilder = (source != "configPage")
-    boolean useConfigPage = (source != "ruleBuilderJson")
-    // Only a built-in app's page is read. A
-    // user or community app's state can carry Rule Machine's keys without being a rule, and its
-    // default page runs its own code, which can drop a wizard's pending input (Hubitat Package
-    // Manager clears a pending install there).
+    def checkErrors = []
+    def result = [ok: false, unreadable: true, broken: null, ruleFormat: null, label: null, disabled: null,
+                  paused: null, stopped: null, structuralIssues: [], validationErrors: [], issues: issues, checkErrors: checkErrors]
+    if (appId == null) {
+        issues << "health check failed: appId is null"
+        return result
+    }
     def installed = null
     boolean identified = true
     try { installed = getAppByAppId(appId as Long) }
     catch (Exception lookup) {
-        // The compiled state runs no page code, so it is still read; the page is not.
         identified = false
-        useConfigPage = false
         checkErrors << "app ${appId}'s page was not read: the app could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app's page runs its own code".toString()
     }
     if (identified && installed == null) throw new IllegalArgumentException("App ${appId} not found; list installed apps with hub_list_apps")
-    def namespace = installed?.appType?.namespace?.toString()
-    if (identified && namespace != "hubitat") {
-        useRuleBuilder = false; useConfigPage = false
-        label = installed.label?.toString()
-        ruleFormat = "classic-app"
+    if (identified && installed.appType?.namespace?.toString() != "hubitat") {
+        result.label = installed.label?.toString()
+        result.ruleFormat = "classic-app"
         checkErrors << "app ${appId} was not read: it is a user or community app, whose state is not a rule's and whose page code can change its own state when rendered; read it with hub_get_app_config".toString()
+        return result
     }
-
-    // PREFERRED structured source — the compiled-state verdict for ANY rule engine
-    // (classic RM `broken` boolean, graph Visual Rule validationErrors, classic Visual Rule).
-    if (useRuleBuilder) {
-        def cs = _ruleCompiledState(appId)
-        if (cs != null && cs.ruleFormat == null && cs.readError) compiledReadError = cs.readError
-        if (cs != null && cs.ruleFormat != null) {
-            ruleFormat = cs.ruleFormat
-            sourcesUsed << cs.endpoint
-            broken = cs.broken
-            paused = cs.paused
-            if (cs.label != null) label = cs.label
-            if (cs.predicate != null) predicate = cs.predicate
-            if (cs.requiredExpressionTokens != null) requiredExpressionTokens = cs.requiredExpressionTokens as Integer
-            compiledActionList = _rmCoerceActionIndices(cs.actionList)   // null in -> null out
-            if (cs.validationErrors) validationErrors = cs.validationErrors
-            if (ruleFormat == "rm" && broken == true) {
-                // Not capabsfalse: it lists a rule's conditions whatever their current truth,
-                // so quoting it as "false conditions" points at the wrong cause.
-                issues << "ruleBuilderJson reports broken:true (compiled-state boolean — authoritative).".toString()
-            } else if (ruleFormat == "vrb-graph" && !validationErrors.isEmpty()) {
-                issues << "Visual Rule (graph) has validation errors: ${validationErrors.join('; ')}".toString()
-            }
-        } else if (source == "ruleBuilderJson") {
-            // Distinguish a genuine read failure (auth/connectivity) from a clean negative so we
-            // don't misdirect recovery toward "the rule doesn't exist / wrong firmware".
-            if (cs?.readError) {
-                issues << "source='ruleBuilderJson' requested but the compiled-state read FAILED for app ${appId}: ${cs.readError}. This is likely a hub read error (Hub Security auth or connectivity), not a missing rule — retry with source='auto' for the HTML fallback.".toString()
-            } else {
-                issues << "source='ruleBuilderJson' requested but the compiled-state source is unavailable for app ${appId} (empty {} for a nonexistent id, a non-rule app, or older firmware). Retry with source='auto' to use the HTML fallback.".toString()
-            }
-        }
-    }
-
-    // RETAINED HTML / configure-json path — RM-specific detections (label *BROKEN*, render
-    // markers, multiple-flag poison, structural imbalance) + the cross-check + the fallback
-    // for the preferred source. Visual Rules don't speak this protocol (no *BROKEN* label, no
-    // actType settings), so their validationErrors above ARE the health signal — skip the RM
-    // scans for a known VRB rule.
-    boolean runHtml = useConfigPage && ruleFormat != "vrb-classic" && ruleFormat != "vrb-graph"
-    // The structural verdict scopes by the compiled actionList when there is one. Without it -- an
-    // RM record that carried none, a compiled read that failed, or source='configPage', which skips
-    // that read -- the walk is the whole-settings scan, where leftover rows can read as an unclosed
-    // block, and orphanedActionRows cannot be computed. Say so wherever that scan runs; silence
-    // would read as "no orphans, structure verified". A Visual Rule has no actionList by design and
-    // never reaches the scan.
-    // The condition is the SCAN's own state -- it ran (runHtml) with no compiled list -- not a
-    // guess at why. Keying it on ruleFormat=='rm' missed the case that motivates the note most: a
-    // compiled read that came back empty without erroring leaves ruleFormat null, and the
-    // config-page leg then identifies an RM rule and scans anyway.
-    if (runHtml && compiledActionList == null) {
-        String why = !useRuleBuilder ? "source='configPage' skips ruleBuilderJson" :
-                     (compiledReadError != null ? "ruleBuilderJson could not be read" :
-                      (ruleFormat == "rm" ? "ruleBuilderJson carried no usable actionList"
-                                          : "ruleBuilderJson returned no usable record for this app"))
-        checkErrors << "no compiled actionList was available for app ${appId} (${why}); structuralIssues came from the settings scan (leftover rows may read as an unclosed block) and orphanedActionRows could not be computed".toString()
-    }
-    if (runHtml) {
+    String typeName = installed?.appType?.name?.toString()
+    boolean visual = typeName?.startsWith("Visual Rule Builder")
+    boolean ruleType = typeName != null && typeName ==~ /(?:Button )?Rule-\d.*/
+    boolean read = false
+    Map cfg = null
+    if (identified && !visual) {
         try {
-            // This reads the app's default page, which can reset a non-RM app's own wizard (HPM
-            // clears its pending install settings there); the settings in the response are app-wide.
-            def cfg = _rmFetchConfigJson(appId)
-            sourcesUsed << "configPage"
-            label = cfg?.app?.label?.toString()
-            // Same fetch already in hand: reporting the red-X state costs nothing and spares
-            // callers a second tool call (hub_list_rules) just to learn whether a rule can run.
-            if (cfg?.app?.disabled != null) appDisabled = (cfg.app.disabled == true)
-            // Recognize the classic app type so the report names what it inspected instead of
-            // leaving ruleFormat null. Button Controller / Basic Rule (and other classic apps)
-            // share RM's configPage protocol, so the generic detections below (configPage.error,
-            // multiple-flag poison) apply to them; only RM has the compiled `broken` boolean and
-            // the actType structural model, so broken stays null for the others.
-            if (ruleFormat == null) ruleFormat = _classicAppFormat(cfg)
-            configPageError = cfg?.configPage?.error
-            if (configPageError) {
-                issues << "configPage.error: ${configPageError}".toString()
+            cfg = _rmFetchConfigJson(appId)
+            read = true
+            def label = cfg.app?.label?.toString()
+            if (cfg.app?.disabled != null) result.disabled = (cfg.app.disabled == true)
+            if (cfg.configPage?.error) issues << "the app's page reports an error: ${cfg.configPage.error}".toString()
+            if (label?.contains("*BROKEN*")) issues << "label contains *BROKEN* marker — rule has at least one malformed trigger or action".toString()
+            // The live renderer puts RM's markers in body elements; older pages use a paragraphs array.
+            def markers = (cfg.configPage?.sections ?: []).collectMany { sect ->
+                ((sect?.body ?: []).findAll { it instanceof Map && it.element in ["paragraph", "href"] }.collect { it.description?.toString() ?: "" }) +
+                    (sect?.paragraphs ?: []).collect { it?.toString() ?: "" }
+            }.collectMany { text -> ["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"].findAll { text.contains(it) } }.unique()
+            if (markers) issues << "broken markers on the rule's page: ${markers.join(', ')}".toString()
+            // Only real markup is a runtime decoration; a typed suffix is escaped and stays the user's name.
+            while (label != null) {
+                def decoration = label =~ /<[^>]+>\s*\((?:Paused|Stopped)\)\s*(?:<\/[^>]+>\s*)*$/
+                if (!decoration.find()) break
+                label = label.substring(0, decoration.start()).trim()
             }
-            if (label?.contains("*BROKEN*")) {
-                issues << "label contains *BROKEN* marker — rule has at least one malformed trigger or action".toString()
-            }
-            // "Use Required Expression" switched on with no committed expression: RM runs the rule
-            // as if there were no gate at all.
-            if (cfg?.settings?.useST?.toString() == "true") {
-                if (ruleFormat == "rm" && requiredExpressionTokens == 0) {
-                    issues << "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED. Rebuild it with hub_set_rule(operation='update') required changes, or turn useST off if no gate is wanted.".toString()
-                } else if (requiredExpressionTokens == null) {
-                    checkErrors << "Required Expression is enabled (useST) but the committed expression was not read, so an ungated rule is not ruled out -- re-check it, or read its expression with hub_get_app_config.".toString()
-                }
-            }
-            // Scan for the broken-state strings RM emits in its rendered output. Read BOTH
-            // formats the hub serves: the body-element format the live UI renderer uses
-            // (sect.body[].description where element is "paragraph"/"href") AND the
-            // paragraphs-array format. Live on fw 2.5.0.143 a deleted-trigger rule's direct
-            // /configure/json puts '**Broken Trigger**' in the body-element format, which a
-            // paragraphs-only scan misses.
-            def paragraphTexts = (cfg?.configPage?.sections ?: []).collectMany { sect ->
-                def fromBody = (sect?.body ?: [])
-                    .findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
-                    .collect { it.description?.toString() ?: "" }
-                def fromParagraphs = (sect?.paragraphs ?: []).collect { it?.toString() ?: "" }
-                fromBody + fromParagraphs
-            }
-            paragraphTexts.each { text ->
-                ["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"].each { marker ->
-                    if (text.contains(marker)) brokenMarkers << marker
-                }
-            }
-            if (brokenMarkers) {
-                issues << "broken markers in render: ${brokenMarkers.unique().join(', ')}".toString()
-            }
-            // Multiple-flag corruption check. Compare schema declaration vs
-            // statusJson appSettings record for each setting that the schema
-            // says is multi.
-            def settingsByName = _rmFetchSettingsByName(appId)
-            def schema = _rmCollectInputSchema(cfg?.configPage)
-            schema.each { name, meta ->
-                if (meta?.multiple == true) {
-                    def rec = settingsByName.get(name)
-                    if (rec != null && rec.multiple != true) {
-                        multipleFlagPoison << name.toString()
-                    }
-                }
-            }
-            if (multipleFlagPoison) {
-                issues << "multiple-flag poison on settings: ${multipleFlagPoison.join(', ')} — re-POST with the 3-field group to recover".toString()
-            }
-            // Structural balance check (defense in depth -- the native document batch check and
-            // _rmDeleteAction's pre-flight refusal block most imbalance at the source; this catches
-            // raw settings writes and the post-response-commit race for non-structural deletes).
-            structuralIssues = _rmStructuralIssuesFromSequence(
-                _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), compiledActionList))
-            orphanedActionRows = _rmOrphanedActionRows(settingsByName, compiledActionList)
-            if (structuralIssues) {
-                issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer with hub_set_rule(operation='update') and a terminator change (subtype endIf or endRep). Otherwise compare against hub_set_rule(operation='read') before considering a restore.".toString())
-            }
+            result.label = label?.replaceAll(/<[^>]+>/, "")?.trim()
         } catch (Exception e) {
-            if (sourcesUsed.isEmpty()) {
-                // Both sources down: include the compiled-state read failure too so the dual-failure
-                // diagnostic is complete (auth/connectivity often breaks both localhost reads at once).
-                def also = compiledReadError ? " (compiled-state read also failed: ${compiledReadError})" : ""
-                issues << "health check failed: ${e.message}${also}".toString()
-            } else {
-                // The compiled source read CLEAN and only this HTML leg failed: a lone
-                // transient fetch failure is not evidence about the rule, so it must not
-                // ride in issues -- an ok:false verdict here fails every committed-work
-                // gate AND set-diffs as a "new issue" in the replace/patches regression
-                // differ, firing the auto-restore over one localhost GET hiccup. It still
-                // surfaces in checkErrors (visible, non-gating): the render scan is the
-                // cross-check that can show a break before the compiled boolean flips, so
-                // the caller is told this verdict is half-checked and can re-probe.
-                checkErrors << "configPage read failed: ${e.message}".toString()
+            checkErrors << "configPage read failed: ${e.message}".toString()
+        }
+    }
+    // Other built-in classic apps have no compiled state to read.
+    if (typeName != null && !visual && !ruleType) {
+        result.ruleFormat = _classicAppFormat(typeName)
+    } else {
+        def cs = _ruleCompiledState(appId)
+        if (cs?.ruleFormat != null) {
+            read = true
+            result.ruleFormat = cs.ruleFormat
+            result.broken = cs.broken
+            result.paused = cs.paused
+            if (cs.label != null) result.label = cs.label
+            result.validationErrors = cs.validationErrors ?: []
+            if (cs.ruleFormat == "vrb-graph" && result.validationErrors) {
+                issues << "Visual Rule (graph) has validation errors: ${result.validationErrors.join('; ')}".toString()
             }
+            if (cs.ruleFormat == "rm") {
+                Map compiled = cs.state
+                if (cs.broken == true) issues << "Rule Machine marks this rule broken (compiled broken:true): a trigger, condition or action refers to something that is gone; find it with hub_set_rule(operation='read').".toString()
+                result.stopped = _ndNativeFlag(compiled, "stopped")
+                // A new rule stores the private boolean as the string 'true'; setting it stores a Boolean.
+                def priv = compiled.get("private")
+                result.privateBoolean = priv instanceof Boolean ? priv : (priv?.toString() in ["true", "false"] ? priv.toString() == "true" : null)
+                result.disabledActions = compiled.disabledActions instanceof Collection ? compiled.disabledActions.collect { it.toString() } : []
+                if (compiled.containsKey("disabledTriggers")) {
+                    result.disabledTriggers = compiled.disabledTriggers instanceof Collection ? compiled.disabledTriggers.collect { it.toString() } : compiled.disabledTriggers
+                }
+                result.structuralIssues = _ndStructuralIssues(compiled, cfg?.settings?.useST?.toString() == "true")
+                if (result.structuralIssues) {
+                    issues << ("structural imbalance in the rule's actions or expressions: ${result.structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer with hub_set_rule(operation='update') and a terminator change (subtype endIf or endRep). Otherwise compare against hub_set_rule(operation='read') before considering a restore.").toString()
+                }
+            }
+        } else if (cs?.readError) {
+            checkErrors << "compiled-state read failed: ${cs.readError}".toString()
+        } else if (ruleType) {
+            checkErrors << "Rule Machine returned no compiled state for app ${appId}, so broken, structure and runtime flags were not checked".toString()
         }
+        if (result.ruleFormat == null && cfg != null) result.ruleFormat = _classicAppFormat(cfg.app?.appType?.name?.toString())
     }
-    // Mirror leg: the compiled-state read failed but the HTML path ran clean. Previously
-    // this was SILENTLY discarded in auto mode (ok:true with the authoritative source
-    // unread) -- surface it the same non-gating way as the HTML-leg failure above.
-    if (compiledReadError != null && !sourcesUsed.isEmpty()) {
-        checkErrors << "compiled-state read failed: ${compiledReadError}".toString()
-    }
-    // Cross-check the two RM sources when both ran. They can legitimately disagree in a
-    // transient window: live on fw 2.5.0.143, deleting a rule's trigger device sets the
-    // '*BROKEN*' label immediately while the compiled `broken` boolean stays false until the
-    // rule re-validates (e.g. its config page is rendered), after which `broken` flips true and
-    // the two agree. Surfacing the disagreement (rather than trusting either source alone) is
-    // exactly why issue #254 keeps both paths instead of replacing the HTML scan. VRB rules
-    // have no HTML markers, so the cross-check only applies to classic RM.
-    if (ruleFormat == "rm" || ruleFormat == null) {
-        boolean htmlBroken = (!brokenMarkers.isEmpty()) || (label != null && label.contains("*BROKEN*"))
-        if (broken == true && !htmlBroken && sourcesUsed.contains("configPage")) {
-            issues << "cross-check: ruleBuilderJson broken:true but the HTML render showed no broken markers — the structured source caught a break the render scan missed.".toString()
-        } else if (broken == false && htmlBroken) {
-            issues << "cross-check: HTML broken markers present but ruleBuilderJson broken:false — render text disagrees with the compiled state; treat as suspect and re-read.".toString()
-        }
-    }
-
-    // Per-marker occurrence COUNT (computed before the unique() below loses it). The
-    // deduped brokenMarkers list and the single collapsed "broken markers in render" issue
-    // string both lose multiplicity, so a baseline already carrying one **Broken Condition**
-    // would set-diff to empty against a render with TWO of them and a genuinely-new broken
-    // instance would slip through a string-set delta. Callers comparing two health verdicts
-    // (the replace restore gate) use this count map to detect a NEW broken instance.
-    def brokenMarkerCounts = [:]
-    brokenMarkers.each { m -> brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
-
-    // Stable report shape (backward-compatible with the pre-#254 contract): the RM detection
-    // arrays are always present so existing consumers can read them unconditionally. The new
-    // cross-engine fields (broken / source / ruleFormat / validationErrors) are added alongside;
-    // predicate is included only when the compiled state carried one. The dual-path cost is one
-    // extra localhost GET, not response size — the empty arrays are a few bytes.
-    def result = [
-        // An app that could not be identified may be a user app whose state only looks like a rule's.
-        ok: identified && !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
-        // unreadable: NEITHER source could be read -- a "couldn't check" verdict, not
-        // a "checked and broken" one (ok stays false; there is no positive evidence
-        // either way). Callers gating committed work on ok should treat unreadable
-        // as advisory (a transient fetch failure must not fail a committed op) and
-        // direct the caller to re-verify via hub_get_rule_health.
-        unreadable: sourcesUsed.isEmpty(),
-        broken: broken,
-        source: (sourcesUsed ? sourcesUsed.join("+") : "none"),
-        ruleFormat: ruleFormat,
-        label: label,
-        paused: paused,
-        disabled: appDisabled,
-        configPageError: configPageError,
-        brokenMarkers: brokenMarkers.unique(),
-        brokenMarkerCounts: brokenMarkerCounts,
-        multipleFlagPoison: multipleFlagPoison,
-        structuralIssues: structuralIssues,
-        // Leftover settings rows the rule does not contain. Deliberately outside
-        // `issues` (same reasoning as checkErrors): they are visible state, not a
-        // defect, so they must not flip ok or feed the regression differ.
-        orphanedActionRows: orphanedActionRows,
-        validationErrors: validationErrors,
-        issues: issues,
-        // Half-checked marker: ONE source failed to read while the other read clean.
-        // Deliberately outside `issues` so ok stays evidence-based -- a lone transient
-        // fetch failure neither fails committed-work gates nor feeds the regression
-        // differ (both-sources-down is `unreadable`, not this).
-        checkErrors: checkErrors
-    ]
-    if (predicate != null) result.predicate = predicate
-    if (requiredExpressionTokens != null) result.requiredExpressionTokens = requiredExpressionTokens
+    if (!read) issues << "health check failed: neither the app's page nor its compiled state could be read".toString()
+    result.unreadable = !read
+    // An app that could not be identified may be a user app whose state only looks like a rule's.
+    result.ok = identified && read && issues.isEmpty() && result.broken != true && result.validationErrors.isEmpty()
     return result
 }
 
@@ -12588,23 +12317,22 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 ### hub_manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules
 
 RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
-(These four tools and hub_get_rule_health are also in hub_manage_rule_machine. The reads, hub_list_rules and hub_get_rule_health, are also in hub_read_rules.)
+(hub_list_rules, hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean and hub_get_rule_health are also in hub_manage_rule_machine, with hub_set_rule and hub_list_rule_local_variables. The reads hub_list_rules, hub_get_rule_health and hub_list_rule_local_variables are also in hub_read_rules.)
 
-- **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live **status** — "active" | "paused" | "stopped" | "disabled" | "unknown" — plus **disabled** / **paused** booleans (omitted on the "unknown" path) and, only when detected, **requiredExpressionFalse: true**.
-  - **disabled** is the app's red-X enable/disable flag, read straight from /hub2/appsList (data.disabled).
-  - **paused** is decoration-detected. Rule Machine surfaces a paused rule ONLY as a "(Paused)" suffix appended to the app's /hub2/appsList name; the RMUtils label for the same rule stays clean (live-verified). So the appsList name and the RMUtils label are BOTH HTML-stripped (tags removed, entities decoded, trimmed — the appsList name comes decoded, the RMUtils label comes entity-escaped like "Heat On &lt;67" and can carry trailing spaces) and diffed: equal → no decoration; appsList == label + remainder → the remainder is the decoration ("(Paused)" ⇒ paused, "(Required Expression false)" ⇒ requiredExpressionFalse). A rule the user literally NAMED "... (Paused)" is NOT false-flagged: the RMUtils label carries the same suffix, so the remainder is empty.
-  - **stopped** is the runtime "(Stopped)" decoration, detected by the SAME appsList-vs-RMUtils-label diff the paused check uses (a rule literally NAMED "... (Stopped)" carries the suffix in both strings, so it is not false-flagged). The suffix is stripped from the returned label/name in the encoding they already use. Rule Machine updates the decoration when the rule's page is rendered, and hub_call_rule(action="stop"/"start") renders it, so the list is current after an MCP stop or start; a stop made elsewhere shows once the rule's page is next opened.
-  - **state read for decorated rows.** The name carries one decoration at a time — a rule both paused and stopped shows only "(Stopped)" — so a row whose name shows "(Paused)" or "(Stopped)" also reads that rule's own paused/stopped state, and both paused and status come from it. Undecorated rows make no extra read. If that read fails, the row keeps the name-derived values. For one rule, hub_get_rule_health reads its own state directly.
-  - **precedence** governs only the **status** summary (disabled > stopped > paused > active). The disabled/paused booleans are independent facts: a rule paused first and red-X disabled afterward keeps its "(Paused)" decoration, so it truthfully reads disabled:true AND paused:true with status:"disabled".
-  - **status "unknown"** is per-rule, not just per-list. Tree-level: /hub2/appsList was momentarily unreadable, so NO rule has data — the whole list is returned unfiltered (post-delete ghosts may linger) with a result-level **statusNote**. Per-entry: the tree read fine but ONE rule's node is under-populated (data.disabled absent, node name null, or the RMUtils label null), so just THAT rule is "unknown" while the rest keep real statuses. Either way the disabled/paused booleans are omitted (a value the data can't support is never asserted).
-  - This status detection covers Rule Machine rules. For the enabled/disabled state of other classic automation apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances'), whose entries carry a disabled flag.
-- **hub_call_rule** — trigger one or more RM rules (ruleId takes an id or an array; rule/actions dispatch the whole set in one RMUtils call, stop/start toggle per rule with per-rule results + failedRuleIds/remainingRuleIds on partial batches)
-  - action="rule" (default): full evaluation (triggers + conditions + actions)
+- **hub_list_rules** — every Rule Machine rule (RM 4.x + 5.x, deduplicated by id) with a live **status** ("active" | "paused" | "stopped" | "disabled" | "unknown"), the **disabled** and **paused** booleans (omitted when unknown) and, only when detected, **requiredExpressionFalse: true**.
+  - **disabled** is the app's red-X flag from /hub2/appsList.
+  - **paused** and **stopped** come from Rule Machine's name decoration. The appsList name and the RMUtils label are compared with markup stripped and entities decoded; the text the appsList name adds — "(Paused)", "(Stopped)", "(Required Expression false)" — sets the flag. A rule literally NAMED "... (Paused)" or "... (Stopped)" carries the suffix in both strings and is not flagged. A stopped rule's label and name come back without the decoration, in the encoding they already use.
+  - The name shows one decoration at a time ("(Stopped)" hides "(Paused)"), so a decorated row also reads that rule's own paused/stopped state; undecorated rows make no extra read, and if that read fails the name decides. Rule Machine refreshes the decoration when the rule's page renders: hub_call_rule(action="stop"/"start") renders it, so the list is current after an MCP stop or start, while a stop made elsewhere shows once the rule's page is next opened.
+  - **status** precedence is disabled > stopped > paused > active; the booleans stay independent (a paused rule disabled later reads disabled:true, paused:true, status:"disabled").
+  - **unknown**: when /hub2/appsList cannot be read, every rule is unknown, the list is unfiltered (deleted rules may linger) and the result carries **statusNote**; when one rule's entry lacks data, only that rule is unknown.
+  - For one rule's state call hub_get_rule_health. For the disabled flag of other classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances').
+- **hub_call_rule** — act on one or more RM rules (ruleId takes an id or an array). `rule` (Rule Machine 4.x only) dispatches the whole set in one RMUtils call; `actions`, `stop` and `start` click each rule's page button in turn and return per-rule results, with failedRuleIds/remainingRuleIds on a partial batch
+  - action="rule" (default): full evaluation (triggers + conditions + actions) of a Rule Machine 4.x rule; refused for 5.x rules, where it runs nothing
   - action="actions": run actions only, skip conditions
   - action="stop": stop running actions
   - action="start": restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged)
 - **hub_set_rule_paused** — pause (paused=true) or resume (paused=false) one or more rules in ONE call (ruleId takes an id or an array; multi-id batches existence-check every id first); reversible
-- **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only)
+- **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only); hub_get_rule_health reads it back as privateBoolean
 
 Native CRUD (also requires the Write master):
 - **hub_set_native_app** — create, update or drive the forms of every classic app other than Rule Machine rules (see set_native_app_reference). Rule Machine rules use hub_set_rule.
@@ -12615,7 +12343,7 @@ Native CRUD (also requires the Write master):
 - **hub_import_native_app** — creates the app from that JSON under the parent of `parentHintAppId`; the import is active unless `stageDisabled`, with the same failure contract as clone.
 
 - Clone and import read the parent's child apps first: if that read fails nothing is created and the call can be retried, and an ambiguous new child is never guessed at. When staging reaches its continuation limit, the error keeps newAppId, stagedDisabled, stageFailures and stageRemaining: disable those apps directly instead of creating again.
-- **hub_get_rule_health** — read-only health check on any installed app (Rule Machine AND Visual Rules Builder). Args: appId, source (auto|ruleBuilderJson|configPage, default auto). Prefers the compiled-state verdict: the classic RM `broken` boolean (/app/ruleBuilderJson) or a graph Visual Rule's validationErrors (/app/ruleBuilder20Json); for classic RM the HTML render scan is retained as cross-check + fallback. Returns ok / broken / source / ruleFormat / label / paused / stopped / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / orphanedActionRows (leftover actType/actSubType rows that are not among the rule's actions -- diagnostic only, never affects ok) / validationErrors / issues (+ predicate when read). Pause state comes from the rule's compiled Boolean or status state; tagged runtime decoration is a fallback. `paused:null` means unknown. Explicit stopped state outranks config-page markup. Literal `(Paused)` and `(Stopped)` name suffixes are preserved; Visual Rule labels come from their own document unless configPage is forced. Embedded write-response health carries compiled paused only; the standalone read adds status/markup fallbacks, stopped, and live subscription/job counts.
+- **hub_get_rule_health** — read-only health of one rule or built-in classic app; see hub_get_rule_health below.
 
 For reading a native RM rule without editor renders, use hub_set_rule(operation='read'). hub_get_app_config remains available for native configuration diagnostics.
 
@@ -12629,7 +12357,7 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 ### CRUD workflow example
   hub_set_rule(operation="create", args={parent_id:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true) → app_id
-  hub_get_rule_health(appId=<app_id>) → ok=true, no configPageError or brokenMarkers
+  hub_get_rule_health(appId=<app_id>) → ok=true, issues:[]
   hub_delete_native_app(appId=<app_id>, force=true, confirm=true) → {backup: {backupKey: "rm-rule_<app_id>_..."}}
 
 ### hub_list_drivers (list device driver TYPES on the hub)
@@ -12645,37 +12373,33 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 `action` selects which Rule Machine verb to invoke (default `rule`):
 
-- **`rule`** → `runRule`: re-evaluate the rule's conditions, then run the matching true/false action set.
+- **`rule`** → RMUtils `runRule`: for a Rule Machine 4.x rule, re-evaluate the rule's conditions, then run the matching true/false action set. Rule Machine 5.x accepts runRule and runs nothing, so a call naming any 5.x rule (Rule-5.x or Button Rule-5.x) is refused before anything is dispatched; use `actions` to run a 5.x rule's actions.
 - **`actions`**: click the rule's Run Actions button (`runAction`) to run the action list directly, skipping condition evaluation.
 - **`stop`**: halt the rule's in-progress actions.
 - **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged).
 
-`actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. Only `rule` still goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation).
+`actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), one rule at a time, not RMUtils: that is the route the hub UI takes. `stop` and `start` read the rule's stopped state first and leave a rule already in the target state alone, so they are safe to repeat; a repeated `rule` or `actions` runs the actions again. Only `rule` goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation).
 
 ### hub_get_rule_health
 
-Rule Machine, Visual Rules Builder, and the other supported classic apps (Button Controller, Basic Rule) share RM's configPage protocol.
+`ruleFormat` says what was inspected: `rm` (Rule Machine or Button Rule) / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
 
-`ruleFormat` says which engine answered: `rm` / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
+- **Rule Machine**: the rule's page is rendered once, then its compiled state (/app/ruleBuilderJson) is read once. Rule Machine updates its `broken` flag only when the page renders, so a rule whose trigger device was deleted reads broken here without opening the editor first. The report carries `broken`, `paused`, `stopped`, `privateBoolean`, `disabledActions` (the native ids of actions switched off in the rule; `disabledTriggers` likewise when present), `disabled` (red-X), `label` (runtime decoration removed), `structuralIssues` (the same IF/Repeat block and expression check hub_set_rule runs), and the page's own error, `*BROKEN*` label or `**Broken Trigger|Action|Condition**` markers as `issues`.
+- **Visual Rules Builder**: the engine's own verdict — a graph rule's `validationErrors` (broken when non-empty) and pause state, with the rule's own name as `label`.
+- **Other built-in classic apps** (Basic Rule, Button Controller, Room Lighting, …): label, red-X and page errors; `broken` is null.
+- User and community apps are not read (their page runs their own code); use hub_get_app_config.
+- `eventSubscriptionCount` / `scheduledJobCount` are the app's live subscriptions and scheduled jobs (null with a `checkErrors` entry when that read fails). Visual Rule write responses embed this report without them.
 
-The report surfaces the compiled-state broken verdict, validationErrors, config-page render errors, RM `*BROKEN*` / `**Broken Trigger|Action|Condition**` markers, multiple-flag corruption, structural IF/Repeat imbalance, and a compiled-vs-HTML cross-check.
-
-**`source` parameter — which source(s) to read:**
-- `auto` (default): the preferred compiled-state verdict plus the RM HTML render detections + a cross-check.
-- `ruleBuilderJson`: the compiled-state verdict only.
-- `configPage`: the legacy RM HTML render scan only.
-
-`unreadable:true` with `ok:false` means health could not be established, not proof of breakage. Read hub_get_rule_health for current diagnostics. Native document writes independently check editor diagnostics, expression references, block structure and activation status; runtime behavior still needs verification.
+`ok:true` means everything was read and nothing is wrong. `ok:false` with `unreadable:false` means `issues` names the problem; `unreadable:true` means nothing could be read, which is not evidence of breakage. `checkErrors` lists reads that failed without being evidence about the rule. A structural issue is expected while a block is built across several calls; finish it with a hub_set_rule(operation='update') terminator change, and compare with hub_set_rule(operation='read') before considering a restore.
 
 ### hub_list_rule_local_variables
 
 List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals). Requires the Read master.
 
-- Hub globals are covered by hub_list_variables; native locals are read/written through hub_set_rule(operation='read') / hub_set_rule(operation='update') variable changes.
-- Reads the rule's `statusJson` appState: names and types from `allLocalVars`, current values from each variable's live `lv_<name>` entry (`allLocalVars` keeps the old value after an action sets the variable until someone opens the rule's page).
-- Pure read -- no wizard, no mutation.
+- Hub globals are covered by hub_list_variables; native locals are written through hub_set_rule(operation='update') variable changes.
+- Reads the rule's own local-variable list, which includes a value the running rule just set (for a 4.x rule, its stored list overlaid with each variable's live value). A credential-named variable's value is hidden (`redacted:true`) while credential hiding is on.
 - Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is Rule Machine's own token (integer, bigdecimal, string, boolean, datetime), the same value a hub_set_rule variable change takes; the rule page shows it as Number, Decimal, String, Boolean, DateTime.
-
+- Rule Machine 4.x and 5.1 rules and Button Rules are read; any other app id is refused.
 - Use to confirm a local exists (and its type) before targeting it with a Set Variable action or a hub_set_rule variable change.
 
 ### hub_delete_native_app

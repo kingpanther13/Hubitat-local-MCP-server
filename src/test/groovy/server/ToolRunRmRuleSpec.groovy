@@ -755,4 +755,59 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.results.size() == 1
         result.note.contains("ruleId=[115]")
     }
+
+    private void ruleTypes(Map types) {
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: types[id as Integer]]] }
+    }
+
+    @spock.lang.Unroll
+    def "action=rule on a #typeName rule is refused before anything is dispatched"() {
+        given:
+        ruleTypes([101: typeName])
+
+        when:
+        script.toolRunRmRule([ruleId: 101, action: 'rule'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("rule(s) 101 are Rule Machine 5.x")
+        ex.message.contains("action:'actions'")
+        rmUtils.calls.isEmpty()
+
+        where:
+        typeName << ['Rule-5.1', 'Button Rule-5.1', 'Rule-5.0']
+    }
+
+    def "action=rule still dispatches runRule to a Rule-4.x rule"() {
+        given:
+        ruleTypes([101: 'Rule-4.1'])
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 101, action: 'rule'])
+
+        then:
+        result.success == true
+        rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRule' }
+    }
+
+    @spock.lang.Unroll
+    def "hub_call_rule via dispatch refuses action=rule for a mixed batch naming only the 5.x ids (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        ruleTypes([101: 'Rule-4.1', 102: 'Rule-5.1', 103: 'Button Rule-5.1'])
+
+        when:
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: [101, 102, 103], action: 'rule'])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        response.result.isError == true
+        inner.error.contains("rule(s) 102, 103 are Rule Machine 5.x")
+        !inner.error.contains("101,")
+        !rmUtils.calls.any { it.method == 'sendAction' }
+
+        where:
+        useGateways << [true, false]
+    }
+
 }

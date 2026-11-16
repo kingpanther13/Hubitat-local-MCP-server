@@ -1837,48 +1837,48 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a minimal empty rule named 'BAT-HealthSrc' via hub_set_rule and remember its appId.",
-  "test_prompt": "Check the rule's health (let it pick the best source automatically) and report ok, broken, and source. Then check its health again, restricted to the config-page render as the source, and report broken and source.",
+  "test_prompt": "Check the rule's health and report ok, broken, paused, stopped, privateBoolean and disabledActions.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: The auto `hub_get_rule_health` call returns `ok: true`, `broken: false` (the authoritative boolean read from GET /app/ruleBuilderJson), and `source` containing `ruleBuilderJson` (typically `ruleBuilderJson+configPage`). The `hub_get_rule_health(source='configPage')` call returns `broken: null` (the HTML render scan does not produce the compiled-state boolean) and `source: configPage`. Neither path is dropped.
+**Expected**: `hub_get_rule_health` returns `ok: true`, `broken: false` (the compiled-state boolean from GET /app/ruleBuilderJson, read after the rule's page renders), `paused: false`, `stopped: false`, `privateBoolean: true` (a new rule's default) and `disabledActions: []`.
 
 ### T457 — hub_get_rule_health reports broken:true on a genuinely broken rule (issue #254 verification)
 
 ```json
 {
   "setup_prompt": "Create a rule named 'BAT-BrokenProbe' via hub_set_rule with a trigger on a BAT virtual device, then delete that BAT device so the rule's trigger reference dangles (RM marks the rule *BROKEN*). Use ONLY BAT-prefixed devices.",
-  "test_prompt": "Check the rule's health and report ok, broken, source, and issues.",
+  "test_prompt": "Check the rule's health and report ok, broken, and issues.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: `hub_get_rule_health` returns `broken: true` (the compiled-state boolean from ruleBuilderJson), `ok: false`, and an `issues` entry naming the broken state. `source` includes `ruleBuilderJson`. This confirms the boolean fires both ways (the open verification item from the issue). SAFETY: only BAT-prefixed devices/rules are touched.
+**Expected**: `hub_get_rule_health` returns `broken: true` (the compiled-state boolean from ruleBuilderJson), `ok: false`, and an `issues` entry naming the broken state, without the rule's editor being opened first (health renders the rule's page, which is when Rule Machine updates its broken flag). This confirms the boolean fires both ways (the open verification item from the issue). SAFETY: only BAT-prefixed devices/rules are touched.
 
 ### T458 — hub_get_rule_health covers Visual Rules Builder rules (issue #254)
 
 ```json
 {
   "setup_prompt": "Create a Visual Rules Builder rule named 'BAT-VRB-Health' via hub_set_visual_rule with a simple trigger on a BAT virtual device. Remember its appId and format.",
-  "test_prompt": "Check the rule's health and report ruleFormat, broken, source, and issues. Also report whether the create response for the Visual Rules Builder rule carried a `health` block.",
+  "test_prompt": "Check the rule's health and report ruleFormat, broken, and issues. Also report whether the create response for the Visual Rules Builder rule carried a `health` block.",
   "teardown_prompt": "Delete the rule via hub_delete_visual_rule(appId=ruleId, confirm=true)."
 }
 ```
 
-**Expected**: `hub_get_rule_health` does NOT reject the VRB rule — it returns `ruleFormat` of `vrb-graph` or `vrb-classic`. For a graph rule, `broken` is a boolean derived from `validationErrors` (true when non-empty) and `source` is `ruleBuilder20Json`; for a classic VRB rule, `broken` is null. The `hub_set_visual_rule` create response carries a `health` block with the same shape (health attached to every VRB authoring response, success AND failure). SAFETY: only BAT-prefixed devices/rules are touched.
+**Expected**: `hub_get_rule_health` does NOT reject the VRB rule — it returns `ruleFormat` of `vrb-graph` or `vrb-classic`. For a graph rule, `broken` is a boolean derived from `validationErrors` (true when non-empty); for a classic VRB rule, `broken` is null. The `hub_set_visual_rule` create response carries a `health` block with the same shape, without the live subscription and job counts (health attached to every VRB authoring response, success AND failure). SAFETY: only BAT-prefixed devices/rules are touched.
 
 ### T459 — hub_get_rule_health covers classic apps (Button Controller, Basic Rule) (issue #254)
 
 ```json
 {
   "setup_prompt": "Create a Basic Rule via hub_set_native_app(operation='create', args={app_type: 'basic_rule'}) and a Button Controller bound to a virtual button via hub_set_native_app(operation='create', args={app_type: 'button_controller', fields: {buttonDev: [deviceId]}}) (neither first page renders a label input, so no name). Remember both app_ids.",
-  "test_prompt": "Check the health of each. Report ruleFormat, broken, source, configPageError, and multipleFlagPoison for both.",
+  "test_prompt": "Check the health of each. Report ruleFormat, broken, ok and issues for both.",
   "teardown_prompt": "Delete both via hub_delete_native_app(appId=..., force=true)."
 }
 ```
 
-**Expected**: `hub_get_rule_health` does NOT reject either app. The Basic Rule returns `ruleFormat: "basic-rule"` and the Button Controller `ruleFormat: "button-controller"`, both with `broken: null` (no compiled boolean for non-RM classic apps), `source: "configPage"`, and the generic classic-app checks present (`configPageError`, `multipleFlagPoison` — the same multi-flag-poison failure mode RM has). SAFETY: only BAT-prefixed apps are touched.
+**Expected**: `hub_get_rule_health` does NOT reject either app. The Basic Rule returns `ruleFormat: "basic-rule"` and the Button Controller `ruleFormat: "button-controller"`, both with `broken: null` (no compiled boolean for non-RM classic apps), `ok: true` and no `issues` (a page error would be listed there). SAFETY: only BAT-prefixed apps are touched.
 
 ## Section 6: RM recreation bundle (T460–T464)
 

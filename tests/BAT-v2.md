@@ -3644,7 +3644,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 **Failure modes**: Response carries a `nextCursor` (pagination was re-introduced or never removed — silent client truncation regression). Tool count substantially less than the expected flat-mode catalog (size-guard hit `-32603` because the catalog grew past the 124,000-byte cap — needs more `[[FLAT_TRIM]]` wraps). Stale `-32602` errors on cursor values (cursor handling not fully removed). Duplicate tool names in the response (catalog assembly regression).
 
-**Reading note for T607-T619 Expected sections**: where these scenarios say "no broken markers", the check is `hub_get_rule_health` returning `ok=true` with an empty `brokenMarkers` list. Together they confirm the rule picked up no `*BROKEN*` rendering markers after the write.
+**Reading note for T607-T619 Expected sections**: where these scenarios say "no broken markers", the check is `hub_get_rule_health` returning `ok=true` with an empty `issues` list. Together they confirm the rule picked up no `*BROKEN*` rendering markers after the write.
 
 ### T607 — Set a hub variable to a constant value inside an RM rule
 

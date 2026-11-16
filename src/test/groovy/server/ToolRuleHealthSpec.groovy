@@ -4,157 +4,374 @@ import support.ToolSpecBase
 import groovy.json.JsonOutput
 
 /**
- * Spec for hub_get_rule_health (toolCheckRuleHealth -> _rmCheckRuleHealth) after
- * issue #254: the rule's compiled atomicState (GET /app/ruleBuilderJson) becomes
- * the PREFERRED source for the `broken` verdict, with the HTML configure-json
- * render scan RETAINED as a cross-check and as the fallback when the JSON source
- * is unavailable.
+ * hub_get_rule_health (toolCheckRuleHealth -> _rmCheckRuleHealth). A Rule Machine rule's page is
+ * rendered once, then its compiled state (GET /app/ruleBuilderJson, the rule's whole app state) is
+ * read once; the tool adds one statusJson read for the live subscription and job counts. Visual
+ * Rules report their engine's own verdict; other built-in classic apps report their page.
  *
- * Mocking: hubInternalGet is routed to hubGet.register(path) by HarnessSpec, and
- * the closure return value MUST be a JSON STRING (production parses it with
- * JsonSlurper). Unstubbed paths throw IllegalStateException inside the helper's
- * try/catch — which is itself the "source unavailable -> fall back" path.
+ * Mocking: hubInternalGet is routed to hubGet.register(path) by HarnessSpec, and the closure
+ * returns a JSON STRING. Unstubbed paths throw inside the helper's try/catch.
  */
 class ToolRuleHealthSpec extends ToolSpecBase {
 
     def setup() {
-        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat']] }
+        settingsMap.enableRead = true
+        appType('Rule-5.1')
     }
 
     // ---------- fixtures ----------
 
-    /** Classic RM compiled-state shape (the ~45-key /app/ruleBuilderJson body, trimmed). */
+    private void appType(String name, String namespace = 'hubitat') {
+        script.metaClass.getAppByAppId = { Long id -> [id: id, label: 'BAT-RH-test', appType: [namespace: namespace, name: name]] }
+    }
+
+    /** The live /app/ruleBuilderJson body of a new Rule-5.1 rule, trimmed. */
     private String ruleBuilderJson(Map overrides = [:]) {
         def base = [
-            installed: true, running: false, broken: false, condOper: "cond",
-            trigCustoms: ["switch"], capabstrue: [:], capabsfalse: [:],
-            eval: [:], parens: [:], inUseConds: [], unusedConds: [],
-            // Current firmware carries the rule's action membership; a fixture without it is the
-            // degraded (settings-scan) mode and is reported as such in checkErrors. Override with
-            // [actionList: null] to model that firmware explicitly.
-            actionList: []
+            installed: true, broken: false, private: 'true', condOper: 'cond',
+            capabstrue: [:], capabsfalse: [:], eval: [:], actionList: [], actions: [:],
+            allLocalVars: [:], disabledActions: []
         ]
         JsonOutput.toJson(base + overrides)
     }
 
-    /** configure/json shape used by the retained HTML path. */
-    private String configJson(int id, String label = "BAT-RH-test", List paragraphs = [], List inputs = [], def configError = null) {
+    /** configure/json shape of a rendered rule page. */
+    private String configJson(int id, Map opts = [:]) {
         JsonOutput.toJson([
-            app: [id: id, label: label, name: "Rule-5.1", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "mainPage", title: "Edit Rule", install: true, error: configError,
-                         sections: [[title: "", input: inputs, paragraphs: paragraphs]]],
-            settings: [:], childApps: []
+            app: [id: id, label: opts.label ?: 'BAT-RH-test', name: 'Rule-5.1', installed: true,
+                  disabled: opts.disabled ?: false, appType: [name: opts.typeName ?: 'Rule-5.1', namespace: 'hubitat']],
+            configPage: [name: 'mainPage', title: 'Edit Rule', install: true, error: opts.error,
+                         sections: [[title: '', input: [], paragraphs: opts.paragraphs ?: [], body: opts.body ?: []]]],
+            settings: opts.settings ?: [:], childApps: []
         ])
     }
 
-    /** statusJson shape consumed by _rmFetchSettingsByName (the multiple-flag + structural checks). */
-    private String statusJson(int id, List appSettings = []) {
-        JsonOutput.toJson([
-            installedApp: [id: id], appSettings: appSettings,
-            eventSubscriptions: [], scheduledJobs: [], appState: [:]
-        ])
+    private String statusJson(int id) {
+        JsonOutput.toJson([installedApp: [id: id], appSettings: [], eventSubscriptions: [[name: 'switch']],
+                           scheduledJobs: [], appState: []])
     }
 
-    private void seedHealthy(int id, Map rbOverrides = [:]) {
-        settingsMap.enableRead = true
-        hubGet.register("/app/ruleBuilderJson/${id}".toString()) { ruleBuilderJson(rbOverrides) }
-        hubGet.register("/installedapp/configure/json/${id}".toString()) { configJson(id) }
+    private void seed(int id, Map rb = [:], Map page = [:]) {
+        hubGet.register("/app/ruleBuilderJson/${id}".toString()) { ruleBuilderJson(rb) }
+        hubGet.register("/installedapp/configure/json/${id}".toString()) { configJson(id, page) }
         hubGet.register("/installedapp/statusJson/${id}".toString()) { statusJson(id) }
+    }
+
+    private int count(String path) { hubGet.calls.count { it.path == path } }
+
+    // ---------- Rule Machine ----------
+
+    def "a healthy rule reports its compiled flags from one page render, one compiled read and one status read"() {
+        given:
+        seed(100)
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        h.ok == true
+        h.unreadable == false
+        h.ruleFormat == 'rm'
+        h.broken == false
+        h.paused == false
+        h.stopped == false
+        h.privateBoolean == true
+        h.disabledActions == []
+        !h.containsKey('disabledTriggers')
+        h.disabled == false
+        h.label == 'BAT-RH-test'
+        h.structuralIssues == []
+        h.issues == []
+        h.checkErrors == []
+        h.eventSubscriptionCount == 1
+        h.scheduledJobCount == 0
+
+        and: "the removed report fields are gone"
+        !h.containsKey('source')
+        !h.containsKey('brokenMarkers')
+        !h.containsKey('brokenMarkerCounts')
+        !h.containsKey('multipleFlagPoison')
+        !h.containsKey('orphanedActionRows')
+        !h.containsKey('configPageError')
+
+        and:
+        count('/installedapp/configure/json/100') == 1
+        count('/app/ruleBuilderJson/100') == 1
+        count('/installedapp/statusJson/100') == 1
+        hubGet.calls.size() == 3
+    }
+
+    def "the rule's page is rendered before its compiled state is read, so a render-time broken flag is reported"() {
+        given: "Rule Machine sets broken only when the page renders"
+        boolean rendered = false
+        hubGet.register('/installedapp/configure/json/100') { rendered = true; configJson(100, [paragraphs: ['**Broken Trigger**']]) }
+        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: rendered]) }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+        def paths = hubGet.calls*.path
+
+        then:
+        paths.indexOf('/installedapp/configure/json/100') < paths.indexOf('/app/ruleBuilderJson/100')
+        h.broken == true
+        h.ok == false
+        h.issues.any { it.contains('compiled broken:true') && it.contains("hub_set_rule(operation='read')") }
+        h.issues.any { it.contains('**Broken Trigger**') }
+    }
+
+    @spock.lang.Unroll
+    def "privateBoolean reads the stored private flag #stored as #expected"() {
+        given:
+        seed(100, [private: stored])
+
+        expect:
+        script.toolCheckRuleHealth([appId: 100]).privateBoolean == expected
+
+        where:
+        stored  | expected
+        'true'  | true
+        'false' | false
+        true    | true
+        false   | false
+        null    | null
+        'maybe' | null
+    }
+
+    def "disabledActions are native action ids as strings, and disabledTriggers appears only when stored"() {
+        given:
+        seed(100, [disabledActions: ['3', 5], disabledTriggers: [2]])
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        h.disabledActions == ['3', '5']
+        h.disabledTriggers == ['2']
+    }
+
+    @spock.lang.Unroll
+    def "stopped is read from the compiled state (#stored -> #expected)"() {
+        given:
+        seed(100, stored)
+
+        expect:
+        script.toolCheckRuleHealth([appId: 100]).stopped == expected
+
+        where:
+        stored            | expected
+        [:]               | false
+        [stopped: true]   | true
+        [stopped: false]  | false
+        [stopped: 'x']    | null
     }
 
     @spock.lang.Unroll
     def "native compiled pause defaults only for an absent flag on a recognizable RM state (#stored)"() {
         given:
-        seedHealthy(100)
-        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson(stored) }
+        seed(100, stored)
 
-        when:
-        def health = script.toolCheckRuleHealth([appId: 100, source: 'ruleBuilderJson'])
-
-        then:
-        health.paused == expected
-        hubGet.calls.count { it.path == '/app/ruleBuilderJson/100' } == 1
-        hubGet.calls.every { !it.path.startsWith('/installedapp/configure/json/') }
+        expect:
+        script.toolCheckRuleHealth([appId: 100]).paused == expected
 
         where:
-        stored            | expected
-        [:]               | false
-        [paused: true]    | true
-        [paused: false]   | false
-        [paused: null]    | null
-        [paused: 'invalid']| null
-        [capabstrue: null] | null
-        [broken: 'invalid']| null
+        stored              | expected
+        [:]                 | false
+        [paused: true]      | true
+        [paused: false]     | false
+        [paused: null]      | null
+        [paused: 'invalid'] | null
+        [capabstrue: null]  | null
     }
 
-    def "an unrelated compiled map with a broken flag does not establish native pause absence"() {
+    def "an unclosed IF in the compiled actions is a structural issue pointing at the terminator change and a read"() {
         given:
-        seedHealthy(100)
-        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson([broken: false]) }
+        seed(100, [actionList: ['1', '2'], actions: ['1': [method: 'getIfThen', rule: '1'], '2': [method: 'getLogMsg']],
+                   eval: ['1': []]])
 
         when:
-        def health = script.toolCheckRuleHealth([appId: 100, source: 'ruleBuilderJson'])
+        def h = script.toolCheckRuleHealth([appId: 100])
+        def text = h.issues.find { it.startsWith('structural imbalance') }
 
         then:
-        health.paused == null
+        h.ok == false
+        h.structuralIssues.contains('Native IF block has no END-IF')
+        text.contains("hub_set_rule(operation='update')")
+        text.contains('terminator')
+        text.contains("hub_set_rule(operation='read')")
     }
 
-    def "unreadable native pause state remains unknown"() {
+    def "a balanced IF / ELSE / END-IF and REPEAT / END-REP read clean"() {
         given:
-        seedHealthy(100)
-        hubGet.register('/app/ruleBuilderJson/100') { throw new IOException('compiled state unavailable') }
-        hubGet.register('/installedapp/statusJson/100') { throw new IOException('status unavailable') }
+        seed(100, [actionList: ['1', '2', '3', '4', '5', '6'], eval: ['1': ['1']], capabsfalse: ['1': [capab: 'Switch']],
+                   actions: ['1': [method: 'getIfThen', rule: '1'], '2': [method: 'getRepeat'], '3': [method: 'getEndRepeat'],
+                             '4': [method: 'getElse'], '5': [method: 'getLogMsg'], '6': [method: 'getEndIf']]])
 
         when:
-        def health = script.toolCheckRuleHealth([appId: 100, source: 'ruleBuilderJson'])
+        def h = script.toolCheckRuleHealth([appId: 100])
 
         then:
-        health.paused == null
-        health.ok == false
+        h.structuralIssues == []
+        h.ok == true
+    }
+
+    def "a Required Expression switched on with none committed is a structural issue"() {
+        given:
+        seed(100, [:], [settings: [useST: true]])
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        h.structuralIssues.any { it.startsWith('Native expression 0') }
+        h.ok == false
+    }
+
+    def "the page's *BROKEN* label, broken markers in either format and its error are issues"() {
+        given:
+        seed(100, [:], [label: 'Porch *BROKEN*', error: 'For input string', paragraphs: ['**Broken Action**'],
+                        body: [[element: 'paragraph', description: 'x **Broken Condition**']]])
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        h.ok == false
+        h.issues.any { it.contains('*BROKEN*') }
+        h.issues.any { it.contains('**Broken Action**') && it.contains('**Broken Condition**') }
+        h.issues.any { it.contains('For input string') }
     }
 
     @spock.lang.Unroll
-    def "public health reports never-paused native state and preserves a literal pause suffix (useGateways=#useGateways)"() {
+    def "the label drops only real runtime decoration markup (#label)"() {
         given:
-        settingsMap.useGateways = useGateways
-        seedHealthy(100)
-        hubGet.register('/installedapp/configure/json/100') { configJson(100, 'Living Room (Paused)') }
+        seed(100, [:], [label: label])
 
-        when:
-        def response = mcpDriver.callTool('hub_get_rule_health', [appId: 100])
-        def health = mcpDriver.parseInner(response)
-
-        then:
-        response.error == null
-        health.ok == true
-        health.paused == false
-        health.label == 'Living Room (Paused)'
+        expect:
+        script.toolCheckRuleHealth([appId: 100]).label == expected
 
         where:
-        useGateways << [true, false]
+        label                                                     | expected
+        'Porch Light <span style="color:green">(Stopped)</span>'   | 'Porch Light'
+        'Porch <span>(Stopped)</span> <span>(Paused)</span>'       | 'Porch'
+        'Alert When Stopped (Stopped)'                            | 'Alert When Stopped (Stopped)'
+        'Living Room (Paused)'                                    | 'Living Room (Paused)'
     }
 
-    @spock.lang.Unroll
-    def "public health uses Visual Rule pause evidence even without a classic config page (#format, paused=#paused)"() {
+    def "the red-X disabled flag comes from the rendered page"() {
         given:
-        settingsMap.enableRead = true
+        seed(100, [:], [disabled: true])
+
+        expect:
+        script.toolCheckRuleHealth([appId: 100]).disabled == true
+    }
+
+    def "a Button Rule is read as a Rule Machine rule"() {
+        given:
+        appType('Button Rule-5.1')
+        seed(100)
+
+        expect:
+        script.toolCheckRuleHealth([appId: 100]).ruleFormat == 'rm'
+    }
+
+    // ---------- read failures ----------
+
+    def "a page that fails to render is a non-gating checkErrors entry when the compiled state reads clean"() {
+        given:
+        seed(100)
+        hubGet.register('/installedapp/configure/json/100') { throw new IOException('page timeout') }
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        h.ok == true
+        h.unreadable == false
+        h.checkErrors.any { it.contains('configPage read failed') && it.contains('page timeout') }
+    }
+
+    def "a compiled-state read failure is a checkErrors entry when the page rendered"() {
+        given:
+        seed(100)
+        hubGet.register('/app/ruleBuilderJson/100') { throw new IOException('403') }
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        h.checkErrors.any { it.contains('compiled-state read failed') }
+        h.unreadable == false
+        h.broken == null
+    }
+
+    def "a rule whose compiled state is not a rule's says its flags were not checked"() {
+        given:
+        seed(100)
+        hubGet.register('/app/ruleBuilderJson/100') { '{}' }
+        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        h.checkErrors.any { it.contains('returned no compiled state') }
+        h.broken == null
+    }
+
+    def "nothing readable is unreadable, not checked-and-broken"() {
+        given:
+        hubGet.register('/installedapp/configure/json/100') { throw new IOException('down') }
+        hubGet.register('/app/ruleBuilderJson/100') { throw new IOException('down') }
+        hubGet.register('/app/ruleBuilder20Json/100') { throw new IOException('down') }
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        h.ok == false
+        h.unreadable == true
+        h.eventSubscriptionCount == null
+        h.checkErrors.any { it.startsWith('statusJson:') }
+    }
+
+    def "a schedule-only rule reports zero live counts, not null"() {
+        given:
+        seed(100)
+        hubGet.register('/installedapp/statusJson/100') { JsonOutput.toJson([installedApp: [id: 100], appSettings: [], appState: []]) }
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        h.eventSubscriptionCount == 0
+        h.scheduledJobCount == 0
+        !h.checkErrors.any { it.startsWith('statusJson:') }
+    }
+
+    // ---------- Visual Rules and classic apps ----------
+
+    @spock.lang.Unroll
+    def "a Visual Rule reports its own verdict, pause and name without rendering a page (#format, paused=#paused)"() {
+        given:
+        appType('Visual Rule Builder 2.0')
         def payload = [name: 'Visual (Paused)', rulePaused: paused]
         hubGet.register('/app/ruleBuilderJson/100') {
             JsonOutput.toJson(format == 'vrb-classic' ? payload + [whenNodes: [], thenNodes: []] : [:])
         }
-        hubGet.register('/app/ruleBuilder20Json/100') {
-            JsonOutput.toJson(payload + [ruleJson: [:], validationErrors: []])
-        }
+        hubGet.register('/app/ruleBuilder20Json/100') { JsonOutput.toJson(payload + [ruleJson: [:], validationErrors: []]) }
         hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
 
         when:
-        def health = script.toolCheckRuleHealth([appId: 100, source: 'ruleBuilderJson'])
+        def h = script.toolCheckRuleHealth([appId: 100])
 
         then:
-        health.ruleFormat == format
-        health.paused == paused
-        health.label == 'Visual (Paused)'
+        h.ruleFormat == format
+        h.paused == paused
+        h.label == 'Visual (Paused)'
+        h.ok == true
+        count('/installedapp/configure/json/100') == 0
+        !h.containsKey('privateBoolean')
 
         where:
         format        | paused
@@ -164,514 +381,97 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         'vrb-graph'   | true
     }
 
-    @spock.lang.Unroll
-    def "public Visual Rule health preserves raw own names (#format, paused=#paused, #name)"() {
+    def "a graph Visual Rule with validation errors is broken"() {
         given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') {
-            JsonOutput.toJson(format == 'vrb-classic' ?
-                [name: name, rulePaused: paused, whenNodes: [], thenNodes: []] : [:])
-        }
-        hubGet.register('/app/ruleBuilder20Json/100') {
-            JsonOutput.toJson([name: name + (paused ? " <span class='text-red'>(Paused)</span>" : ''),
-                              rulePaused: paused, ruleJson: [:], validationErrors: []])
-        }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def response = mcpDriver.callTool('hub_get_rule_health', [appId: 100])
-        def health = mcpDriver.parseInner(response)
-
-        then:
-        response.error == null
-        health.ruleFormat == format
-        health.paused == paused
-        health.label == name
-
-        where:
-        [format, paused, name] << [
-            ['vrb-classic', 'vrb-graph'], [false, true],
-            ['Literal <span>(Paused)</span>', 'Literal &amp; (Paused)',
-             "Literal <span class='text-red'>(Paused)</span> inside name"]
-        ].combinations()
-    }
-
-    @spock.lang.Unroll
-    def "public health uses compiled RM paused=#paused with source=#source"() {
-        given:
-        seedHealthy(100, [paused: paused])
-        hubGet.register('/installedapp/configure/json/100') { configJson(100, 'Literal (Paused)') }
-
-        when:
-        def health = script.toolCheckRuleHealth([appId: 100, source: source])
-
-        then:
-        health.paused == paused
-        health.label == (source == 'auto' ? 'Literal (Paused)' : null)
-
-        where:
-        paused | source
-        false  | 'auto'
-        true   | 'auto'
-        false  | 'ruleBuilderJson'
-        true   | 'ruleBuilderJson'
-    }
-
-    @spock.lang.Unroll
-    def "public health strips only proved markup and preserves the real name (#label)"() {
-        given:
-        seedHealthy(100)
-        hubGet.register('/installedapp/configure/json/100') { configJson(100, label) }
-        hubGet.register('/installedapp/statusJson/100') { throw new IOException('status unavailable') }
-
-        when:
-        def health = script.toolCheckRuleHealth([appId: 100, source: 'configPage'])
-
-        then:
-        health.label == expected
-        health.paused == paused
-        health.stopped == stopped
-        health.eventSubscriptionCount == null
-        health.checkErrors.any { it.contains('statusJson:') }
-
-        where:
-        label                                                                                               | expected          | paused | stopped
-        'Literal (Paused) <span>(Paused)</span>'                                                             | 'Literal (Paused)'| true   | null
-        'Literal (Stopped) <span>(Stopped)</span>'                                                           | 'Literal (Stopped)'| null  | true
-        'Literal (Paused) <span>(Paused)</span> <span>(Stopped)</span>'                                       | 'Literal (Paused)'| true   | true
-        'Literal (Paused) <span>(Stopped)</span> <span>(Paused)</span>'                                       | 'Literal (Paused)'| true   | true
-        'Literal (Paused)'                                                                                  | 'Literal (Paused)'| null   | null
-        'Literal &lt;span&gt;(Paused)&lt;/span&gt;'                                                           | 'Literal &lt;span&gt;(Paused)&lt;/span&gt;' | null | null
-    }
-
-    def "public config-only health uses the status paused boolean without stripping a literal suffix"() {
-        given:
-        seedHealthy(100)
-        hubGet.register('/installedapp/configure/json/100') { configJson(100, 'Literal (Paused)') }
-        hubGet.register('/installedapp/statusJson/100') {
-            JsonOutput.toJson([appSettings: [], appState: [[name: 'paused', value: 'false']]])
-        }
-
-        when:
-        def health = script.toolCheckRuleHealth([appId: 100, source: 'configPage'])
-
-        then:
-        health.paused == false
-        health.label == 'Literal (Paused)'
-    }
-
-    @spock.lang.Unroll
-    def "explicit stopped state #stored wins over older config markup"() {
-        given:
-        seedHealthy(100)
-        hubGet.register('/installedapp/configure/json/100') {
-            configJson(100, 'Literal (Stopped) <span>(Stopped)</span>')
-        }
-        hubGet.register('/installedapp/statusJson/100') {
-            JsonOutput.toJson([appSettings: [], appState: [[name: 'stopped', value: stored]]])
-        }
-
-        when:
-        def health = script.toolCheckRuleHealth([appId: 100])
-
-        then:
-        health.stopped == expected
-        health.paused == false
-        health.label == 'Literal (Stopped)'
-
-        where:
-        stored  | expected
-        false   | false
-        'false' | false
-        true    | true
-        'true'  | true
-    }
-
-    // ---------- preferred source: ruleBuilderJson broken boolean ----------
-
-    def "auto: healthy rule -> ok=true, broken=false, both sources contributed"() {
-        given:
-        seedHealthy(100)
+        appType('Visual Rule Builder 2.0')
+        hubGet.register('/app/ruleBuilderJson/100') { '{}' }
+        hubGet.register('/app/ruleBuilder20Json/100') { JsonOutput.toJson([name: 'V', ruleJson: [:], validationErrors: ['Trigger device missing']]) }
 
         when:
         def h = script._rmCheckRuleHealth(100)
 
         then:
-        h.ok == true
-        h.broken == false
-        h.source == "ruleBuilderJson+configPage"
-        h.issues.isEmpty()
-    }
-
-    def "auto: when NEITHER source is readable the verdict is flagged unreadable -- couldn't check, not checked-and-broken"() {
-        given: 'no hub paths registered: both the compiled-state and HTML reads throw'
-        settingsMap.enableRead = true
-
-        when:
-        def h = script._rmCheckRuleHealth(123)
-
-        then: 'ok stays false (no positive evidence of health), but unreadable marks the transient'
-        h.ok == false
-        h.unreadable == true
-        h.source == 'none'
-        h.broken == null
-        h.brokenMarkers.isEmpty()
-    }
-
-    def "auto: a genuine broken verdict is NOT unreadable"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: true]) }
-        hubGet.register('/installedapp/configure/json/100') { configJson(100) }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.ok == false
-        h.unreadable == false
+        h.ruleFormat == 'vrb-graph'
         h.broken == true
-    }
-
-    def "auto: ruleBuilderJson broken:true is the authoritative verdict (even when HTML shows nothing)"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') {
-            ruleBuilderJson([broken: true, capabsfalse: ["1": "Temperature of Sensor A(70) is ≠ Sensor B(73.9)"]])
-        }
-        hubGet.register('/installedapp/configure/json/100') { configJson(100) }   // no *BROKEN*, no markers
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
         h.ok == false
-        h.broken == true
-        h.issues.any { it.contains("broken:true") }
-        // capabsfalse lists conditions regardless of their truth, so it is not quoted as the cause
-        !h.issues.any { it.contains("False conditions") || it.contains("Sensor A") }
-        // the JSON caught a break the render scan missed -> cross-check fires
-        h.issues.any { it.contains("cross-check") }
-    }
-
-    def "auto: predicate summary is surfaced from ruleBuilderJson when present"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([hasPredicate: true, predCapabs: [1]]) }
-        hubGet.register('/installedapp/configure/json/100') { configJson(100) }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.predicate == [hasPredicate: true, predCapabs: [1]]
-    }
-
-    // ---------- shape-check (not status-check) ----------
-
-    @spock.lang.Unroll
-    def "auto: useST on with #desc -> ungated issue=#flagged"() {
-        given: "the rule switched Use Required Expression on; eval['0'] is its committed expression"
-        seedHealthy(100, [eval: evalState])
-        hubGet.register('/installedapp/configure/json/100') {
-            JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(configJson(100)) + [settings: [useST: useST]])
-        }
-
-        when:
-        def health = script._rmCheckRuleHealth(100)
-
-        then:
-        health.ok == !flagged
-        health.issues.any { it.contains("runs UNGATED") } == flagged
-
-        where:
-        desc                                   | useST  | evalState              || flagged
-        'no committed expression'              | "true" | [:]                    || true
-        'an empty expression'                  | "true" | ["0": []]              || true
-        'a committed expression'               | "true" | ["0": [1]]             || false
-        'only IF expressions in actions'       | "true" | ["1": ["2"]]           || true
-        'Use Required Expression off'          | ""     | [:]                    || false
-    }
-
-    def "auto: the committed token count is returned with the verdict"() {
-        given:
-        seedHealthy(100, [eval: ["0": [1, "AND", 2]]])
-        hubGet.register('/installedapp/configure/json/100') {
-            JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(configJson(100)) + [settings: [useST: "true"]])
-        }
-
-        expect:
-        script._rmCheckRuleHealth(100).requiredExpressionTokens == 3
-    }
-
-    def "auto: a rule state without an eval map leaves the token count unknown, never zero"() {
-        given:
-        seedHealthy(100, [eval: null])
-        hubGet.register('/installedapp/configure/json/100') {
-            JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(configJson(100)) + [settings: [useST: "true"]])
-        }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.requiredExpressionTokens == null
-        !h.issues.any { it.contains("runs UNGATED") }
-        h.checkErrors.any { it.contains("ungated rule is not ruled out") }
-    }
-
-    def "configPage: useST on with the expression unread is reported as unchecked, not as clean"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/installedapp/configure/json/100') {
-            JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(configJson(100)) + [settings: [useST: "true"]])
-        }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100, "configPage")
-
-        then:
-        h.checkErrors.any { it.contains("ungated rule is not ruled out") }
-        !h.issues.any { it.contains("runs UNGATED") }
-    }
-
-    def "auto: empty {} (nonexistent id) is ignored as a JSON source and falls back to HTML"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { "{}" }                      // nonexistent id => {}
-        hubGet.register('/installedapp/configure/json/100') { configJson(100) }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.broken == null          // JSON source not usable
-        h.source == "configPage"  // only HTML contributed
-        h.ok == true
-    }
-
-    def "auto: a classic Visual Rule (whenNodes/thenNodes) is recognized as vrb-classic, not mistaken for an RM rule"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') {
-            JsonOutput.toJson([name: "vrb", rulePaused: false, whenNodes: [], thenNodes: [], elseNodes: []])
-        }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.ruleFormat == "vrb-classic"
-        h.broken == null               // classic VRB has no compiled broken boolean
-        h.source == "ruleBuilderJson"  // recognized; the RM HTML path is skipped for VRB
-        // RM HTML scan must not run for a Visual Rule (it has no *BROKEN*/actType protocol)
-        hubGet.calls.every { it.path != "/installedapp/configure/json/100" }
-    }
-
-    // ---------- VRB graph rules: validationErrors are the broken-equivalent ----------
-
-    def "auto: a graph Visual Rule with validationErrors reports broken:true (ruleFormat vrb-graph)"() {
-        given:
-        settingsMap.enableRead = true
-        // ruleBuilderJson returns the graph app's raw state (no broken/whenNodes) -> unrecognized,
-        // so the reader falls through to the graph endpoint.
-        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson([someGraphAppState: true]) }
-        hubGet.register('/app/ruleBuilder20Json/100') {
-            JsonOutput.toJson([name: "g", rulePaused: false, ruleJson: "{}", validationErrors: ["Trigger device missing"]])
-        }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.ruleFormat == "vrb-graph"
-        h.broken == true
-        h.source == "ruleBuilder20Json"
-        h.validationErrors == ["Trigger device missing"]
-        h.ok == false
-        h.issues.any { it.contains("validation errors") }
-        // VRB rules don't speak the RM HTML protocol -> that path is skipped
-        hubGet.calls.every { it.path != "/installedapp/configure/json/100" }
-    }
-
-    def "auto: a healthy graph Visual Rule (no validationErrors) reports broken:false"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson([someGraphAppState: true]) }
-        hubGet.register('/app/ruleBuilder20Json/100') {
-            JsonOutput.toJson([name: "g", rulePaused: false, ruleJson: '{"version":1,"nodes":[],"edges":[]}', validationErrors: []])
-        }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.ruleFormat == "vrb-graph"
-        h.broken == false
-        h.ok == true
-        h.source == "ruleBuilder20Json"
-    }
-
-    def "auto: an unrecognized compiled state (not rm/vrb, graph not-a-graph) falls back to the HTML path"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson([someAppState: true]) }      // not rm / vrb-classic
-        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false,"message":"not found"}' }  // not a graph rule (no throw)
-        hubGet.register('/installedapp/configure/json/100') { configJson(100) }                       // Rule-5.1 type
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.source == "configPage"   // compiled-state path found nothing -> HTML fallback ran
-        h.ruleFormat == "rm"       // and the HTML path classified the configPage app type
-        h.ok == true
+        h.validationErrors == ['Trigger device missing']
+        h.issues.any { it.contains('Trigger device missing') }
     }
 
     @spock.lang.Unroll
-    def "auto: a classic app (no compiled state) is classified by configPage app type: #typeName -> #expected"() {
-        // Button Controller / Basic Rule and other classic apps share RM's configPage protocol;
-        // health covers them via the configPage checks and names the app type in ruleFormat.
+    def "a built-in classic app is classified by its type without a compiled read: #typeName -> #expected"() {
         given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson([someAppState: true]) }  // not rm / vrb-classic
-        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }                    // not a graph rule
-        hubGet.register('/installedapp/configure/json/100') {
-            JsonOutput.toJson([
-                app: [id: 100, label: "BAT-x", name: typeName, installed: true,
-                      appType: [name: typeName, namespace: "hubitat"]],
-                configPage: [name: "mainPage", error: null, sections: [[title: "", input: []]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+        appType(typeName)
+        hubGet.register('/installedapp/configure/json/100') { configJson(100, [typeName: typeName]) }
 
         when:
         def h = script._rmCheckRuleHealth(100)
 
         then:
         h.ruleFormat == expected
-        h.broken == null            // classic apps have no compiled broken boolean
-        h.source == "configPage"
+        h.broken == null
         h.ok == true
+        count('/app/ruleBuilderJson/100') == 0
+        !h.containsKey('privateBoolean')
 
         where:
         typeName                | expected
-        "Basic Rule-1.0"        | "basic-rule"
-        "Button Controller-5.1" | "button-controller"
-        "Notifier-1.0"          | "classic-app"
+        'Basic Rule-1.0'        | 'basic-rule'
+        'Button Controller-5.1' | 'button-controller'
+        'Notifier-1.0'          | 'classic-app'
     }
 
-    def "a user or community app's default page is never rendered by a health read"() {
+    def "a user or community app is not read at all"() {
         given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { '{}' }
-        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
         script.metaClass.getAppByAppId = { Long id -> [id: id, label: 'Package Manager', appType: [name: 'Hubitat Package Manager', namespace: 'dcm.hpm']] }
-        List rendered = []
-        hubGet.register('/installedapp/configure/json/100') { rendered << 'default'; '{}' }
 
         when:
         def h = script._rmCheckRuleHealth(100)
 
         then:
-        rendered.isEmpty()
-        h.ruleFormat == "classic-app"
-        h.label == "Package Manager"
-        h.checkErrors.any { it.contains("was not read: it is a user or community app") }
+        hubGet.calls.isEmpty()
+        h.ruleFormat == 'classic-app'
+        h.label == 'Package Manager'
+        h.checkErrors.any { it.contains('was not read: it is a user or community app') }
         h.unreadable == true
         h.ok == false
     }
 
-    def "a user or community app whose state carries Rule Machine's broken flag is not read as a healthy rule"() {
+    def "an app without an app type is not read as a built-in app"() {
         given:
-        settingsMap.enableRead = true
-        script.metaClass.getAppByAppId = { Long id -> [id: id, label: 'Widget', appType: [name: 'Widget', namespace: 'someDeveloper']] }
-        List read = []
-        hubGet.register('/app/ruleBuilderJson/100') { read << 'compiled'; '{"broken":false}' }
-        hubGet.register('/installedapp/configure/json/100') { read << 'page'; '{}' }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, label: 'Untyped'] }
 
         when:
         def h = script._rmCheckRuleHealth(100)
 
         then:
-        read.isEmpty()
-        h.ruleFormat == "classic-app"
-        h.broken == null
-        h.ok == false
+        hubGet.calls.isEmpty()
         h.unreadable == true
     }
 
-    def "an app the health read cannot identify is not rendered either"() {
+    @spock.lang.Unroll
+    def "an app whose lookup throws gets its compiled state read but no page, and is never reported healthy (broken=#brokenFlag)"() {
         given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { '{}' }
-        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
         script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
-        List rendered = []
-        hubGet.register('/installedapp/configure/json/100') { rendered << 'default'; '{}' }
+        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: brokenFlag]) }
 
         when:
         def h = script._rmCheckRuleHealth(100)
 
         then:
-        rendered.isEmpty()
-        h.checkErrors.any { it.contains("could not be identified (lookup failed)") }
+        count('/installedapp/configure/json/100') == 0
+        h.ruleFormat == 'rm'
+        h.broken == brokenFlag
         h.ok == false
+        h.checkErrors.any { it.contains('could not be identified (lookup failed)') }
+
+        where:
+        brokenFlag << [true, false]
     }
 
-    def "an app whose lookup throws still gets its compiled state read, so a broken rule is reported broken"() {
+    def "an app id the hub does not know is refused before any read"() {
         given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: true]) }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
-        List rendered = []
-        hubGet.register('/installedapp/configure/json/100') { rendered << 'default'; '{}' }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        rendered.isEmpty()
-        h.ruleFormat == "rm"
-        h.broken == true
-        h.unreadable == false
-        h.ok == false
-    }
-
-    def "an app whose lookup throws is never reported healthy, even when its compiled state reads not broken"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: false]) }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.broken == false
-        h.checkErrors.any { it.contains("could not be identified (lookup failed)") }
-        h.ok == false
-    }
-
-    def "an app id the hub does not know is refused instead of being read as a built-in app"() {
-        given:
-        settingsMap.enableRead = true
         script.metaClass.getAppByAppId = { Long id -> null }
-        List read = []
-        hubGet.register('/app/ruleBuilderJson/100') { read << 'compiled'; '{}' }
-        hubGet.register('/installedapp/configure/json/100') { read << 'page'; '{}' }
 
         when:
         script._rmCheckRuleHealth(100)
@@ -679,369 +479,57 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         then:
         def refused = thrown(IllegalArgumentException)
         refused.message.contains('App 100 not found')
-        read.isEmpty()
+        hubGet.calls.isEmpty()
     }
 
-    def "an app without an app type is not read as a built-in app"() {
-        given:
-        settingsMap.enableRead = true
-        script.metaClass.getAppByAppId = { Long id -> [id: id, label: 'Untyped'] }
-        List read = []
-        hubGet.register('/app/ruleBuilderJson/100') { read << 'compiled'; '{"broken":false}' }
-        hubGet.register('/installedapp/configure/json/100') { read << 'page'; '{}' }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        read.isEmpty()
-        h.ruleFormat == "classic-app"
-        h.unreadable == true
-    }
-
-    def "auto: a LONE configPage fetch failure is a non-gating checkErrors diagnostic when ruleBuilderJson read clean"() {
-        given: 'the compiled source reads clean; the HTML leg alone fails, so the fetch error must remain distinct from evidence of a broken rule'
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: false]) }
-        // configure/json unregistered -> _rmFetchConfigJson throws inside the HTML path
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then: 'ok reflects what WAS read; the failed leg is named in checkErrors, not issues'
-        h.broken == false
-        h.ok == true
-        h.unreadable == false
-        h.issues.isEmpty()
-        h.checkErrors.any { it.contains("configPage read failed") }
-
-    }
-
-    def "auto: a LONE compiled-state read failure is surfaced in checkErrors when the HTML leg read clean (was silently discarded)"() {
-        given: 'ruleBuilderJson read fails; configPage renders clean -- the authoritative source went unread and the verdict must say so'
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { throw new RuntimeException('status code: 408, reason phrase: Request Timeout') }
-        hubGet.register('/installedapp/configure/json/100') { configJson(100) }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then: 'ok reflects the clean HTML scan; the unread compiled source is named, not swallowed'
-        h.ok == true
-        h.unreadable == false
-        h.broken == null
-        h.source == "configPage"
-        h.issues.isEmpty()
-        h.checkErrors.any { it.contains("compiled-state read failed") }
-    }
-
-    def "auto: a fully-read verdict carries an EMPTY checkErrors (always present)"() {
-        given:
-        seedHealthy(100)
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.checkErrors == []
-    }
-
-    def "auto: a ruleBuilderJson with NO actionList is reported as the degraded settings-scan mode"() {
-        given: "a valid RM record from firmware that does not carry action membership"
-        seedHealthy(100, [actionList: null])
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then: "non-gating, but named -- silence here read as 'structure verified, no orphans'"
-        h.ok == true
-        h.checkErrors.any { it.toString().contains("no usable actionList") }
-        h.orphanedActionRows == []
-    }
-
-    def "auto: ruleBuilderJson broken:true AND an HTML marker agree -> no cross-check issue"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: true]) }
-        hubGet.register('/installedapp/configure/json/100') { configJson(100, "BAT-RH-test", ["**Broken Action**"]) }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.broken == true
-        h.brokenMarkers.contains("**Broken Action**")
-        h.ok == false
-        h.issues.every { !it.contains("cross-check") }   // sources agree -> no cross-check noise
-    }
-
-    def "auto: multiple-flag poison is detected from statusJson vs schema (RM HTML path)"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: false]) }
-        hubGet.register('/installedapp/configure/json/100') {
-            configJson(100, "BAT-RH-test", [], [[name: "dev1", type: "capability.switch", multiple: true]])
-        }
-        hubGet.register('/installedapp/statusJson/100') {
-            statusJson(100, [[name: "dev1", type: "capability.switch", multiple: false, value: "8"]])
-        }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.multipleFlagPoison.contains("dev1")
-        h.ok == false
-        h.issues.any { it.contains("multiple-flag poison") }
-    }
-
-    def "an RM rule without a predicate omits the predicate field"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: false]) }  // no hasPredicate/predCapabs
-        hubGet.register('/installedapp/configure/json/100') { configJson(100) }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        !h.containsKey("predicate")
-    }
-
-    // ---------- retained HTML path: fallback + its own detections ----------
-
-    def "auto: when ruleBuilderJson is unavailable, the HTML *BROKEN* label still flags the rule"() {
-        given:
-        settingsMap.enableRead = true
-        // ruleBuilderJson NOT registered -> helper catches the throw and returns null
-        hubGet.register('/installedapp/configure/json/100') { configJson(100, "BAT-RH-test *BROKEN*") }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.broken == null
-        h.source == "configPage"
-        h.ok == false
-        h.issues.any { it.contains("*BROKEN*") }
-    }
-
-    def "auto: HTML markers with ruleBuilderJson broken:false -> cross-check flags the disagreement"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: false]) }
-        hubGet.register('/installedapp/configure/json/100') { configJson(100, "BAT-RH-test", ["**Broken Action**"]) }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.broken == false
-        h.brokenMarkers.contains("**Broken Action**")
-        h.issues.any { it.contains("render text disagrees") }
-        h.ok == false
-    }
-
-    def "auto: a broken marker in the body-element format (live UI renderer shape) is caught"() {
-        // Regression guard: the live hub serves '**Broken Trigger**' in the section.body[]
-        // element format (sect.body[].description), not the paragraphs-array. A paragraphs-only
-        // scan missed it on fw 2.5.0.143 (verified live). The health scan reads BOTH formats.
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: false]) }
-        hubGet.register('/installedapp/configure/json/100') {
-            JsonOutput.toJson([
-                app: [id: 100, label: "BAT-RH-test", name: "Rule-5.1", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", error: null, sections: [
-                    [title: "", input: [], body: [
-                        [element: "paragraph", description: "**Broken Trigger**"],
-                        [element: "paragraph", description: "Define Actions"]
-                    ]]
-                ]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.brokenMarkers.contains("**Broken Trigger**")
-        h.ok == false
-        // ruleBuilderJson broken:false but an HTML marker is present -> cross-check fires
-        h.issues.any { it.contains("render text disagrees") }
-    }
-
-    // ---------- source selection (param) ----------
-
-    def "source=configPage forces the HTML path only (ruleBuilderJson never read)"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/installedapp/configure/json/100') { configJson(100) }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100, "configPage")
-
-        then:
-        h.source == "configPage"
-        h.broken == null
-        hubGet.calls.every { !(it.path == "/app/ruleBuilderJson/100") }
-    }
-
-    def "source=ruleBuilderJson forces the JSON path only (configure/json never read)"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: false]) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100, "ruleBuilderJson")
-
-        then:
-        h.source == "ruleBuilderJson"
-        h.broken == false
-        h.ok == true
-        hubGet.calls.every { !(it.path == "/installedapp/configure/json/100") }
-    }
-
-    def "source=ruleBuilderJson, clean negative ({} + not-a-graph) -> ok=false with unavailable guidance"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { "{}" }                       // nonexistent id => {}
-        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false,"message":"not found"}' }  // not a graph rule (no throw)
-
-        when:
-        def h = script._rmCheckRuleHealth(100, "ruleBuilderJson")
-
-        then:
-        h.ok == false
-        h.broken == null
-        h.source == "none"
-        h.issues.any { it.contains("unavailable") && it.contains("source='auto'") }
-    }
-
-    def "source=ruleBuilderJson, a THROWN read is reported as a read failure, not a missing rule (silent-failure review)"() {
-        given:
-        settingsMap.enableRead = true
-        // Both endpoints unregistered -> the mock throws (stands in for auth/hub-down); the
-        // compiled-state read must surface as a read FAILURE, not 'nonexistent / wrong firmware'.
-
-        when:
-        def h = script._rmCheckRuleHealth(100, "ruleBuilderJson")
-
-        then:
-        h.ok == false
-        h.broken == null
-        h.issues.any { it.contains("read FAILED") && it.contains("hub read error") }
-        h.issues.every { !it.contains("nonexistent id") }   // must NOT misattribute to a missing rule
-    }
-
-    def "source=ruleBuilderJson, a non-JSON 200 (login page) is a read failure, not a missing rule"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { "<html><body>Please log in</body></html>" }   // bad 200, not JSON
-        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }                        // not a graph rule
-
-        when:
-        def h = script._rmCheckRuleHealth(100, "ruleBuilderJson")
-
-        then:
-        h.ok == false
-        h.issues.any { it.contains("read FAILED") }
-        h.issues.every { !it.contains("nonexistent id") }
-    }
-
-    def "source=ruleBuilderJson, a non-JSON 200 on the graph endpoint is also a read failure (final-pass review)"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson([someAppState: true]) }   // valid JSON, not a rule
-        hubGet.register('/app/ruleBuilder20Json/100') { "<html><body>Please log in</body></html>" }  // bad 200 on the 2nd GET
-
-        when:
-        def h = script._rmCheckRuleHealth(100, "ruleBuilderJson")
-
-        then:
-        h.ok == false
-        h.issues.any { it.contains("read FAILED") }
-        h.issues.every { !it.contains("nonexistent id") }
-    }
-
-    def "auto: an app state with only one VRB node array (not both) is NOT classified as vrb-classic"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson([whenNodes: [], somethingElse: true]) }  // lone key
-        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }
-        hubGet.register('/installedapp/configure/json/100') { configJson(100) }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
-
-        when:
-        def h = script._rmCheckRuleHealth(100)
-
-        then:
-        h.ruleFormat != "vrb-classic"   // a lone whenNodes key must not be misread as a VRB rule
-        h.source == "configPage"        // falls through to the RM/HTML path
-    }
-
-    def "null appId short-circuits to a clean unhealthy verdict without any HTTP calls (Gemini review)"() {
-        given:
-        settingsMap.enableRead = true
-
+    def "a null appId is an unreadable verdict with no reads"() {
         when:
         def h = script._rmCheckRuleHealth(null)
 
         then:
         h.ok == false
-        h.unreadable == true   // nothing was checked -- the ok||unreadable gates must read couldn't-check, not broken
-        h.broken == null
-        h.source == "none"
-        h.issues.any { it.contains("appId is null") }
-        h.brokenMarkerCounts == [:]   // faithful subset of the normal shape (the gate reads this key)
-        hubGet.calls.isEmpty()   // no /app/ruleBuilderJson/null or /installedapp/configure/json/null
+        h.unreadable == true
+        h.issues.any { it.contains('appId is null') }
+        hubGet.calls.isEmpty()
     }
 
     // ---------- dispatch envelope ----------
 
     @spock.lang.Unroll
-    def "hub_get_rule_health via dispatch returns the enriched shape (useGateways=#useGateways)"() {
+    def "hub_get_rule_health via dispatch returns the report (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        seedHealthy(100)
+        seed(100, [private: false, disabledActions: ['4']])
 
         when:
         def response = mcpDriver.callTool('hub_get_rule_health', [appId: 100])
+        def inner = mcpDriver.parseInner(response)
 
         then:
         response.error == null
         !response.result.isError
-        def inner = mcpDriver.parseInner(response)
         inner.ok == true
-        inner.broken == false
-        inner.source == "ruleBuilderJson+configPage"
+        inner.privateBoolean == false
+        inner.disabledActions == ['4']
+        inner.eventSubscriptionCount == 1
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_get_rule_health via dispatch rejects an invalid source with isError validation result (useGateways=#useGateways)"() {
+    def "hub_get_rule_health refuses the removed source argument as unknown (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableRead = true
+        seed(100)
 
         when:
-        def response = mcpDriver.callTool('hub_get_rule_health', [appId: 100, source: "bogus"])
+        def response = mcpDriver.callTool('hub_get_rule_health', [appId: 100, source: 'configPage'])
 
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains("source must be one of")
+        mcpDriver.parseInner(response).error.contains('Unknown hub_get_rule_health argument: source')
+        hubGet.calls.isEmpty()
 
         where:
         useGateways << [true, false]
