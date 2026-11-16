@@ -3929,3 +3929,39 @@ def test_short_rename_recovery_stops_and_keeps_the_record_when_it_cannot_be_read
         _short_rename_runner(client)._recover_short_rename_room(_listed(client.rooms))
     assert client.rooms == {"7": "Z9"}
     assert "hub_delete_file" not in client.calls and "hub_write_file" not in client.calls
+
+
+class _DriverPagesClient:
+    """hub_list_drivers in pages of two: answers each cursor with its slice and the next cursor."""
+
+    def __init__(self, rows, broken=False):
+        self.rows, self.broken, self.args = rows, broken, []
+
+    def call_tool(self, name, arguments):
+        args = arguments["args"]
+        self.args.append(dict(args))
+        if self.broken:
+            return {"response_too_large": True, "truncated": True}
+        start = int(args["cursor"] or 0)
+        out = {"drivers": self.rows[start:start + 2]}
+        if start + 2 < len(self.rows):
+            out["nextCursor"] = str(start + 2)
+        return out
+
+
+def _driver_catalog_runner(client):
+    runner = object.__new__(et.TestRunner)
+    runner.client = client
+    return runner
+
+
+def test_driver_catalog_pages_from_an_empty_cursor_and_joins_every_page():
+    rows = [{"id": i, "name": f"D{i}"} for i in range(5)]
+    client = _DriverPagesClient(rows)
+    assert _driver_catalog_runner(client)._driver_catalog("all") == rows
+    assert client.args == [{"include": "all", "cursor": c} for c in ("", "2", "4")]
+
+
+def test_driver_catalog_refuses_a_page_that_is_not_a_driver_list():
+    with pytest.raises(AssertionError, match="driver catalog read failed"):
+        _driver_catalog_runner(_DriverPagesClient([], broken=True))._driver_catalog()
