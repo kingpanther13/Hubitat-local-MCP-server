@@ -1942,15 +1942,15 @@ class TestRunner:
 
     def _driver_catalog(self, include: str = "user") -> list[dict]:
         """Every hub_list_drivers row, read page by page from cursor "" so a large catalog never
-        reaches the response-size guard. A page that is not a driver list raises: it is not
-        'driver absent'."""
+        reaches the response-size guard. A page that is not a successful hub read raises: a failed
+        read answers drivers=[] with another source, which is not 'driver absent'."""
         rows: list[dict] = []
         cursor = ""
         for _ in range(200):
             page = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_list_drivers", "args": {"include": include, "cursor": cursor}})
-            assert isinstance(page.get("drivers"), list), \
-                f"driver catalog read failed (not a driver list) -- this is NOT 'driver absent': {page}"
+            assert isinstance(page.get("drivers"), list) and page.get("source") == "hub_api", \
+                f"driver catalog read failed (source={page.get('source')!r}) -- this is NOT 'driver absent': {page}"
             rows += [d for d in page["drivers"] if isinstance(d, dict)]
             cursor = page.get("nextCursor")
             if not cursor:

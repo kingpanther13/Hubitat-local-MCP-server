@@ -3934,16 +3934,18 @@ def test_short_rename_recovery_stops_and_keeps_the_record_when_it_cannot_be_read
 class _DriverPagesClient:
     """hub_list_drivers in pages of two: answers each cursor with its slice and the next cursor."""
 
-    def __init__(self, rows, broken=False):
-        self.rows, self.broken, self.args = rows, broken, []
+    def __init__(self, rows, broken=None, fail_at=None):
+        self.rows, self.broken, self.fail_at, self.args = rows, broken, fail_at, []
 
     def call_tool(self, name, arguments):
         args = arguments["args"]
         self.args.append(dict(args))
         if self.broken:
-            return {"response_too_large": True, "truncated": True}
+            return self.broken
         start = int(args["cursor"] or 0)
-        out = {"drivers": self.rows[start:start + 2]}
+        if start == self.fail_at:
+            return {"drivers": [], "count": 0, "source": "unavailable"}
+        out = {"drivers": self.rows[start:start + 2], "source": "hub_api"}
         if start + 2 < len(self.rows):
             out["nextCursor"] = str(start + 2)
         return out
@@ -3962,6 +3964,15 @@ def test_driver_catalog_pages_from_an_empty_cursor_and_joins_every_page():
     assert client.args == [{"include": "all", "cursor": c} for c in ("", "2", "4")]
 
 
-def test_driver_catalog_refuses_a_page_that_is_not_a_driver_list():
+@pytest.mark.parametrize("broken", [{"response_too_large": True, "truncated": True},
+                                    {"drivers": [], "source": "unavailable"},
+                                    {"drivers": [], "note": "Empty response from hub API"}])
+def test_driver_catalog_refuses_a_page_that_is_not_a_successful_read(broken):
     with pytest.raises(AssertionError, match="driver catalog read failed"):
-        _driver_catalog_runner(_DriverPagesClient([], broken=True))._driver_catalog()
+        _driver_catalog_runner(_DriverPagesClient([], broken=broken))._driver_catalog()
+
+
+def test_driver_catalog_refuses_a_failed_later_page_instead_of_returning_the_earlier_rows():
+    client = _DriverPagesClient([{"id": i, "name": f"D{i}"} for i in range(5)], fail_at=2)
+    with pytest.raises(AssertionError, match="source='unavailable'"):
+        _driver_catalog_runner(client)._driver_catalog("all")
