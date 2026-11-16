@@ -215,6 +215,35 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.ok == true
     }
 
+    @spock.lang.Unroll
+    def "a #typeName rule's structure comes from its settings rows, not the 5.1 state walk (unclosed=#unclosed)"() {
+        given: "a compiled state whose 5.1 actions map lacks action 1, which the 5.1 walk reads as a missing action"
+        appType(typeName)
+        def rows = [[name: 'actType.1', value: 'condActs'], [name: 'actSubType.1', value: 'getIfThen']]
+        if (!unclosed) rows += [[name: 'actType.2', value: 'condActs'], [name: 'actSubType.2', value: 'getEndIf']]
+        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([actionList: unclosed ? ['1'] : ['1', '2']]) }
+        hubGet.register('/installedapp/configure/json/100') { configJson(100, [typeName: typeName]) }
+        hubGet.register('/installedapp/statusJson/100') {
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: rows, eventSubscriptions: [], scheduledJobs: [], appState: []])
+        }
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        !h.structuralIssues.any { it.contains('missing action') }
+        h.ok == !unclosed
+        unclosed == h.structuralIssues.any { it.contains('never closed') }
+        !h.issues.any { it.contains('hub_set_rule') }
+
+        where:
+        typeName   | unclosed
+        'Rule-4.1' | false
+        'Rule-5.0' | false
+        'Rule-4.1' | true
+        'Rule-5.0' | true
+    }
+
     def "a Required Expression switched on with none committed is a structural issue"() {
         given:
         seed(100, [:], [settings: [useST: true]])
@@ -303,6 +332,9 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.checkErrors.any { it.contains('compiled-state read failed') }
         h.unreadable == false
         h.broken == null
+
+        and: "a rule whose broken flag went unread is not reported healthy"
+        h.ok == false
     }
 
     def "a rule whose compiled state is not a rule's says its flags were not checked"() {
@@ -317,6 +349,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         then:
         h.checkErrors.any { it.contains('returned no compiled state') }
         h.broken == null
+        h.ok == false
     }
 
     def "nothing readable is unreadable, not checked-and-broken"() {

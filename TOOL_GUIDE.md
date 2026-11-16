@@ -1060,8 +1060,8 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
   - **status** precedence is disabled > stopped > paused > active; the booleans stay independent (a paused rule disabled later reads disabled:true, paused:true, status:"disabled").
   - **unknown**: when /hub2/appsList cannot be read, every rule is unknown, the list is unfiltered (deleted rules may linger) and the result carries **statusNote**; when one rule's entry lacks data, only that rule is unknown.
   - For one rule's state call hub_get_rule_health. For the disabled flag of other classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances').
-- **hub_call_rule** — act on one or more RM rules (ruleId takes an id or an array). `rule` (Rule Machine 4.x only) dispatches the whole set in one RMUtils call; `actions`, `stop` and `start` click each rule's page button in turn and return per-rule results, with failedRuleIds/remainingRuleIds on a partial batch
-  - action="rule" (default): full evaluation (triggers + conditions + actions) of a Rule Machine 4.x rule; refused for 5.x rules, where it runs nothing
+- **hub_call_rule** — act on one or more RM rules (ruleId takes an id or an array). `rule` (refused for Rule Machine 5.1 rules) dispatches the whole set in one RMUtils call; `actions`, `stop` and `start` click each rule's page button in turn and return per-rule results, with failedRuleIds/remainingRuleIds on a partial batch
+  - action="rule" (default): full evaluation (triggers + conditions + actions); refused for Rule Machine 5.1 rules, where it runs nothing
   - action="actions": run actions only, skip conditions
   - action="stop": stop running actions
   - action="start": restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged)
@@ -1107,18 +1107,18 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 `action` selects which Rule Machine verb to invoke (default `rule`):
 
-- **`rule`** → RMUtils `runRule`: for a Rule Machine 4.x rule, re-evaluate the rule's conditions, then run the matching true/false action set. Rule Machine 5.x accepts runRule and runs nothing, so a call naming any 5.x rule (Rule-5.x or Button Rule-5.x) is refused before anything is dispatched; use `actions` to run a 5.x rule's actions.
+- **`rule`** → RMUtils `runRule`: re-evaluate the rule's conditions, then run the matching true/false action set. Rule Machine 5.1 accepts runRule and runs nothing, so a call naming any 5.1 rule (Rule-5.1 or Button Rule-5.1) is refused before anything is dispatched; use `actions` to run a 5.1 rule's actions.
 - **`actions`**: click the rule's Run Actions button (`runAction`) to run the action list directly, skipping condition evaluation.
 - **`stop`**: halt the rule's in-progress actions.
 - **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged).
 
-`actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), one rule at a time, not RMUtils: that is the route the hub UI takes. `stop` and `start` read the rule's stopped state first and leave a rule already in the target state alone, so they are safe to repeat; a repeated `rule` or `actions` runs the actions again. Only `rule` goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation).
+`actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), one rule at a time, not RMUtils: that is the route the hub UI takes. `stop` and `start` read the rule's stopped state first and leave a rule already in the target state alone, so they are safe to repeat; a repeated `rule` or `actions` runs the actions again. Only `rule` goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation). An id whose app is not a Rule Machine rule (the Rule Machine parent app, a Basic Rule, any other app) is refused for every action before anything is dispatched, as it is by hub_set_rule_paused and hub_set_rule_private_boolean.
 
 ### hub_get_rule_health
 
 `ruleFormat` says what was inspected: `rm` (Rule Machine or Button Rule) / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
 
-- **Rule Machine**: the rule's page is rendered once, then its compiled state (/app/ruleBuilderJson) is read once. Rule Machine updates its `broken` flag only when the page renders, so a rule whose trigger device was deleted reads broken here without opening the editor first. The report carries `broken`, `paused`, `stopped`, `privateBoolean`, `disabledActions` (the native ids of actions switched off in the rule; `disabledTriggers` likewise when present), `disabled` (red-X), `label` (runtime decoration removed), `structuralIssues` (the same IF/Repeat block and expression check hub_set_rule runs), and the page's own error, `*BROKEN*` label or `**Broken Trigger|Action|Condition**` markers as `issues`.
+- **Rule Machine**: the rule's page is rendered once, then its compiled state (/app/ruleBuilderJson) is read once. Rule Machine updates its `broken` flag only when the page renders, so a rule whose trigger device was deleted reads broken here without opening the editor first. The report carries `broken`, `paused`, `stopped`, `privateBoolean`, `disabledActions` (the native ids of actions switched off in the rule; `disabledTriggers` likewise when present), `disabled` (red-X), `label` (runtime decoration removed), `structuralIssues` (for a Rule Machine 5.1 rule the same IF/Repeat block and expression check hub_set_rule runs; for older rule types the IF/Repeat balance of its action rows), and the page's own error, `*BROKEN*` label or `**Broken Trigger|Action|Condition**` markers as `issues`.
 - **Visual Rules Builder**: the engine's own verdict — a graph rule's `validationErrors` (broken when non-empty) and pause state, with the rule's own name as `label`.
 - **Other built-in classic apps** (Basic Rule, Button Controller, Room Lighting, …): label, red-X and page errors; `broken` is null.
 - User and community apps are not read (their page runs their own code); use hub_get_app_config.

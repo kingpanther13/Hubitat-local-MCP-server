@@ -21,7 +21,7 @@ def _getAllToolDefinitions_partNativeRM() {
                 type: "object",
                 properties: [
                     ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"],
-                    action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "actions runs the rule's actions; rule (the default) applies to Rule Machine 4.x rules only and is refused for 5.x rules; stop/start stop or restart the rule."],
+                    action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "actions runs the rule's actions; rule (the default) evaluates the rule and is refused for Rule Machine 5.1 rules, where it runs nothing; stop/start stop or restart the rule."],
                 ],
                 required: ["ruleId"]
             ]
@@ -488,11 +488,17 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
     if (paused || stopped) {
         try {
             def status = _rmFetchStatusJson(idInt)
-            def statePaused = _readAppStateBoolean(status, "paused", null)
-            def stateStopped = _readAppStateBoolean(status, "stopped", null)
-            if (statePaused != null) paused = statePaused
-            // A readable state with no stopped flag means the rule was never stopped.
-            stopped = (stateStopped != null) ? stateStopped : false
+            // Only a readable state settles the flags; a missing one leaves the name's decoration.
+            if (status?.appState instanceof List) {
+                def statePaused = _readAppStateBoolean(status, "paused", null)
+                if (statePaused != null) paused = statePaused
+                // No stopped entry means the rule was never stopped; a malformed one leaves the decoration.
+                if (!status.appState.any { it?.name == "stopped" }) stopped = false
+                else {
+                    def stateStopped = _readAppStateBoolean(status, "stopped", null)
+                    if (stateStopped != null) stopped = stateStopped
+                }
+            }
         } catch (Exception e) {
             mcpLog("warn", "rm-interop", "_rmAnnotateRuleStatus: rule ${entry.id} state read failed (${e.message}); status from its appsList name")
         }
@@ -575,6 +581,8 @@ def toolRunRmRule(args) {
     List<Integer> ruleIds = idArg.ids
     ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
     def action = args?.action ?: "rule"
+    if (!(action in ["rule", "actions", "stop", "start"])) throw new IllegalArgumentException("Invalid action '${action}'. Must be 'rule', 'actions', 'stop', or 'start'.")
+    Map<Integer, String> types = _rmRequireRuleTargets(ruleIds, "hub_call_rule")
 
     // start/stop route through the stopRule button click (a toggle on
     // state.stopped) rather than RMUtils.sendAction: clicking stopRule when
@@ -640,20 +648,42 @@ def toolRunRmRule(args) {
         return out
     }
 
-    if (action != "rule") throw new IllegalArgumentException("Invalid action '${action}'. Must be 'rule', 'actions', 'stop', or 'start'.")
-    // Rule Machine 5.x accepts runRule through RMUtils and then runs nothing, so a 5.x target would
-    // report success with no effect. A type that cannot be read is left to RMUtils.
-    List<Integer> rm5 = ruleIds.findAll { id ->
-        def typeName = null
-        try { typeName = getAppByAppId(id as Long)?.appType?.name?.toString() } catch (Exception ignored) { }
-        typeName != null && typeName ==~ /(?:Button )?Rule-5\..*/
-    }
-    if (rm5) {
-        throw new IllegalArgumentException("action 'rule' only applies to Rule Machine 4.x rules; rule(s) ${rm5.join(', ')} are Rule Machine 5.x, where it runs nothing. Use action:'actions' to run a 5.x rule's actions. Nothing was dispatched.")
+    // Rule Machine 5.1 accepts runRule through RMUtils and then runs nothing, so a 5.1 target would
+    // report success with no effect. Older types and a type that cannot be read are left to RMUtils.
+    List<Integer> rm51 = ruleIds.findAll { id -> types.get(id) in ["Rule-5.1", "Button Rule-5.1"] }
+    if (rm51) {
+        throw new IllegalArgumentException("action 'rule' is refused for Rule Machine 5.1 rules, where it runs nothing; rule(s) ${rm51.join(', ')} are Rule Machine 5.1. Use action:'actions' to run a 5.1 rule's actions. Nothing was dispatched.")
     }
     def result = sendRmAction(ruleIds, "runRule", "hub_call_rule action=${action}")
     if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
     return result
+}
+
+// RMUtils reports success while running nothing on an id that is not a rule, or has no app at all,
+// so both are refused before any dispatch. Returns each id's app type name; null (lookup failed)
+// is left to the existing paths.
+private Map<Integer, String> _rmRequireRuleTargets(List<Integer> ruleIds, String toolName) {
+    Map<Integer, String> types = [:]
+    List<Integer> missing = []
+    ruleIds.each { id ->
+        def typeName = null
+        try {
+            def app = getAppByAppId(id as Long)
+            if (app == null) missing << id
+            else typeName = app.appType?.name?.toString()
+        } catch (Exception ignored) { }
+        types.put(id, typeName)
+    }
+    if (missing) {
+        throw new IllegalArgumentException("No app with id ${missing.join(', ')} is installed; ${toolName} only acts on Rule Machine rules. Find rule ids with hub_list_rules. Nothing was dispatched.")
+    }
+    def notRules = types.findAll { id, typeName -> typeName != null && !(typeName ==~ /(?:Button )?Rule-\d.*/) }
+    if (notRules) {
+        def named = notRules.size() == 1 ? notRules.collect { id, typeName -> "App ${id} is a ${typeName} app, not a Rule Machine rule" }[0]
+            : "Apps ${notRules.collect { id, typeName -> "${id} (${typeName})" }.join(', ')} are not Rule Machine rules"
+        throw new IllegalArgumentException("${named}; ${toolName} only acts on rules. Find rule ids with hub_list_rules. Nothing was dispatched.")
+    }
+    types
 }
 
 // Click the rule's Run Actions button (runAction on the main page): runs the action list
@@ -758,6 +788,7 @@ def toolSetRulePaused(args) {
     def idArg = _rmRuleIdListArg(args.ruleId)
     List<Integer> ruleIds = idArg.ids
     ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
+    _rmRequireRuleTargets(ruleIds, "hub_set_rule_paused")
     def result = paused ? sendRmAction(ruleIds, "pauseRule", "hub_set_rule_paused")
                         : sendRmAction(ruleIds, "resumeRule", "hub_set_rule_paused")
     // idsVerified: true = every id existence-checked before dispatch; false = the
@@ -799,6 +830,7 @@ def toolSetRmRuleBoolean(args) {
     def rmAction = resolved ? "setRuleBooleanTrue" : "setRuleBooleanFalse"
     def idArg = _rmRuleIdListArg(args.ruleId)
     idArg.ids.each { _requireUnprotectedAppMutation(it, "set rule private boolean") }
+    _rmRequireRuleTargets(idArg.ids as List, "hub_set_rule_private_boolean")
     def result = sendRmAction(idArg.ids as List, rmAction, "hub_set_rule_private_boolean value=${resolved}")
     if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
     return result
@@ -2720,8 +2752,8 @@ def toolCheckRuleHealth(args) {
 }
 
 // hub_list_rule_local_variables. A 5.1 rule's own getAllLocalVars() carries a value the running rule
-// just set; the stored allLocalVars map lags it until the rule's page renders, so a 4.x rule's
-// stored map is overlaid with its live lv_<name> entries.
+// just set; the stored allLocalVars map lags it until the rule's page renders, so other rule types'
+// stored maps are overlaid with their live lv_<name> entries.
 def toolListRuleLocalVariables(args) {
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
     def appId = normalizeRuleId(args.appId)
@@ -2738,6 +2770,9 @@ def toolListRuleLocalVariables(args) {
             def live = compiled.state.get("lv_${name}".toString())
             all.put(name, live instanceof Map && live.containsKey("value") ? [type: (row instanceof Map ? row.type : null) ?: live.type, value: live.value] : row)
         }
+    } else if (typeName != null && typeName ==~ /(?:Button )?Rule-\d.*/ && !(typeName in ["Rule-5.1", "Button Rule-5.1"])) {
+        // Other rule types keep the status-page read, the one source not tied to a Rule Machine version.
+        all = _rmReadLocalVarsFromStatus(appId)
     } else {
         def handle
         try { handle = _nrHandle(appId as Long) }
@@ -2751,6 +2786,29 @@ def toolListRuleLocalVariables(args) {
         _rmPublicLocalVariable(name?.toString(), row instanceof Map ? [type: row.type?.toString(), value: row.value] : [value: row])
     }.sort { it.name }
     return [appId: appId, localVariables: localVariables, total: localVariables.size()]
+}
+
+// A rule's stored allLocalVars from its App Status page, overlaid with the live lv_<name> values a
+// running rule writes (the stored map catches up only when the rule's page renders).
+private Map _rmReadLocalVarsFromStatus(Integer appId) {
+    def status
+    try { status = _rmFetchStatusJson(appId) }
+    catch (Exception e) { throw new IllegalStateException("Rule ${appId}'s state could not be read (${e.message ?: e.toString()})") }
+    def appState = status?.appState
+    // An empty non-List carries nothing; a non-empty one is a shape this read does not understand.
+    if (appState != null && !(appState instanceof List)) {
+        if (appState instanceof Map && appState.isEmpty()) return [:]
+        throw new IllegalStateException("Rule ${appId} returned its local variables in an unexpected shape")
+    }
+    def stored = (appState ?: []).find { it?.name?.toString() == "allLocalVars" }?.value
+    if (stored != null && !(stored instanceof Map)) throw new IllegalStateException("Rule ${appId} returned its local variables in an unexpected shape")
+    def all = [:]
+    (stored ?: [:]).each { name, row ->
+        def live = (appState ?: []).find { it?.name?.toString() == "lv_${name}".toString() }?.value
+        // Local names can be sandbox property names such as fields; use Map.put for arbitrary keys.
+        all.put(name, [type: (row instanceof Map ? row.type : null), value: (live instanceof Map && live.containsKey("value")) ? live.value : (row instanceof Map ? row.value : null)])
+    }
+    all
 }
 
 // A local variable named like a credential (doorCode, alarmPin) reads with its value hidden, as settings do.

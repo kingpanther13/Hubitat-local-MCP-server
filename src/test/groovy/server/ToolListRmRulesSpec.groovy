@@ -905,6 +905,29 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         r481.status == 'active'
     }
 
+    @spock.lang.Unroll
+    def "a (Stopped) row whose state #what reads #expected"() {
+        given:
+        rmUtils.stubRuleList5 = [[483: 'Garage loop']]
+        registerRmAppsList([ruleNode(483, 'Garage loop (Stopped)')])
+        hubGet.register('/installedapp/statusJson/483') { params ->
+            groovy.json.JsonOutput.toJson([installedApp: [id: 483], appSettings: []] + (appState == 'absent' ? [:] : [appState: appState]))
+        }
+
+        when:
+        def r483 = script.toolListRmRules([:]).rules.find { it.id == 483 }
+
+        then:
+        r483.status == expected
+
+        where:
+        what                                  | appState                                    | expected
+        'has no stopped entry'                | [[name: 'paused', value: false]]            | 'active'
+        'has a malformed stopped entry'       | [[name: 'stopped', value: 'maybe']]         | 'stopped'
+        'is missing'                          | 'absent'                                    | 'stopped'
+        'is not a list'                       | [stopped: false]                            | 'stopped'
+    }
+
     def "a failed state read keeps the name-derived status for that row"() {
         given:
         rmUtils.stubRuleList5 = [[482: 'Garage loop']]

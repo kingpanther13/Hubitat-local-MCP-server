@@ -3446,6 +3446,68 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         thrown(IllegalStateException)
     }
 
+    private void statusRule(String typeName, Object appState) {
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: typeName]] }
+        script.metaClass._nrHandle = { Long id -> throw new AssertionError('this rule type is read from its status page') }
+        hubGet.register('/installedapp/statusJson/100') { params -> JsonOutput.toJson([installedApp: [id: 100], appSettings: [], appState: appState]) }
+    }
+
+    @Unroll
+    def "a #typeName rule's locals come from its status page, with a live value overlaying the stored one"() {
+        given:
+        enableReadOnly()
+        statusRule(typeName, [[name: 'allLocalVars', value: [zzN: [type: 'integer', value: 1], fields: [type: 'string', value: 'a']]],
+                              [name: 'lv_zzN', value: [name: 'zzN', type: 'integer', value: 99]]])
+
+        when:
+        def result = script.toolListRuleLocalVariables([appId: 100])
+
+        then:
+        result.localVariables == [[name: 'fields', type: 'string', value: 'a'], [name: 'zzN', type: 'integer', value: 99]]
+        hubGet.calls.count { it.path == '/installedapp/statusJson/100' } == 1
+
+        where:
+        typeName << ['Rule-5.0', 'Rule-3.0']
+    }
+
+    @Unroll
+    def "a Rule-5.0 rule's status read #what"() {
+        given:
+        enableReadOnly()
+        statusRule('Rule-5.0', appState)
+
+        when:
+        def result = script.toolListRuleLocalVariables([appId: 100])
+
+        then:
+        result.total == 0
+
+        where:
+        what                                    | appState
+        'with no allLocalVars is empty'         | []
+        'with an empty non-list state is empty' | [:]
+    }
+
+    @Unroll
+    def "a Rule-5.0 rule's status read that #what is an error, not an empty list"() {
+        given:
+        enableReadOnly()
+        statusRule('Rule-5.0', appState)
+        if (fails) hubGet.register('/installedapp/statusJson/100') { params -> throw new RuntimeException('channel down') }
+
+        when:
+        script.toolListRuleLocalVariables([appId: 100])
+
+        then:
+        thrown(IllegalStateException)
+
+        where:
+        what                       | appState                                      | fails
+        'fails'                    | []                                            | true
+        'carries a non-list state' | [allLocalVars: [x: 1]]                        | false
+        'carries non-map locals'   | [[name: 'allLocalVars', value: 'unexpected']] | false
+    }
+
     @Unroll
     def "hub_list_rule_local_variables dispatches and refuses an unknown rule as a validation error (useGateways=#useGateways)"() {
         given:

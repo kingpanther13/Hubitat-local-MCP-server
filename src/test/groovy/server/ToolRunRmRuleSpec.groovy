@@ -770,17 +770,18 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("rule(s) 101 are Rule Machine 5.x")
+        ex.message.contains("rule(s) 101 are Rule Machine 5.1")
         ex.message.contains("action:'actions'")
         rmUtils.calls.isEmpty()
 
         where:
-        typeName << ['Rule-5.1', 'Button Rule-5.1', 'Rule-5.0']
+        typeName << ['Rule-5.1', 'Button Rule-5.1']
     }
 
-    def "action=rule still dispatches runRule to a Rule-4.x rule"() {
+    @spock.lang.Unroll
+    def "action=rule still dispatches runRule to a #typeName rule"() {
         given:
-        ruleTypes([101: 'Rule-4.1'])
+        ruleTypes([101: typeName])
 
         when:
         def result = script.toolRunRmRule([ruleId: 101, action: 'rule'])
@@ -788,6 +789,100 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         result.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRule' }
+
+        where:
+        typeName << ['Rule-4.1', 'Rule-5.0']
+    }
+
+    @spock.lang.Unroll
+    def "action=#action on an app that is not a rule is refused naming the app and its type, before any dispatch"() {
+        given:
+        ruleTypes([20: 'Rule Machine'])
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200, data: '{}'] }
+
+        when:
+        script.toolRunRmRule([ruleId: 20, action: action])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('App 20 is a Rule Machine app, not a Rule Machine rule')
+        ex.message.contains('hub_call_rule only acts on rules')
+        ex.message.contains('hub_list_rules')
+        ex.message.contains('Nothing was dispatched')
+        rmUtils.calls.isEmpty()
+        posts.isEmpty()
+        hubGet.calls.isEmpty()
+
+        where:
+        action << ['rule', 'actions', 'stop', 'start']
+    }
+
+    @spock.lang.Unroll
+    def "#tool on an id with no app is refused before any dispatch"() {
+        given: "the hub returns no app for 999999, as it does for an id that was never installed"
+        script.metaClass.getAppByAppId = { Long id -> null }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200, data: '{}'] }
+
+        when:
+        call(script)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('No app with id 999999 is installed')
+        ex.message.contains("${tool} only acts on Rule Machine rules")
+        ex.message.contains('Nothing was dispatched')
+        rmUtils.calls.isEmpty()
+        posts.isEmpty()
+
+        where:
+        tool                           | call
+        'hub_call_rule'                | { s -> s.toolRunRmRule([ruleId: 999999, action: 'rule']) }
+        'hub_call_rule'                | { s -> s.toolRunRmRule([ruleId: [999999], action: 'actions']) }
+        'hub_set_rule_paused'          | { s -> s.toolSetRulePaused([ruleId: 999999, paused: true]) }
+        'hub_set_rule_private_boolean' | { s -> s.toolSetRmRuleBoolean([ruleId: 999999, value: true]) }
+    }
+
+    @spock.lang.Unroll
+    def "hub_call_rule via dispatch refuses a batch holding a non-rule app before running any rule (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        ruleTypes([101: 'Rule-5.1', 20: 'Rule Machine', 30: 'Basic Rule-1.0'])
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200, data: '{}'] }
+
+        when:
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: [101, 20, 30], action: 'actions'])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        response.result.isError == true
+        inner.error.contains('Apps 20 (Rule Machine), 30 (Basic Rule-1.0) are not Rule Machine rules')
+        posts.isEmpty()
+        !rmUtils.calls.any { it.method == 'sendAction' }
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "#tool refuses an app that is not a rule before dispatching"() {
+        given:
+        ruleTypes([20: 'Rule Machine'])
+
+        when:
+        script."${method}"(args)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("App 20 is a Rule Machine app, not a Rule Machine rule; ${tool} only acts on rules")
+        rmUtils.calls.isEmpty()
+
+        where:
+        tool                           | method                  | args
+        'hub_set_rule_paused'          | 'toolSetRulePaused'     | [ruleId: 20, paused: true]
+        'hub_set_rule_private_boolean' | 'toolSetRmRuleBoolean'  | [ruleId: 20, value: true]
     }
 
     @spock.lang.Unroll
@@ -802,7 +897,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
         then:
         response.result.isError == true
-        inner.error.contains("rule(s) 102, 103 are Rule Machine 5.x")
+        inner.error.contains("rule(s) 102, 103 are Rule Machine 5.1")
         !inner.error.contains("101,")
         !rmUtils.calls.any { it.method == 'sendAction' }
 

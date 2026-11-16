@@ -8713,8 +8713,9 @@ def updated() {}
     @test("native_apps")
     def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
         # Running the rule's actions sets its local variable, which hub_list_rule_local_variables reads
-        # back at once; action 'rule' is refused on this 5.x rule. Deleting a local variable an action still uses is applied (RM allows it) but reported
-        # as leaving the rule broken, and the editor shows it broken.
+        # back at once. action 'rule', named or by default, is refused on this 5.1 rule, and the Rule
+        # Machine parent app is refused as not a rule. Deleting a local variable an action still uses
+        # is applied (RM allows it) but reported as leaving the rule broken, as the editor shows.
         app_id, _ = self._rm_rule("RefLocal", [
             native_change("variable", operation="create", name="refLocal", type="integer", value=0),
             self._rm_variable_action("refLocal", "number", [native_field("valNumber.#", "number", 9)])])
@@ -8727,14 +8728,31 @@ def updated() {}
             listed = self.client.call_tool("hub_list_rule_local_variables", {"appId": app_id})
             assert listed.get("total") == 1 and listed["localVariables"][0]["type"] == "integer", listed
             assert local_value() == 0
-            # RMUtils runRule runs nothing on a Rule Machine 5.x rule, so it is refused with nothing dispatched.
-            try:
-                refused = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "rule"})
-            except McpToolError as exc:
-                refused = _tool_error_payload(exc)
-            assert "only applies to Rule Machine 4.x rules" in str(refused.get("error")) \
-                and "action:'actions'" in str(refused.get("error")), refused
+            # RMUtils runRule runs nothing on a Rule Machine 5.1 rule, so it is refused with nothing
+            # dispatched, including when action is omitted (it defaults to 'rule').
+            for call_args in ({"ruleId": app_id, "action": "rule"}, {"ruleId": app_id}):
+                try:
+                    refused = self.client.call_tool("hub_call_rule", call_args)
+                except McpToolError as exc:
+                    refused = _tool_error_payload(exc)
+                assert "is refused for Rule Machine 5.1 rules" in str(refused.get("error")) \
+                    and "action:'actions'" in str(refused.get("error")), (call_args, refused)
             assert local_value() == 0, "a refused runRule changed the local variable"
+            # The Rule Machine parent app is not a rule: running its actions and reading its locals are refused.
+            parent_id = self._native_rule_parent_id()
+            try:
+                parent_run = self.client.call_tool("hub_call_rule", {"ruleId": parent_id, "action": "actions"})
+            except McpToolError as exc:
+                parent_run = _tool_error_payload(exc)
+            assert f"App {parent_id} is a Rule Machine app, not a Rule Machine rule" in str(parent_run.get("error")) \
+                and "Nothing was dispatched" in str(parent_run.get("error")), parent_run
+            try:
+                parent_locals = self.client.call_tool("hub_list_rule_local_variables", {"appId": parent_id})
+            except McpToolError as exc:
+                parent_locals = _tool_error_payload(exc)
+            assert f"App {parent_id} is not a Rule Machine rule" in str(parent_locals.get("error")) \
+                and "it is a Rule Machine app" in str(parent_locals.get("error")), parent_locals
+            assert local_value() == 0, "a refused call on the Rule Machine parent changed the rule's local variable"
             ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "actions"})
             assert ran.get("success") is not False, ran
             self._rm_wait(lambda: local_value() == 9, what="refLocal=9 after the rule's actions ran")
@@ -8745,6 +8763,16 @@ def updated() {}
             except McpToolError as exc:
                 missing = _tool_error_payload(exc)
             assert "App 999999999 is not a Rule Machine rule" in str(missing.get("error")), missing
+            # The runtime tools refuse an id with no app instead of reporting a dispatch that did nothing.
+            for tool, args in (("hub_call_rule", {"ruleId": 999999999}),
+                               ("hub_set_rule_paused", {"ruleId": 999999999, "paused": True}),
+                               ("hub_set_rule_private_boolean", {"ruleId": 999999999, "value": True})):
+                try:
+                    gone = self.client.call_tool(tool, args)
+                except McpToolError as exc:
+                    gone = _tool_error_payload(exc)
+                assert "No app with id 999999999 is installed" in str(gone.get("error")) \
+                    and "Nothing was dispatched" in str(gone.get("error")), (tool, gone)
             result = self._rm_call({"operation": "update", "rule_id": app_id, "confirm": True, "args": {
                 "changes": [native_change("variable", operation="delete", name="refLocal")]}})
             assert result.get("success") is False and result.get("partial") is True and "broken" in str(result).lower(), result

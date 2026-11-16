@@ -5938,7 +5938,7 @@ def getGatewayConfig() {
                 hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
 
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
-                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule (RM 4.x only) uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start re-initializes the rule).",
+                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils (refused for RM 5.1 rules); actions clicks runAction; stop/start toggle stopRule (start re-initializes the rule).",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call (RMUtils). Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules (RMUtils). Args: ruleId (id or array of ids), value (bool)",
                 hub_set_native_app: "Create, update or drive the native forms of classic apps (Room Lighting, Button Controller and Button Rule, Basic Rule, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, user and community apps). Args: operation?, app_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas. Rule Machine rules use hub_set_rule.",
@@ -6065,7 +6065,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (RMUtils — RM only)",
-                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule; rule is RM 4.x only)",
+                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule; rule is refused for RM 5.1 rules)",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call. Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules. Args: ruleId (id or array of ids), value (bool)",
                 hub_get_rule_health: "Read one rule's health (Rule Machine, Visual Rules Builder or a built-in classic app): broken, paused, stopped, private boolean, disabled actions, block structure and live subscription/job counts. Args: appId",
@@ -10742,9 +10742,22 @@ Map _rmCheckRuleHealth(Integer appId) {
                 if (compiled.containsKey("disabledTriggers")) {
                     result.disabledTriggers = compiled.disabledTriggers instanceof Collection ? compiled.disabledTriggers.collect { it.toString() } : compiled.disabledTriggers
                 }
-                result.structuralIssues = _ndStructuralIssues(compiled, cfg?.settings?.useST?.toString() == "true")
-                if (result.structuralIssues) {
+                // The native state walk knows only the Rule Machine 5.1 state shape; other rule types
+                // keep the settings walk, which reads the actType/actSubType rows every version writes.
+                if (typeName in ["Rule-5.1", "Button Rule-5.1"]) {
+                    result.structuralIssues = _ndStructuralIssues(compiled, cfg?.settings?.useST?.toString() == "true")
+                } else {
+                    try {
+                        result.structuralIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(
+                            _rmFetchSettingsByName(appId), ([] as Set), _rmCoerceActionIndices(cs.actionList)))
+                    } catch (Exception e) {
+                        checkErrors << "structure check skipped: the rule's settings could not be read (${e.message})".toString()
+                    }
+                }
+                if (result.structuralIssues && typeName in ["Rule-5.1", "Button Rule-5.1"]) {
                     issues << ("structural imbalance in the rule's actions or expressions: ${result.structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer with hub_set_rule(operation='update') and a terminator change (subtype endIf or endRep). Otherwise compare against hub_set_rule(operation='read') before considering a restore.").toString()
+                } else if (result.structuralIssues) {
+                    issues << ("structural imbalance in the rule's action blocks: ${result.structuralIssues.join('; ')} — expected while a block is still being built; otherwise check the rule's actions on its page before considering a restore.").toString()
                 }
             }
         } else if (cs?.readError) {
@@ -10757,7 +10770,9 @@ Map _rmCheckRuleHealth(Integer appId) {
     if (!read) issues << "health check failed: neither the app's page nor its compiled state could be read".toString()
     result.unreadable = !read
     // An app that could not be identified may be a user app whose state only looks like a rule's.
-    result.ok = identified && read && issues.isEmpty() && result.broken != true && result.validationErrors.isEmpty()
+    // A Rule Machine rule whose broken flag went unread has not been checked, whatever else was read.
+    result.ok = identified && read && issues.isEmpty() && result.broken != true && result.validationErrors.isEmpty() &&
+        !(ruleType && result.broken == null)
     return result
 }
 
@@ -12326,8 +12341,8 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
   - **status** precedence is disabled > stopped > paused > active; the booleans stay independent (a paused rule disabled later reads disabled:true, paused:true, status:"disabled").
   - **unknown**: when /hub2/appsList cannot be read, every rule is unknown, the list is unfiltered (deleted rules may linger) and the result carries **statusNote**; when one rule's entry lacks data, only that rule is unknown.
   - For one rule's state call hub_get_rule_health. For the disabled flag of other classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances').
-- **hub_call_rule** — act on one or more RM rules (ruleId takes an id or an array). `rule` (Rule Machine 4.x only) dispatches the whole set in one RMUtils call; `actions`, `stop` and `start` click each rule's page button in turn and return per-rule results, with failedRuleIds/remainingRuleIds on a partial batch
-  - action="rule" (default): full evaluation (triggers + conditions + actions) of a Rule Machine 4.x rule; refused for 5.x rules, where it runs nothing
+- **hub_call_rule** — act on one or more RM rules (ruleId takes an id or an array). `rule` (refused for Rule Machine 5.1 rules) dispatches the whole set in one RMUtils call; `actions`, `stop` and `start` click each rule's page button in turn and return per-rule results, with failedRuleIds/remainingRuleIds on a partial batch
+  - action="rule" (default): full evaluation (triggers + conditions + actions); refused for Rule Machine 5.1 rules, where it runs nothing
   - action="actions": run actions only, skip conditions
   - action="stop": stop running actions
   - action="start": restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged)
@@ -12373,18 +12388,18 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 `action` selects which Rule Machine verb to invoke (default `rule`):
 
-- **`rule`** → RMUtils `runRule`: for a Rule Machine 4.x rule, re-evaluate the rule's conditions, then run the matching true/false action set. Rule Machine 5.x accepts runRule and runs nothing, so a call naming any 5.x rule (Rule-5.x or Button Rule-5.x) is refused before anything is dispatched; use `actions` to run a 5.x rule's actions.
+- **`rule`** → RMUtils `runRule`: re-evaluate the rule's conditions, then run the matching true/false action set. Rule Machine 5.1 accepts runRule and runs nothing, so a call naming any 5.1 rule (Rule-5.1 or Button Rule-5.1) is refused before anything is dispatched; use `actions` to run a 5.1 rule's actions.
 - **`actions`**: click the rule's Run Actions button (`runAction`) to run the action list directly, skipping condition evaluation.
 - **`stop`**: halt the rule's in-progress actions.
 - **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged).
 
-`actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), one rule at a time, not RMUtils: that is the route the hub UI takes. `stop` and `start` read the rule's stopped state first and leave a rule already in the target state alone, so they are safe to repeat; a repeated `rule` or `actions` runs the actions again. Only `rule` goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation).
+`actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), one rule at a time, not RMUtils: that is the route the hub UI takes. `stop` and `start` read the rule's stopped state first and leave a rule already in the target state alone, so they are safe to repeat; a repeated `rule` or `actions` runs the actions again. Only `rule` goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation). An id whose app is not a Rule Machine rule (the Rule Machine parent app, a Basic Rule, any other app) is refused for every action before anything is dispatched, as it is by hub_set_rule_paused and hub_set_rule_private_boolean.
 
 ### hub_get_rule_health
 
 `ruleFormat` says what was inspected: `rm` (Rule Machine or Button Rule) / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
 
-- **Rule Machine**: the rule's page is rendered once, then its compiled state (/app/ruleBuilderJson) is read once. Rule Machine updates its `broken` flag only when the page renders, so a rule whose trigger device was deleted reads broken here without opening the editor first. The report carries `broken`, `paused`, `stopped`, `privateBoolean`, `disabledActions` (the native ids of actions switched off in the rule; `disabledTriggers` likewise when present), `disabled` (red-X), `label` (runtime decoration removed), `structuralIssues` (the same IF/Repeat block and expression check hub_set_rule runs), and the page's own error, `*BROKEN*` label or `**Broken Trigger|Action|Condition**` markers as `issues`.
+- **Rule Machine**: the rule's page is rendered once, then its compiled state (/app/ruleBuilderJson) is read once. Rule Machine updates its `broken` flag only when the page renders, so a rule whose trigger device was deleted reads broken here without opening the editor first. The report carries `broken`, `paused`, `stopped`, `privateBoolean`, `disabledActions` (the native ids of actions switched off in the rule; `disabledTriggers` likewise when present), `disabled` (red-X), `label` (runtime decoration removed), `structuralIssues` (for a Rule Machine 5.1 rule the same IF/Repeat block and expression check hub_set_rule runs; for older rule types the IF/Repeat balance of its action rows), and the page's own error, `*BROKEN*` label or `**Broken Trigger|Action|Condition**` markers as `issues`.
 - **Visual Rules Builder**: the engine's own verdict — a graph rule's `validationErrors` (broken when non-empty) and pause state, with the rule's own name as `label`.
 - **Other built-in classic apps** (Basic Rule, Button Controller, Room Lighting, …): label, red-X and page errors; `broken` is null.
 - User and community apps are not read (their page runs their own code); use hub_get_app_config.
