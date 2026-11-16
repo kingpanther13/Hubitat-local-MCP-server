@@ -3807,17 +3807,17 @@ def toolCreateDevice(args) {
         def catalog = catalogText ? new groovy.json.JsonSlurper().parseText(catalogText) : null
         if (!(catalog instanceof Map) || !(catalog.drivers instanceof List)) {
             return [success: false, isError: true, error: 'The native driver catalog is unavailable or invalid; no device create request sent.',
-                    note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+                    note: "Verify the deviceTypeId via hub_list_drivers(include='all', nameFilter='<driver name>')."]
         }
         def matches = catalog.drivers.findAll { row -> row instanceof Map && row.id?.toString() == typeId }
         if (matches.size() != 1 || !(matches[0].type in ['sys', 'usr'])) {
             return [success: false, isError: true, error: "Could not resolve one supported native driver type for ${typeId}; no device create request sent.",
-                    note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+                    note: "Verify the deviceTypeId via hub_list_drivers(include='all', nameFilter='<driver name>')."]
         }
         driverType = matches[0].type.toString()
     } catch (Exception e) {
         return [success: false, isError: true, error: 'Hub call failed reading the driver catalog; no device create request sent.',
-                note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+                note: "Verify the deviceTypeId via hub_list_drivers(include='all', nameFilter='<driver name>')."]
     }
 
     // The user-driver create takes the label; a built-in driver's create is labelled afterwards.
@@ -3833,13 +3833,13 @@ def toolCreateDevice(args) {
         resp = respText ? new groovy.json.JsonSlurper().parseText(respText) : null
     } catch (Exception e) {
         return [success: false, isError: true, error: "Hub call failed creating device from driver-type ${typeId}: ${e.message}",
-                note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+                note: "Verify the deviceTypeId via hub_list_drivers(include='all', nameFilter='<driver name>')."]
     }
     // Vue's /device/createVirtual response identifies success by deviceId and omits success.
     if (resp?.deviceId != null && resp?.success == null) resp.put("success", true)
     if (resp?.success != true || resp?.deviceId == null) {
         return [success: false, isError: true, error: resp?.errorMessage ?: "Hub did not create a device for driver-type ${typeId}",
-                note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+                note: "Verify the deviceTypeId via hub_list_drivers(include='all', nameFilter='<driver name>')."]
     }
     def newId = resp.deviceId.toString()
 

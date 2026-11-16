@@ -3929,3 +3929,72 @@ def test_short_rename_recovery_stops_and_keeps_the_record_when_it_cannot_be_read
         _short_rename_runner(client)._recover_short_rename_room(_listed(client.rooms))
     assert client.rooms == {"7": "Z9"}
     assert "hub_delete_file" not in client.calls and "hub_write_file" not in client.calls
+
+
+class _DriverPagesClient:
+    """hub_list_drivers in pages of two: answers each cursor with its slice and the next cursor."""
+
+    def __init__(self, rows, broken=None, fail_at=None):
+        self.rows, self.broken, self.fail_at, self.args = rows, broken, fail_at, []
+
+    def call_tool(self, name, arguments):
+        args = arguments["args"]
+        self.args.append(dict(args))
+        if self.broken:
+            return self.broken
+        start = int(args["cursor"] or 0)
+        if start == self.fail_at:
+            return {"drivers": [], "count": 0, "source": "unavailable"}
+        out = {"drivers": self.rows[start:start + 2], "source": "hub_api"}
+        if start + 2 < len(self.rows):
+            out["nextCursor"] = str(start + 2)
+        return out
+
+
+def _driver_catalog_runner(client):
+    runner = object.__new__(et.TestRunner)
+    runner.client = client
+    return runner
+
+
+def test_driver_catalog_pages_from_an_empty_cursor_and_joins_every_page():
+    rows = [{"id": i, "name": f"D{i}"} for i in range(5)]
+    client = _DriverPagesClient(rows)
+    assert _driver_catalog_runner(client)._driver_catalog("all") == rows
+    assert client.args == [{"include": "all", "cursor": c} for c in ("", "2", "4")]
+
+
+@pytest.mark.parametrize("broken", [{"response_too_large": True, "truncated": True},
+                                    {"drivers": [], "source": "unavailable"},
+                                    {"drivers": [], "source": "hub_api_raw", "rawResponse": "<html>"},
+                                    {"drivers": [], "note": "Empty response from hub API"}])
+def test_driver_catalog_refuses_a_page_that_is_not_a_successful_read(broken):
+    with pytest.raises(AssertionError, match="driver catalog read failed"):
+        _driver_catalog_runner(_DriverPagesClient([], broken=broken))._driver_catalog()
+
+
+def test_driver_catalog_refuses_a_failed_later_page_instead_of_returning_the_earlier_rows():
+    client = _DriverPagesClient([{"id": i, "name": f"D{i}"} for i in range(5)], fail_at=2)
+    with pytest.raises(AssertionError, match="source='unavailable'"):
+        _driver_catalog_runner(client)._driver_catalog("all")
+
+
+def test_driver_catalog_reads_the_user_list_by_default_from_an_empty_cursor():
+    client = _DriverPagesClient([{"id": 1, "name": "Mine"}])
+    assert _driver_catalog_runner(client)._driver_catalog() == [{"id": 1, "name": "Mine"}]
+    assert client.args == [{"include": "user", "cursor": ""}]
+
+
+@pytest.mark.parametrize("page", [{"drivers": {"1": "Mine"}, "source": "hub_api"},
+                                  {"drivers": ["Mine"], "source": "hub_api"}])
+def test_driver_catalog_refuses_rows_that_are_not_driver_objects(page):
+    with pytest.raises(AssertionError, match="driver catalog"):
+        _driver_catalog_runner(_DriverPagesClient([], broken=page))._driver_catalog()
+
+
+def test_driver_catalog_stops_when_next_cursor_never_ends():
+    class Endless:
+        def call_tool(self, name, arguments):
+            return {"drivers": [{"id": 1}], "source": "hub_api", "nextCursor": "1"}
+    with pytest.raises(AssertionError, match="never ended"):
+        _driver_catalog_runner(Endless())._driver_catalog("all")

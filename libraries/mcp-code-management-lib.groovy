@@ -162,6 +162,9 @@ def toolListHubDrivers(args) {
     def cursor = args?.cursor
     def include = (args?.include ?: "user").toString().toLowerCase()
     if (!(include in ["user", "all"])) throw new IllegalArgumentException("include must be 'user' or 'all' (got '${args.include}').")
+    // The full catalog is larger than the cloud relay's response cap, so include='all' always pages;
+    // a call without a cursor gets page one.
+    if (include == "all" && cursor == null) cursor = ""
     def result = [:]
     if (include == "all") {
         // Full instantiable driver-type catalog -- built-in "system" + "virtual" + user
@@ -2678,9 +2681,9 @@ def _getAllToolDefinitions_partCodeManagement() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
+                    include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user), paged 50 per page."],
                     nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                    cursor: [type: "string", description: "Pagination cursor (page size 50): iterate nextCursor until it is absent. include='all' always pages (no cursor = first page); include='user' returns the whole list unless a cursor is given (\"\" for the first page)."]
                 ]
             ]
         ],

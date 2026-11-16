@@ -1940,13 +1940,29 @@ class TestRunner:
         self._perm_fixture_ids[key] = str(dev_id)
         return self._perm_fixture_ids[key]
 
+    def _driver_catalog(self, include: str = "user") -> list[dict]:
+        """Every hub_list_drivers row, read page by page from cursor "" so a large catalog never
+        reaches the response-size guard. A page that is not a successful hub read raises: a failed
+        read answers drivers=[] with a different or missing source, which is not 'driver absent'."""
+        rows: list[dict] = []
+        cursor = ""
+        for _ in range(200):
+            page = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_list_drivers", "args": {"include": include, "cursor": cursor}})
+            assert isinstance(page.get("drivers"), list) and page.get("source") == "hub_api", \
+                f"driver catalog read failed (source={page.get('source')!r}) -- this is NOT 'driver absent': {page}"
+            assert all(isinstance(d, dict) for d in page["drivers"]), \
+                f"driver catalog rows are not objects: {page['drivers'][:3]}"
+            rows += page["drivers"]
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return rows
+        raise AssertionError(f"hub_list_drivers(include={include!r}) nextCursor never ended")
+
     def _ensure_fixture_driver(self, name: str) -> None:
         """Install a permanent fixture's user driver from tests/fixtures unless the hub already has it."""
-        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_drivers", "args": {}})
-        # An unreadable list is not "absent": installing then would add a duplicate permanent driver.
-        assert isinstance(listed.get("drivers"), list), \
-            f"user driver list unreadable -- refusing to install '{name}' a second time: {listed}"
-        if any(d.get("name") == name and d.get("namespace") == "mcptest" for d in listed["drivers"]):
+        # An unreadable list raises rather than reading as "absent", which would install a duplicate.
+        if any(d.get("name") == name and d.get("namespace") == "mcptest" for d in self._driver_catalog()):
             return
         source = (Path(__file__).resolve().parent / "fixtures" / self.PERM_FIXTURE_DRIVERS[name]).read_text(encoding="utf-8")
         created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_driver", "args": {"source": source, "confirm": True}})
@@ -1959,28 +1975,16 @@ class TestRunner:
     def _driver_type_id(self, driver_name: str) -> str:
         """Resolve a built-in driver's type id by name (hub-specific, so never hardcoded)."""
         if not self._driver_type_ids:
-            cursor = None
-            while True:
-                args = {"include": "all"}
-                if cursor:
-                    args["cursor"] = cursor
-                page = self.client.call_tool("hub_read_apps_code",
-                                             {"tool": "hub_list_drivers", "args": args})
-                assert isinstance(page.get("drivers"), list), \
-                    f"driver catalog read failed (not a driver list) -- this is NOT 'driver absent': {page}"
-                for d in page["drivers"]:
-                    name, did, bucket = d.get("name"), d.get("id"), d.get("bucket")
-                    # Prefer a BUILT-IN over a user driver of the same name -- the catalog exposes
-                    # `bucket` for exactly this, and relying on list order would silently adopt a
-                    # user-installed "Virtual Switch" as every fixture's driver.
-                    if not name or did is None:
-                        continue
-                    if name not in self._driver_type_ids or (bucket != "user" and self._driver_buckets.get(name) == "user"):
-                        self._driver_type_ids[name] = str(did)
-                        self._driver_buckets[name] = bucket
-                cursor = page.get("nextCursor")
-                if not cursor:
-                    break
+            for d in self._driver_catalog("all"):
+                name, did, bucket = d.get("name"), d.get("id"), d.get("bucket")
+                # Prefer a BUILT-IN over a user driver of the same name -- the catalog exposes
+                # `bucket` for exactly this, and relying on list order would silently adopt a
+                # user-installed "Virtual Switch" as every fixture's driver.
+                if not name or did is None:
+                    continue
+                if name not in self._driver_type_ids or (bucket != "user" and self._driver_buckets.get(name) == "user"):
+                    self._driver_type_ids[name] = str(did)
+                    self._driver_buckets[name] = bucket
         type_id = self._driver_type_ids.get(driver_name)
         assert type_id, (f"driver '{driver_name}' not found in hub_list_drivers(include='all') -- "
                          f"a fixture cannot be created without its type id")
@@ -3858,12 +3862,10 @@ class TestRunner:
         }
         inventory = self._device_allowlist_inventory(cached=True, labelFilter=f"{SCAFFOLD_PREFIX}Configuration")
         assert isinstance(inventory.get("devices"), list), f"Configuration fixture inventory failed: {inventory}"
-        catalog = self.client.call_tool("hub_read_apps_code", {
-            "tool": "hub_list_drivers", "args": {"include": "all"},
-        })
+        catalog = self._driver_catalog("all")
         driver_types = {}
         for name in (manifest["driver"], manifest["replacementDriver"]):
-            matches = [row for row in catalog.get("drivers", []) if row.get("name") == name
+            matches = [row for row in catalog if row.get("name") == name
                        and row.get("namespace") == "mcptest" and row.get("bucket") == "user"]
             assert len(matches) == 1, (
                 f"Provision exactly one '{name}' driver outside E2E using tests/fixtures/"
@@ -4655,20 +4657,19 @@ class TestRunner:
     @test("devices")
     def test_create_device_from_driver_type(self) -> None:
         # Intent: create a device from a driver type (the "add device by driver" path).
-        # Resolve a built-in Virtual Switch driver-type id from the full driver catalog,
-        # create from it with confirm, then delete. Skips cleanly if no such type is found.
-        catalog = self.client.call_tool("hub_read_apps_code", {
-            "tool": "hub_list_drivers", "args": {"include": "all"},
-        })
-        drivers = catalog.get("drivers", []) if isinstance(catalog, dict) else []
-        type_id = None
-        for d in drivers:
-            if (d.get("name") or "") == "Virtual Switch":
-                type_id = str(d.get("id"))
-                break
-        if not type_id:
-            print("    no 'Virtual Switch' driver-type id in catalog -- skipping create-from-driver")
-            return
+        # Resolve the built-in Virtual Switch driver-type id from the full driver catalog,
+        # create from it with confirm, then delete.
+        drivers = self._driver_catalog("all")
+        # include='all' pages even without a cursor: the first page of 50 plus the whole catalog's size.
+        first = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_drivers", "args": {"include": "all"}})
+        assert len(first.get("drivers") or []) == min(50, len(drivers)) and first.get("total") == len(drivers), \
+            f"an uncursored include='all' call did not return the first page of {len(drivers)}: " \
+            f"{ {k: v for k, v in first.items() if k != 'drivers'} }"
+        assert bool(first.get("nextCursor")) == (len(drivers) > 50), \
+            f"an uncursored include='all' call has the wrong nextCursor for {len(drivers)} drivers: {first.get('nextCursor')!r}"
+        builtin = [d for d in drivers if d.get("name") == "Virtual Switch" and d.get("bucket") != "user"]
+        assert builtin, "the built-in 'Virtual Switch' is missing from a complete hub_list_drivers(include='all') read"
+        type_id = str(builtin[0].get("id"))
         # nameFilter narrows the catalog; an argument the tool does not take is refused, not ignored.
         narrowed = self.client.call_tool("hub_read_apps_code", {
             "tool": "hub_list_drivers", "args": {"include": "all", "nameFilter": "virtual switch"}})
@@ -18049,8 +18050,7 @@ def updated() {}
         # convention but lives in Drivers Code, which the app-type listing above
         # never sees -- sweep it through the driver list.
         try:
-            ddrvs = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_drivers", "args": {}})
-            for d in (ddrvs.get("drivers", []) if isinstance(ddrvs, dict) else []):
+            for d in self._driver_catalog():
                 if d.get("namespace") == "mcptest" and str(d.get("name") or "").startswith("Deadman Test Target"):
                     try:
                         print(f"  Sweep: deleting stranded throwaway driver code class {d.get('id')}")
