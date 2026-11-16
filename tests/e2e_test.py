@@ -12320,6 +12320,19 @@ def updated() {}
         finally:
             self._delete_variable_safe(num_name)
 
+        # The hub checks names itself; its refusal (and its naming rules) reaches the caller.
+        bad_name = f"{PREFIX}HubVar[Bad]"
+        try:
+            refused_name = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_create_variable",
+                "args": {"name": bad_name, "type": "String", "value": "x", "confirm": True}})
+        except McpToolError as exc:
+            assert "Use a name of 1-255 characters" in str(exc) and "Nothing was changed" in str(exc), \
+                f"the hub's name refusal did not reach the caller: {exc}"
+        else:
+            raise AssertionError(f"a name with [ ] was not refused: {refused_name}")
+        assert not self._hub_variable_visible_in_bulk(bad_name), "a refused name left a variable behind"
+
         # A misspelt key in a bulk item fails that item by name, before anything is sent.
         typo = self.client.call_tool_failure("hub_manage_variables", {
             "tool": "hub_create_variable",

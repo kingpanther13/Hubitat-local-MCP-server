@@ -56,9 +56,12 @@ class ToolHubVariablesSpec extends ToolSpecBase {
             Map body = new groovy.json.JsonSlurper().parseText(json) as Map
             varPosts << [path: path, body: body]
             onPost?.call(path, body)
-            return [success: true]
+            return null   // the hub answers a write it took with HTTP 204 and an empty body
         }
     }
+
+    // The hub's 400 body for a name it will not take.
+    static final String NAME_REFUSAL = '{"message":"Use a name of 1-255 characters without leading/trailing spaces, control characters, or quotes, backslashes, ~, [, ], :, <, >."}'
 
     // An HTTP error answer as the hub client throws it: the status and body ride on `response`.
     static class HubAnswer extends RuntimeException {
@@ -1073,16 +1076,35 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // -------- toolCreateVariable validation (issue #92) --------
 
-    def "hub_create_variable rejects forbidden characters in name"() {
+    def "hub_create_variable relays the hub's own refusal of a name"() {
         given:
         enableWrite()
+        script.metaClass.getGlobalVar = { String n -> null }
+        script.metaClass.hubInternalPostJson = { String path, String json, int timeout = 420 ->
+            throw new HubAnswer(400, NAME_REFUSAL)
+        }
 
         when:
-        script.toolCreateVariable([name: 'has[brackets]', type: 'String', value: 'x', confirm: true])
+        def result = script.toolCreateVariable([name: 'has[brackets]', type: 'String', value: 'x', confirm: true])
+
+        then: 'nothing local second-guesses the hub, and its rules reach the caller'
+        result.success == false
+        result.error == 'hub_create_variable: Hub Variables create failed: Use a name of 1-255 characters without leading/trailing spaces, control characters, or quotes, backslashes, ~, [, ], :, <, >.'
+        result.note.startsWith('Nothing was changed')
+    }
+
+    def "hub_create_variable refuses a blank name before any request"() {
+        given:
+        enableWrite()
+        stubHubVarsPage()
+
+        when:
+        script.toolCreateVariable([name: '   ', type: 'String', value: 'x', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('forbidden character')
+        ex.message == 'Variable name is required'
+        varPosts.isEmpty()
     }
 
     def "hub_create_variable with present-but-null mesh keys takes the create path, not the link form"() {
@@ -1372,6 +1394,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         Map stored = [:]
         script.metaClass.getGlobalVar = { String n -> stored[n] }
         stubHubVarsPage { path, body ->
+            if (body.name.toString().contains('[')) throw new HubAnswer(400, NAME_REFUSAL)
             if (!(body.name in neverStored)) {
                 def v = body.type == 'integer' ? body.value.toInteger() : body.type == 'bigdecimal' ? body.value.toBigDecimal() :
                     body.type == 'boolean' ? body.value.toBoolean() : body.value
@@ -1411,7 +1434,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         enableWrite()
         stubBulkCreate()
 
-        when: 'the middle item has a forbidden character in its name'
+        when: 'the hub refuses the middle item\'s name'
         def result = script.toolCreateVariable([confirm: true, variables: [
             [name: 'goodOne', type: 'Number', value: 1],
             [name: 'bad[name]', type: 'Number', value: 2],
@@ -1425,9 +1448,9 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.results[0].success == true
         result.results[1].name == 'bad[name]'
         result.results[1].success == false
-        result.results[1].error.contains('forbidden character')
+        result.results[1].error.endsWith('Use a name of 1-255 characters without leading/trailing spaces, control characters, or quotes, backslashes, ~, [, ], :, <, >.')
         result.results[2].success == true
-        varPosts*.body.name == ['goodOne', 'goodTwo']
+        varPosts*.body.name == ['goodOne', 'bad[name]', 'goodTwo']
     }
 
     def "hub_create_variable bulk form: a non-Map item fails only itself while the others still create"() {
@@ -2587,17 +2610,19 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_variable via dispatch maps forbidden-character to isError validation result (useGateways=#useGateways)"() {
+    def "hub_create_variable via dispatch returns the hub's name refusal as an isError result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
+        script.metaClass.getGlobalVar = { String n -> null }
+        script.metaClass.hubInternalPostJson = { String path, String json, int timeout = 420 -> throw new HubAnswer(400, NAME_REFUSAL) }
 
         when:
         def response = mcpDriver.callTool('hub_create_variable', [name: 'has[brackets]', type: 'String', value: 'x', confirm: true])
 
         then:
         response.result?.isError == true
-        mcpDriver.parseInner(response).error.contains('forbidden character')
+        mcpDriver.parseInner(response).error.contains('Use a name of 1-255 characters')
 
         where:
         useGateways << [true, false]

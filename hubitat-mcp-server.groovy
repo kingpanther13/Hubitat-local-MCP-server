@@ -12796,7 +12796,7 @@ For DateTime, pass hub-local `yyyy-MM-ddTHH:mm` or `{date,time}`. Supplied offse
 - Creation isn't exposed via the public app API, so the tool sends one create request to the hub's own Hub Variables page, reads the variable back, and fails if it did not appear or its stored type or value differs from the request. When the hub refuses the value (for example text for a Number), the error carries the hub's reason and nothing is created.
 
 **Constraints:**
-- Name must not contain any of these characters: `' " \\ ~ [ : ] < >`. (This applies to the single-form `name` and to each bulk item's `name`.)
+- The hub checks names itself and refuses a bad or duplicate name before writing; its message, which states the naming rules, comes back in `error` (for a bulk item, in that item's `error`).
 - A String variable's initial value must be non-empty (an empty String reports success but never persists).
 
 **Expose to device-only apps:**

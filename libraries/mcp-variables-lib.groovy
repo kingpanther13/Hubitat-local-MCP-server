@@ -223,27 +223,15 @@ private void _attachHubVarDependents(Map found, String name) {
     }
 }
 
-// Hub variable name validation. Hubitat's UI rejects ' " \ ~ [ : ] < > and
-// blank names. Reproduced here so the create tool fails fast with a clean
-// error before any hub write. Returned via getters because the
-// Hubitat sandbox rejects `private static final` at script scope.
-private List getHubVarForbiddenChars() {
-    return ["'", '"', '\\', '~', '[', ':', ']', '<', '>']
-}
-
 private List getHubVarTypes() {
     return ["Number", "Decimal", "String", "Boolean", "DateTime"]
 }
 
+// The hub checks the characters itself and its refusal names its rules; only a blank name is caught
+// here, because a blank name cannot identify the existence check or the request.
 private void _validateHubVarName(String name) {
     if (!name?.trim()) {
         throw new IllegalArgumentException("Variable name is required")
-    }
-    def bad = getHubVarForbiddenChars().findAll { c -> name.contains(c) }
-    if (bad) {
-        throw new IllegalArgumentException(
-            "Variable name '${name}' contains forbidden character(s): ${bad.join(' ')}. " +
-            "Hubitat rejects: ' \" \\ ~ [ : ] < >")
     }
 }
 

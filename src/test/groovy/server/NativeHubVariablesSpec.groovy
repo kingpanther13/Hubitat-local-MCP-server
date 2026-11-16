@@ -17,7 +17,8 @@ class NativeHubVariablesSpec extends ToolSpecBase {
     private Set hiddenFromModel = [] as Set
     private Set rejectNames = [] as Set
     private Map meshJson = [localLinkedHubVariables: [], availableLinkedHubVariables: [], sharedHubVariables: []]
-    private Map postResponse = [success: true]
+    // null is the hub's success answer: HTTP 204 with an empty body, which hubInternalPostJson returns as null.
+    private Map postResponse = null
 
     def setupSpec() { appExecutor.getLocation() >> sharedLocation }
 
@@ -39,8 +40,8 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String json, int timeout = 420 ->
             Map body = new JsonSlurper().parseText(json) as Map
             requests << [method: 'POST', path: path, body: body]
-            if (body.name in rejectNames) return [success: false, message: 'Rejected by hub']
-            if (persistWrites && postResponse.success == true) {
+            if (body.name in rejectNames) throw new HttpFailure(400, '{"message":"Use a name of 1-255 characters without leading/trailing spaces, control characters, or quotes, backslashes, ~, [, ], :, <, >."}')
+            if (persistWrites && postResponse == null) {
                 if (path == '/hub2/variables/create') {
                     String sdkType = [integer: 'Number', bigdecimal: 'Decimal', string: 'String', boolean: 'Boolean', datetime: 'DateTime'][body.type]
                     def value = body.type == 'integer' ? body.value.toInteger() : body.type == 'bigdecimal' ? body.value.toBigDecimal() : body.type == 'boolean' ? body.value.toBoolean() : body.value
@@ -77,9 +78,9 @@ class NativeHubVariablesSpec extends ToolSpecBase {
 
     static class HttpFailure extends RuntimeException {
         Map response
-        HttpFailure(Integer status) {
+        HttpFailure(Integer status, String body = null) {
             super("HTTP ${status}".toString())
-            response = [status: status]
+            response = [status: status, data: body]
         }
     }
 
@@ -158,7 +159,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         !variables.containsKey('Missing')
     }
 
-    def 'a POST the hub answers with an error body is a failure'() {
+    def 'a POST answered with an error body instead of the empty 204 is a failure'() {
         given:
         postResponse = [success: false, error: 'Rejected']
         when:
@@ -470,7 +471,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         result.failedCount == 1
         result.results*.name == ['First', 'Bad', 'Last']
         result.results*.success == [true, false, true]
-        result.results[1].error.contains('Rejected by hub')
+        result.results[1].error == 'Hub Variables create failed: Use a name of 1-255 characters without leading/trailing spaces, control characters, or quotes, backslashes, ~, [, ], :, <, >.'
         posts()*.body*.name == ['First', 'Bad', 'Last']
         variables.keySet() == ['First', 'Last'] as Set
     }
