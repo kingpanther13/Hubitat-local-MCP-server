@@ -361,6 +361,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_set_variable writes via setGlobalVar and reports source 'hub' on success"() {
         given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'boolean', value: false] }
         def captured = [:]
         script.metaClass.setGlobalVar = { String name, Object value ->
             captured[name] = value
@@ -379,7 +380,8 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     def "hub_set_variable falls back to rule engine when setGlobalVar returns false (var not found)"() {
-        given: 'setGlobalVar returns false when the hub var does not exist'
+        given: 'the name is not a hub variable, and setGlobalVar returns false for it'
+        script.metaClass.getGlobalVar = { String n -> null }
         script.metaClass.setGlobalVar = { String name, Object value -> false }
 
         when:
@@ -394,8 +396,9 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.value == 42
     }
 
-    def "hub_set_variable falls back to rule engine when setGlobalVar throws"() {
+    def "hub_set_variable falls back to rule engine when setGlobalVar throws for a name that is not a hub variable"() {
         given:
+        script.metaClass.getGlobalVar = { String n -> null }
         script.metaClass.setGlobalVar = { String name, Object value ->
             throw new RuntimeException('Hub variable API unavailable')
         }
@@ -412,6 +415,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_set_variable passes string values through to setGlobalVar unchanged"() {
         given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'string', value: 'rain'] }
         def captured = [:]
         script.metaClass.setGlobalVar = { String name, Object value ->
             captured[name] = value
@@ -550,26 +554,131 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.meshShareConfirmed == true
     }
 
-    // Item: value leg falls back to rule_engine when setGlobalVar returns false, WHILE the mesh share is
-    // still processed (the mesh_shared pre-check passed because getGlobalVar sees it as a hub variable).
-    def "hub_set_variable value+mesh: setGlobalVar false falls the value to rule_engine AND still processes the mesh share"() {
+    def "hub_set_variable value+mesh: a hub variable the hub does not set fails before the mesh share"() {
         given:
         script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: false] }
         script.metaClass.setGlobalVar = { String n, Object v -> false }   // hub write does not persist
-        hubGet.register('/hub2/addVarToMesh/vacationMode') { params -> '' }
-        hubGet.register('/hub2/hubMeshJson') { params -> '{"sharedHubVariables":[{"name":"vacationMode"}]}' }
 
         when:
         def result = script.toolSetVariable([name: 'vacationMode', value: true, mesh_shared: true])
 
-        then: 'value fell back to rule_engine'
-        result.success == true
-        result.source == 'rule_engine'
-        result.value == true
+        then: 'an honest failure, no rule_engine copy, and the mesh share never sent'
+        result.success == false
+        result.isError == true
+        result.error.contains("did not apply the new value to hub variable 'vacationMode'")
+        result.note.contains("hub_get_tool_guide(section='variables')")
+        stateMap.ruleVariables == null
+        !hubGet.calls.any { it.path.startsWith('/hub2/addVarToMesh/') }
+    }
 
-        and: 'the mesh share was still processed and confirmed'
-        result.meshShared == true
-        result.meshShareConfirmed == true
+    // -------- toolSetVariable typed hub-variable writes --------
+
+    @spock.lang.Unroll
+    def "hub_set_variable stores #input on a #type hub variable as #expected"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: type, value: null] }
+        def captured = []
+        script.metaClass.setGlobalVar = { String n, Object v -> captured << v; true }
+
+        when:
+        def result = script.toolSetVariable([name: 'v', value: input])
+
+        then:
+        captured == [expected]
+        captured[0].getClass() == expected.getClass()
+        result == [success: true, name: 'v', value: expected, source: 'hub']
+
+        where:
+        type         | input    | expected
+        'integer'    | '42'     | 42
+        'integer'    | -7       | -7
+        'integer'    | 5.0      | 5
+        'bigdecimal' | '1.50'   | new BigDecimal('1.50')
+        'bigdecimal' | 3        | new BigDecimal('3')
+        'boolean'    | 'TRUE'   | true
+        'boolean'    | false    | false
+        'string'     | 5        | '5'
+    }
+
+    @spock.lang.Unroll
+    def "hub_set_variable refuses #input for a #type hub variable before any write"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: type, value: null] }
+        def writes = []
+        script.metaClass.setGlobalVar = { String n, Object v -> writes << v; true }
+
+        when:
+        script.toolSetVariable([name: 'v', value: input])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(phrase)
+        writes.isEmpty()
+        stateMap.ruleVariables == null
+
+        where:
+        type         | input                 | phrase
+        'integer'    | 'abc'                 | 'is a Number (integer): value must be a whole number'
+        'integer'    | '1.5'                 | 'whole number'
+        'integer'    | '99999999999'         | 'whole number'
+        'bigdecimal' | 'x'                   | 'is a Decimal (bigdecimal): value must be a number'
+        'boolean'    | 'yes'                 | 'is a Boolean: value must be true or false'
+        'string'     | null                  | 'is a String: value must be text'
+        'datetime'   | '2026-13-45T12:30'    | 'requires a valid date and time'
+        'datetime'   | null                  | 'is a DateTime'
+    }
+
+    @spock.lang.Unroll
+    def "hub_set_variable converts DateTime input #input to the hub-local stored form"() {
+        given:
+        sharedLocation.timeZone = TimeZone.getTimeZone('America/New_York')
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'datetime', value: '2026-01-01T00:00:00.000-0500'] }
+        def captured = []
+        script.metaClass.setGlobalVar = { String n, Object v -> captured << v; true }
+
+        when:
+        def result = script.toolSetVariable([name: 'when', value: input])
+
+        then:
+        captured == ['2026-02-04T14:00:00.000-0500']
+        result.value == '2026-02-04T14:00:00.000-0500'
+
+        where:
+        input << ['2026-02-04T14:00', '2026-02-04 14:00:59', [date: '2026-02-04', time: '14:00']]
+    }
+
+    def "hub_set_variable reports a throwing setGlobalVar on a hub variable as a failure, not a rule_engine write"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'integer', value: 1] }
+        script.metaClass.setGlobalVar = { String n, Object v -> throw new RuntimeException('excessive hub load') }
+
+        when:
+        def result = script.toolSetVariable([name: 'n', value: 2])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains('excessive hub load')
+        result.note.contains('hub_get_variable')
+        stateMap.ruleVariables == null
+    }
+
+    def "hub_set_variable writes nothing when it cannot tell whether the name is a hub variable"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> throw new RuntimeException('lookup failed') }
+        def writes = []
+        script.metaClass.setGlobalVar = { String n, Object v -> writes << v; true }
+
+        when:
+        def result = script.toolSetVariable([name: 'n', value: 2])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains("could not read whether 'n' is a hub variable")
+        result.note.startsWith('Nothing was changed')
+        writes.isEmpty()
+        stateMap.ruleVariables == null
     }
 
     // Item: a THROW from getGlobalVar in the mesh_shared pre-check is transient/unknown, NOT proof the
@@ -2444,6 +2553,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     def "hub_set_variable via dispatch writes hub var (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'boolean', value: false] }
         def captured = [:]
         script.metaClass.setGlobalVar = { String name, Object value ->
             captured[name] = value
@@ -2468,9 +2578,32 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "hub_set_variable via dispatch maps a wrong-type value to an isError validation result (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'integer', value: 3] }
+        def writes = []
+        script.metaClass.setGlobalVar = { String n, Object v -> writes << v; true }
+
+        when:
+        def response = mcpDriver.callTool('hub_set_variable', [name: 'counter', value: 'abc'])
+
+        then:
+        response.error == null
+        response.result.isError
+        mcpDriver.parseInner(response).toString().contains('whole number')
+        writes.isEmpty()
+        stateMap.ruleVariables == null
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
     def "hub_set_variable via dispatch falls back to rule_engine when hub var missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        script.metaClass.getGlobalVar = { String n -> null }
         script.metaClass.setGlobalVar = { String name, Object value -> false }
 
         when:

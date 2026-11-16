@@ -12302,6 +12302,24 @@ def updated() {}
         finally:
             self._delete_variable_safe(bad_value_name)
 
+        # A value that does not fit an existing hub variable's type is refused before any write: the hub
+        # value stays, and no rule-engine variable of that name appears.
+        num_name = f"{PREFIX}HubVar_Num"
+        self.created_variable_names.append(num_name)
+        try:
+            made = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_create_variable", "args": {"name": num_name, "type": "Number", "value": 3, "confirm": True}})
+            assert made.get("success") is True, f"Number fixture create failed: {made}"
+            self._expect_tool_refusal("hub_set_variable", {"name": num_name, "value": "abc"}, "whole number")
+            kept = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": num_name}})
+            assert kept.get("source") == "hub" and kept.get("value") == 3, f"a refused set changed the hub variable: {kept}"
+            listed = self.client.call_tool("hub_manage_variables", {"tool": "hub_list_variables", "args": {}})
+            assert num_name not in [v.get("name") for v in listed.get("ruleVariables") or []], \
+                f"a refused set created a rule-engine variable {num_name}"
+        finally:
+            self._delete_variable_safe(num_name)
+
         # A misspelt key in a bulk item fails that item by name, before anything is sent.
         typo = self.client.call_tool_failure("hub_manage_variables", {
             "tool": "hub_create_variable",
@@ -12357,6 +12375,13 @@ def updated() {}
                 f"DateTime create changed the requested date or time: {dt_value}"
             assert actual_datetime.utcoffset() == expected_datetime.utcoffset(), \
                 f"DateTime offset does not match hub zone {hub_zone}: {dt_value}"
+            # hub_set_variable takes the same DateTime input as the create and stores it on the hub variable.
+            set_dt = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": dt_name, "value": "2026-03-05T08:15"}})
+            assert set_dt.get("success") is True and set_dt.get("source") == "hub", f"DateTime set failed: {set_dt}"
+            reread = str(self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": dt_name}}).get("value"))
+            assert reread.startswith("2026-03-05T08:15"), f"DateTime set did not land on the hub variable: {reread}"
         finally:
             self._delete_variable_safe(dt_name)
 
