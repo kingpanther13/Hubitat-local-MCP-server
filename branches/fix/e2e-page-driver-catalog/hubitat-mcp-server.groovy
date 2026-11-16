@@ -13238,17 +13238,17 @@ def toolCreateDevice(args) {
         def catalog = catalogText ? new groovy.json.JsonSlurper().parseText(catalogText) : null
         if (!(catalog instanceof Map) || !(catalog.drivers instanceof List)) {
             return [success: false, isError: true, error: 'The native driver catalog is unavailable or invalid; no device create request sent.',
-                    note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+                    note: "Verify the deviceTypeId via hub_list_drivers(include='all', nameFilter='<driver name>')."]
         }
         def matches = catalog.drivers.findAll { row -> row instanceof Map && row.id?.toString() == typeId }
         if (matches.size() != 1 || !(matches[0].type in ['sys', 'usr'])) {
             return [success: false, isError: true, error: "Could not resolve one supported native driver type for ${typeId}; no device create request sent.",
-                    note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+                    note: "Verify the deviceTypeId via hub_list_drivers(include='all', nameFilter='<driver name>')."]
         }
         driverType = matches[0].type.toString()
     } catch (Exception e) {
         return [success: false, isError: true, error: 'Hub call failed reading the driver catalog; no device create request sent.',
-                note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+                note: "Verify the deviceTypeId via hub_list_drivers(include='all', nameFilter='<driver name>')."]
     }
     String wantLabel = args?.label != null && args.label.toString().trim() ? args.label.toString() : null
     def resp
@@ -13259,12 +13259,12 @@ def toolCreateDevice(args) {
         resp = respText ? new groovy.json.JsonSlurper().parseText(respText) : null
     } catch (Exception e) {
         return [success: false, isError: true, error: "Hub call failed creating device from driver-type ${typeId}: ${e.message}",
-                note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+                note: "Verify the deviceTypeId via hub_list_drivers(include='all', nameFilter='<driver name>')."]
     }
     if (resp?.deviceId != null && resp?.success == null) resp.put("success", true)
     if (resp?.success != true || resp?.deviceId == null) {
         return [success: false, isError: true, error: resp?.errorMessage ?: "Hub did not create a device for driver-type ${typeId}",
-                note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+                note: "Verify the deviceTypeId via hub_list_drivers(include='all', nameFilter='<driver name>')."]
     }
     def newId = resp.deviceId.toString()
     def warnings = []
@@ -18778,7 +18778,7 @@ def _getAllToolDefinitions_partCodeManagement() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
+                    include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user), paged 50 per page."],
                     nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
                     cursor: [type: "string", description: "Pagination cursor (page size 50): iterate nextCursor until it is absent. include='all' always pages (no cursor = first page); include='user' returns the whole list unless a cursor is given (\"\" for the first page)."]
                 ]
@@ -31110,7 +31110,7 @@ def getGatewayConfig() {
             tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_hpm_packages"],
             summaries: [
                 hub_list_apps: "List installed apps. scope='types' (all app TYPES: community + built-in, each with its menu tab) or 'instances' (running apps with parent/child tree). Args: scope, filter?, nameFilter?, includeHidden?, cursor?",
-                hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), each id usable with hub_create_device. Args: include?, nameFilter?, cursor?",
+                hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), paged 50 at a time, each id usable with hub_create_device. Args: include?, nameFilter?, cursor?",
                 hub_get_source: "Get app/driver/library Groovy source with chunked reading. Args: type (app|driver|library), id, offset?, length?",
                 hub_list_libraries: "List installed Groovy libraries (id, name, namespace, version). Pair with hub_get_source(type='library', id) to read source. Args: cursor?",
                 hub_list_bundles: "List installed code bundles (the Bundle-Manager containers HPM delivers code in; distinct from Libraries Code). Returns id, name, namespace, sourceUrl, the code ids it stored (codeIds) and a contains summary of their names. Find a bundle id for hub_delete_bundle/hub_export_bundle. Args: cursor?",
@@ -35612,7 +35612,7 @@ MCP-managed virtual devices:
 ''',
         update_device: '''## Device inspection and updates
 
-Call `hub_get_device(deviceId=..., mode="configuration")` before an update. `editableFields` has one entry per `fields` name: its `name`, `type`, `minimum`/`maximum` for integers, `options` (or an `optionsReference` lookup) where the page offers choices, the current `value`, `writable` with a `reason` when this device does not offer it, and `requiresConfirmation` when it needs confirm=true. An unset field and one saved as null both read `value: null`. `preferences` lists the driver's declared preferences with type, options, range, default and saved value; `valueStatus` tells `stored` from `unset`, and a driver default does not prove the setting was saved. `deviceInfo` carries the driver identity; `preferenceRead` and `deviceInfoRead` give each read's status. Use `mode="details"` with optional `sections` for wider inspection.
+Call `hub_get_device(deviceId=..., mode="configuration")` before an update. `editableFields` has one entry per `fields` name: its `name`, `type`, `minimum`/`maximum` for integers, `options` (or an `optionsReference` lookup, which may be paged: follow its `nextCursor`, or narrow it with `nameFilter` where the tool takes one) where the page offers choices, the current `value`, `writable` with a `reason` when this device does not offer it, and `requiresConfirmation` when it needs confirm=true. An unset field and one saved as null both read `value: null`. `preferences` lists the driver's declared preferences with type, options, range, default and saved value; `valueStatus` tells `stored` from `unset`, and a driver default does not prove the setting was saved. `deviceInfo` carries the driver identity; `preferenceRead` and `deviceInfoRead` give each read's status. Use `mode="details"` with optional `sections` for wider inspection.
 
 Details mode does not inline event or log history; it points to the read tools for them. Password values are redacted unless Hide passwords and credentials is off. Missing or unrecognized native data is reported as partial or unavailable. It never proves the device has no settings. `driverSource` gives a ready hub_get_source call when a user driver resolves to exactly one driver. Otherwise it gives the hub_list_drivers lookup and the reason. Built-in driver source is not available. Driver source can show more declarations, but it never shows the device's saved preference values. Every mode is read-only (it is also in hub_read_devices), and device authorization still applies.
 
@@ -35869,7 +35869,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 **Response-size guard.** Every tool result is measured before sending. A result over 120,000 bytes on the LAN (the hub caps responses at 128 KiB), or over 99,000 bytes through the cloud relay (which drops larger responses), has its content replaced with `{response_too_large: true, truncated: true, estimatedBytes, sizeLimitBytes, tool, suggestion}`. The call itself still succeeds. On gateway calls, `tool` names the actual sub-tool. `suggestion` names the knob to narrow with (filters, limit, fields, `saveAs`, or `cursor`). Re-issue a narrower call; do not repeat the same one.
 
-**Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard. Two always return one page: `hub_list_backups` (scope=source), with `hasMore: true` and `nextCursor` when more backups follow, and `hub_list_drivers(include='all')`, whose full catalog is too large for one response through the cloud relay. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
+**Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard. These always return one page: `hub_list_backups` (scope=source), with `hasMore: true` and `nextCursor` when more backups follow; `hub_list_drivers(include='all')`, whose full catalog is too large for one response through the cloud relay; and `hub_list_devices` in `format='context'` when `limit` is unset. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
 - 25: `hub_list_hpm_packages`.
 - 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices` in `format='context'` when `limit` is unset (the other formats are unpaged until a `cursor` or a positive `limit` is given).
 - 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs` (50 per tab when several are listed), `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
@@ -36099,10 +36099,10 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 ### hub_list_drivers (list device driver TYPES on the hub)
 
-`include='user'` (default) lists user-installed drivers only; `include='all'` returns the full catalog (system + virtual + user), where each entry is `{id, name, namespace, bucket}` per driver type.
+`include='user'` (default) lists user-installed drivers only; `include='all'` returns the full catalog (system + virtual + user), 50 entries per page, where each entry is `{id, name, namespace, bucket}` per driver type.
 
 - For `include='all'`, each entry is tagged `bucket=system|virtual|user`.
-- `include='all'` always pages, 50 per page: a call without a cursor returns the first page with `total` and `nextCursor`; pass each `nextCursor` back until it is absent. Use `nameFilter` to find one driver without walking the pages. `include='user'` returns the whole list unless a cursor is given.
+- `include='all'` always pages, 50 per page: a call without a cursor returns the first page with `total`, and `nextCursor` while more follow; pass each `nextCursor` back until it is absent. Use `nameFilter` to find one driver without walking the pages; it filters the whole catalog before paging. `include='user'` returns the whole list unless a cursor is given.
 - For an `include='all'` entry, its **id** is the driver-type id to pass to `hub_create_device`, while `hub_manage_virtual_device(customDriver={namespace, name})` takes that same entry's **namespace + name** (not the id).
 
 
