@@ -7496,7 +7496,8 @@ def updated() {}
             assert listed.get("status") == "active" and listed.get("paused") is False, listed
             label = listed.get("name") or listed.get("label")
             assert str(label).endswith(" (Paused)"), listed
-            for paused in (True, False):
+
+            def set_paused(paused: bool) -> None:
                 result = self.client.call_tool_result("hub_set_rule_paused", {"ruleId": app_id, "paused": paused})
                 if result.get("success") is False and "excessive hub load" in str(result.get("error", "")):
                     # RMUtils is refused once the hub's load limiter trips; the rule's own Pause button
@@ -7506,11 +7507,23 @@ def updated() {}
                     self._rm_submit(app_id, form, control=self._rm_control(form, name="pausRule"))
                 else:
                     assert result.get("success") is not False, result
-                self._rm_wait(lambda paused=paused: self._rm_health(app_id).get("paused") is paused, what=f"paused={paused}")
+                self._rm_wait(lambda: self._rm_health(app_id).get("paused") is paused, what=f"paused={paused}")
+
+            for paused in (True, False):
+                set_paused(paused)
                 assert self._rm_health(app_id).get("label") == label
             result = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "stop"})
             assert result.get("success") is not False, result
+            # The stop re-renders the rule's page, so the list shows it at once, without waiting.
+            listed = self._rm_listed(app_id)
+            assert listed.get("status") == "stopped", listed
             self._rm_wait(lambda: self._rm_health(app_id).get("stopped") is True, what="stopped")
+            # The name shows one decoration at a time; a paused and stopped rule still lists both.
+            set_paused(True)
+            listed = self._rm_listed(app_id)
+            assert listed.get("paused") is True and listed.get("status") == "stopped", listed
+            set_paused(False)
+            assert self._rm_listed(app_id).get("paused") is False
             assert self._rm_health(app_id)["eventSubscriptionCount"] == 0
             # An edit keeps the rule stopped, and restoring its recovery point brings back the original
             # time with the rule still stopped.
@@ -8258,7 +8271,7 @@ def updated() {}
     def test_set_rule_walkstep_drive(self) -> None:
         # The native editor, driven step by step: a new action committed with actionDone, invalid
         # field names, controls and option values refused without a change, and an open Repeat block
-        # reported until its END-REPEAT is added.
+        # reported until its END-REP is added, and clean once it is.
         switch, switch2 = self._ensure_perm_fixture("switch_a"), self._ensure_perm_fixture("switch_b")
         app_id, _ = self._rm_rule("FormDrive")
         try:
@@ -8295,6 +8308,8 @@ def updated() {}
             assert any("repeat" in str(issue).lower() for issue in health.get("structuralIssues", [])), health
             # The write succeeds only once the block is balanced and the rule compiles.
             self._rm_update(app_id, [native_change("terminator", subtype="endRep")])
+            health = self._rm_health(app_id)
+            assert not health.get("structuralIssues"), health
             # Preflight refuses, before any write, an END-REP ordered ahead of its REPEAT and an order
             # that follows a new action in the same batch.
             before = self._rm_snapshot(app_id)

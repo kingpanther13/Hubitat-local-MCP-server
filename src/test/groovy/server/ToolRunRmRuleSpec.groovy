@@ -359,6 +359,79 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    @spock.lang.Unroll
+    def "action=#action renders the rule's page once after the stopRule click so its name decoration is current"() {
+        given:
+        hubGet.register('/installedapp/statusJson/106') { params -> minimalStatusJson(106, stoppedBefore) }
+        def renders = 0
+        hubGet.register('/installedapp/configure/json/106') { params ->
+            renders++
+            JsonOutput.toJson([app: [id: 106, version: 3], configPage: [name: 'mainPage', sections: []]])
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 106, action: action])
+
+        then:
+        result.success == true
+        posts.count { it.path == '/installedapp/btn' && it.body.name == 'stopRule' } == 1
+        renders == 1
+        result.note == null
+
+        where:
+        action  | stoppedBefore
+        'stop'  | false
+        'start' | true
+    }
+
+    def "an already-stopped rule is neither clicked nor re-rendered"() {
+        given:
+        hubGet.register('/installedapp/statusJson/106') { params -> minimalStatusJson(106, true) }
+        def renders = 0
+        hubGet.register('/installedapp/configure/json/106') { params -> renders++; '{}' }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 106, action: 'stop'])
+
+        then:
+        result.rmAction == 'noop'
+        renders == 0
+    }
+
+    @spock.lang.Unroll
+    def "hub_call_rule via dispatch keeps a landed #action successful with a note when the page re-render fails (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        hubGet.register('/installedapp/statusJson/107') { params -> minimalStatusJson(107, action == 'start') }
+        hubGet.register('/installedapp/configure/json/107') { params -> throw new RuntimeException('render timed out') }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 107, action: action])
+
+        then: "the stop/start itself landed, so the call succeeds and names the stale-status risk"
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.note.contains('render timed out')
+        inner.note.contains('hub_list_rules')
+        inner.note.contains('hub_get_rule_health')
+
+        where:
+        action  | useGateways
+        'stop'  | true
+        'stop'  | false
+        'start' | true
+    }
+
     def "action=start is idempotent — no-ops when rule is already running"() {
         given:
         hubGet.register('/installedapp/statusJson/106') { params -> minimalStatusJson(106, false) }

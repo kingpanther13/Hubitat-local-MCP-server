@@ -1799,12 +1799,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.structuralIssues.any { it.toString().contains("action 4") }
     }
 
-    def "hub_get_rule_health flags an orphaned End-Repeat closing nothing"() {
+    def "hub_get_rule_health flags an orphaned END-REP closing nothing"() {
         given:
         enableReadOnly()
         def settings = ifStructureSettings([
             [idx: 1, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 2, actType: "repeatActs", actSubType: "getStopRepeat"]
+            [idx: 2, actType: "repeatActs", actSubType: "getEndRepeat"]
         ])
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Orphan Stop", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
@@ -1814,7 +1814,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         result.ok == false
-        result.structuralIssues.any { it.toString().contains("End Repeat") }
+        result.structuralIssues.any { it.toString().contains("END-REP") }
         result.structuralIssues.any { it.toString().contains("orphaned closer") }
     }
 
@@ -1904,13 +1904,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.structuralIssues == [] || result.structuralIssues?.isEmpty()
     }
 
-    def "hub_get_rule_health reports ok on Repeat / End-Repeat sequence"() {
+    def "hub_get_rule_health reports ok on Repeat / END-REP sequence"() {
         given:
         enableReadOnly()
         def settings = ifStructureSettings([
             [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
             [idx: 2, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 3, actType: "repeatActs", actSubType: "getStopRepeat"]
+            [idx: 3, actType: "repeatActs", actSubType: "getEndRepeat"]
         ])
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Repeat", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
@@ -1990,7 +1990,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def settings = ifStructureSettings([
             [idx: 1,                        actSubType: "getRepeat"],
             [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 3,                        actSubType: "getStopRepeat"]
+            [idx: 3,                        actSubType: "getEndRepeat"]
         ])
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Repeat", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
@@ -2064,8 +2064,165 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         'getEndIf'      | 'condActs'
         'getRepeat'     | 'repeatActs'
         'getWhile'      | 'repeatActs'
-        'getStopRepeat' | 'repeatActs'
+        'getEndRepeat'  | 'repeatActs'
+        'getStopRepeat' | null
         'getLogMsg'     | null
+    }
+
+    private Map repeatHealth(List<Map> rows, List actionList) {
+        enableReadOnly()
+        def settings = ifStructureSettings(rows)
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Repeat Shapes", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: actionList.collect { it.toString() }])
+        }
+        script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+    }
+
+    def "hub_get_rule_health reports ok on a Repeat-While closed by END-REP"() {
+        when:
+        def result = repeatHealth([
+            [idx: 1, actType: "repeatActs", actSubType: "getWhile"],
+            [idx: 2, actType: "logActs",    actSubType: "getLogMsg"],
+            [idx: 3,                        actSubType: "getEndRepeat"]
+        ], [1, 2, 3])
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
+    def "hub_get_rule_health reports ok on the live IF / While / END-REP / ELSE / Stop Repeating / END-IF rule"() {
+        given: "the action order read from a real Rule Machine 5.1 rule; Stop Repeating inside the ELSE is a leaf"
+        def methods = ['getIfThen', 'getWhile', 'getMsg', 'getMsg', 'getMsg', 'getEndRepeat',
+                       'getElse', 'getStopRepeat', 'getMsg', 'getMsg', 'getMsg', 'getEndIf']
+        def rows = []
+        methods.eachWithIndex { m, i ->
+            def row = [idx: i + 1, actSubType: m]
+            if (m in ['getIfThen']) row.actType = 'condActs'
+            if (m in ['getWhile', 'getStopRepeat']) row.actType = 'repeatActs'
+            if (m == 'getMsg') row.actType = 'notificationActs'
+            rows << row
+        }
+
+        when:
+        def result = repeatHealth(rows, (1..12).toList())
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
+    def "hub_get_rule_health reports ok on IF / Repeat / END-REP / ELSE / END-IF"() {
+        when:
+        def result = repeatHealth([
+            [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 2, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 3, actType: "logActs",    actSubType: "getLogMsg"],
+            [idx: 4,                        actSubType: "getEndRepeat"],
+            [idx: 5,                        actSubType: "getElse"],
+            [idx: 6, actType: "logActs",    actSubType: "getLogMsg"],
+            [idx: 7,                        actSubType: "getEndIf"]
+        ], [1, 2, 3, 4, 5, 6, 7])
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
+    def "hub_get_rule_health flags a Repeat that is never closed, even with a Stop Repeating inside it"() {
+        when:
+        def result = repeatHealth([
+            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 2, actType: "logActs",    actSubType: "getLogMsg"],
+            [idx: 3, actType: "repeatActs", actSubType: "getStopRepeat"]
+        ], [1, 2, 3])
+
+        then:
+        result.ok == false
+        result.structuralIssues.size() == 1
+        result.structuralIssues[0].toString().contains("action 1 (Repeat) opened a block that was never closed")
+        result.structuralIssues[0].toString().contains("END-REP")
+    }
+
+    def "hub_get_rule_health flags an END-REP with no Repeat when the row carries no actType"() {
+        when:
+        def result = repeatHealth([
+            [idx: 1, actType: "logActs", actSubType: "getLogMsg"],
+            [idx: 2,                     actSubType: "getEndRepeat"]
+        ], [1, 2])
+
+        then:
+        result.ok == false
+        result.structuralIssues.any { it.toString().contains("action 2 (END-REP) has no matching Repeat") }
+    }
+
+    def "the structural-imbalance issue points at the terminator update and a read, not a removed API"() {
+        when:
+        def result = repeatHealth([
+            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 2, actType: "logActs",    actSubType: "getLogMsg"]
+        ], [1, 2])
+        def text = result.issues.find { it.toString().startsWith("structural imbalance") }?.toString()
+
+        then:
+        text != null
+        text.contains("hub_set_rule(operation='update')")
+        text.contains("terminator")
+        text.contains("hub_set_rule(operation='read')")
+        !text.contains("addAction")
+        !text.contains("stopRepeat")
+    }
+
+    private void deletePreflight(List<Map> rows, List<Integer> ordered, List clicks) {
+        def removedIdx = null
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: ordered.collect { it.toString() }])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, ifStructureSettings(rows.findAll { it.idx != removedIdx }))
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btn, String attr = null, String page = null, Map cache = null ->
+            clicks << btn; removedIdx = btn as Integer; [status: 200]
+        }
+    }
+
+    def "removing a needed END-REP is refused before any click"() {
+        given:
+        def clicks = []
+        deletePreflight([
+            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 2, actType: "logActs",    actSubType: "getLogMsg"],
+            [idx: 3,                        actSubType: "getEndRepeat"]
+        ], [1, 2, 3], clicks)
+
+        when:
+        script._rmDeleteAction(100, 3)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("structural END-REP")
+        e.message.contains("never closed")
+        clicks.isEmpty()
+    }
+
+    def "removing a Stop Repeating leaf inside a Repeat block is allowed"() {
+        given:
+        def clicks = []
+        deletePreflight([
+            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 2, actType: "repeatActs", actSubType: "getStopRepeat"],
+            [idx: 3,                        actSubType: "getEndRepeat"]
+        ], [1, 2, 3], clicks)
+
+        when:
+        def out = script._rmDeleteAction(100, 2)
+
+        then:
+        out.success == true
+        out.removedIndex == 2
+        clicks == ["2"]
     }
 
     def "hub_get_rule_health reports ok on a UI-built flat IF ELSE END-IF with no actType on the closers"() {

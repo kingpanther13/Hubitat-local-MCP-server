@@ -5,7 +5,7 @@ def _getAllToolDefinitions_partNativeRM() {
         // Native Rule Machine runtime and administrative tools.
         [
             name: "hub_list_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id) with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub's list source decorates the label (many firmwares don't) — the authoritative stopped check is hub_get_rule_health's `stopped` field. For ONE rule's state, call hub_get_rule_health(appId) instead of listing every rule — it returns that rule's paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
+            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id) with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. Status reflects Rule Machine's name decoration (refreshed after an MCP stop or start); a decorated rule's paused/stopped come from its own state. A stop made outside MCP may show only after the rule's page is next opened. For ONE rule's state, call hub_get_rule_health(appId) instead of listing every rule — it returns that rule's paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -422,7 +422,8 @@ private void registerRmRule(Map combined, def r, String version) {
 // Annotate an RM rule entry (in place) with disabled/paused booleans, a status summary,
 // and requiredExpressionFalse. WHY decoration-detection (full algorithm in the
 // builtin_app_tools guide): RMUtils exposes no paused or stopped boolean, so both are found
-// only by diffing the app's /hub2/appsList name against its RMUtils label. A stopped rule
+// by diffing the app's /hub2/appsList name against its RMUtils label (a decorated row then
+// reads its exact flags from app state, below). A stopped rule
 // reaches this function through EITHER of two channels and both are read here: the
 // "(Stopped)" suffix can sit on the RMUtils LABEL while the appsList name stays clean, or it
 // can sit in the appsList-name REMAINDER the "(Paused)" diff already computes. The diff is
@@ -481,6 +482,21 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
     if (stopped) {
         entry.label = _rmStripTrailingDecoration(entry.label, "(Stopped)")
         entry.name = _rmStripTrailingDecoration(entry.name, "(Stopped)")
+    }
+    // The name carries one decoration at a time ("(Stopped)" hides "(Paused)") and can lag a
+    // stop made without rendering the rule's page, so a decorated row reads its real flags from
+    // app state. Undecorated rows skip the read: a hub can carry hundreds of rules.
+    if (paused || stopped) {
+        try {
+            def status = _rmFetchStatusJson(idInt)
+            def statePaused = _readAppStateBoolean(status, "paused", null)
+            def stateStopped = _readAppStateBoolean(status, "stopped", null)
+            if (statePaused != null) paused = statePaused
+            // A readable state with no stopped flag means the rule was never stopped.
+            stopped = (stateStopped != null) ? stateStopped : false
+        } catch (Exception e) {
+            mcpLog("warn", "rm-interop", "_rmAnnotateRuleStatus: rule ${entry.id} state read failed (${e.message}); status from its appsList name")
+        }
     }
     entry.disabled = disabled
     entry.paused = paused
@@ -580,7 +596,7 @@ def toolRunRmRule(args) {
             return single
         }
         // Per-rule toggle loop with a relay-budget checkpoint: each toggle is a
-        // statusJson read + (maybe) a button click, so a long list can outlive the
+        // statusJson read + (maybe) a button click and page render, so a long list can outlive the
         // response budget. _rmToggleStopped no-ops rules already in the target
         // state, so re-issuing with the remainder is safe.
         def results = []
@@ -669,11 +685,19 @@ private Map _rmToggleStopped(Integer ruleId, String action) {
     } catch (Exception e) {
         return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: stopRule button click failed (${e.message})"]
     }
-    return [
+    def out = [
         success: true,
         ruleId: ruleId,
         rmAction: (action == "stop") ? "stopRule button -> state.stopped=true" : "stopRule button -> state.stopped=false (initialize)"
     ]
+    // The click alone leaves the rule's "(Stopped)" name decoration stale until its page is next
+    // rendered; render it once, as the hub UI does after the click, so hub_list_rules is current.
+    try {
+        _rmFetchConfigJson(ruleId)
+    } catch (Exception e) {
+        out.note = "The rule was ${action == 'stop' ? 'stopped' : 'started'}, but re-rendering its page failed (${e.message}), so hub_list_rules may show the old status until the rule's page is next opened. hub_get_rule_health reads the rule's own state.".toString()
+    }
+    return out
 }
 
 // Pull a named Boolean out of statusJson.appState[]. Hubitat serializes
@@ -1004,10 +1028,10 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
     // set diff still allows deletions that strictly improve a broken
     // rule, because every projected issue is also in current.
     // Keyed off actSubType ALONE: RM 5.1's UI persists no actType.<N> on
-    // ELSE / ELSE-IF / END-IF rows, so also requiring actType would let a
+    // ELSE / ELSE-IF / END-IF / END-REP rows, so also requiring actType would let a
     // UI-built closer skip the refusal and silently unbalance the rule.
     def sType = settingsByName["actSubType.${actionIdx}".toString()]?.value?.toString()
-    def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getStopRepeat"]
+    def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getEndRepeat"]
     if (sType in structuralSubTypes && !skipStructuralCheck) {
         // Both sides walk the rule's OWN actions. A leftover settings row is not
         // part of the rule's structure, and the set-diff does not reliably cancel
@@ -1021,7 +1045,7 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
             "getEndIf": "END-IF",
             "getRepeat": "Repeat",
             "getWhile": "Repeat-While",
-            "getStopRepeat": "End-Repeat"
+            "getEndRepeat": "END-REP"
         ][sType] ?: sType
         def orderedIndices = _rmOrderedActionIndices(appId)
         if (orderedIndices == null) {

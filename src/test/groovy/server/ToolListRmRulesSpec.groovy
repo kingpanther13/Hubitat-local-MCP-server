@@ -869,6 +869,80 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         r470.name == 'Porch timer'
     }
 
+    private void registerRuleState(int id, Map flags) {
+        hubGet.register("/installedapp/statusJson/${id}".toString()) { params ->
+            groovy.json.JsonOutput.toJson([installedApp: [id: id], appSettings: [],
+                appState: flags.collect { k, v -> [name: k, value: v, type: 'Boolean'] }])
+        }
+    }
+
+    def "a rule both paused and stopped reads both flags from its state, though its name shows only (Stopped)"() {
+        given:
+        rmUtils.stubRuleList5 = [[480: 'Garage loop']]
+        registerRmAppsList([ruleNode(480, 'Garage loop <span style="color:red">(Stopped)</span>')])
+        registerRuleState(480, [paused: true, stopped: true])
+
+        when:
+        def r480 = script.toolListRmRules([:]).rules.find { it.id == 480 }
+
+        then:
+        r480.paused == true
+        r480.status == 'stopped'
+        r480.label == 'Garage loop'
+    }
+
+    def "a decorated row whose state is no longer stopped reads active, with the stale decoration still stripped"() {
+        given:
+        rmUtils.stubRuleList5 = [[481: 'Garage loop']]
+        registerRmAppsList([ruleNode(481, 'Garage loop (Stopped)')])
+        registerRuleState(481, [paused: false])
+
+        when:
+        def r481 = script.toolListRmRules([:]).rules.find { it.id == 481 }
+
+        then:
+        r481.paused == false
+        r481.status == 'active'
+    }
+
+    def "a failed state read keeps the name-derived status for that row"() {
+        given:
+        rmUtils.stubRuleList5 = [[482: 'Garage loop']]
+        registerRmAppsList([ruleNode(482, 'Garage loop (Paused)')])
+        hubGet.register('/installedapp/statusJson/482') { params -> throw new RuntimeException('hub busy') }
+
+        when:
+        def r482 = script.toolListRmRules([:]).rules.find { it.id == 482 }
+
+        then:
+        r482.paused == true
+        r482.status == 'paused'
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_rules via dispatch reads state only for decorated rows (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        rmUtils.stubRuleList5 = [[483: 'Hall'], [484: 'Porch'], [485: 'Kitchen']]
+        registerRmAppsList([ruleNode(483, 'Hall'), ruleNode(484, 'Porch (Stopped)'), ruleNode(485, 'Kitchen')])
+        registerRuleState(484, [paused: true, stopped: true])
+        hubGet.calls.clear()
+
+        when:
+        def response = mcpDriver.callTool('hub_list_rules', [:])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        !response.result.isError
+        hubGet.calls*.path == ['/hub2/appsList', '/installedapp/statusJson/484']
+        inner.rules.find { it.id == 484 }.paused == true
+        inner.rules.find { it.id == 484 }.status == 'stopped'
+        inner.rules.findAll { it.id != 484 }.every { it.status == 'active' && it.paused == false }
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "does not false-flag a rule the user literally named ending in (Stopped)"() {
         given: 'both strings carry the literal suffix, so nothing distinguishes it as decoration'
         rmUtils.stubRuleList5 = [[471: 'Movie mode (Stopped)']]

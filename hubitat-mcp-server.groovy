@@ -10484,9 +10484,13 @@ private Map _ruleCompiledState(Integer appId) {
  *
  * Asymmetric refusal at the call sites: openers (ifThen / repeat /
  * repeatWhile) added alone are allowed (normal multi-step build state).
- * Branch keywords (elseIf / else) and bare closers (endIf / stopRepeat)
+ * Branch keywords (elseIf / else) and bare closers (endIf / endRepeat)
  * are refused if they would render orphaned, because they have no valid
  * follow-up step the caller would naturally do next.
+ *
+ * getEndRepeat (END-REP) closes a Repeat / Repeat-While block. getStopRepeat
+ * ("Stop Repeating Actions") is a leaf that may sit anywhere, so the walk
+ * must not treat it as a closer.
  *
  * Partial-commit handling: an entry with `actType` set but `actSubType`
  * null -- or one carrying an explicit `partial: true` -- is REPORTED as a
@@ -10532,12 +10536,12 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
         } else if (aType == "repeatActs") {
             if (sType == "getRepeat" || sType == "getWhile") {
                 stack << [kind: "repeat", openIdx: idx]
-            } else if (sType == "getStopRepeat") {
+            } else if (sType == "getEndRepeat") {
                 if (stack.isEmpty()) {
-                    issues << ("action ${idx} (End Repeat) has no matching Repeat — orphaned closer".toString())
+                    issues << ("action ${idx} (END-REP) has no matching Repeat — orphaned closer".toString())
                 } else if (stack[-1].kind != "repeat") {
                     def open = stack[-1]
-                    issues << ("action ${idx} (End Repeat) closes an IF block opened at action ${open.openIdx} — mismatched block closer".toString())
+                    issues << ("action ${idx} (END-REP) closes an IF block opened at action ${open.openIdx} — mismatched block closer".toString())
                     stack.removeAt(stack.size() - 1)
                 } else {
                     stack.removeAt(stack.size() - 1)
@@ -10547,7 +10551,7 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
     }
     stack.each { open ->
         def label = open.kind == "if" ? "IF" : "Repeat"
-        def closer = open.kind == "if" ? "END-IF" : "End-Repeat"
+        def closer = open.kind == "if" ? "END-IF" : "END-REP"
         issues << ("action ${open.openIdx} (${label}) opened a block that was never closed — rule is missing an ${closer}".toString())
     }
     issues
@@ -10556,7 +10560,7 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
 /**
  * Map a structural actSubType to the actType RM stores alongside it, or null for a leaf subtype.
  * RM 5.1's UI persists actType.<N> only on rows whose editor asked for a capability, so a
- * UI-built ELSE / ELSE-IF / END-IF / Repeat closer carries actSubType.<N> ALONE (our own wizard
+ * UI-built ELSE / ELSE-IF / END-IF / END-REP row carries actSubType.<N> ALONE (our own wizard
  * writer always writes both).
  */
 private String _rmActTypeForStructuralSubType(String subType) {
@@ -10568,7 +10572,7 @@ private String _rmActTypeForStructuralSubType(String subType) {
             return "condActs"
         case "getRepeat":
         case "getWhile":
-        case "getStopRepeat":
+        case "getEndRepeat":
             return "repeatActs"
         default: return null
     }
@@ -10646,7 +10650,7 @@ private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIn
         if (excludeIndices.contains(idx)) return
         def aType = _rmActionSettingText(settingsByName, "actType", idx)
         def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
-        // RM's UI writes no actType on ELSE / ELSE-IF / END-IF -- infer it or the walker sees a leaf.
+        // RM's UI writes no actType on ELSE / ELSE-IF / END-IF / END-REP -- infer it or the walker sees a leaf.
         if (aType == null && sType != null) aType = _rmActTypeForStructuralSubType(sType)
         def entry = [idx: idx, actType: aType, actSubType: sType]
         // The reverse half-pair is an add-action half-commit, not a leaf; mark it for the walker.
@@ -10934,7 +10938,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
                 _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), compiledActionList))
             orphanedActionRows = _rmOrphanedActionRows(settingsByName, compiledActionList)
             if (structuralIssues) {
-                issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer, and the fix is simply to add it via addAction(capability='endIf'|'stopRepeat') — do NOT restore. Only if the rule was already complete does this indicate damage (a raw settings write or a mutation that committed post-response), in which case use hub_restore_backup to roll back.".toString())
+                issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer with hub_set_rule(operation='update') and a terminator change (subtype endIf or endRep). Otherwise compare against hub_set_rule(operation='read') before considering a restore.".toString())
             }
         } catch (Exception e) {
             if (sourcesUsed.isEmpty()) {
@@ -12589,7 +12593,8 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
 - **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live **status** — "active" | "paused" | "stopped" | "disabled" | "unknown" — plus **disabled** / **paused** booleans (omitted on the "unknown" path) and, only when detected, **requiredExpressionFalse: true**.
   - **disabled** is the app's red-X enable/disable flag, read straight from /hub2/appsList (data.disabled).
   - **paused** is decoration-detected. Rule Machine surfaces a paused rule ONLY as a "(Paused)" suffix appended to the app's /hub2/appsList name; the RMUtils label for the same rule stays clean (live-verified). So the appsList name and the RMUtils label are BOTH HTML-stripped (tags removed, entities decoded, trimmed — the appsList name comes decoded, the RMUtils label comes entity-escaped like "Heat On &lt;67" and can carry trailing spaces) and diffed: equal → no decoration; appsList == label + remainder → the remainder is the decoration ("(Paused)" ⇒ paused, "(Required Expression false)" ⇒ requiredExpressionFalse). A rule the user literally NAMED "... (Paused)" is NOT false-flagged: the RMUtils label carries the same suffix, so the remainder is empty.
-  - **stopped** is the runtime "(Stopped)" decoration after hub_call_rule(action="stop"), detected by the SAME appsList-vs-RMUtils-label diff the paused check uses (a rule literally NAMED "... (Stopped)" carries the suffix in both strings, so it is not false-flagged). The suffix is stripped from the returned label/name in the encoding they already use; hub_call_rule(action="start") removes it. CAVEAT: this decoration appears here only when the hub's list source decorates the label, which many firmwares do NOT do -- the authoritative stopped check is hub_get_rule_health's `stopped` field, which prefers explicit statusJson state and falls back to config-page markup when state is unavailable.
+  - **stopped** is the runtime "(Stopped)" decoration, detected by the SAME appsList-vs-RMUtils-label diff the paused check uses (a rule literally NAMED "... (Stopped)" carries the suffix in both strings, so it is not false-flagged). The suffix is stripped from the returned label/name in the encoding they already use. Rule Machine updates the decoration when the rule's page is rendered, and hub_call_rule(action="stop"/"start") renders it, so the list is current after an MCP stop or start; a stop made elsewhere shows once the rule's page is next opened.
+  - **state read for decorated rows.** The name carries one decoration at a time — a rule both paused and stopped shows only "(Stopped)" — so a row whose name shows "(Paused)" or "(Stopped)" also reads that rule's own paused/stopped state, and both paused and status come from it. Undecorated rows make no extra read. If that read fails, the row keeps the name-derived values. For one rule, hub_get_rule_health reads its own state directly.
   - **precedence** governs only the **status** summary (disabled > stopped > paused > active). The disabled/paused booleans are independent facts: a rule paused first and red-X disabled afterward keeps its "(Paused)" decoration, so it truthfully reads disabled:true AND paused:true with status:"disabled".
   - **status "unknown"** is per-rule, not just per-list. Tree-level: /hub2/appsList was momentarily unreadable, so NO rule has data — the whole list is returned unfiltered (post-delete ghosts may linger) with a result-level **statusNote**. Per-entry: the tree read fine but ONE rule's node is under-populated (data.disabled absent, node name null, or the RMUtils label null), so just THAT rule is "unknown" while the rest keep real statuses. Either way the disabled/paused booleans are omitted (a value the data can't support is never asserted).
   - This status detection covers Rule Machine rules. For the enabled/disabled state of other classic automation apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances'), whose entries carry a disabled flag.
