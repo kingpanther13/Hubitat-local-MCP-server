@@ -1943,7 +1943,7 @@ class TestRunner:
     def _driver_catalog(self, include: str = "user") -> list[dict]:
         """Every hub_list_drivers row, read page by page from cursor "" so a large catalog never
         reaches the response-size guard. A page that is not a successful hub read raises: a failed
-        read answers drivers=[] with another source, which is not 'driver absent'."""
+        read answers drivers=[] with a different or missing source, which is not 'driver absent'."""
         rows: list[dict] = []
         cursor = ""
         for _ in range(200):
@@ -1951,7 +1951,9 @@ class TestRunner:
                 "tool": "hub_list_drivers", "args": {"include": include, "cursor": cursor}})
             assert isinstance(page.get("drivers"), list) and page.get("source") == "hub_api", \
                 f"driver catalog read failed (source={page.get('source')!r}) -- this is NOT 'driver absent': {page}"
-            rows += [d for d in page["drivers"] if isinstance(d, dict)]
+            assert all(isinstance(d, dict) for d in page["drivers"]), \
+                f"driver catalog rows are not objects: {page['drivers'][:3]}"
+            rows += page["drivers"]
             cursor = page.get("nextCursor")
             if not cursor:
                 return rows
@@ -4655,24 +4657,19 @@ class TestRunner:
     @test("devices")
     def test_create_device_from_driver_type(self) -> None:
         # Intent: create a device from a driver type (the "add device by driver" path).
-        # Resolve a built-in Virtual Switch driver-type id from the full driver catalog,
-        # create from it with confirm, then delete. Skips cleanly if no such type is found.
+        # Resolve the built-in Virtual Switch driver-type id from the full driver catalog,
+        # create from it with confirm, then delete.
         drivers = self._driver_catalog("all")
         # include='all' pages even without a cursor: the first page of 50 plus the whole catalog's size.
         first = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_drivers", "args": {"include": "all"}})
         assert len(first.get("drivers") or []) == min(50, len(drivers)) and first.get("total") == len(drivers), \
             f"an uncursored include='all' call did not return the first page of {len(drivers)}: " \
             f"{ {k: v for k, v in first.items() if k != 'drivers'} }"
-        assert (first.get("nextCursor") == "50") == (len(drivers) > 50), \
+        assert bool(first.get("nextCursor")) == (len(drivers) > 50), \
             f"an uncursored include='all' call has the wrong nextCursor for {len(drivers)} drivers: {first.get('nextCursor')!r}"
-        type_id = None
-        for d in drivers:
-            if (d.get("name") or "") == "Virtual Switch":
-                type_id = str(d.get("id"))
-                break
-        if not type_id:
-            print("    no 'Virtual Switch' driver-type id in catalog -- skipping create-from-driver")
-            return
+        builtin = [d for d in drivers if d.get("name") == "Virtual Switch" and d.get("bucket") != "user"]
+        assert builtin, "the built-in 'Virtual Switch' is missing from a complete hub_list_drivers(include='all') read"
+        type_id = str(builtin[0].get("id"))
         # nameFilter narrows the catalog; an argument the tool does not take is refused, not ignored.
         narrowed = self.client.call_tool("hub_read_apps_code", {
             "tool": "hub_list_drivers", "args": {"include": "all", "nameFilter": "virtual switch"}})

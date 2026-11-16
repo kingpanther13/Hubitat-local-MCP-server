@@ -518,6 +518,48 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         !user.containsKey('total')
     }
 
+    def "hub_list_drivers include=all applies nameFilter to the whole catalog before paging"() {
+        given: 'sixty drivers, the one match at row 55'
+        enableRead()
+        def rows = (1..60).collect { [id: it, name: (it == 55 ? 'Target Driver' : "Driver ${it}").toString(), namespace: 'hubitat', type: 'sys'] }
+        hubGet.register('/device/drivers') { params -> groovy.json.JsonOutput.toJson([drivers: rows]) }
+
+        when:
+        def result = script.toolListHubDrivers([include: 'all', nameFilter: 'target'])
+
+        then: 'the match past the first fifty rows, on a single page'
+        result.drivers*.id == ['55']
+        result.total == 1
+        !result.containsKey('nextCursor')
+    }
+
+    @spock.lang.Unroll
+    def "an uncursored include=all over the cloud returns a page instead of response_too_large (useGateways=#useGateways)"() {
+        given: 'a catalog whose projection is over the cloud relay limit (99,000 bytes)'
+        settingsMap.useGateways = useGateways
+        enableRead()
+        def pad = 'x' * 60
+        def rows = (1..1000).collect { [id: it, name: "Driver ${it} ${pad}".toString(), namespace: 'hubitat', type: 'sys'] }
+        assert groovy.json.JsonOutput.toJson([drivers: rows.collect { [id: it.id.toString(), name: it.name, namespace: it.namespace, bucket: 'system'] }])
+            .getBytes('UTF-8').length > 99000
+        hubGet.register('/device/drivers') { params -> groovy.json.JsonOutput.toJson([drivers: rows]) }
+        script.metaClass._isCloudRequest = { -> true }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_drivers', [include: 'all'])
+
+        then:
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.response_too_large == null
+        inner.drivers.size() == 50
+        inner.total == 1000
+        inner.nextCursor == '50'
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "hub_list_drivers refuses an unknown include: #label"() {
         when:
         script.toolListHubDrivers(args)

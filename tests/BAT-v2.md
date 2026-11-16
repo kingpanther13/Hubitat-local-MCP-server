@@ -702,13 +702,13 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_list_drivers` with `include="all"`. Returns the superset catalog (system + virtual + user buckets), each entry carrying an `id` usable as a `deviceTypeId`. Read-only.
+**Expected**: Calls `hub_list_drivers` with `include="all"`, which returns the catalog 50 entries per page with `total` and, while more follow, `nextCursor`. The agent follows `nextCursor` until it is absent (or reports `total` and offers to continue) rather than presenting the first page as the whole catalog. Entries span the system, virtual and user buckets, each carrying an `id` usable as a `deviceTypeId`. Read-only.
 
 ### T19h — hub_create_device (from a driver type)
 
 ```json
 {
-  "setup_prompt": "List the full driver-type catalog (include='all') and pick a built-in software/virtual driver type id (e.g. a 'Virtual Switch' type). If none is obvious, skip this test.",
+  "setup_prompt": "Find the built-in 'Virtual Switch' driver type id (hub_list_drivers with include='all' and nameFilter='Virtual Switch').",
   "test_prompt": "Create a new device from that driver type, label it 'BAT Create From Driver'. Confirm the creation.",
   "teardown_prompt": "Delete the device 'BAT Create From Driver'."
 }
