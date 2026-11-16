@@ -3966,6 +3966,7 @@ def test_driver_catalog_pages_from_an_empty_cursor_and_joins_every_page():
 
 @pytest.mark.parametrize("broken", [{"response_too_large": True, "truncated": True},
                                     {"drivers": [], "source": "unavailable"},
+                                    {"drivers": [], "source": "hub_api_raw", "rawResponse": "<html>"},
                                     {"drivers": [], "note": "Empty response from hub API"}])
 def test_driver_catalog_refuses_a_page_that_is_not_a_successful_read(broken):
     with pytest.raises(AssertionError, match="driver catalog read failed"):
