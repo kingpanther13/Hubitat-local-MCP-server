@@ -1037,8 +1037,9 @@ private Map _setVariableValueLeg(name, value) {
 }
 
 // The value in the Java type the hub variable stores, or IllegalArgumentException naming the type and
-// the expected format. DateTime takes the same input as hub_create_variable.
-private _hubVariableValueFor(String name, String type, value) {
+// the expected format. A DateTime keeps its kind (`current` is the stored value that encodes it):
+// setGlobalVar would change it silently.
+private _hubVariableValueFor(String name, String type, value, current = null) {
     String text = value?.toString()?.trim()
     switch (type) {
         case "integer":
@@ -1055,8 +1056,11 @@ private _hubVariableValueFor(String name, String type, value) {
             if (text?.equalsIgnoreCase("false")) return false
             throw new IllegalArgumentException("Hub variable '${name}' is a Boolean: value must be true or false, got: ${value}")
         case "datetime":
-            if (value == null) throw new IllegalArgumentException("Hub variable '${name}' is a DateTime: value must be a date and time such as 2026-02-04T14:00, got: null")
-            return _dateTimeInput(name, value).stored
+            String kind = _dateTimeKind(current) ?: "datetime"
+            Map dt = null
+            try { dt = (value == null) ? null : _dateTimeInput(name, value) } catch (IllegalArgumentException ignored) { }
+            if (dt?.kind != kind) throw new IllegalArgumentException("Hub variable '${name}' is ${_dateTimeKindRule(kind)}, got: ${value}")
+            return dt.stored
         case "string":
             if (value == null) throw new IllegalArgumentException("Hub variable '${name}' is a String: value must be text, got: null")
             return value.toString()
@@ -1065,9 +1069,18 @@ private _hubVariableValueFor(String name, String type, value) {
     }
 }
 
+// What a set must send for each DateTime kind, as a refusal tells it.
+private String _dateTimeKindRule(String kind) {
+    switch (kind) {
+        case "date": return "a date-only DateTime: value must be a date such as 2026-03-05, {date}, or its stored form 2026-03-05T99:99:99.999-9999"
+        case "time": return "a time-only DateTime: value must be a time such as 08:15, {time}, or its stored form 9999-99-99T08:15:00.000-0500"
+        default: return "a DateTime with date and time: value must be a date and time such as 2026-03-05T08:15, {date, time}, or its stored form 2026-03-05T08:15:00.000-0500"
+    }
+}
+
 private Map _setHubVariableValue(String name, hubVar, value) {
     String type = hubVar.type?.toString()?.toLowerCase()
-    def stored = _hubVariableValueFor(name, type, value)
+    def stored = _hubVariableValueFor(name, type, value, hubVar.value)
     boolean ok
     try { ok = setGlobalVar(name, stored) }
     catch (Exception e) {
@@ -1311,7 +1324,7 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_set_variable",
-            description: "Set an existing variable's value[[FLAT_TRIM]], or add to a Number/Decimal hub variable with increment[[/FLAT_TRIM]]. For hub variables, the value must fit the variable's declared type, or nothing is written.[[FLAT_TRIM]] A DateTime takes hub-local 2026-02-04T14:00 or {date,time}, as hub_create_variable does. A name that is not a hub variable falls back to the rule_engine namespace. Creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both — see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
+            description: "Set an existing variable's value[[FLAT_TRIM]], or add to a Number/Decimal hub variable with increment[[/FLAT_TRIM]]. For hub variables, the value must fit the variable's declared type, or nothing is written.[[FLAT_TRIM]] A DateTime keeps its kind: date-and-time takes 2026-02-04T14:00, date-only 2026-02-04, time-only 14:00 (hub-local; {date,time} and the stored form from hub_get_variable also work). A name that is not a hub variable falls back to the rule_engine namespace. Creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both — see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [

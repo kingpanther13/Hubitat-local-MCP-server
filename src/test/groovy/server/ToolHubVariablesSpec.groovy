@@ -626,7 +626,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         'bigdecimal' | 'x'                   | 'is a Decimal (bigdecimal): value must be a number'
         'boolean'    | 'yes'                 | 'is a Boolean: value must be true or false'
         'string'     | null                  | 'is a String: value must be text'
-        'datetime'   | '2026-13-45T12:30'    | 'requires a valid date and time'
+        'datetime'   | '2026-13-45T12:30'    | 'is a DateTime with date and time: value must be a date and time'
         'datetime'   | null                  | 'is a DateTime'
     }
 
@@ -647,6 +647,60 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
         where:
         input << ['2026-02-04T14:00', '2026-02-04 14:00:59', [date: '2026-02-04', time: '14:00']]
+    }
+
+    @spock.lang.Unroll
+    def "hub_set_variable keeps a #kind DateTime variable's kind for #input"() {
+        given:
+        sharedLocation.timeZone = TimeZone.getTimeZone('America/New_York')
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'datetime', value: current] }
+        def captured = []
+        script.metaClass.setGlobalVar = { String n, Object v -> captured << v; true }
+
+        when:
+        def result = script.toolSetVariable([name: 'when', value: input])
+
+        then:
+        captured == [expected]
+        result.value == expected
+
+        where:
+        kind       | current                         | input                            | expected
+        'date'     | '2026-03-05T99:99:99.999-9999'  | '2026-04-01'                     | '2026-04-01T99:99:99.999-9999'
+        'date'     | '2026-03-05T99:99:99.999-9999'  | [date: '2026-04-01']             | '2026-04-01T99:99:99.999-9999'
+        'date'     | '2026-03-05T99:99:99.999-9999'  | '2026-03-05T99:99:99.999-9999'   | '2026-03-05T99:99:99.999-9999'
+        'time'     | '9999-99-99T08:15:00.000-0500'  | '10:30'                          | '9999-99-99T10:30:00.000' + offsetNow()
+        'time'     | '9999-99-99T08:15:00.000-0500'  | [time: '10:30:45']               | '9999-99-99T10:30:00.000' + offsetNow()
+        'time'     | '9999-99-99T08:15:00.000-0500'  | '9999-99-99T08:15:00.000-0500'   | '9999-99-99T08:15:00.000' + offsetNow()
+        'datetime' | '2026-03-05T08:15:00.000-0500'  | '2026-03-05T08:15:00.000-0500'   | '2026-03-05T08:15:00.000-0500'
+    }
+
+    private static String offsetNow() { new Date().format('Z', TimeZone.getTimeZone('America/New_York')) }
+
+    @spock.lang.Unroll
+    def "hub_set_variable refuses #input for a #kind DateTime variable before any write, keeping its kind"() {
+        given:
+        sharedLocation.timeZone = TimeZone.getTimeZone('America/New_York')
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'datetime', value: current] }
+        def writes = []
+        script.metaClass.setGlobalVar = { String n, Object v -> writes << v; true }
+
+        when:
+        script.toolSetVariable([name: 'when', value: input])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(phrase)
+        writes.isEmpty()
+
+        where:
+        kind       | current                         | input                  | phrase
+        'date'     | '2026-03-05T99:99:99.999-9999'  | '2026-04-01T10:00'     | 'is a date-only DateTime: value must be a date such as 2026-03-05'
+        'date'     | '2026-03-05T99:99:99.999-9999'  | '10:00'                | 'is a date-only DateTime'
+        'time'     | '9999-99-99T08:15:00.000-0500'  | '2026-04-01'           | 'is a time-only DateTime: value must be a time such as 08:15'
+        'time'     | '9999-99-99T08:15:00.000-0500'  | '25:00'                | 'is a time-only DateTime'
+        'datetime' | '2026-03-05T08:15:00.000-0500'  | '2026-04-01'           | 'is a DateTime with date and time'
+        'datetime' | '2026-03-05T08:15:00.000-0500'  | '9999-99-99T08:15:00.000-0500' | 'is a DateTime with date and time'
     }
 
     def "hub_set_variable reports a throwing setGlobalVar on a hub variable as a failure, not a rule_engine write"() {

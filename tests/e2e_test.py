@@ -12426,6 +12426,26 @@ def updated() {}
                     "tool": "hub_get_variable", "args": {"name": kind_name}})
                 assert read_kind.get("dateTimeKind") == kind and str(read_kind.get("value")).startswith(marker), \
                     f"{kind}-only DateTime read-back is wrong: {read_kind}"
+            # Each kind takes its own input and stores the marker form; another kind is refused, value unchanged.
+            for kind_name, new_value, stored_prefix, wrong, kind in (
+                    (date_name, "2026-04-01", "2026-04-01T99:99:99.999-9999", "2026-04-01T10:00", "date-only"),
+                    (time_name, "10:30", "9999-99-99T10:30:00.000", "2026-04-01", "time-only")):
+                set_kind = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_set_variable", "args": {"name": kind_name, "value": new_value}})
+                assert set_kind.get("success") is True and str(set_kind.get("value")).startswith(stored_prefix), \
+                    f"{kind} DateTime set failed: {set_kind}"
+                before = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": kind_name}})
+                assert str(before.get("value")).startswith(stored_prefix), f"{kind} DateTime set did not store {stored_prefix}: {before}"
+                self._expect_tool_refusal("hub_set_variable", {"name": kind_name, "value": wrong}, f"is a {kind} DateTime")
+                after = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": kind_name}})
+                assert after.get("value") == before.get("value"), f"a refused {kind} set changed the value: {before} -> {after}"
+                # The stored form written back unchanged is accepted.
+                echoed = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_set_variable", "args": {"name": kind_name, "value": before.get("value")}})
+                assert echoed.get("success") is True and str(echoed.get("value")).startswith(stored_prefix), \
+                    f"writing back the stored {kind} value failed: {echoed}"
         finally:
             self._delete_variable_safe(date_name)
             self._delete_variable_safe(time_name)
