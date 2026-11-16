@@ -592,9 +592,11 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
         where:
         type         | input    | expected
-        'integer'    | '42'     | 42
-        'integer'    | -7       | -7
-        'integer'    | 5.0      | 5
+        'integer'    | '42'     | 42L
+        'integer'    | -7       | -7L
+        'integer'    | 5.0      | 5L
+        'integer'    | '3000000000' | 3000000000L
+        'integer'    | '-9223372036854775808' | Long.MIN_VALUE
         'bigdecimal' | '1.50'   | new BigDecimal('1.50')
         'bigdecimal' | 3        | new BigDecimal('3')
         'boolean'    | 'TRUE'   | true
@@ -622,7 +624,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         type         | input                 | phrase
         'integer'    | 'abc'                 | 'is a Number (integer): value must be a whole number'
         'integer'    | '1.5'                 | 'whole number'
-        'integer'    | '99999999999'         | 'whole number'
+        'integer'    | '9223372036854775808' | 'whole number'
         'bigdecimal' | 'x'                   | 'is a Decimal (bigdecimal): value must be a number'
         'boolean'    | 'yes'                 | 'is a Boolean: value must be true or false'
         'string'     | null                  | 'is a String: value must be text'
@@ -1494,7 +1496,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stubHubVarsPage { path, body ->
             if (body.name.toString().contains('[')) throw new HubAnswer(400, NAME_REFUSAL)
             if (!(body.name in neverStored)) {
-                def v = body.type == 'integer' ? body.value.toInteger() : body.type == 'bigdecimal' ? body.value.toBigDecimal() :
+                def v = body.type == 'integer' ? body.value.toLong() : body.type == 'bigdecimal' ? body.value.toBigDecimal() :
                     body.type == 'boolean' ? body.value.toBoolean() : body.value
                 stored[body.name] = [name: body.name, type: body.type, value: v, deviceId: null, attribute: null]
             }

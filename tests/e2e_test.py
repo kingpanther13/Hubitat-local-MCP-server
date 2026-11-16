@@ -12314,6 +12314,16 @@ def updated() {}
             kept = self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_get_variable", "args": {"name": num_name}})
             assert kept.get("source") == "hub" and kept.get("value") == 3, f"a refused set changed the hub variable: {kept}"
+            # A Number holds a Java Long, so a value past the int range is accepted and reads back whole.
+            big = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": num_name, "value": "3000000000"}})
+            assert big.get("success") is True and big.get("value") == 3000000000, f"a Long-range set failed: {big}"
+            big_read = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": num_name}})
+            assert big_read.get("value") == 3000000000, f"the Long-range value did not read back: {big_read}"
+            restored = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": num_name, "value": 3}})
+            assert restored.get("success") is True and restored.get("value") == 3, f"setting the Number back failed: {restored}"
             listed = self.client.call_tool("hub_manage_variables", {"tool": "hub_list_variables", "args": {}})
             assert num_name not in [v.get("name") for v in listed.get("ruleVariables") or []], \
                 f"a refused set created a rule-engine variable {num_name}"

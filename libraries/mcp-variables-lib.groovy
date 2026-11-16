@@ -1043,8 +1043,9 @@ private _hubVariableValueFor(String name, String type, value, current = null) {
     switch (type) {
         case "integer":
             try {
-                if (text ==~ /[+-]?\d+/) return new BigDecimal(text).intValueExact()
-                if (value instanceof Number) return new BigDecimal(value.toString()).intValueExact()
+                // A Number hub variable holds a Java Long.
+                if (text ==~ /[+-]?\d+/) return new BigDecimal(text).longValueExact()
+                if (value instanceof Number) return new BigDecimal(value.toString()).longValueExact()
             } catch (ArithmeticException ignored) { }
             throw new IllegalArgumentException("Hub variable '${name}' is a Number (integer): value must be a whole number such as 42, got: ${value}")
         case "bigdecimal":

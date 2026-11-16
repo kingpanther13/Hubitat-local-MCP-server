@@ -44,7 +44,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
             if (persistWrites && postResponse == null) {
                 if (path == '/hub2/variables/create') {
                     String sdkType = [integer: 'Number', bigdecimal: 'Decimal', string: 'String', boolean: 'Boolean', datetime: 'DateTime'][body.type]
-                    def value = body.type == 'integer' ? body.value.toInteger() : body.type == 'bigdecimal' ? body.value.toBigDecimal() : body.type == 'boolean' ? body.value.toBoolean() : body.value
+                    def value = body.type == 'integer' ? body.value.toLong() : body.type == 'bigdecimal' ? body.value.toBigDecimal() : body.type == 'boolean' ? body.value.toBoolean() : body.value
                     seed(body.name.toString(), sdkType, value)
                 } else if (path == '/hub2/variables/createConnector') {
                     variables[body.name].sdk.deviceId = 905
