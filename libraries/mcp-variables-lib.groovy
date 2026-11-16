@@ -122,10 +122,8 @@ def toolListVariables(args = null) {
 }
 
 def toolGetVariable(args) {
-    // Accept either a bare variable name (direct callers) or the dispatch args map
-    // {name, includeDependents}.
-    String name = (args instanceof Map) ? args.name : args
-    boolean includeDependents = (args instanceof Map) && (args.includeDependents == true)
+    String name = args?.name
+    boolean includeDependents = args?.includeDependents == true
 
     def found = null
     try {
@@ -216,8 +214,8 @@ private List getHubVarTypes() {
     return ["Number", "Decimal", "String", "Boolean", "DateTime"]
 }
 
-// The hub checks the characters itself and its refusal names its rules; only a blank name is caught
-// here, because a blank name cannot identify the existence check or the request.
+// The hub checks names itself and its refusal states the rules; a blank name is caught here because it
+// cannot even be looked up.
 private void _validateHubVarName(String name) {
     if (!name?.trim()) {
         throw new IllegalArgumentException("Variable name is required")
@@ -284,7 +282,8 @@ private String _hubVarsModelError(Exception e) {
     return "Could not read the Hub Variables model: ${e.message ?: e.class.simpleName}"
 }
 
-// The hub applies these POSTs before it answers, so callers read the result back once.
+// The hub applies these POSTs before it answers (HTTP 204, empty body, which hubInternalPostJson returns
+// as null), so one read-back afterwards shows the result.
 private void _hubVarsNativePost(String action, Map body) {
     def response
     try { response = hubInternalPostJson("/hub2/variables/${action}", groovy.json.JsonOutput.toJson(body)) }
@@ -1162,7 +1161,7 @@ def toolDeleteHubVariable(args) {
     String registryError = null
     def linkedMirrorRow = null
     if (isHubVar) {
-        // A linked mirror's display name is DECORATED ("<sourceVar> on <peer>") -- the caller passes that,
+        // A linked mirror's display name is DECORATED ("<sourceVar> on <peer>") -- the name given is that,
         // so match localLinkedHubVariables[].name against varName (the create/link read-back instead keys
         // on sourceVarName+sourceHubId). Why the mirror needs its own path: the platform ALWAYS registers
         // the mesh link itself as an in-use consumer, so the generic guard would force-gate every unlink;
@@ -1217,8 +1216,8 @@ def toolDeleteHubVariable(args) {
     }
 
     if (isHubVar) {
-        // One native remove POST. Hubitat also deletes the connector device when one exists,
-        // surfacing the resulting deviceId in the audit log so the caller knows what else disappeared.
+        // Hubitat also deletes the connector device when one exists, so the audit line records its
+        // deviceId as also gone.
         def previousValue = hubVar.value
         def previousType  = hubVar.type
         def hadConnector  = hubVar.deviceId != null

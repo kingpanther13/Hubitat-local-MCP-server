@@ -259,7 +259,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         script.metaClass.getGlobalVar = { String name -> throw new RuntimeException('platform lookup failed') }
 
         when:
-        script.toolGetVariable('outdoor_temp')
+        script.toolGetVariable([name: 'outdoor_temp'])
 
         then: 'the lookup failure falls through to not-found'
         thrown(IllegalArgumentException)
@@ -279,7 +279,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolGetVariable('outdoor_temp')
+        def result = script.toolGetVariable([name: 'outdoor_temp'])
 
         then:
         result.name == 'outdoor_temp'
@@ -297,7 +297,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolGetVariable('vacation_mode')
+        def result = script.toolGetVariable([name: 'vacation_mode'])
 
         then:
         result.name == 'vacation_mode'
@@ -316,7 +316,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stateMap.ruleVariables = [porch_light_pref: 'bright']
 
         when:
-        def result = script.toolGetVariable('porch_light_pref')
+        def result = script.toolGetVariable([name: 'porch_light_pref'])
 
         then:
         result.name == 'porch_light_pref'
@@ -330,7 +330,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stateMap.ruleVariables = [:]
 
         when:
-        script.toolGetVariable('nonexistent')
+        script.toolGetVariable([name: 'nonexistent'])
 
         then:
         def ex = thrown(IllegalArgumentException)
