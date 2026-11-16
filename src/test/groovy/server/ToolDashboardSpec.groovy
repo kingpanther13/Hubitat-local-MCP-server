@@ -557,7 +557,6 @@ class ToolDashboardSpec extends ToolSpecBase {
                                                            navigationSelection: '[5,6]'])])
         }
         enableWrite()
-        hubGet.register('/installedapp/configure/json/412') { params -> easyConfigJson('Living Room') }
 
         when: 'read the dashboard, then feed the read shape straight back into update'
         def got = script.toolGetDashboard([dashboardId: '412'])
@@ -796,7 +795,6 @@ class ToolDashboardSpec extends ToolSpecBase {
     def "update adds id and the full wholesale config to /dashboard/update"() {
         given:
         enableWrite()
-        hubGet.register('/installedapp/configure/json/412') { params -> easyConfigJson('Living Room') }
 
         when:
         def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
@@ -906,18 +904,17 @@ class ToolDashboardSpec extends ToolSpecBase {
         call.params.dashboardPin == '4242'
     }
 
-    def "update refuses without writing when it can't read the config to keep omitted PINs"() {
-        given: 'the caller omits the PINs and the config read fails (/installedapp/configure/json/412 unmocked -> throws)'
+    def "update flags pinPreserveFailed when it can't read the config to preserve an omitted PIN"() {
+        given: 'the caller omits the PIN and the preservation read fails (/installedapp/configure/json/412 unmocked -> throws)'
         enableWrite()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark', localOnly: false]])
+        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
 
-        then: 'nothing is sent, so the stored PINs are not cleared'
-        r.success == false
-        r.error.contains('dashboardPin, hsmPin')
-        r.note.contains('pass dashboardPin, hsmPin in options')
-        !hubGet.calls.find { it.path == '/dashboard/update' }
+        then: 'the update applies but FLAGS that an omitted PIN may have been cleared -- the clear is not silent'
+        r.success == true
+        r.pinPreserveFailed == true
+        r.note != null
     }
 
     def "update preserves an existing hsmPin the caller didn't pass (exercises the hsmPin preservation line)"() {
@@ -1249,7 +1246,6 @@ class ToolDashboardSpec extends ToolSpecBase {
     def "hub_update_dashboard via dispatch returns the success envelope"() {
         given:
         enableWrite()
-        hubGet.register('/installedapp/configure/json/412') { params -> easyConfigJson('Living Room') }
 
         when:
         def resp = mcpDriver.callTool('hub_update_dashboard', [dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34']])
@@ -3290,35 +3286,19 @@ class ToolDashboardSpec extends ToolSpecBase {
         updates[1].params.localOnly == 'false'
     }
 
-    @Unroll
-    def "update refuses without writing when the config read to keep an omitted localOnly fails (bypass=#bypass)"() {
+    def "update flags localOnlyPreserveFailed when the config read to keep an omitted localOnly fails"() {
         given: 'both PINs passed; /installedapp/configure/json/412 unmocked, so the read throws'
         enableWrite()
-        settingsMap.bypassDeviceAllowlist = bypass
 
         when:
         def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Den', deviceIds: ['12'], options: [dashboardPin: '', hsmPin: '']])
 
-        then: 'nothing is sent, so Local access only is not turned off'
-        r.success == false
-        !hubGet.calls.find { it.path == '/dashboard/update' }
-
-        where:
-        bypass << [true, false]
-    }
-
-    def "update with every kept field passed writes even when the config can't be read (bypass on)"() {
-        given:
-        enableWrite()
-        settingsMap.bypassDeviceAllowlist = true
-
-        when:
-        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Den', deviceIds: ['12'],
-            options: [dashboardPin: '', hsmPin: '', localOnly: true]])
-
         then:
         r.success == true
-        hubGet.calls.find { it.path == '/dashboard/update' }.params.localOnly == 'true'
+        r.localOnlyPreserveFailed == true
+        !r.containsKey('pinPreserveFailed')
+        r.note.contains("'Local access only' is off")
+        !hubGet.calls.find { it.path == '/dashboard/update' }.params.containsKey('localOnly')
     }
 
     def "an Easy copy carries the source's localOnly"() {

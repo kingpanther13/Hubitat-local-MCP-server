@@ -712,14 +712,6 @@ private Map _updateDashboardLocked(String updateId, Map args) {
     def kept = ["dashboardPin", "hsmPin", "localOnly"].findAll { k -> !opts.containsKey(k) }
     boolean selectionGate = _mcpAuthorizedIds(getChildDevices() ?: []) != null
     def cur = (kept || selectionGate) ? _dashboardConfigFromApp(updateId) : null
-    // An omitted PIN or localOnly is an access setting the wholesale update would clear, so an
-    // unreadable config refuses the update rather than clearing it (with the selection gate on, the
-    // device check below refuses it first).
-    if (kept && cur == null && !selectionGate) {
-        return [success: false, id: updateId,
-                error: "Could not read the dashboard's current config to keep the omitted ${kept.join(', ')}, so no update was attempted.",
-                note: "Retry, or pass ${kept.join(', ')} in options (\"\" clears a PIN)."]
-    }
     if (cur != null) kept.each { k -> if (cur.containsKey(k)) opts.put(k, cur.get(k)) }
     args.options = opts
     def q = _buildDashboardConfigQuery(args, deviceCsv)
@@ -734,7 +726,21 @@ private Map _updateDashboardLocked(String updateId, Map args) {
     }
     q.id = updateId
     try {
-        return _dashboardWriteResult(hubInternalGet("/dashboard/update", q), "update", updateId)
+        def result = _dashboardWriteResult(hubInternalGet("/dashboard/update", q), "update", updateId)
+        if (cur == null && kept && result.success == true) {
+            def pins = kept.findAll { it != "localOnly" }
+            def lost = []
+            if (pins) {
+                result.pinPreserveFailed = true
+                lost << "any ${pins.join(' or ')} it had is cleared"
+            }
+            if (kept.contains("localOnly")) {
+                result.localOnlyPreserveFailed = true
+                lost << "'Local access only' is off"
+            }
+            result.note = "Update applied, but the current config couldn't be read to keep the omitted settings: ${lost.join(', and ')}. Re-set them with another update if needed."
+        }
+        return result
     } catch (Exception e) {
         mcpLogError("dashboard", "update dashboard failed", e)
         return [success: false, error: "Failed to update dashboard: ${e.message}", note: "The dashboard may be unchanged; verify with hub_get_dashboard."]
