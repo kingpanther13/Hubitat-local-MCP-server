@@ -1,4 +1,4 @@
-library(name: "McpVariablesLib", namespace: "mcp", author: "kingpanther13", description: "Hub variable + connector tool implementations (list/get/set/create/delete variables, connectors, change history) plus the variable event-subscription handlers for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpVariablesLib", namespace: "mcp", author: "kingpanther13", description: "Hub variable + connector tool implementations (list/get/set/create/delete variables, connectors) plus the hub-variable in-use registration for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 private boolean _refreshHubVarInUseRegistrations() {
     Set<String> currentVars = [] as Set
@@ -60,109 +60,15 @@ private boolean _refreshHubVarInUseRegistrations() {
     return complete
 }
 
-private boolean _subscribeToAllHubVariables() {
-    def vars
-    try { vars = getAllGlobalVars() }
-    catch (Exception e) {
-        mcpLogError("hub-vars", "Hub variable inventory failed -- subscriptions remain incomplete until setup retries", e)
-        return false
-    }
-    if (location == null) return false
-    boolean complete = true
-    vars?.keySet()?.each { varName ->
-        try {
-            subscribe(location, "variable:${varName}", "handleHubVariableEvent")
-        } catch (Throwable e) {
-            // Continue other subscriptions. The retry backoff also bounds persistent bad-name failures.
-            // Catch Throwable because hubitat_ci's subscription validator throws AssertionError.
-            complete = false
-            mcpLog("error", "hub-vars", "subscribe to variable:${varName} failed: ${e.message} -- hub_list_variable_changes will not capture changes for this var")
-        }
-    }
-    return complete
-}
-
+// The hub calls this on apps that registered use of a hub variable (addInUseGlobalVar, for the legacy
+// custom rules), so it stays defined; those rules are not rewritten, as before.
 def renameVariable(String oldName, String newName) {
     mcpLog("info", "hub-vars", "renameVariable callback: '${oldName}' -> '${newName}'")
-    def history = atomicState.variableHistory ?: []
-    def rewrote = false
-    history = history.collect { entry ->
-        if (entry?.name == oldName) {
-            rewrote = true
-            // Groovy Map +: rightmost map's keys override; produces a new
-            // map with `name` updated and other fields preserved.
-            return entry + [name: newName]
-        }
-        return entry
-    }
-    if (rewrote) atomicState.variableHistory = history
-    // Re-subscribe to the new name. The old "variable:OLD" event will
-    // never fire again since the variable is gone, but Hubitat's
-    // unsubscribe semantics mean it's harmless to leave it in place.
-    // Catch Throwable because the hubitat_ci validator throws AssertionError
-    // (not Exception) when location is null in unit-test environments;
-    // history rewrite is the important part and shouldn't be aborted by a
-    // subscription registration failure.
-    if (location != null) {
-        try { subscribe(location, "variable:${newName}", "handleHubVariableEvent") }
-        catch (Throwable e) {
-            mcpLog("error", "hub-vars", "post-rename subscribe to variable:${newName} failed: ${e.message} -- history capture for renamed var will lag until next initialize()")
-        }
-    }
 }
 
-def handleHubVariableEvent(evt) {
-    if (evt == null) return
-    def varName = evt.name?.toString()
-    if (varName?.startsWith("variable:")) {
-        varName = varName.substring("variable:".length())
-    }
-    if (!varName) return
-
-    def entry = [
-        name: varName,
-        value: evt.value,
-        timestamp: now(),
-        descriptionText: evt.descriptionText?.toString()
-    ]
-    // Best-effort, non-transactional read-append-cap-write. atomicState gives
-    // per-write durability, not read-then-write atomicity, and the sandbox has
-    // no CAS primitive: concurrent variable: events may read the same snapshot
-    // and drop an append. Acceptable for a best-effort history buffer.
-    def history = atomicState.variableHistory ?: []
-    history << entry
-    // Cap the buffer. 200 entries is enough to survive an MCP-tool
-    // round-trip plus a few minutes of bursty change activity without
-    // blowing up state size on hubs with many vars.
-    def cap = 200
-    if (history.size() > cap) {
-        history = history[(history.size() - cap)..-1]
-    }
-    atomicState.variableHistory = history
-}
-
-def toolGetVariableHistory(args) {
-    def history = atomicState.variableHistory ?: []
-    def filtered = history
-    if (args?.name) {
-        def n = args.name.toString()
-        filtered = filtered.findAll { it?.name == n }
-    }
-    if (args?.sinceMs != null) {
-        def since = args.sinceMs as Long
-        filtered = filtered.findAll { (it?.timestamp ?: 0L) >= since }
-    }
-    def limit = (args?.limit != null) ? (args.limit as Integer) : 50
-    if (limit < 1) limit = 1
-    // Most-recent first; cap at limit.
-    def recent = filtered.reverse().take(limit)
-    return [
-        entries: recent,
-        total: recent.size(),
-        bufferSize: history.size(),
-        bufferCap: 200
-    ]
-}
+// Retired change-history handler: variable subscriptions an older version made still call it until the
+// next setup refresh unsubscribes them.
+def handleHubVariableEvent(evt) { }
 
 def toolListVariables(args = null) {
     // getAllGlobalVars() sees every hub variable and carries the typed values; the Hub Variables page
@@ -785,19 +691,6 @@ private Map _createOneVariable(String name, String type, value) {
         created = getGlobalVar(name)
         if (created?.value?.toString()?.take(16) != dtValue.take(16)) {
             throw new IllegalStateException("hub_create_variable: '${name}' was created, but its time could not be set (it reads ${created?.value}). Set it with hub_set_variable(name='${name}', value='${dtValue}').")
-        }
-    }
-
-    // Subscribe to the new variable's location event so changes show up in
-    // hub_list_variable_changes without waiting for the next updated() pass.
-    // Null-check + Throwable catch mirrors renameVariable: hubitat_ci's
-    // validator throws AssertionError (not Exception) when location is null
-    // in unit-test environments, and the create itself shouldn't be aborted
-    // by a subscription-registration failure.
-    if (location != null) {
-        try { subscribe(location, "variable:${name}", "handleHubVariableEvent") }
-        catch (Throwable e) {
-            mcpLog("error", "hub-vars", "post-create subscribe to variable:${name} failed: ${e.message} -- hub_list_variable_changes won't capture this var's changes until next initialize()")
         }
     }
 
@@ -1485,18 +1378,6 @@ def _getAllToolDefinitions_partVariables() {
                 required: ["name", "confirm"]
             ]
         ],
-        [
-            name: "hub_list_variable_changes",
-            description: "List recent hub-variable change events captured by the MCP app's location-event subscription, most-recent first.[[FLAT_TRIM]] Use this to audit or debug what changed a variable and when, without polling hub_get_variable. The buffer holds at most the 200 most recent changes (oldest dropped) and survives app and hub restarts, but it is not a complete history — an empty or partial result does NOT mean the variable never changed. For the hub's separately retained location-event history call hub_list_device_events with no deviceId (location-event mode).[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Optional: filter to changes for this variable name only, e.g. \"vacationMode\".[[FLAT_TRIM]] Omit to include all variables.[[/FLAT_TRIM]]"],
-                    sinceMs: [type: "integer", description: "Optional: only return changes whose timestamp >= this epoch-millis value, e.g. 1717459200000"],
-                    limit: [type: "integer", description: "Optional: max entries to return (default 50)"]
-                ]
-            ]
-        ],
     ] }
     return defs()
 }
@@ -1507,7 +1388,7 @@ def _readOnlyToolNames_partVariables() {
     // the tool). A tool absent from every part list is write+destructive by default.
     return [
         // Variables (reads); hub_get_variable folds in the dependents read via includeDependents
-        "hub_list_variables", "hub_get_variable", "hub_list_variable_changes"
+        "hub_list_variables", "hub_get_variable"
     ]
 }
 
@@ -1531,7 +1412,6 @@ def _toolDisplayMeta_partVariables() {
         hub_create_variable: [title: "Create Variable", summary: "Create a new hub variable."],
         hub_delete_variable: [title: "Delete Variable", summary: "Permanently delete a hub variable and any connector it has."],
         hub_create_connector: [title: "Create Variable Connector", summary: "Create a virtual-device connector for a hub variable."],
-        hub_delete_connector: [title: "Delete Variable Connector", summary: "Remove a hub variable's connector device."],
-        hub_list_variable_changes: [title: "List Variable Changes", summary: "Recent hub-variable changes from the retained 200-entry history."]
+        hub_delete_connector: [title: "Delete Variable Connector", summary: "Remove a hub variable's connector device."]
     ]
 }

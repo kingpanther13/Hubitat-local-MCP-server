@@ -1462,15 +1462,10 @@ def initialize() {
     // 24h guard for steady-state freshness.
     if (state.updateCheck == null) checkForUpdate()
 
-    // Issue #92: subscribe to every hub variable's location event
-    // ("variable:NAME") so the AI can see what changed and when via
-    // hub_list_variable_changes. Hubitat does NOT implicitly unsubscribe between
-    // updated() invocations, so unsubscribe first -- otherwise every settings save
-    // stacks another duplicate subscription per variable, firing
-    // handleHubVariableEvent N times per change and inflating variableHistory.
+    // This app subscribes to nothing; unsubscribe() drops the per-variable "variable:NAME"
+    // subscriptions older versions made for their retired change history.
     try { unsubscribe() }
-    catch (Exception e) { setupComplete = false; mcpLog("warn", "hub-vars", "unsubscribe() before re-subscribe failed: ${e.message} -- duplicate subscriptions may persist") }
-    if (!_subscribeToAllHubVariables()) setupComplete = false
+    catch (Exception e) { setupComplete = false; mcpLog("warn", "hub-vars", "unsubscribe() of retired variable subscriptions failed: ${e.message} -- retried on the next setup") }
 
     // Issue #96 gap 1: register addInUseGlobalVar for every hub variable
     // referenced by any child rule. Hubitat then warns users before they
@@ -5643,7 +5638,7 @@ def _cleanupRetiredToolState() {
         try {
             ['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
              'toolSearchCorpusFingerprint', 'requiredParamsByTool',
-             'requiredParamsByToolFingerprint', 'predClearPending', 'hubVarsAppId'].each { key ->
+             'requiredParamsByToolFingerprint', 'predClearPending', 'hubVarsAppId', 'variableHistory'].each { key ->
                 if (atomicState.containsKey(key)) atomicState.remove(key)
                 if (state.containsKey(key)) state.remove(key)
             }
@@ -5686,8 +5681,8 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_variables: [
-            description: "Manage hub variables (every type: Number, Decimal, String, Boolean, DateTime), their connector devices, and rule-engine variables. Full read/write CRUD via the Hub Variable API and the hub's Hub Variables page; observe changes via hub_list_variable_changes.",
-            tools: ["hub_list_variables", "hub_get_variable", "hub_set_variable", "hub_create_variable", "hub_delete_variable", "hub_create_connector", "hub_delete_connector", "hub_list_variable_changes"],
+            description: "Manage hub variables (every type: Number, Decimal, String, Boolean, DateTime), their connector devices, and rule-engine variables. Full read/write CRUD via the Hub Variable API and the hub's Hub Variables page.",
+            tools: ["hub_list_variables", "hub_get_variable", "hub_set_variable", "hub_create_variable", "hub_delete_variable", "hub_create_connector", "hub_delete_connector"],
             summaries: [
                 hub_list_variables: "List all hub variables (with type, connector and Hub Mesh sharing) and rule-engine variables. Args: type, cursor",
                 hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable plus its connector and Hub Mesh details. Args: name, includeDependents?",
@@ -5695,8 +5690,7 @@ def getGatewayConfig() {
                 hub_create_variable: "Create a new hub variable, or several at once. Single: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true. Bulk: variables=[{name,type,value},...], confirm=true (mutually exclusive with the single form). A String value must be non-empty",
                 hub_delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if apps or rules use it]",
                 hub_create_connector: "Create a virtual-device connector for an existing hub variable. connectorType picks a device type the hub offers for it (Number/Decimal: Dimmer|Variable|Volume|ColorTemp|Humidity|Illuminance; default Variable). Args: name, connectorType?, confirm=true",
-                hub_delete_connector: "Remove the connector device for a hub variable (variable itself unchanged). Args: name, confirm=true, [force=true if apps use it]",
-                hub_list_variable_changes: "Recent hub-variable changes from the retained 200-entry history. Args: name (optional filter), sinceMs (optional), limit (optional)"
+                hub_delete_connector: "Remove the connector device for a hub variable (variable itself unchanged). Args: name, confirm=true, [force=true if apps use it]"
             ],
             searchHints: [
                 hub_list_variables: "show all global state connector",
@@ -5705,8 +5699,7 @@ def getGatewayConfig() {
                 hub_create_variable: "add new hub variable global",
                 hub_delete_variable: "remove drop destroy purge cleanup orphan stranded BAT_ stale variable",
                 hub_create_connector: "expose hub variable as virtual device switch dimmer",
-                hub_delete_connector: "unlink delete connector device variable",
-                hub_list_variable_changes: "watch observe changes events recent variable timeline"
+                hub_delete_connector: "unlink delete connector device variable"
             ]
         ],
         hub_manage_rooms: [
@@ -6020,17 +6013,15 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_variables: [
-            description: "Read-only hub-variable inspection: list all variables (with type/connector linkage), get one variable's value + metadata (optionally the apps that reference it), and watch the recent change timeline. All operations are read-only; variable create/set/delete and connectors live in hub_manage_variables.",
-            tools: ["hub_list_variables", "hub_get_variable", "hub_list_variable_changes"],
+            description: "Read-only hub-variable inspection: list all variables (with type/connector linkage), get one variable's value + metadata (optionally the apps that reference it). All operations are read-only; variable create/set/delete and connectors live in hub_manage_variables.",
+            tools: ["hub_list_variables", "hub_get_variable"],
             summaries: [
                 hub_list_variables: "List all hub variables (with type, connector and Hub Mesh sharing) and rule-engine variables. Args: type, cursor",
-                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable plus its connector and Hub Mesh details. Args: name, includeDependents?",
-                hub_list_variable_changes: "Recent hub-variable changes from the retained 200-entry history. Args: name?, sinceMs?, limit?"
+                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable plus its connector and Hub Mesh details. Args: name, includeDependents?"
             ],
             searchHints: [
                 hub_list_variables: "show all global state connector variables",
-                hub_get_variable: "read fetch lookup global state variable which apps use reference depend on dependents consumers in use before rename delete",
-                hub_list_variable_changes: "watch observe changes events recent variable timeline"
+                hub_get_variable: "read fetch lookup global state variable which apps use reference depend on dependents consumers in use before rename delete"
             ]
         ],
         hub_manage_devices: [
@@ -7057,7 +7048,6 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_delete_variable": return toolDeleteHubVariable(args)
         case "hub_create_connector": return toolCreateConnector(args)
         case "hub_delete_connector": return toolRemoveConnector(args)
-        case "hub_list_variable_changes": return toolGetVariableHistory(args)
         case "hub_update_mcp_settings": return toolUpdateMcpSettings(args)
         case "hub_update_package": return toolUpdatePackage(args)
         case "hub_get_hsm_status": return toolGetHsmStatus()
@@ -12827,9 +12817,9 @@ Apps that never register their use, such as webCoRE pistons, cannot be seen by a
 
 Deleting a Hub Mesh **linked mirror** (a local copy of a peer's shared variable) is an UNLINK — see the "Hub Mesh: sharing and linking hub variables" subsection below. There the generic in-use refusal is relaxed (a clean mirror unlinks without `force`); `force=true` is needed when a real local app uses the mirror OR when that use can't be confirmed (`inUseByApps` true or unreadable), not when `inUseByApps` is confirmed false.
 
-### hub_list_variable_changes
+### When a hub variable changed
 
-Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. It is not a complete history — an empty or partial result does NOT mean the variable never changed. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
+The hub records each hub-variable change as a location event named `variable:<name>`. Read them with `hub_get_logs(mode='locationEvents', pattern='variable:<name>')` (the pattern is a case-insensitive regex over each row's name, description and value; escape regex characters in the name), newest first, with `since` (strictly after) and `until`, and a cursor for paging. Rows carry the hub's event time, a renamed variable's earlier rows keep its old name, and retention is the hub's own location-event history.
 
 ### hub_create_connector
 

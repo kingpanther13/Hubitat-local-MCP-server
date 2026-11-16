@@ -61,7 +61,7 @@ class SetupRefreshLifecycleSpec extends ToolSpecBase {
         stateMap.setupVersion == script.currentVersion()
         fresh()
         UNSUBSCRIBE_CALL_COUNT.get() == 1
-        inventoryReads == 2
+        inventoryReads == 1
 
         when:
         mcpDriver.callTool('hub_get_tool_guide', [section: 'rooms'])
@@ -69,7 +69,7 @@ class SetupRefreshLifecycleSpec extends ToolSpecBase {
 
         then:
         UNSUBSCRIBE_CALL_COUNT.get() == 1
-        inventoryReads == 2
+        inventoryReads == 1
     }
 
     def "failed variable inventory remains retryable without rebuilding setup on every request"() {
@@ -105,27 +105,17 @@ class SetupRefreshLifecycleSpec extends ToolSpecBase {
         UNSUBSCRIBE_CALL_COUNT.get() == 2
     }
 
-    def "failed subscriptions do not complete setup and are retried after backoff"() {
+    def "setup subscribes to no hub variable, so a variable change costs this app nothing"() {
         given:
-        failSubscribe = true
         script.metaClass.getAllGlobalVars = { -> [sample: [name: 'sample']] }
 
         when:
         script._refreshSetupAfterUpdate()
 
-        then:
-        !fresh()
-        stateMap.setupVersion != script.currentVersion()
-
-        when:
-        failSubscribe = false
-        clock += 60001L
-        script._refreshSetupAfterUpdate()
-
-        then:
+        then: 'the subscriptions older versions made are dropped and none are made'
         fresh()
-        stateMap.setupVersion == script.currentVersion()
-        subscriptionAttempts == ['variable:sample', 'variable:sample']
+        UNSUBSCRIBE_CALL_COUNT.get() == 1
+        subscriptionAttempts.isEmpty()
     }
 
     def "a lifecycle initialization failure invalidates an already-current marker"() {

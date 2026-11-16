@@ -7,8 +7,8 @@ import support.ToolSpecBase
 /**
  * Spec for the hub-variable tools in libraries/mcp-variables-lib.groovy:
  * hub_list_variables, hub_get_variable, hub_set_variable, hub_create_variable,
- * hub_delete_variable, hub_create_connector, hub_delete_connector and
- * hub_list_variable_changes, plus the main app's _resolveDirectAppId helper.
+ * hub_delete_variable, hub_create_connector and hub_delete_connector, plus the
+ * main app's _resolveDirectAppId helper.
  *
  * getAllGlobalVars / getGlobalVar / setGlobalVar are dynamic (not on
  * AppExecutor), so they're stubbed per-test via script.metaClass. The hub's
@@ -71,29 +71,28 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // -------- initialize() lifecycle (issue #105 PR2a #6) --------
 
-    def "initialize unsubscribes BEFORE re-subscribing to hub variables (no duplicate subscription stacking)"() {
+    def "initialize drops the variable subscriptions older versions made"() {
         given: 'a clean initialize with the unrelated side-effects neutralised'
         UNSUBSCRIBE_CALL_COUNT.set(0)
         stateMap.accessToken = 'tok'                  // skip createAccessToken
         script.metaClass.checkForUpdate = { -> }      // skip the GitHub HTTP check
-        // The first getAllGlobalVars call happens inside _subscribeToAllHubVariables (the
-        // re-subscribe phase), so capturing the unsubscribe count there proves ordering --
-        // a regression that moved unsubscribe() AFTER _subscribeToAllHubVariables() would see
-        // 0 here and wipe the freshly-established subscriptions.
-        def unsubCountAtResubscribe = -1
-        script.metaClass.getAllGlobalVars = { ->
-            if (unsubCountAtResubscribe < 0) unsubCountAtResubscribe = UNSUBSCRIBE_CALL_COUNT.get()
-            [:]
-        }
+        script.metaClass.getAllGlobalVars = { -> [porch: [name: 'porch']] }
 
         when:
         script.initialize()
 
-        then: 'unsubscribe() fires (Hubitat does NOT implicitly unsubscribe between updated() calls, so without it every settings save stacks duplicate subscriptions)'
+        then: 'SetupRefreshLifecycleSpec proves no subscription is made'
         UNSUBSCRIBE_CALL_COUNT.get() == 1
+    }
 
-        and: 'and it fired BEFORE the re-subscribe phase'
-        unsubCountAtResubscribe == 1
+    def "the retired variable callbacks write no app state"() {
+        when: 'a variable event from an older subscription arrives, and the hub reports a rename'
+        script.handleHubVariableEvent([name: 'variable:porch', value: 'on'])
+        script.renameVariable('porch', 'deck')
+
+        then: 'only the log machinery touched state'
+        !atomicStateMap.containsKey('variableHistory')
+        atomicStateMap.keySet() - ['debugLogGeneration'] == [] as Set
     }
 
     // -------- toolListVariables --------
@@ -2227,146 +2226,6 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stateMap.ruleVariables == [Temp: 20]
     }
 
-    // -------- handleHubVariableEvent + toolGetVariableHistory --------
-
-    def "handleHubVariableEvent strips the 'variable:' prefix and appends to atomicState.variableHistory"() {
-        given:
-        atomicStateMap.variableHistory = []
-        def evt = [name: 'variable:porch_light_pref', value: 'bright', descriptionText: 'changed by user']
-
-        when:
-        script.handleHubVariableEvent(evt)
-
-        then:
-        atomicStateMap.variableHistory.size() == 1
-        atomicStateMap.variableHistory[0].name == 'porch_light_pref'
-        atomicStateMap.variableHistory[0].value == 'bright'
-        atomicStateMap.variableHistory[0].timestamp == 1234567890000L  // HarnessSpec's fixed now()
-        atomicStateMap.variableHistory[0].descriptionText == 'changed by user'
-    }
-
-    def "handleHubVariableEvent caps the buffer at 200 entries — oldest dropped"() {
-        given: 'history pre-loaded with 200 entries'
-        atomicStateMap.variableHistory = (1..200).collect { i -> [name: 'var', value: i, timestamp: i] }
-        def evt = [name: 'variable:var', value: 999]
-
-        when:
-        script.handleHubVariableEvent(evt)
-
-        then: 'still 200 entries; the oldest (value=1) is gone, newest is at the tail'
-        atomicStateMap.variableHistory.size() == 200
-        atomicStateMap.variableHistory[0].value == 2
-        atomicStateMap.variableHistory[-1].value == 999
-    }
-
-    def "handleHubVariableEvent ignores null events and missing names"() {
-        given:
-        atomicStateMap.variableHistory = []
-
-        when:
-        script.handleHubVariableEvent(null)
-        script.handleHubVariableEvent([name: null, value: 'x'])
-
-        then:
-        atomicStateMap.variableHistory == []
-    }
-
-    def "hub_list_variable_changes returns most-recent-first capped at limit"() {
-        given:
-        atomicStateMap.variableHistory = (1..10).collect { i -> [name: 'v', value: i, timestamp: i] }
-
-        when:
-        def result = script.toolGetVariableHistory([limit: 3])
-
-        then: 'newest three, reverse-chronological'
-        result.entries.size() == 3
-        result.entries[0].value == 10
-        result.entries[1].value == 9
-        result.entries[2].value == 8
-        result.bufferSize == 10
-        result.bufferCap == 200
-    }
-
-    def "hub_list_variable_changes filters by name when provided"() {
-        given:
-        atomicStateMap.variableHistory = [
-            [name: 'foo', value: 1, timestamp: 1],
-            [name: 'bar', value: 2, timestamp: 2],
-            [name: 'foo', value: 3, timestamp: 3]
-        ]
-
-        when:
-        def result = script.toolGetVariableHistory([name: 'foo'])
-
-        then:
-        result.entries.size() == 2
-        result.entries.every { it.name == 'foo' }
-        result.entries[0].value == 3  // newest first
-    }
-
-    def "hub_list_variable_changes filters by sinceMs when provided"() {
-        given:
-        atomicStateMap.variableHistory = [
-            [name: 'v', value: 1, timestamp: 100],
-            [name: 'v', value: 2, timestamp: 200],
-            [name: 'v', value: 3, timestamp: 300]
-        ]
-
-        when:
-        def result = script.toolGetVariableHistory([sinceMs: 200])
-
-        then: 'only entries with timestamp >= 200'
-        result.entries.size() == 2
-        result.entries[0].timestamp == 300
-        result.entries[1].timestamp == 200
-    }
-
-    def "hub_list_variable_changes returns empty entries when buffer is empty"() {
-        given:
-        atomicStateMap.variableHistory = []
-
-        when:
-        def result = script.toolGetVariableHistory([:])
-
-        then:
-        result.entries == []
-        result.bufferSize == 0
-    }
-
-    // -------- renameVariable callback --------
-
-    def "renameVariable rewrites matching history entries to the new name"() {
-        given:
-        atomicStateMap.variableHistory = [
-            [name: 'old', value: 'a', timestamp: 1],
-            [name: 'unrelated', value: 'x', timestamp: 2],
-            [name: 'old', value: 'b', timestamp: 3]
-        ]
-        // subscribe is on AppExecutor — already stubbed in HarnessSpec
-
-        when:
-        script.renameVariable('old', 'new')
-
-        then: 'old -> new for matching entries; others untouched'
-        atomicStateMap.variableHistory[0].name == 'new'
-        atomicStateMap.variableHistory[1].name == 'unrelated'
-        atomicStateMap.variableHistory[2].name == 'new'
-        // Values preserved
-        atomicStateMap.variableHistory[0].value == 'a'
-        atomicStateMap.variableHistory[2].value == 'b'
-    }
-
-    def "renameVariable is a no-op on history when no entries match"() {
-        given:
-        atomicStateMap.variableHistory = [[name: 'untouched', value: 'x', timestamp: 1]]
-
-        when:
-        script.renameVariable('absent', 'replacement')
-
-        then: 'history unchanged'
-        atomicStateMap.variableHistory[0].name == 'untouched'
-    }
-
     // -------- _refreshHubVarInUseRegistrations (issue #96 gap 1) --------
 
     def "in-use refresh registers vars referenced by child rules"() {
@@ -2823,71 +2682,6 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         inner.results[0].success == true
         inner.results[1].name == 'dispBulkB'
         inner.results[1].success == true
-
-        where:
-        useGateways << [true, false]
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_variable_changes via dispatch caps at limit (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        atomicStateMap.variableHistory = (1..10).collect { i -> [name: 'v', value: i, timestamp: i] }
-
-        when:
-        def response = mcpDriver.callTool('hub_list_variable_changes', [limit: 3])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.entries.size() == 3
-        inner.entries[0].value == 10
-        inner.bufferSize == 10
-
-        where:
-        useGateways << [true, false]
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_variable_changes via dispatch filters by name (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        atomicStateMap.variableHistory = [
-            [name: 'foo', value: 1, timestamp: 1],
-            [name: 'bar', value: 2, timestamp: 2],
-            [name: 'foo', value: 3, timestamp: 3]
-        ]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_variable_changes', [name: 'foo'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.entries.size() == 2
-        inner.entries.every { it.name == 'foo' }
-
-        where:
-        useGateways << [true, false]
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_variable_changes via dispatch returns empty when buffer is empty (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        atomicStateMap.variableHistory = []
-
-        when:
-        def response = mcpDriver.callTool('hub_list_variable_changes', [:])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.entries == []
-        inner.bufferSize == 0
 
         where:
         useGateways << [true, false]

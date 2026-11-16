@@ -12382,6 +12382,17 @@ def updated() {}
             reread = str(self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_get_variable", "args": {"name": dt_name}}).get("value"))
             assert reread.startswith("2026-03-05T08:15"), f"DateTime set did not land on the hub variable: {reread}"
+            # The guide points change history at the hub's location events, named variable:<name>.
+            deadline = time.time() + 10.0
+            changes: list = []
+            while not changes and time.time() < deadline:
+                changes = self.client.call_tool("hub_read_diagnostics", {
+                    "tool": "hub_get_logs",
+                    "args": {"mode": "locationEvents", "pattern": f"variable:{dt_name}", "pageSize": 5}}).get("entries") or []
+                if not changes:
+                    time.sleep(1.0)
+            assert changes and all(dt_name in str(r) for r in changes), \
+                f"hub_get_logs(locationEvents, pattern='variable:{dt_name}') did not find the change: {changes}"
         finally:
             self._delete_variable_safe(dt_name)
 

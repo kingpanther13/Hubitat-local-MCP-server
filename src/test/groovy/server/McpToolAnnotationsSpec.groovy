@@ -78,7 +78,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_list_devices', 'hub_get_device',
             'hub_get_custom_rule', 'hub_test_custom_rule',
             'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status', 'hub_get_hub_mesh',
-            'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
+            'hub_list_variables', 'hub_get_variable',
             'hub_list_captured_states',
             'hub_report_issue',
             'hub_get_logs', 'hub_list_device_events',
@@ -494,7 +494,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_get_compatible_devices',
             'hub_get_custom_rule', 'hub_test_custom_rule',
             'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status', 'hub_get_hub_mesh',
-            'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
+            'hub_list_variables', 'hub_get_variable',
             'hub_list_captured_states',
             'hub_report_issue',
             'hub_get_logs', 'hub_get_memory_history',
@@ -568,7 +568,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 113
+        names.size() == 112
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

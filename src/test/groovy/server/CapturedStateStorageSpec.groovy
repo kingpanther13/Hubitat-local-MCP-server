@@ -97,7 +97,6 @@ class CapturedStateStorageSpec extends ToolSpecBase {
         given:
         stateMap.accessToken = 'tok'
         stateMap.updateCheck = [checkedAt: 1L]
-        script.metaClass._subscribeToAllHubVariables = { -> }
         script.metaClass._refreshHubVarInUseRegistrations = { -> }
         if (legacyLocation in ['state', 'both']) stateMap.capturedDeviceStates = legacyValue
         if (legacyLocation in ['atomicState', 'both']) atomicStateMap.capturedDeviceStates = legacyValue

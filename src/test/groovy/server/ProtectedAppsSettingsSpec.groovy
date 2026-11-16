@@ -251,7 +251,6 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
         settingsMap.protectedAppIds = ['194']
         stateMap.accessToken = 'existing-token'
         stateMap.updateCheck = [checkedAt: 1L]
-        script.metaClass._subscribeToAllHubVariables = { -> }
         script.metaClass._refreshHubVarInUseRegistrations = { -> }
 
         when:

@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 113 MCP tools (36 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 112 MCP tools (36 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 113 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 112 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -255,9 +255,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (113 total — 36 on tools/list)
+### MCP Tools (112 total — 36 on tools/list)
 
-The server has 113 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 112 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (13) — Always visible on tools/list
 
@@ -396,13 +396,12 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 </details>
 
 <details>
-<summary><b>hub_read_variables</b> (3) — Hub variable reads (read-only)</summary>
+<summary><b>hub_read_variables</b> (2) — Hub variable reads (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
 | `hub_list_variables` | List all hub variables (type, connector, Hub Mesh sharing) and rule engine variables |
 | `hub_get_variable` | Get a variable value and metadata; `includeDependents=true` also lists the apps that reference a hub variable (in-use registry) |
-| `hub_list_variable_changes` | Latest 200 subscribed hub-variable changes, retained across restarts |
 
 </details>
 
@@ -453,7 +452,7 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 </details>
 
 <details>
-<summary><b>hub_manage_variables</b> (8) — Hub variables</summary>
+<summary><b>hub_manage_variables</b> (7) — Hub variables</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -464,7 +463,6 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 | `hub_delete_variable` | Permanently delete a hub variable (DESTRUCTIVE) |
 | `hub_create_connector` | Create a virtual-device connector for a hub variable |
 | `hub_delete_connector` | Remove the connector device for a hub variable |
-| `hub_list_variable_changes` | Latest 200 subscribed hub-variable changes, retained across restarts (also in `hub_read_variables`) |
 
 </details>
 
@@ -1047,7 +1045,7 @@ For easier bug reporting:
   > 4. Package request body, headers, and query params into pseudo-event for variable substitution
 
 - [x] **Hub variable change triggers** — *Closed differently than originally planned (issue #92).*
-  > Originally scoped as a `variable_change` trigger type for the legacy MCP rule engine. With the legacy engine now frozen and native Rule Machine providing variable triggers natively, the equivalent capability for MCP/AI consumers ships as observation tooling instead: the parent app subscribes to `variable:*` location events on install/update, buffers the last 200 changes in `atomicState.variableHistory`, and exposes them via `hub_list_variable_changes`. The `renameVariable(oldName, newName)` callback keeps the buffer consistent across UI renames. See PR closing #92 / #96.
+  > Originally scoped as a `variable_change` trigger type for the legacy MCP rule engine. With the legacy engine now frozen and native Rule Machine providing variable triggers natively, the equivalent capability for MCP/AI consumers ships as observation tooling instead: the parent app subscribes to `variable:*` location events on install/update, buffers the last 200 changes in `atomicState.variableHistory`, and exposes them via `hub_list_variable_changes`. The `renameVariable(oldName, newName)` callback keeps the buffer consistent across UI renames. See PR closing #92 / #96. That tool and its buffer were later removed (issue #561): the hub keeps the same changes in its own location-event history, read with `hub_get_logs(mode='locationEvents', pattern='variable:<name>')`.
 
 - [ ] **System start trigger** — `Difficulty: 2 | Effort: S`
   > *Feasible.* Hubitat supports `subscribe(location, "systemStart", handler)`. Add a `system_start` trigger type. After hub reboot, the app restores, `initialize()` → `subscribeToTriggers()` runs, and the systemStart event fires the rule. Minor edge case: the event may fire before all apps finish restoring — needs testing on hardware.
@@ -1217,7 +1215,7 @@ For easier bug reporting:
   > 5. Document that hub variables should use Hubitat's built-in connectors instead
 
 - [~] **Variable change events** — *Hub-variable half closed under issue #92; MCP-rule-engine half deferred (legacy engine frozen).*
-  > Hub-variable change observation now ships via `hub_list_variable_changes` (see "Hub variable change triggers" above). The MCP-rule-engine half — sending a `ruleVariableChanged` location event when `setRuleVariable()` writes — would require new code in the legacy child app, which is no longer being extended. New rule-variable consumers should use native Rule Machine, which has variable triggers built in.
+  > Hub-variable change observation is `hub_get_logs(mode='locationEvents', pattern='variable:<name>')` (see "Hub variable change triggers" above). The MCP-rule-engine half — sending a `ruleVariableChanged` location event when `setRuleVariable()` writes — would require new code in the legacy child app, which is no longer being extended. New rule-variable consumers should use native Rule Machine, which has variable triggers built in.
 
 - [ ] **Local variable triggers** — `Difficulty: 2 | Effort: S`
   > *Feasible.* After `set_local_variable` or `variable_math` modifies a local variable, check for matching `local_variable_change` triggers and re-trigger asynchronously via `runIn(0, handler)`. High risk of infinite loops if a rule triggers itself — recommend only firing from external changes (another rule setting this rule's local variable via rule-to-rule control). The loop guard provides a safety net.

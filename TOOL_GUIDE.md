@@ -1473,9 +1473,9 @@ Apps that never register their use, such as webCoRE pistons, cannot be seen by a
 
 Deleting a Hub Mesh **linked mirror** (a local copy of a peer's shared variable) is an UNLINK — see the "Hub Mesh: sharing and linking hub variables" subsection below. There the generic in-use refusal is relaxed (a clean mirror unlinks without `force`); `force=true` is needed when a real local app uses the mirror OR when that use can't be confirmed (`inUseByApps` true or unreadable), not when `inUseByApps` is confirmed false.
 
-### hub_list_variable_changes
+### When a hub variable changed
 
-Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. It is not a complete history — an empty or partial result does NOT mean the variable never changed. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
+The hub records each hub-variable change as a location event named `variable:<name>`. Read them with `hub_get_logs(mode='locationEvents', pattern='variable:<name>')` (the pattern is a case-insensitive regex over each row's name, description and value; escape regex characters in the name), newest first, with `since` (strictly after) and `until`, and a cursor for paging. Rows carry the hub's event time, a renamed variable's earlier rows keep its old name, and retention is the hub's own location-event history.
 
 ### hub_create_connector
 
