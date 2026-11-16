@@ -78,16 +78,7 @@ def toolListVariables(args = null) {
     try {
         def allVars = getAllGlobalVars()
         if (allVars) {
-            hubVariables = allVars.collect { name, var ->
-                [
-                    name: name,
-                    value: var?.value,
-                    type: var?.type,
-                    deviceId: var?.deviceId,
-                    attribute: var?.attribute,
-                    source: "hub"
-                ]
-            }
+            hubVariables = allVars.collect { name, var -> _hubVarRow(name, var) }
         }
     } catch (Exception e) {
         // Surface to mcpLog (not just logDebug) so a "no hub variables" response can be
@@ -139,16 +130,7 @@ def toolGetVariable(args) {
     def found = null
     try {
         def hubVar = getGlobalVar(name)
-        if (hubVar != null) {
-            found = [
-                name: name,
-                value: hubVar.value,
-                type: hubVar.type,
-                deviceId: hubVar.deviceId,
-                attribute: hubVar.attribute,
-                source: "hub"
-            ]
-        }
+        if (hubVar != null) found = _hubVarRow(name, hubVar)
     } catch (Exception e) {
         mcpLog("debug", "hub-vars", "Hub variable '${name}' lookup threw ${e.class.simpleName}: ${e.message}")
     }
@@ -164,6 +146,13 @@ def toolGetVariable(args) {
     // polling) and stays free of hub requests. The page and its registry cover hub variables only.
     if (includeDependents && found.source == "hub") _attachHubVarDependents(found, name)
     return found
+}
+
+// A hub variable as both reads return it. dateTimeKind names the DateTime kind the stored value encodes.
+private Map _hubVarRow(name, var) {
+    Map row = [name: name, value: var?.value, type: var?.type, deviceId: var?.deviceId, attribute: var?.attribute, source: "hub"]
+    if (var?.type?.toString()?.toLowerCase() == "datetime") row.dateTimeKind = _dateTimeKind(var.value)
+    return row
 }
 
 // The model's connector and Hub Mesh fields, as the tools name them. Absent model fields stay absent
@@ -612,46 +601,70 @@ private void _validateInitialValue(String name, String type, value) {
     }
 }
 
-// Canonical hub DateTime text for a create value: the format RM stores, in hub-local time. Accepts
-// "yyyy-MM-ddTHH:mm[:ss[.fraction]][offset]", a space instead of T, or {date,time}; any
-// offset in the input is ignored, as the UI's date and time pickers are hub-local.
-private String _dateTimeVariableValue(String name, value) {
-    def dateStr, timeStr
-    if (value instanceof Map) {
-        dateStr = value.date?.toString()
-        timeStr = value.time?.toString()
-    } else {
-        def s = value.toString().trim()
-        def parts = s.contains("T") ? s.split("T", 2) : (s.contains(" ") ? s.split(" ", 2) : [s, null])
-        dateStr = parts[0]
-        timeStr = parts.size() > 1 ? parts[1] : null
-    }
-    // Validate the entire input before reducing it to the form's minute precision.
-    boolean validTime = timeStr != null && (timeStr ==~ /(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?(?:Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?/)
-    def zone = location.timeZone
-    def when = null
-    if (dateStr && validTime) {
-        timeStr = timeStr.take(5)
-        try { when = Date.parse("yyyy-MM-dd HH:mm", "${dateStr} ${timeStr}", zone) } catch (Exception ignored) { }
-    }
-    // Round-trip check: a lenient parse would accept 2026-13-45 or a DST gap.
-    if (when == null || when.format("yyyy-MM-dd HH:mm", zone) != "${dateStr} ${timeStr}".toString()) {
-        throw new IllegalArgumentException(
-            "DateTime variable '${name}' requires a valid date and time. " +
-            "Pass an ISO string like '2026-05-06T12:00:00' or a {date,time} map. Got: ${value}")
-    }
-    return when.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ", zone)
+// The hub stores every DateTime as yyyy-MM-dd'T'HH:mm:ss.SSSZ in hub time. A date-only variable holds
+// the time 99:99:99.999-9999 and a time-only one the date 9999-99-99; nothing else records the kind.
+private String _dateTimeKind(value) {
+    String text = value?.toString()
+    if (text == null) return null
+    if (text.startsWith("9999-99-99T")) return "time"
+    if (text.endsWith("T99:99:99.999-9999")) return "date"
+    return "datetime"
 }
 
-// Shared per-variable create core: one native create POST, one read-back that must match the request,
-// then a subscription to the variable's change event. Throws on validation, a refused POST, or a
-// read-back that disagrees.
+// A DateTime input as [kind, date, time, stored], stored being the hub's string for that kind. Input is
+// hub-local, like the hub's own pickers: an offset is ignored and seconds are dropped.
+private Map _dateTimeInput(String name, value) {
+    String dateStr = null
+    String timeStr = null
+    if (value instanceof Map) {
+        dateStr = value.date?.toString()?.trim() ?: null
+        timeStr = value.time?.toString()?.trim() ?: null
+    } else if (value != null) {
+        String s = value.toString().trim()
+        if (s.startsWith("9999-99-99T")) timeStr = s.substring(11)
+        else if (s.endsWith("T99:99:99.999-9999")) dateStr = s.take(s.length() - 18)
+        else if (s.contains("T") || s.contains(" ")) {
+            def parts = s.split(s.contains("T") ? "T" : " ", 2)
+            dateStr = parts[0]
+            timeStr = parts[1]
+        } else if (s.contains(":")) timeStr = s
+        else if (s) dateStr = s
+    }
+    def zone = location.timeZone
+    boolean valid = (dateStr != null || timeStr != null) &&
+        (timeStr == null || timeStr ==~ /(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?(?:Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?/)
+    String hm = timeStr?.take(5)
+    // Round-trip each parse: a lenient one would accept 2026-13-45 or a time in a DST gap.
+    Date when = null
+    if (valid) {
+        String fmt = dateStr != null && hm != null ? "yyyy-MM-dd HH:mm" : (dateStr != null ? "yyyy-MM-dd" : "HH:mm")
+        String text = [dateStr, hm].findAll { it != null }.join(" ")
+        try { when = Date.parse(fmt, text, zone) } catch (Exception ignored) { }
+        if (when == null || when.format(fmt, zone) != text) valid = false
+    }
+    if (!valid) {
+        throw new IllegalArgumentException(
+            "DateTime variable '${name}' requires a valid date and time, date, or time: pass '2026-05-06T12:00', " +
+            "'2026-05-06', '12:00', a {date, time} map with either or both, or a value as hub_get_variable returns it. Got: ${value}")
+    }
+    if (dateStr != null && hm != null) return [kind: "datetime", date: dateStr, time: hm, stored: when.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ", zone)]
+    if (dateStr != null) return [kind: "date", date: dateStr, time: null, stored: "${dateStr}T99:99:99.999-9999".toString()]
+    return [kind: "time", date: null, time: hm, stored: "9999-99-99T${hm}:00.000${new Date().format('Z', zone)}".toString()]
+}
+
+// One create POST, then one read-back that must match the requested type, value and DateTime kind.
+// Throws on validation, a refused POST, or a read-back that disagrees.
 private Map _createOneVariable(String name, String type, value) {
-    // Validate a DateTime value before any hub write, so a bad value writes nothing.
-    String dtValue = (type == "DateTime") ? _dateTimeVariableValue(name, value) : null
+    Map dt = (type == "DateTime") ? _dateTimeInput(name, value) : null
     def expectedType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][type]
-    def body = [name: name, type: expectedType, value: dtValue ?: value.toString()]
-    if (dtValue != null) { body.mode = "datetime"; body.date = dtValue.take(10); body.time = dtValue.substring(11, 16) }
+    def body = [name: name, type: expectedType, value: value.toString()]
+    // The hub's page posts the kind as mode, with the date and/or time; a date-only or time-only value is that part alone.
+    if (dt != null) {
+        body.mode = dt.kind
+        if (dt.date != null) body.date = dt.date
+        if (dt.time != null) body.time = dt.time
+        body.value = dt.kind == "datetime" ? dt.stored : (dt.date ?: dt.time)
+    }
     _hubVarsNativePost("create", body)
 
     def created = null
@@ -662,7 +675,12 @@ private Map _createOneVariable(String name, String type, value) {
         throw new IllegalStateException("hub_create_variable: the hub accepted the create, but '${name}' is not visible via getGlobalVar.")
     }
     boolean matches = created.type?.toString()?.toLowerCase() == expectedType
-    if (dtValue == null) {
+    String createdText = created.value?.toString()
+    if (dt?.kind == "date") {
+        matches = matches && _dateTimeKind(createdText) == "date" && createdText.take(10) == dt.date
+    } else if (dt?.kind == "time") {
+        matches = matches && _dateTimeKind(createdText) == "time" && createdText.substring(11, 16) == dt.time
+    } else if (dt == null) {
         if (type in ["Number", "Decimal"]) {
             try { matches = matches && new BigDecimal(created.value.toString()).compareTo(new BigDecimal(value.toString())) == 0 }
             catch (Exception ignored) { matches = false }
@@ -671,19 +689,20 @@ private Map _createOneVariable(String name, String type, value) {
     if (!matches) throw new IllegalStateException(
         "hub_create_variable: '${name}' exists, but reads type=${created.type}, value=${created.value}; " +
         "requested type=${expectedType}, value=${value}. Repair it with hub_set_variable, or delete it with hub_delete_variable before creating it again.")
-    // Compare date and hour:minute only: RM stores local time, and its offset text is not ours to match.
-    if (dtValue != null && created.value?.toString()?.take(16) != dtValue.take(16)) {
-        try { setGlobalVar(name, dtValue) } catch (Exception e) {
+    // A date-and-time create has landed without its time; setGlobalVar with the full string repairs it.
+    // Date and hour:minute are compared, as the offset text follows the hub zone.
+    if (dt?.kind == "datetime" && createdText?.take(16) != dt.stored.take(16)) {
+        try { setGlobalVar(name, dt.stored) } catch (Exception e) {
             mcpLog("debug", "hub-vars", "hub_create_variable: setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
         }
         created = getGlobalVar(name)
-        if (created?.value?.toString()?.take(16) != dtValue.take(16)) {
-            throw new IllegalStateException("hub_create_variable: '${name}' was created, but its time could not be set (it reads ${created?.value}). Set it with hub_set_variable(name='${name}', value='${dtValue}').")
+        if (created?.value?.toString()?.take(16) != dt.stored.take(16)) {
+            throw new IllegalStateException("hub_create_variable: '${name}' was created, but its time could not be set (it reads ${created?.value}). Set it with hub_set_variable(name='${name}', value='${dt.stored}').")
         }
     }
 
     mcpLog("info", "hub-vars", "Created hub variable '${name}' type=${type} value=${value}")
-    return [
+    Map result = [
         success: true,
         name: name,
         type: type,
@@ -691,6 +710,8 @@ private Map _createOneVariable(String name, String type, value) {
         source: "hub",
         message: "Variable '${name}' (${type}) created with initial value ${created.value}."
     ]
+    if (dt != null) result.dateTimeKind = dt.kind
+    return result
 }
 
 def toolCreateConnector(args) {
@@ -1035,7 +1056,7 @@ private _hubVariableValueFor(String name, String type, value) {
             throw new IllegalArgumentException("Hub variable '${name}' is a Boolean: value must be true or false, got: ${value}")
         case "datetime":
             if (value == null) throw new IllegalArgumentException("Hub variable '${name}' is a DateTime: value must be a date and time such as 2026-02-04T14:00, got: null")
-            return _dateTimeVariableValue(name, value)
+            return _dateTimeInput(name, value).stored
         case "string":
             if (value == null) throw new IllegalArgumentException("Hub variable '${name}' is a String: value must be text, got: null")
             return value.toString()
@@ -1310,7 +1331,7 @@ def _getAllToolDefinitions_partVariables() {
                 properties: [
                     name: [type: "string", description: "New variable name, e.g. \"vacationMode\".[[FLAT_TRIM]] Omit when using variables or the Hub Mesh link form.[[/FLAT_TRIM]]"],
                     type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
-                    value: [description: "Initial value, must match the type.[[FLAT_TRIM]] DateTime uses hub-local time, e.g. 2026-02-04T14:00 or {date,time}; offsets are ignored and seconds/fractions discarded. Omit when using variables.[[/FLAT_TRIM]]"],
+                    value: [description: "Initial value, must match the type.[[FLAT_TRIM]] DateTime is hub-local: 2026-02-04T14:00 makes a date-and-time variable, 2026-02-04 a date-only one, 14:00 a time-only one; {date,time} takes either or both. Offsets are ignored and seconds dropped. Omit when using variables.[[/FLAT_TRIM]]"],
                     mesh_source_hub_id: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with mesh_source_name, not name/type/value.[[/FLAT_TRIM]]"],
                     mesh_source_name: [type: "string", description: "Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"],
                     variables: [type: "array", description: "Bulk form: several variables in one call.", items: [

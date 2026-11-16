@@ -12779,13 +12779,29 @@ Each hub variable row carries `name`, `value`, `type`, `deviceId`/`attribute` (i
 - `meshShared` — this hub shares the variable over Hub Mesh;
 - `linked` — the variable is a Hub Mesh mirror of another hub's variable, with `sourceHubName` naming that hub.
 
+A DateTime row also carries `dateTimeKind` (`datetime`, `date` or `time`), read from its stored value; see "DateTime kinds".
+
+### DateTime kinds
+
+The hub stores every DateTime value as `yyyy-MM-ddTHH:mm:ss.SSSZ` in hub time, and only the value tells the kinds apart:
+- date and time: `2026-03-05T08:15:00.000-0500`;
+- date only: the time part is the marker `99:99:99.999-9999`, e.g. `2026-03-05T99:99:99.999-9999`;
+- time only: the date part is the marker `9999-99-99`, e.g. `9999-99-99T08:15:00.000-0500` (the offset is the hub zone's offset when it was written).
+
+`hub_get_variable` and `hub_list_variables` return `value` exactly as stored, plus `dateTimeKind`. Read the 99/9999 parts as "not set", not as a date or time.
+
 If that page cannot be read, the rows keep their other fields and the response carries `detailsError` (`hub_get_variable(includeDependents=true)` does the same). Which apps use a variable is read one variable at a time with `hub_get_variable(includeDependents=true)`.
 
 ### hub_create_variable
 
 Create a new hub variable (global variable visible to apps and Rule Machine), one at a time or several in one call. Single form: name + type + value.
 
-For DateTime, pass hub-local `yyyy-MM-ddTHH:mm` or `{date,time}`. Supplied offsets are ignored; seconds and fractions are discarded. The stored value uses the hub timezone for that date.
+A DateTime variable is one of three kinds, set by the initial value (hub-local; supplied offsets are ignored, seconds and fractions dropped):
+- date and time: `yyyy-MM-ddTHH:mm` (or a space for the T, or `{date, time}`);
+- date only: `yyyy-MM-dd` (or `{date}`);
+- time only: `HH:mm` (or `{time}`).
+
+The read-back must show the requested kind. See "DateTime kinds" below for how the hub stores each one.
 
 **Bulk form:**
 - `variables=[{name,type,value}, ...]` — mutually exclusive with the single form (i.e. mutually exclusive with `name`/`type`/`value`).

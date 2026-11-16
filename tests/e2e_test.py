@@ -12409,6 +12409,27 @@ def updated() {}
         finally:
             self._delete_variable_safe(dt_name)
 
+        # Date-only and time-only DateTime variables: the hub marks the missing part with 99:99:99.999-9999
+        # or 9999-99-99, and the reads name the kind.
+        date_name = f"{PREFIX}HubVar_DateOnly"
+        time_name = f"{PREFIX}HubVar_TimeOnly"
+        self.created_variable_names.extend([date_name, time_name])
+        try:
+            for kind_name, initial, kind, marker in ((date_name, "2026-03-05", "date", "2026-03-05T99:99:99.999-9999"),
+                                                     (time_name, "08:15", "time", "9999-99-99T08:15:")):
+                made_kind = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_variable",
+                    "args": {"name": kind_name, "type": "DateTime", "value": initial, "confirm": True}})
+                assert made_kind.get("success") is True and made_kind.get("dateTimeKind") == kind, \
+                    f"{kind}-only DateTime create failed: {made_kind}"
+                read_kind = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": kind_name}})
+                assert read_kind.get("dateTimeKind") == kind and str(read_kind.get("value")).startswith(marker), \
+                    f"{kind}-only DateTime read-back is wrong: {read_kind}"
+        finally:
+            self._delete_variable_safe(date_name)
+            self._delete_variable_safe(time_name)
+
     @test("hub_variables")
     def test_hub_variable_bulk_create_round_trip(self) -> None:
         # The bulk form (variables=[...]) creates several vars sequentially in one call

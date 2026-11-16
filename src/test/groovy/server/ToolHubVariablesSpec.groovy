@@ -1282,6 +1282,49 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "hub_create_variable DateTime makes a #kind variable from #input"() {
+        given:
+        enableWrite()
+        def rec = stubDateTimeCreate(postCommits: stored)
+
+        when:
+        def result = script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: input, confirm: true])
+
+        then: 'the body the hub page posts for that kind, and a matching read-back'
+        varPosts*.body == [body]
+        result.success == true
+        result.value == stored
+        result.dateTimeKind == kind
+        rec.sets.isEmpty()
+
+        where:
+        kind   | input                  | body                                                                                 | stored
+        'date' | '2026-03-05'           | [name: 'dtVar', type: 'datetime', mode: 'date', date: '2026-03-05', value: '2026-03-05'] | '2026-03-05T99:99:99.999-9999'
+        'date' | [date: '2026-03-05']   | [name: 'dtVar', type: 'datetime', mode: 'date', date: '2026-03-05', value: '2026-03-05'] | '2026-03-05T99:99:99.999-9999'
+        'time' | '08:15'                | [name: 'dtVar', type: 'datetime', mode: 'time', time: '08:15', value: '08:15']          | '9999-99-99T08:15:00.000-0500'
+        'time' | [time: '08:15:42']     | [name: 'dtVar', type: 'datetime', mode: 'time', time: '08:15', value: '08:15']          | '9999-99-99T08:15:00.000-0500'
+    }
+
+    @spock.lang.Unroll
+    def "hub_create_variable DateTime fails when the read-back is not the requested #kind kind"() {
+        given:
+        enableWrite()
+        stubDateTimeCreate(postCommits: stored)
+
+        when:
+        def result = script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: input, confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("'dtVar' exists, but reads type=datetime, value=${stored}")
+
+        where:
+        kind   | input        | stored
+        'date' | '2026-03-05' | '2026-03-05T08:15:00.000-0500'
+        'time' | '08:15'      | '9999-99-99T09:00:00.000-0500'
+    }
+
+    @spock.lang.Unroll
     def "hub_create_variable DateTime sets the full hub-local value when the commit dropped the time (#input)"() {
         given:
         enableWrite()
@@ -1317,7 +1360,8 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         where:
         input << ['2026-13-45T12:30', '2026-01-01T12:30garbage', '2026-01-01T12:30:99',
                   '2026-01-01T24:30', '2026-01-01T12:60', '2026-01-01T12:30:00+25:00',
-                  '2026-01-01T12:30:00.123Zjunk', [date: '2026-01-01', time: '12:30garbage']]
+                  '2026-01-01T12:30:00.123Zjunk', [date: '2026-01-01', time: '12:30garbage'],
+                  '2026-02-30', '2026-1-5', '24:00', '7:05', [date: '2026-02-30'], [time: '12:61'], [:], 'garbage']
     }
 
     @spock.lang.Unroll
@@ -2094,6 +2138,33 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.appsUsing == [[id: '2', label: 'All Devices']]
         !result.containsKey('detailsError')
         hubGet.calls*.path == ['/hub2/variables']
+    }
+
+    @spock.lang.Unroll
+    def "hub reads return a DateTime value as stored, with dateTimeKind #kind"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'datetime', value: stored, deviceId: null, attribute: null] }
+        script.metaClass.getAllGlobalVars = { -> [when: [name: 'when', type: 'datetime', value: stored, deviceId: null, attribute: null],
+                                                 n: [name: 'n', type: 'integer', value: 1, deviceId: null, attribute: null]] }
+        modelRows.when = modelRow('when', [type: 'datetime', value: stored])
+        modelRows.n = modelRow('n')
+        stubHubVarsPage()
+
+        when:
+        def got = script.toolGetVariable([name: 'when'])
+        def listed = script.toolListVariables()
+
+        then:
+        got.value == stored
+        got.dateTimeKind == kind
+        listed.hubVariables.find { it.name == 'when' }.dateTimeKind == kind
+        !listed.hubVariables.find { it.name == 'n' }.containsKey('dateTimeKind')
+
+        where:
+        kind       | stored
+        'datetime' | '2026-03-05T08:15:00.000-0500'
+        'date'     | '2026-03-05T99:99:99.999-9999'
+        'time'     | '9999-99-99T08:15:00.000-0500'
     }
 
     def "hub_get_variable names the source hub of a Hub Mesh linked mirror"() {
