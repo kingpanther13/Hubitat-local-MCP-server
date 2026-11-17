@@ -23,6 +23,8 @@ import support.ToolSpecBase
  * resolve, including the post-click path where the swap action already
  * removed the instance itself (the delete is idempotent; the post-click
  * verify fetch only informs logging, never gates cleanup).
+ *
+ * Also covers _resolveDirectAppId, the main app's name-addressed app-id resolver that Swap Device uses.
  */
 class ToolDeviceSwapSpec extends ToolSpecBase {
 
@@ -1053,4 +1055,110 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         bypass << [false, true]
     }
 
+    // -------- _resolveDirectAppId (name-addressed app-id resolution) --------
+    //
+    // The /installedapp/direct/<alias> chain is two 302 hops:
+    //   direct/<alias> -> create/<typeId> -> configure/<instanceId>.
+    // hubInternalGetRaw is non-private, so a per-test metaClass stub
+    // intercepts the helper's internal calls (class 1 on the dispatch cheat
+    // sheet); the helper itself is invoked directly — Groovy doesn't enforce
+    // `private` for direct calls from specs.
+
+    def "_resolveDirectAppId follows the two-hop redirect chain to the configure instance id"() {
+        given: 'the hub answers both hops with relative 302 Locations'
+        def gets = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            gets << path
+            switch (path) {
+                case '/installedapp/direct/swapDevice': return [status: 302, location: '/installedapp/create/32', data: null]
+                case '/installedapp/create/32':           return [status: 302, location: '/installedapp/configure/1424', data: null]
+                default: throw new IllegalStateException("unexpected GET ${path}")
+            }
+        }
+
+        when:
+        def id = script._resolveDirectAppId('swapDevice')
+
+        then: 'the configure instance id comes back'
+        id == 1424
+
+        and: 'exactly two hops — the configure page itself is never fetched'
+        gets == ['/installedapp/direct/swapDevice', '/installedapp/create/32']
+    }
+
+    def "_resolveDirectAppId tolerates an absolute Location on the final hop"() {
+        given: 'hop 2 redirects with a scheme://host-qualified Location'
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            path == '/installedapp/direct/swapDevice' ?
+                [status: 302, location: '/installedapp/create/38', data: null] :
+                [status: 302, location: 'http://127.0.0.1:8080/installedapp/configure/1802', data: null]
+        }
+
+        expect:
+        script._resolveDirectAppId('swapDevice') == 1802
+    }
+
+    def "_resolveDirectAppId returns null on a non-redirect response"() {
+        given: 'the platform client auto-followed an absolute Location and handed back 200 HTML with no Location (hubInternalGetRaw caveat)'
+        def gets = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            gets << path
+            [status: 200, location: null, data: '<html>configure page</html>']
+        }
+        def logged = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            logged << [level: level, component: component, msg: msg]
+        }
+
+        when:
+        def id = script._resolveDirectAppId('swapDevice')
+
+        then:
+        id == null
+
+        and: 'it gave up on the first hop instead of guessing from the HTML body'
+        gets.size() == 1
+
+        and: 'a hub-admin warn summarizes the cause (incl. the absolute-Location auto-follow caveat) without needing debug logging'
+        logged.any { it.level == 'warn' && it.component == 'hub-admin' && it.msg.contains('swapDevice') && it.msg.contains('auto-followed') }
+    }
+
+    def "_resolveDirectAppId returns null on a garbage Location"() {
+        given: 'a 302 pointing somewhere outside the direct chain'
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            [status: 302, location: '/hub/error', data: null]
+        }
+
+        expect:
+        script._resolveDirectAppId('swapDevice') == null
+    }
+
+    def "_resolveDirectAppId returns null when hop 2 redirects to create/ again"() {
+        given: 'the create hop bounces to ANOTHER create/ instead of configure/ — a create match is only legal on hop 1'
+        def logged = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            logged << [level: level, component: component, msg: msg]
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            path == '/installedapp/direct/swapDevice' ?
+                [status: 302, location: '/installedapp/create/32', data: null] :
+                [status: 302, location: '/installedapp/create/99', data: null]
+        }
+
+        expect:
+        script._resolveDirectAppId('swapDevice') == null
+
+        and: 'the unexpected-Location warn fired at hub-admin'
+        logged.any { it.level == 'warn' && it.component == 'hub-admin' && it.msg.contains('unexpected Location') }
+    }
+
+    def "_resolveDirectAppId returns null when the request throws"() {
+        given:
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            throw new RuntimeException('connection refused')
+        }
+
+        expect:
+        script._resolveDirectAppId('swapDevice') == null
+    }
 }

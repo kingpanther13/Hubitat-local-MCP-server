@@ -60,8 +60,8 @@ private boolean _refreshHubVarInUseRegistrations() {
     return complete
 }
 
-// The hub calls this on apps that registered use of a hub variable (addInUseGlobalVar, for the legacy
-// custom rules), so it stays defined; those rules are not rewritten, as before.
+// The hub calls this on every app that registered use of a hub variable (this app does, through
+// addInUseGlobalVar for the legacy custom rules), so it must exist even with nothing to update.
 def renameVariable(String oldName, String newName) {
     mcpLog("info", "hub-vars", "renameVariable callback: '${oldName}' -> '${newName}'")
 }
@@ -342,8 +342,6 @@ def toolCreateVariable(args) {
         return _createLinkedMeshVariable(meshHubId, meshName)
     }
 
-    // Bulk form: variables=[{name,type,value}, ...]. Mutually exclusive with
-    // the single name/type/value form.
     if (args.variables != null) {
         if (args.name != null || args.type != null || args.value != null) {
             throw new IllegalArgumentException(
@@ -839,8 +837,8 @@ private String _hubVarsLastConnectorNote() {
     return "This was the hub's last variable connector, so the hub also removed its 'Variable Connectors' device, and Hubitat logs a java.lang.StackOverflowError (childRemoved) while doing that, as its own Remove connector button does. The connector is removed."
 }
 
-// Atomic numeric add on a Number/Decimal hub variable via the platform's addValueToGlobalVar(), so
-// concurrent increments cannot lose an update the way a read-then-set can.
+// One hub operation (the platform's addValueToGlobalVar) adds to a Number/Decimal hub variable, with no
+// separate read and write.
 private Map _incrementHubVariable(String name, increment) {
     def amount
     try { amount = (increment instanceof Number) ? increment : new BigDecimal(increment.toString().trim()) }
@@ -1102,10 +1100,9 @@ def toolDeleteHubVariable(args) {
     if (!varName) throw new IllegalArgumentException("name is required")
     def force = args?.force == true
 
-    // Source detection: hub vs rule_engine namespace. Hub vars are deleted
-    // through the hub's Hub Variables page; rule_engine vars are a map in
-    // state we can rewrite directly. The child-rule scan applies to both; a
-    // hub var is also checked against the hub's in-use registry.
+    // Hub variables and rule_engine variables are separate stores: a hub variable is deleted through the
+    // hub's Hub Variables page and also checked against the hub's in-use registry; a rule_engine variable
+    // is a key in app state. The child-rule scan applies to both.
     def hubVar = null
     try { hubVar = getGlobalVar(varName) }
     catch (Exception e) {
@@ -1119,11 +1116,8 @@ def toolDeleteHubVariable(args) {
             "Variable '${varName}' not found in either the hub-variables namespace or the rule_engine namespace.")
     }
 
-    // Pre-deletion safety scan: child rule apps that reference this variable will silently
-    // break on next access (null lookup → conditions flip false, %varname% substitution
-    // leaves literal text). Block by default — caller must opt in via force=true after
-    // acknowledging the breakage. Match heuristic: variable name appears in the rule's
-    // serialized triggers/conditions/actions JSON, as a quoted value or a %name% substitution.
+    // A child rule that references the variable silently breaks once it is gone (null lookups make
+    // conditions false, %name% stays as literal text), so such a delete needs force=true.
     def consumers = []
     try {
         // Word-boundary match: the JSON-quoted name or a %name% substitution, so a

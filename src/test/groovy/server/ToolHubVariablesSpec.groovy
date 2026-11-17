@@ -7,8 +7,7 @@ import support.ToolSpecBase
 /**
  * Spec for the hub-variable tools in libraries/mcp-variables-lib.groovy:
  * hub_list_variables, hub_get_variable, hub_set_variable, hub_create_variable,
- * hub_delete_variable, hub_create_connector and hub_delete_connector, plus the
- * main app's _resolveDirectAppId helper.
+ * hub_delete_variable, hub_create_connector and hub_delete_connector.
  *
  * getAllGlobalVars / getGlobalVar / setGlobalVar are dynamic (not on
  * AppExecutor), so they're stubbed per-test via script.metaClass. The hub's
@@ -72,7 +71,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         }
     }
 
-    // -------- initialize() lifecycle (issue #105 PR2a #6) --------
+    // -------- initialize() lifecycle --------
 
     def "initialize drops the variable subscriptions older versions made"() {
         given: 'a clean initialize with the unrelated side-effects neutralised'
@@ -2239,7 +2238,8 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         'time'     | '9999-99-99T08:15:00.000-0500'
     }
 
-    def "hub_get_variable names the source hub of a Hub Mesh linked mirror"() {
+    // Unverified shape: no linked mirror has been captured live; linked/sourceName follow the page row's field names.
+    def "hub_get_variable names the source hub of a Hub Mesh linked mirror (unverified shape)"() {
         given:
         script.metaClass.getGlobalVar = { String n -> [name: n, type: 'integer', value: 4, deviceId: null, attribute: null] }
         modelRows['T on Peer'] = modelRow('T on Peer', [linked: true, sourceName: 'Peer', sourceIp: '192.0.2.7'])
@@ -2853,112 +2853,5 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
-    }
-
-    // -------- _resolveDirectAppId (name-addressed app-id resolution) --------
-    //
-    // The /installedapp/direct/<alias> chain is two 302 hops:
-    //   direct/<alias> -> create/<typeId> -> configure/<instanceId>.
-    // hubInternalGetRaw is non-private, so a per-test metaClass stub
-    // intercepts the helper's internal calls (class 1 on the dispatch cheat
-    // sheet); the helper itself is invoked directly — Groovy doesn't enforce
-    // `private` for direct calls from specs.
-
-    def "_resolveDirectAppId follows the two-hop redirect chain to the configure instance id"() {
-        given: 'the hub answers both hops with relative 302 Locations'
-        def gets = []
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
-            gets << path
-            switch (path) {
-                case '/installedapp/direct/hubVariables': return [status: 302, location: '/installedapp/create/32', data: null]
-                case '/installedapp/create/32':           return [status: 302, location: '/installedapp/configure/1424', data: null]
-                default: throw new IllegalStateException("unexpected GET ${path}")
-            }
-        }
-
-        when:
-        def id = script._resolveDirectAppId('hubVariables')
-
-        then: 'the configure instance id comes back'
-        id == 1424
-
-        and: 'exactly two hops — the configure page itself is never fetched'
-        gets == ['/installedapp/direct/hubVariables', '/installedapp/create/32']
-    }
-
-    def "_resolveDirectAppId tolerates an absolute Location on the final hop"() {
-        given: 'hop 2 redirects with a scheme://host-qualified Location'
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
-            path == '/installedapp/direct/swapDevice' ?
-                [status: 302, location: '/installedapp/create/38', data: null] :
-                [status: 302, location: 'http://127.0.0.1:8080/installedapp/configure/1802', data: null]
-        }
-
-        expect:
-        script._resolveDirectAppId('swapDevice') == 1802
-    }
-
-    def "_resolveDirectAppId returns null on a non-redirect response"() {
-        given: 'the platform client auto-followed an absolute Location and handed back 200 HTML with no Location (hubInternalGetRaw caveat)'
-        def gets = []
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
-            gets << path
-            [status: 200, location: null, data: '<html>configure page</html>']
-        }
-        def logged = []
-        script.metaClass.mcpLog = { String level, String component, String msg ->
-            logged << [level: level, component: component, msg: msg]
-        }
-
-        when:
-        def id = script._resolveDirectAppId('hubVariables')
-
-        then:
-        id == null
-
-        and: 'it gave up on the first hop instead of guessing from the HTML body'
-        gets.size() == 1
-
-        and: 'a hub-admin warn summarizes the cause (incl. the absolute-Location auto-follow caveat) without needing debug logging'
-        logged.any { it.level == 'warn' && it.component == 'hub-admin' && it.msg.contains('hubVariables') && it.msg.contains('auto-followed') }
-    }
-
-    def "_resolveDirectAppId returns null on a garbage Location"() {
-        given: 'a 302 pointing somewhere outside the direct chain'
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
-            [status: 302, location: '/hub/error', data: null]
-        }
-
-        expect:
-        script._resolveDirectAppId('hubVariables') == null
-    }
-
-    def "_resolveDirectAppId returns null when hop 2 redirects to create/ again"() {
-        given: 'the create hop bounces to ANOTHER create/ instead of configure/ — a create match is only legal on hop 1'
-        def logged = []
-        script.metaClass.mcpLog = { String level, String component, String msg ->
-            logged << [level: level, component: component, msg: msg]
-        }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
-            path == '/installedapp/direct/hubVariables' ?
-                [status: 302, location: '/installedapp/create/32', data: null] :
-                [status: 302, location: '/installedapp/create/99', data: null]
-        }
-
-        expect:
-        script._resolveDirectAppId('hubVariables') == null
-
-        and: 'the unexpected-Location warn fired at hub-admin'
-        logged.any { it.level == 'warn' && it.component == 'hub-admin' && it.msg.contains('unexpected Location') }
-    }
-
-    def "_resolveDirectAppId returns null when the request throws"() {
-        given:
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
-            throw new RuntimeException('connection refused')
-        }
-
-        expect:
-        script._resolveDirectAppId('hubVariables') == null
     }
 }

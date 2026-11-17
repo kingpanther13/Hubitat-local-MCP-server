@@ -1403,7 +1403,7 @@ Sending a classic definition to CREATE a rule on a hub that offers both builders
 
 ## Hub Variables
 
-Reference for the hub-variable tools (hub_list_variables, hub_get_variable, hub_create_variable, hub_delete_variable, hub_create_connector, hub_delete_connector). Per-tool details below. Creates, deletes and connector changes go through the hub's own Hub Variables page, one request each, and every write is read back.
+Reference for the hub-variable tools (hub_list_variables, hub_get_variable, hub_set_variable, hub_create_variable, hub_delete_variable, hub_create_connector, hub_delete_connector). Per-tool details below. Creates, deletes and connector changes go through the hub's own Hub Variables page, one request each, and every write is read back.
 
 When the hub cannot complete a create or delete, the result is `success:false` with `error` and `note`. The note says whether nothing changed or the hub may have applied part of it; in the second case, read the variable with hub_get_variable before retrying.
 
@@ -1420,11 +1420,11 @@ The returned `source` field says which one matched (the hub-variable namespace i
 
 ### hub_set_variable: value
 
-For an existing hub variable the value must fit its declared type, and is refused before anything is written otherwise: Number takes a whole number in the 64-bit (Java Long) range (`42`, `"3000000000"`), Decimal a number (`1.5`), Boolean `true`/`false`, String any text. A DateTime keeps its kind (see "DateTime kinds"), hub-local with offsets ignored and seconds dropped: a date-and-time variable takes `2026-03-05T08:15` or `{date, time}`, a date-only one `2026-03-05` or `{date}` (stored as `2026-03-05T99:99:99.999-9999`), a time-only one `08:15` or `{time}` (stored as `9999-99-99T08:15:00.000` plus the hub zone's current offset). Each also takes its own stored form, so a value read with `hub_get_variable` can be written back unchanged. A value of another kind is refused rather than changing the kind. The result's `value` is what was stored. If the hub does not take a valid value (for example a variable linked from another hub over Hub Mesh, which is changed on its source hub), the result is `success:false` and nothing is written elsewhere. A name that is not a hub variable is stored as a rule-engine variable, as before.
+For an existing hub variable the value must fit its declared type, and is refused before anything is written otherwise: Number takes a whole number in the 64-bit (Java Long) range (`42`, `"3000000000"`), Decimal a number (`1.5`), Boolean `true`/`false`, String any text. A DateTime keeps its kind (see "DateTime kinds"), hub-local with offsets ignored and seconds dropped: a date-and-time variable takes `2026-03-05T08:15` or `{date, time}`, a date-only one `2026-03-05` or `{date}` (stored as `2026-03-05T99:99:99.999-9999`), a time-only one `08:15` or `{time}` (stored as `9999-99-99T08:15:00.000` plus the hub zone's current offset). Each also takes its own stored form, so a value read with `hub_get_variable` can be written back unchanged. A value of another kind is refused rather than changing the kind. The result's `value` is what was stored. If the hub does not take a valid value (for example a variable linked from another hub over Hub Mesh, which is changed on its source hub), the result is `success:false` and nothing is written elsewhere. A name that is not a hub variable is stored as a rule-engine variable.
 
 ### hub_set_variable: increment
 
-`increment` (a number, negative to subtract) adds to a Number or Decimal hub variable in one hub operation (the platform's addValueToGlobalVar), so two clients incrementing at once cannot lose an update the way a read-then-set can. Send it alone (not with `value` or `mesh_shared`). The result carries `previousValue` and the new `value`, read just before and just after the add, so another client's change in between shows in them; a Number variable rounds a fractional result. A variable linked from another hub over Hub Mesh cannot be incremented here. Because a retried increment adds again, check `value` before retrying a call whose response was lost.
+`increment` (a number, negative to subtract) adds to a Number or Decimal hub variable in one hub operation (the platform's addValueToGlobalVar), with no separate read and write. Send it alone (not with `value` or `mesh_shared`). The result carries `previousValue` and the new `value`, read just before and just after the add; a Number variable rounds a fractional result. A variable linked from another hub over Hub Mesh cannot be incremented here. Because a retried increment adds again, check `value` before retrying a call whose response was lost.
 
 ### hub_list_variables
 
@@ -1437,6 +1437,8 @@ Each hub variable row carries `name`, `value`, `type`, `deviceId`/`attribute` (i
 
 A DateTime row also carries `dateTimeKind` (`datetime`, `date` or `time`), read from its stored value; see "DateTime kinds".
 
+If that page cannot be read, the rows keep their other fields and the response carries `detailsError` (`hub_get_variable(includeDependents=true)` does the same). Which apps use a variable is read one variable at a time with `hub_get_variable(includeDependents=true)`.
+
 ### DateTime kinds
 
 The hub stores every DateTime value as `yyyy-MM-ddTHH:mm:ss.SSSZ` in hub time, and only the value tells the kinds apart:
@@ -1445,8 +1447,6 @@ The hub stores every DateTime value as `yyyy-MM-ddTHH:mm:ss.SSSZ` in hub time, a
 - time only: the date part is the marker `9999-99-99`, e.g. `9999-99-99T08:15:00.000-0500` (the offset is the hub zone's offset when it was written).
 
 `hub_get_variable` and `hub_list_variables` return `value` exactly as stored, plus `dateTimeKind`. Read the 99/9999 parts as "not set", not as a date or time.
-
-If that page cannot be read, the rows keep their other fields and the response carries `detailsError` (`hub_get_variable(includeDependents=true)` does the same). Which apps use a variable is read one variable at a time with `hub_get_variable(includeDependents=true)`.
 
 ### hub_create_variable
 
@@ -1457,7 +1457,7 @@ A DateTime variable is one of three kinds, set by the initial value (hub-local; 
 - date only: `yyyy-MM-dd` (or `{date}`);
 - time only: `HH:mm` (or `{time}`).
 
-The read-back must show the requested kind. See "DateTime kinds" below for how the hub stores each one.
+The read-back must show the requested kind. "DateTime kinds" above shows how the hub stores each one.
 
 **Bulk form:**
 - `variables=[{name,type,value}, ...]` — mutually exclusive with the single form (i.e. mutually exclusive with `name`/`type`/`value`).
@@ -1491,7 +1491,7 @@ Deleting a Hub Mesh **linked mirror** (a local copy of a peer's shared variable)
 
 ### When a hub variable changed
 
-The hub records each hub-variable change as a location event named `variable:<name>`. Read them with `hub_get_logs(mode='locationEvents', pattern='variable:<name>')` (the pattern is a case-insensitive regex over each row's name, description and value; escape regex characters in the name), newest first, with `since` (strictly after) and `until`, and a cursor for paging. Rows carry the hub's event time, a renamed variable's earlier rows keep its old name, and retention is the hub's own location-event history.
+The hub records each hub-variable change as a location event named `variable:<name>`. Read them with `hub_get_logs(mode='locationEvents', pattern='^variable:<name>$')`. The pattern is a case-insensitive regex found anywhere in each row's name, description or value, so anchor it as shown and escape regex characters in the name (for example `\Q<name>\E`); otherwise `variable:temp` also matches `variable:temperature`. Rows come newest first, with `since` (strictly after) and `until`, and a cursor for paging. Rows carry the hub's event time, a renamed variable's earlier rows keep its old name, and retention is the hub's own location-event history.
 
 ### hub_create_connector
 

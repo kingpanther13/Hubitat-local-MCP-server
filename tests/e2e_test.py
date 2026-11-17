@@ -12333,11 +12333,26 @@ def updated() {}
             restored = self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_set_variable", "args": {"name": num_name, "value": 3}})
             assert restored.get("success") is True and restored.get("value") == 3, f"setting the Number back failed: {restored}"
+            # Decimal and Boolean refuse a value of the wrong type too, leaving the stored value alone.
+            dec_name = f"{PREFIX}HubVar_Dec"
+            self.created_variable_names.append(dec_name)
+            made_dec = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_create_variable", "args": {"name": dec_name, "type": "Decimal", "value": 1.5, "confirm": True}})
+            assert made_dec.get("success") is True, f"Decimal fixture create failed: {made_dec}"
+            bool_name = self._ensure_perm_variables("sv_bool")["sv_bool"]
+            for target, wrong, needle in ((dec_name, "abc", "must be a number"), (bool_name, "maybe", "true or false")):
+                before_wrong = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": target}}).get("value")
+                self._expect_tool_refusal("hub_set_variable", {"name": target, "value": wrong}, needle)
+                after_wrong = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": target}}).get("value")
+                assert after_wrong == before_wrong, f"a refused set changed {target}: {before_wrong} -> {after_wrong}"
             listed = self.client.call_tool("hub_manage_variables", {"tool": "hub_list_variables", "args": {}})
             assert num_name not in [v.get("name") for v in listed.get("ruleVariables") or []], \
                 f"a refused set created a rule-engine variable {num_name}"
         finally:
             self._delete_variable_safe(num_name)
+            self._delete_variable_safe(f"{PREFIX}HubVar_Dec")
 
         # The hub checks names itself; its refusal (and its naming rules) reaches the caller.
         bad_name = f"{PREFIX}HubVar[Bad]"
@@ -12382,7 +12397,7 @@ def updated() {}
         finally:
             self._delete_variable_safe(bad_dt_name)
 
-        # DateTime keeps its time: a date-only commit stores the hub's 99:99 no-time sentinel.
+        # A date-and-time create stores the full value; date-only and time-only are separate kinds, below.
         dt_name = f"{PREFIX}HubVar_DT"
         self.created_variable_names.append(dt_name)
         try:
@@ -12419,17 +12434,24 @@ def updated() {}
             reread = str(self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_get_variable", "args": {"name": dt_name}}).get("value"))
             assert reread.startswith("2026-03-05T08:15"), f"DateTime set did not land on the hub variable: {reread}"
+            listed_dt = self.client.call_tool("hub_read_variables", {"tool": "hub_list_variables", "args": {"type": "DateTime"}})
+            dt_row = next((v for v in listed_dt.get("hubVariables") or [] if v.get("name") == dt_name), None)
+            assert dt_row and dt_row.get("dateTimeKind") == "datetime", f"the list row lacks dateTimeKind: {dt_row}"
+            self._expect_tool_refusal("hub_set_variable", {"name": dt_name, "value": "10:00"}, "is a DateTime with date and time")
+            kept_dt = str(self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": dt_name}}).get("value"))
+            assert kept_dt == reread, f"a refused time-only value changed the date-and-time variable: {reread} -> {kept_dt}"
             # The guide points change history at the hub's location events, named variable:<name>.
             deadline = time.time() + 10.0
             changes: list = []
             while not changes and time.time() < deadline:
                 changes = self.client.call_tool("hub_read_diagnostics", {
                     "tool": "hub_get_logs",
-                    "args": {"mode": "locationEvents", "pattern": f"variable:{dt_name}", "pageSize": 5}}).get("entries") or []
+                    "args": {"mode": "locationEvents", "pattern": f"^variable:{re.escape(dt_name)}$", "pageSize": 5}}).get("entries") or []
                 if not changes:
                     time.sleep(1.0)
-            assert changes and all(dt_name in str(r) for r in changes), \
-                f"hub_get_logs(locationEvents, pattern='variable:{dt_name}') did not find the change: {changes}"
+            assert changes and all(r.get("name") == f"variable:{dt_name}" for r in changes), \
+                f"hub_get_logs(locationEvents, pattern='^variable:{dt_name}$') did not return exactly that variable's events: {changes}"
         finally:
             self._delete_variable_safe(dt_name)
 
@@ -12687,6 +12709,9 @@ def updated() {}
             assert linked.get("deviceId") is not None, f"no connector linked to {var_name}: {linked}"
             assert linked.get("connectorType") == "Variable" and linked.get("connectorLabel"), \
                 f"hub_get_variable did not report the connector type and label: {linked}"
+            listed_conn = self.client.call_tool("hub_read_variables", {"tool": "hub_list_variables", "args": {"type": "Number"}})
+            conn_row = next((v for v in listed_conn.get("hubVariables") or [] if v.get("name") == var_name), None)
+            assert conn_row and conn_row.get("connectorType") == "Variable", f"the list row lacks connectorType: {conn_row}"
 
             removed = self._soft_write(
                 lambda: self.client.call_tool("hub_manage_variables", {
@@ -12771,6 +12796,15 @@ def updated() {}
             assert shared.get("meshShared") is True, f"share did not report meshShared=true: {shared}"
             assert self._poll_mesh_shared(var_name, want=True), \
                 f"{var_name} never appeared in hub_get_hub_mesh sharedHubVariables after sharing"
+            # Both reads show the share from the Hub Variables page; a shared variable is not a linked mirror.
+            detailed = self.client.call_tool("hub_read_variables", {
+                "tool": "hub_get_variable", "args": {"name": var_name, "includeDependents": True}})
+            assert detailed.get("meshShared") is True and detailed.get("linked") is False, \
+                f"hub_get_variable(includeDependents) did not show the share: {detailed}"
+            listed = self.client.call_tool("hub_read_variables", {"tool": "hub_list_variables", "args": {"type": "String"}})
+            row = next((v for v in listed.get("hubVariables") or [] if v.get("name") == var_name), None)
+            assert row and row.get("meshShared") is True and row.get("linked") is False, \
+                f"the hub_list_variables row did not show the share: {row}"
 
             # UNSHARE and assert the teardown caution rides the result note.
             unshared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})

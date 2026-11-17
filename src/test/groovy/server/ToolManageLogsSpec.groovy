@@ -580,6 +580,8 @@ class ToolManageLogsSpec extends ToolSpecBase {
         '^3$'          || ['variable:guestCount']
         'HUB VARIABLE' || ['variable:guestCount']
         'variable:guestCount' || ['variable:guestCount']
+        '^variable:guestcount$' || ['variable:guestCount']
+        '^variable:guest$'      || []
     }
 
     def "hub_get_logs event since excludes the bookmarked instant and until bounds the window"() {
