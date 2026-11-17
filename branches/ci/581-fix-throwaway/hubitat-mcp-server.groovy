@@ -402,7 +402,7 @@ private Map _applyEasyCreateOnlyOffSettings(Map created, Map q) {
             if (upd.success != true) failure = upd.error ?: "the hub reported failure"
         } catch (Exception e) {
             mcpLogError("dashboard", "follow-up update after dashboard create failed", e)
-            failure = e.message ?: e.toString()
+            failure = e.message
         }
     }
     if (failure == null) return created + [offAfterCreate: off]
@@ -608,7 +608,7 @@ private Map _copyLegacyDashboard(String sourceId, Map src, String name) {
             def post = _legacyLayoutPost(newId, status.accessToken, new LinkedHashMap(src.layout as Map))
             if (!post.sent) saveError = "Could not mint a dashboard requestToken (the dashboard page render failed), so the layout was not saved."
             else if (post.saved == null) saveError = "the layout endpoint did not echo a saved layout (outcome unconfirmed)"
-        } catch (Exception e) { saveError = e.message ?: e.toString() }
+        } catch (Exception e) { saveError = e.message }
     } else {
         saveError = "the new dashboard's access token was unreadable"
     }
