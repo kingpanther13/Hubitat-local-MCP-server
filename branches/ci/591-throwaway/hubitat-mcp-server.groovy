@@ -14008,8 +14008,8 @@ def _getAllToolDefinitions_partDevices() {
                     staleHours: [type: "number", description: "Inactive this many hours"],
                     changedSince: [type: ["string", "integer"], description: "Active since: epoch ms or ISO-8601 with offset"],
                     stateFilter: [type: "object", description: "e.g. {\"switch\":\"on\"}"],
-                    attributeNames: [type: "array", items: [type: "string"], description: "Attributes to show in currentStates and context lines; format summary or context only"],
-                    fields: [type: "array", items: [type: "string"], description: "Record fields (names in the guide); format summary or detailed only"],
+                    attributeNames: [type: "array", items: [type: "string"], description: "Attributes shown; summary/context only"],
+                    fields: [type: "array", items: [type: "string"], description: "Record fields (names in guide); summary/detailed only"],
                     limit: [type: "integer", description: "Page size; omit for all"],
                     cursor: [type: "string", description: "\"\" first, then nextCursor"]
                 ]
