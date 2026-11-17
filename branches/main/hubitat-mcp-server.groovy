@@ -1128,7 +1128,6 @@ def toolGetRoom(args) {
         Map states = [:]
         for (st in rec.currentStates) states.put(st.key, _listStateValue(st.key, st.value, redact))
         if (states) devInfo.currentStates = states
-        if ("currentStates" in rec.missingFields) devInfo.metadataUnavailable = true
         devices << devInfo
     }
     return [
@@ -6604,7 +6603,7 @@ private Map _logsPatterns(Map args) {
     def compile = { String label, p ->
         if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
         if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
-        if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars)")
+        if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars); split an alternation's alternatives across patterns (patternMode 'any'); otherwise shorten it")
         try {
             return java.util.regex.Pattern.compile(p, java.util.regex.Pattern.CASE_INSENSITIVE)
         } catch (java.util.regex.PatternSyntaxException e) {
@@ -8550,8 +8549,8 @@ def _getAllToolDefinitions_partDiagnostics() {
                     level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp."],
                     deviceId: [type: "string", description: "Numeric device id to scope past logs, stats or jobs to."],
                     appId: [type: "string", description: "Numeric app id, the same way."],
-                    pattern: [type: "string", description: "Case-insensitive regex over the row's name, and its message, methodName, descriptionText or value where it has one."],
-                    patterns: [type: "array", items: [type: "string"], description: "More regexes, combined by patternMode."],
+                    pattern: [type: "string", maxLength: 100, description: "Case-insensitive regex over the row's name, and its message, methodName, descriptionText or value where it has one."],
+                    patterns: [type: "array", items: [type: "string", maxLength: 100], description: "More regexes, combined by patternMode."],
                     patternMode: [type: "string", enum: ["any", "all"], description: "Default any."],
                     since: [type: ["string", "integer"], description: "past and events: rows after this time, so a returned time never repeats. '30m', '2h', '7d', a time as rows show it (no zone = hub time), ISO-8601 with a zone, or epoch ms."],
                     until: [type: ["string", "integer"], description: "Rows at or before this time."],
@@ -10207,11 +10206,6 @@ private void _flattenDevicesPage(List nodes, String parentId, List out, Set only
             for (t in (data.tags instanceof List ? data.tags : (data.tags ? data.tags.toString().tokenize(",") : []))) {
                 if (t?.toString()?.trim()) tags << t.toString().trim()
             }
-            List missing = []
-            if (!(data.disabled instanceof Boolean)) missing << "disabled"
-            if (!data.containsKey("roomName")) missing << "room"
-            if (!data.containsKey("lastActivity")) missing << "lastActivity"
-            if (!(data.currentStates instanceof List)) missing << "currentStates"
             out << [id: id, label: label, name: data.secondaryName ? data.secondaryName.toString() : label,
                 driver: data.type, deviceTypeId: data.deviceTypeId, source: data.source,
                 deviceNetworkId: data.dni, zigbeeId: data.zigbeeId,
@@ -10219,23 +10213,29 @@ private void _flattenDevicesPage(List nodes, String parentId, List out, Set only
                     data.isNetwork == true ? "network" : data.isBluetooth == true ? "bluetooth" : data.isVirtual == true ? "virtual" : null,
                 linked: data.isLinked == true, disabled: data.disabled == true, lastActivity: data.lastActivity,
                 roomId: data.roomId, roomName: data.roomName ? data.roomName.toString() : null, parentDeviceId: parentId,
-                tags: tags, notes: data.notes ? data.notes.toString() : null, currentStates: states, missingFields: missing]
+                tags: tags, notes: data.notes ? data.notes.toString() : null, currentStates: states,
+                orphan: data.isOrphan == true, user: data.user == true, defaultCurrentState: data.defaultCurrentState ?: null,
+                meshEnabled: data.hubMesh == true, homekit: data.homekit == true, showOnHome: data.showOnHome == true,
+                dashboardTypes: data.dashboardTypes instanceof List ? data.dashboardTypes : [], defaultIcon: data.defaultIcon ?: null,
+                remoteDeviceUrl: data.remoteDeviceUrl ?: null]
         }
         if (node.children instanceof List) _flattenDevicesPage(node.children, id, out, onlyIds)
     }
 }
-private Map _capabilityFeedFor(List population) {
-    Map caps = _readCapabilityFeed()
+private Map _capabilityFeedFor(List population, Map buttonCounts = null) {
+    Map caps = _readCapabilityFeed(buttonCounts)
     return caps != null && caps.isEmpty() && population ? null : caps
 }
-private Map _readCapabilityFeed() {
+private Map _readCapabilityFeed(Map buttonCounts = null) {
     try {
         def txt = hubInternalGet("/hub2/vrb/devices")
         def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
         if (!(parsed instanceof List)) return null
         Map caps = [:]
         for (entry in parsed) {
-            if (entry instanceof Map && entry.id != null) caps.put(entry.id.toString(), _capabilityNames(entry.capabilities))
+            if (!(entry instanceof Map) || entry.id == null) continue
+            caps.put(entry.id.toString(), _capabilityNames(entry.capabilities))
+            if (buttonCounts != null && entry.buttonCount instanceof Number) buttonCounts.put(entry.id.toString(), ((Number) entry.buttonCount).intValue())
         }
         return caps
     } catch (Exception e) {
@@ -10255,7 +10255,9 @@ private Set _mcpAuthorizedIds(List children) {
 }
 private List _listDeviceFieldNames() {
     ["id", "label", "name", "driver", "room", "roomId", "disabled", "deviceNetworkId", "lastActivity", "protocol",
-     "parentDeviceId", "mcpManaged", "linked", "tags", "notes", "source", "currentStates", "capabilities", "attributes", "commands"]
+     "parentDeviceId", "mcpManaged", "linked", "tags", "notes", "source", "currentStates", "capabilities", "attributes", "commands",
+     "orphan", "user", "defaultCurrentState", "meshEnabled", "homekit", "showOnHome", "dashboardTypes", "defaultIcon",
+     "remoteDeviceUrl", "buttonCount"]
 }
 private Map _listDevicesOptions(Map args) {
     if (args.scope != null && !(args.scope in ["authorized", "all", "owned"])) {
@@ -10285,7 +10287,7 @@ private Map _listDevicesOptions(Map args) {
         args.stateFilter.each { k, v -> stateFilter.put(k.toString(), v.toString()) }
         List hidden = _redactsCredentials() ? stateFilter.keySet().findAll { _deviceConfigurationSecretKey(it) } as List : []
         if (hidden) {
-            throw new IllegalArgumentException("stateFilter cannot match ${hidden.join(', ')}: credential-named attributes are hidden while 'Hide passwords and credentials' is on")
+            throw new IllegalArgumentException("stateFilter cannot match ${hidden.join(', ')}: credential-named attributes are hidden while 'Hide passwords and credentials' is on.")
         }
     }
     for (argName in ["attributeNames", "fields"]) {
@@ -10299,20 +10301,38 @@ private Map _listDevicesOptions(Map args) {
         throw new IllegalArgumentException("limit must be a non-negative integer")
     }
     if (args.cursor != null) _parseListCursor(args.cursor, Integer.MAX_VALUE, "hub_list_devices")
+    List deviceIds = null
+    if (args.deviceIds != null) {
+        if (!(args.deviceIds instanceof List) || args.deviceIds.isEmpty()) throw new IllegalArgumentException("deviceIds must be a non-empty array of device ids")
+        deviceIds = []
+        args.deviceIds.eachWithIndex { v, i ->
+            def id = _canonicalDeviceIdArg(v)
+            if (id == null) throw new IllegalArgumentException("deviceIds[${i}] must be a non-empty string or integral number (got: ${_describeValueForError(v)})")
+            deviceIds << id
+        }
+        List dupes = deviceIds.countBy { it }.findAll { k, c -> c > 1 }.keySet().sort()
+        if (dupes) throw new IllegalArgumentException("deviceIds contains duplicate entries: ${dupes} -- each device may appear once")
+    }
+    if (args.waitFor != null) {
+        if (deviceIds == null || deviceIds.size() > 20) throw new IllegalArgumentException("waitFor requires deviceIds with 1 to 20 devices")
+        if (args.cursor) throw new IllegalArgumentException("waitFor cannot be combined with cursor")
+        if (args.scope == "all") throw new IllegalArgumentException("waitFor reads states, which scope='all' does not list; use scope 'authorized' or 'owned'")
+    }
     String scope = args.scope ?: "authorized"
     String format = args.format ?: "summary"
     List fields = args.get("fields") ?: null
     if (scope == "all") {
-        List identity = ["id", "label", "name", "driver", "room", "roomId", "protocol", "disabled", "parentDeviceId", "source", "linked", "capabilities"]
+        List identity = ["id", "label", "name", "driver", "room", "roomId", "protocol", "disabled", "parentDeviceId", "source", "linked", "capabilities",
+                         "orphan", "user", "remoteDeviceUrl"]
         if (!(format in ["summary", "ids"])) throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only")
-        if (stateFilter || args.staleHours != null || since != null || args.attributeNames != null || fields?.any { !(it in identity) }) {
+        if (stateFilter || args.staleHours != null || since != null || args.attributeNames || fields?.any { !(it in identity) }) {
             throw new IllegalArgumentException("scope='all' lists identity only (fields: ${identity.join(', ')}); states need scope='authorized'")
         }
     }
-    if (args.attributeNames != null && !(format in ["summary", "context"])) {
+    if (args.attributeNames && !(format in ["summary", "context"])) {
         throw new IllegalArgumentException("attributeNames applies to format 'summary' or 'context' only")
     }
-    if (args.get("fields") != null && !(format in ["summary", "detailed"])) {
+    if (fields && !(format in ["summary", "detailed"])) {
         throw new IllegalArgumentException("fields applies to format 'summary' or 'detailed' only")
     }
     Set fieldSet
@@ -10328,20 +10348,22 @@ private Map _listDevicesOptions(Map args) {
         roomFilter: args.roomFilter ?: null, disabled: args.disabled, staleHours: args.staleHours,
         stateFilter: stateFilter ?: null, sinceDate: sinceDate,
         attributeNames: args.attributeNames ?: null, limit: args.limit != null ? (Math.min(args.limit as long, (long) Integer.MAX_VALUE) as int) : 0,
-        cursor: args.cursor?.toString(), redact: _redactsCredentials()]
+        cursor: args.cursor?.toString(), redact: _redactsCredentials(), deviceIds: deviceIds,
+        waitFor: args.waitFor != null ? _waitForSpec(args.waitFor, true, 60000, 200) : null]
     if (sinceDate != null) {
         opts.changedSince = (since instanceof Number || since.toString().trim().isLong()) ?
             sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ") : since.toString().trim()
     }
     opts.filtered = [opts.labelFilter, opts.capabilityFilter, opts.roomFilter, opts.disabled, opts.staleHours,
-                     opts.stateFilter, sinceDate].any { it != null }
+                     opts.stateFilter, sinceDate, deviceIds].any { it != null }
     opts.wantFull = fieldSet.contains("attributes") || fieldSet.contains("commands")
-    opts.wantCaps = opts.capabilityFilter != null || format == "context" || fieldSet.contains("capabilities")
+    opts.wantCaps = opts.capabilityFilter != null || format == "context" || fieldSet.contains("capabilities") || fieldSet.contains("buttonCount")
     return opts
 }
 def toolListDevices(Map args) {
     Map opts = _listDevicesOptions(args ?: [:])
     Long reqT0 = args?.__reqT0 instanceof Number ? args.__reqT0 as Long : null
+    _refuseUnsettledWait(opts.waitFor, reqT0)
     String scope = opts.scope
     String format = opts.format
     List children = getChildDevices() ?: []
@@ -10350,11 +10372,14 @@ def toolListDevices(Map args) {
     Set scopeIds = scope == "owned" ? childIds : (scope == "authorized" ? authorized : null)
     boolean paged = opts.cursor != null || opts.limit > 0 || format == "context"
     int pageSize = opts.limit > 0 ? opts.limit : 50
+    List deviceIds = opts.deviceIds
     if (scopeIds != null && scopeIds.isEmpty()) {
+        if (opts.waitFor) throw new IllegalArgumentException("deviceIds not in scope '${scope}': ${deviceIds}. Nothing was waited for.")
         Map empty = _emptyDeviceList(format, scope == "owned" ?
             "No MCP-managed virtual devices found. Use hub_manage_virtual_device(action=\"create\") to create one." :
             "No devices selected for MCP access and no MCP-managed virtual devices")
         if (paged) empty.putAll([offset: 0, limit: pageSize, hasMore: false])
+        if (deviceIds) empty.deviceIdsNotFound = deviceIds
         return empty
     }
     List population
@@ -10365,7 +10390,20 @@ def toolListDevices(Map args) {
                 note: "Retry; if it persists check the hub's Devices page."]
     }
     if (scopeIds != null) population = population.findAll { scopeIds.contains(it.id) }
-    Map caps = opts.wantCaps ? _capabilityFeedFor(population) : null
+    Set idSet = deviceIds as Set
+    List notFound = deviceIds ? deviceIds - population.collect { it.id } : []
+    if (notFound && opts.waitFor) {
+        throw new IllegalArgumentException("deviceIds not in scope '${scope}': ${notFound}. Nothing was waited for; check the ids with hub_list_devices.")
+    }
+    Map wait = null
+    if (opts.waitFor) {
+        Map first = [:]
+        for (rec in population) if (idSet.contains(rec.id)) first.put(rec.id, rec)
+        wait = _waitForRun(opts.waitFor, deviceIds, true, first, reqT0)
+        population = population.collect { wait.last.get(it.id) ?: it }
+    }
+    Map buttons = opts.fieldSet.contains("buttonCount") ? [:] : null
+    Map caps = opts.wantCaps ? _capabilityFeedFor(population, buttons) : null
     String lf = opts.labelFilter?.toLowerCase()
     String cf = opts.capabilityFilter
     String rf = opts.roomFilter
@@ -10376,27 +10414,18 @@ def toolListDevices(Map args) {
     List matched = []
     List unanswered = []
     for (candidate in population) {
-        List missing = candidate.missingFields
+        if (idSet != null && !idSet.contains(candidate.id)) continue
         if (lf != null && !candidate.label.toLowerCase().contains(lf)) continue
         if (cf != null && caps != null) {
             if (!caps.containsKey(candidate.id)) { unanswered << candidate.id; continue }
             if (!caps.get(candidate.id).any { it.equalsIgnoreCase(cf) }) continue
         } else if (cf != null) continue
-        if (opts.disabled != null) {
-            if ("disabled" in missing) { unanswered << candidate.id; continue }
-            if (candidate.disabled != opts.disabled) continue
-        }
-        if (rf != null) {
-            if ("room" in missing) { unanswered << candidate.id; continue }
-            if (!rf.equalsIgnoreCase(candidate.roomName ?: "")) continue
-        }
-        if (stateFilter != null) {
-            if ("currentStates" in missing) { unanswered << candidate.id; continue }
-            if (stateFilter.any { k, v -> candidate.currentStates.get(k) != v }) continue
-        }
+        if (opts.disabled != null && candidate.disabled != opts.disabled) continue
+        if (rf != null && !rf.equalsIgnoreCase(candidate.roomName ?: "")) continue
+        if (stateFilter != null && stateFilter.any { k, v -> candidate.currentStates.get(k) != v }) continue
         if (staleMs != null || sinceMs != null) {
             Date la = candidate.lastActivity ? _parseSinceArg(candidate.lastActivity) : null
-            if ("lastActivity" in missing || (candidate.lastActivity != null && la == null)) { unanswered << candidate.id; continue }
+            if (candidate.lastActivity != null && la == null) { unanswered << candidate.id; continue }
             if (staleMs != null && la != null && nowMs - la.time < staleMs) continue
             if (sinceMs != null && (la == null || la.time < sinceMs)) continue
         }
@@ -10405,6 +10434,8 @@ def toolListDevices(Map args) {
     int total = matched.size()
     Map common = [:]
     if (opts.filtered) common.unfilteredTotal = population.size()
+    if (notFound) common.deviceIdsNotFound = notFound
+    if (wait) common.waitFor = _waitForBlock(opts.waitFor, wait, true)
     if (unanswered) {
         common.metadataUnavailableIds = unanswered
         common.partial = true
@@ -10418,7 +10449,7 @@ def toolListDevices(Map args) {
     if (rf != null && total == 0) common.roomFilterMatchedKnownRoom = population.any { rf.equalsIgnoreCase(it.roomName ?: "") }
     if (opts.wantCaps && caps == null) {
         common.capabilitiesUnavailable = true
-        common.note = "The hub's capability feed (/hub2/vrb/devices) could not be read or listed no device, so capabilities are omitted and capabilityFilter matches nothing. Retry."
+        common.note = "The hub's capability feed (/hub2/vrb/devices) could not be read or listed no device, so capabilities and buttonCount are omitted and capabilityFilter matches nothing. Retry."
     }
     int start = opts.cursor != null ? Math.min(_parseListCursor(opts.cursor, Integer.MAX_VALUE, "hub_list_devices"), total) : 0
     int end = paged ? (int) Math.min((long) start + pageSize, (long) total) : total
@@ -10455,7 +10486,7 @@ def toolListDevices(Map args) {
                 }
                 fj = _fetchDeviceFullJson(rec.id)
             }
-            Map row = _listDeviceRecord(rec, opts, attrNames, caps, childIds, fj)
+            Map row = _listDeviceRecord(rec, opts, attrNames, caps, buttons, childIds, fj)
             if (scope == "all") row.mcpAuthorized = authorized == null || authorized.contains(rec.id)
             devices << row
         }
@@ -10480,7 +10511,7 @@ def toolListDevices(Map args) {
     }
     return result
 }
-private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set childIds, Map fj) {
+private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Map buttons, Set childIds, Map fj) {
     Set f = opts.fieldSet
     Map row = [id: rec.id]
     if (f.contains("label")) row.label = rec.label
@@ -10498,6 +10529,9 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
     if (f.contains("tags") && rec.tags) row.tags = rec.tags
     if (f.contains("notes")) row.notes = rec.notes
     if (f.contains("source")) row.source = rec.source
+    for (key in ["orphan", "user", "defaultCurrentState", "meshEnabled", "homekit", "showOnHome", "dashboardTypes", "defaultIcon", "remoteDeviceUrl"]) {
+        if (f.contains(key)) row.put(key, rec.get(key))
+    }
     if (f.contains("currentStates")) {
         Map states = [:]
         for (an in attrNames) {
@@ -10506,11 +10540,10 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
         }
         row.currentStates = states
     }
-    boolean capsMissing = f.contains("capabilities") && caps != null && !caps.containsKey(rec.id)
+    boolean capsMissing = (f.contains("capabilities") || f.contains("buttonCount")) && caps != null && !caps.containsKey(rec.id)
     if (f.contains("capabilities") && caps != null && !capsMissing) row.capabilities = caps.get(rec.id)
-    Map shownBy = [disabled: f.contains("disabled"), room: f.contains("room") || f.contains("roomId"),
-                   lastActivity: f.contains("lastActivity"), currentStates: f.contains("currentStates")]
-    if (capsMissing || rec.missingFields.any { shownBy.get(it) }) row.metadataUnavailable = true
+    if (f.contains("buttonCount") && buttons?.get(rec.id) != null) row.buttonCount = buttons.get(rec.id)
+    if (capsMissing) row.metadataUnavailable = true
     if (!opts.wantFull) return row
     Map detail = null
     try {
@@ -10593,7 +10626,7 @@ private String _contextDeviceLine(Map rec, Map caps, List attrNames, boolean red
         def v = rec.currentStates.get(an)
         if (v != null) parts << "${an}=${_listStateValue(an, v, redact)}".toString()
     }
-    String room = "room" in rec.missingFields ? "room unknown" : (rec.roomName ?: "No room")
+    String room = rec.roomName ?: "No room"
     String line = "- ${rec.label} (${rec.id}, ${room})"
     List c = caps?.get(rec.id)
     if (c) line += " - ${c.join(', ')}"
@@ -10662,7 +10695,7 @@ def _buildContextJson() {
     def contextAttrs = _contextAttributeNames()
     def roomIndex = [:]
     for (d in allDevices) {
-        String r = "room" in d.missingFields ? "Room unknown" : (d.roomName ?: "No room")
+        String r = d.roomName ?: "No room"
         if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
         roomIndex.get(r) << d.id
     }
@@ -10691,7 +10724,7 @@ def _buildContextJson() {
         }
         Map rec = [id: d.id, label: d.label, room: d.roomName, capabilities: caps?.get(d.id) ?: [], attributes: attrs]
         if (caps == null) rec.capabilitiesUnavailable = true
-        if (d.missingFields.any { it in ["room", "currentStates"] } || (caps != null && !caps.containsKey(d.id))) rec.metadataUnavailable = true
+        if (caps != null && !caps.containsKey(d.id)) rec.metadataUnavailable = true
         used += _escapedLen(groovy.json.JsonOutput.toJson(rec))
         if (used > budget) {
             truncated = true
@@ -11170,9 +11203,6 @@ private _readBypassAttrValueFrom(Map fullJson, attribute) {
     def entry = st.get(attribute)
     return _nativeDeviceStateValue(entry)
 }
-private _readBypassAttrValue(deviceId, attribute) {
-    return _readBypassAttrValueFrom(_fetchDeviceFullJson(deviceId), attribute)
-}
 private _devicePublicAttributeValue(name, value) {
     return value != null && _redactsCredentials() && _deviceConfigurationSecretKey(name) ? _appConfigRedactedMarker() : value
 }
@@ -11472,11 +11502,21 @@ private Map _deviceReadPage(Map result, String selection) {
     }
     return _deviceReadFragment(snapshot, token, 0)
 }
-def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cursor = null) {
+def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cursor = null, waitFor = null, reqT0 = null) {
+    def canonicalId = _canonicalDeviceIdArg(deviceId)
+    if (canonicalId == null) {
+        throw new IllegalArgumentException("deviceId must be a non-empty string or integral number (got: ${_describeValueForError(deviceId)})")
+    }
+    deviceId = canonicalId
     String selectedMode = mode == null ? 'summary' : mode.toString()
     if (!(selectedMode in ['summary', 'configuration', 'details'])) {
         throw new IllegalArgumentException("mode must be summary, configuration, or details.")
     }
+    if (waitFor != null && (selectedMode != 'summary' || cursor != null)) {
+        throw new IllegalArgumentException("waitFor applies to summary mode only, without cursor.")
+    }
+    Map waitSpec = waitFor != null ? _waitForSpec(waitFor, false, 60000, 200) : null
+    _refuseUnsettledWait(waitSpec, reqT0)
     if (sections != null && (selectedMode != 'details' || !(sections instanceof List) || sections.isEmpty() ||
         sections.any { !(it instanceof String) || !_deviceDetailSections().contains(it) })) {
         throw new IllegalArgumentException("sections is a non-empty array for mode=details; use ${_deviceDetailSections().join(', ')}.")
@@ -11496,11 +11536,15 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
                 note: 'Check the native Devices page and retry.']
     }
     if (selectedMode == 'summary') {
+        Map wait = waitSpec ? _waitForRun(waitSpec, [deviceId.toString()], false, full, reqT0) : null
+        Map result
         try {
-            return _getDeviceFromFullJson(deviceId, full)
+            result = _getDeviceFromFullJson(deviceId, wait?.last ?: full)
         } catch (IllegalStateException e) {
-            return [success: false, isError: true, error: e.message, note: 'Check the native Devices page and retry.']
+            result = [success: false, isError: true, error: e.message, note: 'Check the native Devices page and retry.']
         }
+        if (wait) result.waitFor = _waitForBlock(waitSpec, wait, false)
+        return result
     }
     def identity = [name: full?.device?.name, label: _bypassDeviceLabel(full, deviceId)]
     return _deviceReadPage(_deviceExpandedResult(deviceId, identity, full, selectedMode, sections, fields), selection)
@@ -11515,7 +11559,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
             throw new IllegalArgumentException("commands is mutually exclusive with ${conflicting.join(' and ')} -- pass EITHER a single deviceId+command OR a commands array, not both (per-entry parameters go inside each commands entry)")
         }
         if (waitFor != null) {
-            throw new IllegalArgumentException("waitFor is not supported with commands: it blocks a hub thread per device. Send the batch, then confirm the whole set in one call with hub_get_device_attribute using deviceIds + mode")
+            throw new IllegalArgumentException("waitFor is not supported with commands: it blocks a hub thread per device. Send the batch, then confirm the whole set in one call with hub_list_devices using deviceIds + waitFor")
         }
         return _sendCommandBatch(commands, reqT0)
     }
@@ -11538,9 +11582,8 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     if (!supportedCommands?.contains(command)) {
         throw new IllegalArgumentException("Device ${deviceLabel} does not support command: ${command}. Available: ${supportedCommands}")
     }
-    def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) : null
-    String stableRefusal = (pollArgs != null) ? _pollStableRefusal(pollArgs, reqT0) : null
-    if (stableRefusal) throw new IllegalArgumentException("waitFor.${stableRefusal}")
+    Map waitSpec = (waitFor != null) ? _waitForSpec(waitFor, false, 30000, 250) : null
+    _refuseUnsettledWait(waitSpec, reqT0)
     if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
         def declaration = fullJson.commands?.find { it?.name == command }
@@ -11554,36 +11597,16 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
         command: command,
         parameters: parameters
     ]
-    if (pollArgs != null) {
-        def waitForBlock = [
-            attribute: pollArgs.attribute,
-            expected : (pollArgs.containsKey("expectedValues") ? pollArgs.expectedValues : pollArgs.expectedValue)
-        ]
+    if (waitSpec != null) {
         try {
-            def poll = toolPollUntilAttribute(reqT0 instanceof Number ? pollArgs + [__reqT0: reqT0] : pollArgs)
-            waitForBlock.converged  = poll.success == true
-            waitForBlock.finalValue = poll.finalValue
-            waitForBlock.elapsedMs  = poll.elapsedMs
-            if (poll.timedOut == true)      waitForBlock.timedOut = true
-            if (poll.interrupted == true)   waitForBlock.interrupted = true
-            if (poll.readError == true)     waitForBlock.readError = true
-            if (poll.neverReported == true) waitForBlock.neverReported = true
-            if (poll.nonNumericAttribute == true) waitForBlock.nonNumericAttribute = true
-            if (poll.note != null) waitForBlock.note = poll.note
-            if (poll.containsKey("transitioning")) waitForBlock.transitioning = poll.transitioning
-            if (poll.budgetLimited == true) {
-                waitForBlock.budgetLimited = true
-                waitForBlock.budgetNote = poll.budgetNote
-            }
+            result.waitFor = _waitForBlock(waitSpec, _waitForRun(waitSpec, [deviceId.toString()], false, null, reqT0), false)
         } catch (Throwable e) {
             def cls = e.class.simpleName
             mcpLog("error", "send-command", "waitFor poll failed for ${deviceLabel}: ${cls}: ${e.message ?: '(no message)'}")
-            waitForBlock.converged  = false
-            waitForBlock.finalValue = null
-            waitForBlock.error      = "waitFor poll failed: ${cls}: ${e.message ?: '(no message)'}".toString()
+            result.waitFor = [attribute: waitSpec.attribute, expected: waitSpec.expected, converged: false, finalValue: null,
+                              error: "waitFor poll failed: ${cls}: ${e.message ?: '(no message)'}".toString()]
             result.partial = true
         }
-        result.waitFor = waitForBlock
     }
     if (!includeState) return result
     def stateErr = []
@@ -11677,7 +11700,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
         result.failedDeviceIds = results.findAll { it.success == false }.collect { it.deviceId }
         if (failed < results.size()) result.partial = true
         result.error = "${failed} of ${results.size()} device command(s) failed; ${sent} were sent. See results[] for the per-device cause.".toString()
-        result.note = "The entries that succeeded ALREADY actuated -- do NOT re-send the whole batch. Before re-sending a failed entry, read its error/note: an outcome the hub did not CONFIRM may still have actuated, so verify with hub_get_device_attribute first. See hub_get_tool_guide(section='device_authorization') for what makes an entry fail."
+        result.note = "The entries that succeeded ALREADY actuated -- do NOT re-send the whole batch. Before re-sending a failed entry, read its error/note: an outcome the hub did not CONFIRM may still have actuated, so verify with hub_get_device first. See hub_get_tool_guide(section='device_authorization') for what makes an entry fail."
     }
     if (remaining) {
         result.success = false
@@ -11689,107 +11712,84 @@ private _sendCommandBatch(commands, reqT0 = null) {
     }
     return result
 }
-private Map _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) {
+private Map _waitForSpec(waitFor, boolean multi, int maxTimeoutMs, int defaultIntervalMs) {
     if (!(waitFor instanceof Map)) {
-        throw new IllegalArgumentException("waitFor must be an object with at least attribute and expectedValue/expectedValues")
+        throw new IllegalArgumentException("waitFor must be an object with attribute and expectedValue or expectedValues")
     }
-    def validKeys = ["attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs", "comparator", "stableForMs"] as Set
-    def unknownKeys = (waitFor.keySet() - validKeys).sort()
+    List validKeys = ["attribute", "comparator", "expectedValue", "expectedValues", "pollIntervalMs", "stableForMs", "timeoutMs"] + (multi ? ["mode"] : [])
+    List unknownKeys = (waitFor.keySet().collect { it.toString() } - validKeys).sort()
     if (unknownKeys) {
-        def label = unknownKeys.size() == 1 ? 'an unknown key' : 'unknown keys'
-        throw new IllegalArgumentException("waitFor has ${label}: ${unknownKeys.join(', ')}. Valid keys: ${validKeys.sort().join(', ')}")
+        throw new IllegalArgumentException("waitFor has ${unknownKeys.size() == 1 ? 'an unknown key' : 'unknown keys'}: ${unknownKeys.join(', ')}. Valid keys: ${validKeys.join(', ')}")
     }
     if (!(waitFor.attribute instanceof String) || !waitFor.attribute.trim()) {
         throw new IllegalArgumentException("waitFor.attribute is required and must be a non-empty string")
     }
     _refuseCredentialPoll(waitFor.attribute)
-    def hasExpectedValue  = waitFor.containsKey("expectedValue")
-    def hasExpectedValues = waitFor.containsKey("expectedValues")
-    if (hasExpectedValue && hasExpectedValues) {
+    boolean hasValue = waitFor.containsKey("expectedValue")
+    boolean hasValues = waitFor.containsKey("expectedValues")
+    if (hasValue && hasValues) {
         throw new IllegalArgumentException("waitFor: provide exactly one of expectedValue or expectedValues, not both")
     }
-    if (!hasExpectedValue && !hasExpectedValues) {
+    if (!hasValue && !hasValues) {
         throw new IllegalArgumentException("waitFor: exactly one of expectedValue or expectedValues is required")
     }
-    if (hasExpectedValue) {
-        if (!(waitFor.expectedValue instanceof String) || !waitFor.expectedValue.trim()) {
-            throw new IllegalArgumentException("waitFor.expectedValue must be a non-empty string (got: ${_describeValueForError(waitFor.expectedValue)})")
-        }
+    if (hasValue && (!(waitFor.expectedValue instanceof String) || !waitFor.expectedValue.trim())) {
+        throw new IllegalArgumentException("waitFor.expectedValue must be a non-empty string (got: ${_describeValueForError(waitFor.expectedValue)})")
     }
-    if (hasExpectedValues) {
+    if (hasValues) {
         if (!(waitFor.expectedValues instanceof List) || waitFor.expectedValues.isEmpty()) {
             throw new IllegalArgumentException("waitFor.expectedValues must be a non-empty list of strings")
         }
         waitFor.expectedValues.eachWithIndex { v, i ->
-            if (!(v instanceof String)) {
-                throw new IllegalArgumentException("waitFor.expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
-            }
+            if (!(v instanceof String)) throw new IllegalArgumentException("waitFor.expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
         }
     }
-    if (waitFor.containsKey("timeoutMs")) {
-        if (!(waitFor.timeoutMs instanceof Number) || waitFor.timeoutMs < 100 || waitFor.timeoutMs > 30000) {
-            throw new IllegalArgumentException("waitFor.timeoutMs must be a number between 100 and 30000 (got: ${waitFor.timeoutMs})")
+    Map bounds = [timeoutMs: [100, maxTimeoutMs, 5000], pollIntervalMs: [50, 5000, defaultIntervalMs], stableForMs: [0, null, 0]]
+    Map ms = [:]
+    bounds.each { key, b ->
+        def v = waitFor.containsKey(key) ? waitFor.get(key) : b[2]
+        if (!(v instanceof Number) || v < b[0] || (b[1] != null && v > b[1])) {
+            String range = b[1] != null ? "between ${b[0]} and ${b[1]}" : ">= 0"
+            throw new IllegalArgumentException("waitFor.${key} must be a number ${range} (got: ${_describeValueForError(v)})")
         }
+        ms.put(key, v as Integer)
     }
-    if (waitFor.containsKey("pollIntervalMs")) {
-        if (!(waitFor.pollIntervalMs instanceof Number) || waitFor.pollIntervalMs < 50 || waitFor.pollIntervalMs > 5000) {
-            throw new IllegalArgumentException("waitFor.pollIntervalMs must be a number between 50 and 5000 (got: ${waitFor.pollIntervalMs})")
-        }
-    }
-    def effectiveTimeoutMs = waitFor.containsKey("timeoutMs") ? (waitFor.timeoutMs as Integer) : 5000
-    def validComparators = ["eq", "ne", "gt", "gte", "lt", "lte", "between"]
-    if (waitFor.containsKey("comparator") && waitFor.comparator == null) {
-        throw new IllegalArgumentException("waitFor.comparator must not be null (omit the arg to use the default \"eq\")")
+    if (ms.stableForMs >= ms.timeoutMs) {
+        throw new IllegalArgumentException("waitFor.stableForMs (${ms.stableForMs}) must be less than timeoutMs (${ms.timeoutMs}) -- the condition could never hold long enough to converge")
     }
     def comparator = waitFor.containsKey("comparator") ? waitFor.comparator : "eq"
-    if (!(comparator instanceof String) || !validComparators.contains(comparator)) {
-        throw new IllegalArgumentException("waitFor.comparator must be one of ${validComparators} (got: ${_describeValueForError(waitFor.comparator)})")
+    if (!(comparator in ["eq", "ne", "gt", "gte", "lt", "lte", "between"])) {
+        throw new IllegalArgumentException("waitFor.comparator must be one of eq, ne, gt, gte, lt, lte, between (got: ${_describeValueForError(comparator)})")
     }
-    if (["gt", "gte", "lt", "lte"].contains(comparator)) {
-        if (hasExpectedValues) {
-            throw new IllegalArgumentException("waitFor.comparator '${comparator}' takes a single numeric threshold via expectedValue, not expectedValues")
-        }
-        if (_parseBigDecimalOrNull(waitFor.expectedValue) == null) {
+    Map spec = [attribute: waitFor.attribute, comparator: comparator, expected: hasValues ? waitFor.expectedValues : waitFor.expectedValue,
+                matchSet: (hasValues ? waitFor.expectedValues : [waitFor.expectedValue]) as Set,
+                timeoutMs: ms.timeoutMs, pollIntervalMs: Math.min(ms.pollIntervalMs, ms.timeoutMs), stableForMs: ms.stableForMs]
+    if (comparator in ["gt", "gte", "lt", "lte"]) {
+        if (hasValues) throw new IllegalArgumentException("waitFor.comparator '${comparator}' takes a single numeric threshold via expectedValue, not expectedValues")
+        spec.numericThreshold = _parseBigDecimalOrNull(waitFor.expectedValue)
+        if (spec.numericThreshold == null) {
             throw new IllegalArgumentException("waitFor.comparator '${comparator}' requires expectedValue to be a numeric-parseable string (got: ${_describeValueForError(waitFor.expectedValue)})")
         }
     } else if (comparator == "between") {
-        if (hasExpectedValue) {
-            throw new IllegalArgumentException("waitFor.comparator 'between' takes two numeric bounds via expectedValues, not expectedValue")
-        }
+        if (hasValue) throw new IllegalArgumentException("waitFor.comparator 'between' takes two numeric bounds via expectedValues, not expectedValue")
         if (waitFor.expectedValues.size() != 2) {
             throw new IllegalArgumentException("waitFor.comparator 'between' requires expectedValues to have exactly 2 numeric bounds [low, high] (got ${waitFor.expectedValues.size()})")
         }
-        def lo = _parseBigDecimalOrNull(waitFor.expectedValues[0])
-        def hi = _parseBigDecimalOrNull(waitFor.expectedValues[1])
-        if (lo == null || hi == null) {
+        spec.betweenLow = _parseBigDecimalOrNull(waitFor.expectedValues[0])
+        spec.betweenHigh = _parseBigDecimalOrNull(waitFor.expectedValues[1])
+        if (spec.betweenLow == null || spec.betweenHigh == null) {
             throw new IllegalArgumentException("waitFor.comparator 'between' requires both expectedValues bounds to be numeric-parseable strings (got: ${waitFor.expectedValues})")
         }
-        if (lo > hi) {
+        if (spec.betweenLow > spec.betweenHigh) {
             throw new IllegalArgumentException("waitFor.comparator 'between' requires low <= high (got low=${waitFor.expectedValues[0]}, high=${waitFor.expectedValues[1]})")
         }
     }
-    if (waitFor.containsKey("stableForMs") && waitFor.stableForMs == null) {
-        throw new IllegalArgumentException("waitFor.stableForMs must not be null (omit the arg to use default 0)")
+    if (multi) {
+        def mode = waitFor.containsKey("mode") ? waitFor.mode : "all"
+        if (!(mode in ["any", "all"])) throw new IllegalArgumentException("waitFor.mode must be any or all (got: ${_describeValueForError(mode)})")
+        spec.mode = mode
     }
-    if (waitFor.containsKey("stableForMs")) {
-        if (!(waitFor.stableForMs instanceof Number)) {
-            throw new IllegalArgumentException("waitFor.stableForMs must be an integer (got: ${_describeValueForError(waitFor.stableForMs)})")
-        }
-        if (waitFor.stableForMs < 0) {
-            throw new IllegalArgumentException("waitFor.stableForMs must be >= 0 (got: ${waitFor.stableForMs})")
-        }
-        if ((waitFor.stableForMs as Integer) >= effectiveTimeoutMs) {
-            throw new IllegalArgumentException("waitFor.stableForMs (${waitFor.stableForMs}) must be less than timeoutMs (${effectiveTimeoutMs}) -- the condition could never hold long enough to converge")
-        }
-    }
-    def pollArgs = [deviceId: deviceId.toString(), attribute: waitFor.attribute]
-    if (hasExpectedValue)  pollArgs.expectedValue  = waitFor.expectedValue
-    if (hasExpectedValues) pollArgs.expectedValues = waitFor.expectedValues
-    if (waitFor.containsKey("comparator"))  pollArgs.comparator  = waitFor.comparator
-    if (waitFor.containsKey("stableForMs")) pollArgs.stableForMs = waitFor.stableForMs
-    pollArgs.timeoutMs      = waitFor.containsKey("timeoutMs")      ? waitFor.timeoutMs      : 5000
-    pollArgs.pollIntervalMs = waitFor.containsKey("pollIntervalMs") ? waitFor.pollIntervalMs : 250
-    return pollArgs
+    return spec
 }
 private BigDecimal _parseBigDecimalOrNull(v) {
     if (v instanceof Number) return v as BigDecimal
@@ -11957,25 +11957,6 @@ def toolGetDeviceEvents(deviceId, limit) {
     def events = rows.take(limit as Integer).collect { _mapBypassEventRow(it) }
     return [device: label, events: events, count: events.size()]
 }
-def toolGetAttribute(deviceId, attribute) {
-    deviceId = _canonicalDeviceIdArg(deviceId)
-    if (deviceId == null) throw new IllegalArgumentException('deviceId must be a non-empty string or integral number')
-    if (!(attribute instanceof String) || !attribute) throw new IllegalArgumentException('attribute is required and must be a non-empty string')
-    _requireDeviceToolAccess(deviceId)
-    def full = _fetchDeviceFullJson(deviceId)
-    if (!(full?.device?.currentStates instanceof Map)) {
-        return [success: false, isError: true, deviceId: deviceId, attribute: attribute,
-                error: 'Native device current states could not be read.', note: 'Check the native Devices page and retry.']
-    }
-    def result = [device: _bypassDeviceLabel(full, deviceId), attribute: attribute,
-                  value: _devicePublicAttributeValue(attribute, _readBypassAttrValueFrom(full, attribute))]
-    if (!full.device.currentStates.containsKey(attribute)) {
-        result.neverReported = true
-        result.reportedAttributes = _fullJsonAttributeNames(full)
-        result.note = 'Reported names can help identify a typo; an omitted name may also be a driver attribute that has never reported.'
-    }
-    return result
-}
 def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow, betweenHigh) {
     if (comparator == "eq" || comparator == "ne") {
         def inSet = matchSet.contains(value?.toString()) ||
@@ -11997,37 +11978,14 @@ def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow
     else throw new IllegalArgumentException("Unsupported comparator: ${comparator}")
     return [matched, true]
 }
-def toolPollUntilAttribute(args) {
-    if (args instanceof Map) _refuseCredentialPoll(args.attribute)
-    if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _pollUntilAttributeCore(args)
-    Map pollArgs = [:] + (args as Map)
-    def t0 = pollArgs.remove("__reqT0")
-    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
-    def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
-    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || asked < 100 || asked > 60000) return _pollUntilAttributeCore(pollArgs)
-    long deadline = (t0 as long) + budget
-    long left = deadline - now()
-    String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
-    String refusal = _pollStableRefusal(pollArgs, t0)
-    if (refusal) throw new IllegalArgumentException(refusal)
-    if (left < 100L) {
-        return [success: false, timedOut: true, budgetLimited: true, requestedTimeoutMs: asked, timeoutMs: 0,
-                budgetNote: "Not polled: the request had ${Math.max(0L, left)} ms left (${why}). Poll again in a new call.".toString()]
-    }
-    if (left < (asked as long)) pollArgs.timeoutMs = left as Integer
-    def result = _pollUntilAttributeCore(pollArgs, deadline)
-    if (result instanceof Map && (result.remove("budgetStopped") == true || left < (asked as long)) && result.success != true) {
-        result.requestedTimeoutMs = asked
-        result.timeoutMs = Math.min(left, asked as long)
-        result.budgetLimited = true
-        result.budgetNote = "The poll stopped after ${result.elapsedMs ?: 0} ms instead of waiting ${asked} ms: ${why}. Poll again to keep waiting.".toString()
-    }
-    return result
-}
 private void _refuseCredentialPoll(attribute) {
     if (attribute != null && _redactsCredentials() && _deviceConfigurationSecretKey(attribute)) {
-        throw new IllegalArgumentException("Cannot wait for a value of ${attribute}: credential-named attributes are hidden while 'Hide passwords and credentials' is on")
+        throw new IllegalArgumentException("Cannot wait for a value of ${attribute}: credential-named attributes are hidden while 'Hide passwords and credentials' is on.")
     }
+}
+private void _refuseUnsettledWait(Map spec, reqT0) {
+    String refusal = spec != null ? _pollStableRefusal(spec, reqT0) : null
+    if (refusal) throw new IllegalArgumentException("waitFor.${refusal}")
 }
 private String _pollStableRefusal(Map pollArgs, t0) {
     long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
@@ -12039,293 +11997,169 @@ private String _pollStableRefusal(Map pollArgs, t0) {
     String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
     return "stableForMs ${stable} cannot settle in the ${Math.max(0L, left)} ms this request has left (${why}); use a shorter stableForMs.".toString()
 }
-def _pollUntilAttributeCore(args, Long deadlineMs = null) {
-    def validArgKeys = ["deviceId", "deviceIds", "mode", "attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs", "comparator", "stableForMs"] as Set
-    if (args instanceof Map) {
-        def unknownKeys = (args.keySet() - validArgKeys).sort()
-        if (unknownKeys) {
-            throw new IllegalArgumentException("Unknown arg(s): ${unknownKeys}. Valid args: ${validArgKeys.sort()}. Common gotcha: timeout is 'timeoutMs' in milliseconds, not 'timeoutSeconds'.")
-        }
+private Map _waitForRun(Map spec, List ids, boolean page, first, reqT0) {
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    if (!(reqT0 instanceof Number) || budget <= 0L) return _waitForCore(spec, ids, page, first, null)
+    String refusal = _pollStableRefusal(spec, reqT0)
+    if (refusal) throw new IllegalArgumentException("waitFor.${refusal}")
+    long deadline = (reqT0 as long) + budget
+    long left = deadline - now()
+    int asked = spec.timeoutMs
+    String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
+    if (left < 100L) {
+        return [converged: false, timedOut: true, elapsedMs: 0, polledCount: 0, convergedCount: 0, last: first,
+                devices: ids.collect { [deviceId: it, finalValue: null, matched: false] },
+                budgetLimited: true, requestedTimeoutMs: asked, timeoutMs: 0,
+                budgetNote: "Not polled: the request had ${Math.max(0L, left)} ms left (${why}). Wait again in a new call.".toString()]
     }
-    def hasDeviceId  = args.containsKey("deviceId")  && args.deviceId  != null
-    def hasDeviceIds = args.containsKey("deviceIds") && args.deviceIds != null
-    if (args.containsKey("deviceId") && args.deviceId == null) {
-        throw new IllegalArgumentException("deviceId must not be null (omit the arg or pass a non-empty string)")
+    Map run = left < asked ? spec + [timeoutMs: left as Integer, pollIntervalMs: Math.min(spec.pollIntervalMs as long, left) as Integer] : spec
+    Map result = _waitForCore(run, ids, page, first, deadline)
+    if ((result.remove("budgetStopped") == true || left < asked) && !result.converged) {
+        result.requestedTimeoutMs = asked
+        result.timeoutMs = Math.min(left, asked as long)
+        result.budgetLimited = true
+        result.budgetNote = "The wait stopped after ${result.elapsedMs} ms instead of ${asked} ms: ${why}. Wait again to keep waiting.".toString()
     }
-    if (args.containsKey("deviceIds") && args.deviceIds == null) {
-        throw new IllegalArgumentException("deviceIds must not be null (omit the arg or pass a non-empty list of device IDs)")
-    }
-    if (hasDeviceId && hasDeviceIds) {
-        throw new IllegalArgumentException("provide exactly one of deviceId or deviceIds, not both")
-    }
-    if (!hasDeviceId && !hasDeviceIds) {
-        throw new IllegalArgumentException("deviceId (single device) or deviceIds (a list of device IDs) is required -- provide exactly one")
-    }
-    def multiDevice = hasDeviceIds
-    def MAX_POLL_DEVICES = 20
-    def deviceIdList
-    if (multiDevice) {
-        if (!(args.deviceIds instanceof List) || args.deviceIds.isEmpty()) {
-            throw new IllegalArgumentException("deviceIds must be a non-empty list of device-ID strings")
-        }
-        def coercedIds = []
-        args.deviceIds.eachWithIndex { v, i ->
-            def id = _canonicalDeviceIdArg(v)
-            if (!(id instanceof String) || !id) {
-                throw new IllegalArgumentException("deviceIds[${i}] must be a non-empty string or integral number, got: ${_describeValueForError(v)}")
-            }
-            coercedIds << id
-        }
-        if (coercedIds.size() > MAX_POLL_DEVICES) {
-            throw new IllegalArgumentException("deviceIds has ${coercedIds.size()} device IDs -- the cap is ${MAX_POLL_DEVICES} per poll")
-        }
-        def dupes = coercedIds.countBy { it }.findAll { k, c -> c > 1 }.keySet().sort()
-        if (dupes) {
-            throw new IllegalArgumentException("deviceIds contains duplicate entries: ${dupes} -- each device may appear once")
-        }
-        deviceIdList = coercedIds
-    } else {
-        def singleId = _canonicalDeviceIdArg(args.deviceId)
-        if (!(singleId instanceof String) || !singleId) {
-            throw new IllegalArgumentException("deviceId is required and must be a non-empty string or integral number (got: ${_describeValueForError(args.deviceId)})")
-        }
-        deviceIdList = [singleId]
-    }
-    if (args.containsKey("attribute") && args.attribute == null) {
-        throw new IllegalArgumentException("attribute must not be null (omit the arg or pass a non-empty string)")
-    }
-    if (!(args.attribute instanceof String) || !args.attribute) {
-        throw new IllegalArgumentException("attribute is required and must be a non-empty string")
-    }
-    deviceIdList.each { did -> _requireDeviceToolAccess(did) }
-    def validModes = ["any", "all"]
-    if (args.containsKey("mode") && args.mode == null) {
-        throw new IllegalArgumentException("mode must not be null (omit the arg to use the default \"all\")")
-    }
-    if (args.mode != null && !(args.mode instanceof String && validModes.contains(args.mode))) {
-        throw new IllegalArgumentException("mode must be one of ${validModes} (got: ${_describeValueForError(args.mode)})")
-    }
-    if (args.mode != null && !multiDevice) {
-        throw new IllegalArgumentException("mode applies only to deviceIds (multi-device polling); omit it for a single deviceId")
-    }
-    def mode = (args.mode != null) ? args.mode : "all"
-    if (args.containsKey("expectedValue") && args.expectedValue == null) {
-        throw new IllegalArgumentException("expectedValue must not be null (omit the arg or pass a non-empty string)")
-    }
-    if (args.containsKey("expectedValues") && args.expectedValues == null) {
-        throw new IllegalArgumentException("expectedValues must not be null (omit the arg or pass a non-empty list)")
-    }
-    def hasExpectedValue  = (args.expectedValue  != null)
-    def hasExpectedValues = (args.expectedValues != null)
-    if (hasExpectedValue && hasExpectedValues) {
-        throw new IllegalArgumentException("provide exactly one of expectedValue or expectedValues, not both")
-    }
-    if (!hasExpectedValue && !hasExpectedValues) {
-        throw new IllegalArgumentException("At least one of expectedValue or expectedValues must be provided")
-    }
-    if (hasExpectedValue && !(args.expectedValue instanceof String)) {
-        throw new IllegalArgumentException("expectedValue must be a string")
-    }
-    if (hasExpectedValue && args.expectedValue == "") {
-        throw new IllegalArgumentException("expectedValue must not be empty (omit the arg or pass a non-empty value)")
-    }
-    if (hasExpectedValues) {
-        if (!(args.expectedValues instanceof List)) {
-            throw new IllegalArgumentException("expectedValues must be a list of strings")
-        }
-        if (args.expectedValues.isEmpty()) {
-            throw new IllegalArgumentException("expectedValues must not be empty (omit the arg or pass at least one value)")
-        }
-        args.expectedValues.eachWithIndex { v, i ->
-            if (!(v instanceof String)) {
-                throw new IllegalArgumentException("expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
-            }
-        }
-    }
-    if (args.containsKey("timeoutMs") && args.timeoutMs == null) {
-        throw new IllegalArgumentException("timeoutMs must not be null (omit the arg to use default 5000ms)")
-    }
-    def timeoutMs = (args.timeoutMs != null) ? args.timeoutMs : 5000
-    if (!(timeoutMs instanceof Number)) {
-        throw new IllegalArgumentException("timeoutMs must be an integer (got: ${timeoutMs})")
-    }
-    timeoutMs = timeoutMs as Integer
-    if (timeoutMs < 100 || timeoutMs > 60000) {
-        throw new IllegalArgumentException("timeoutMs must be between 100 and 60000 (got: ${timeoutMs})")
-    }
-    if (args.containsKey("pollIntervalMs") && args.pollIntervalMs == null) {
-        throw new IllegalArgumentException("pollIntervalMs must not be null (omit the arg to use default 200ms)")
-    }
-    def pollIntervalMs = (args.pollIntervalMs != null) ? args.pollIntervalMs : 200
-    if (!(pollIntervalMs instanceof Number)) {
-        throw new IllegalArgumentException("pollIntervalMs must be an integer (got: ${pollIntervalMs})")
-    }
-    pollIntervalMs = pollIntervalMs as Integer
-    if (pollIntervalMs < 50 || pollIntervalMs > 5000) {
-        throw new IllegalArgumentException("pollIntervalMs must be between 50 and 5000 (got: ${pollIntervalMs})")
-    }
-    if (pollIntervalMs > timeoutMs) {
-        pollIntervalMs = timeoutMs
-    }
-    if (args.containsKey("comparator") && args.comparator == null) {
-        throw new IllegalArgumentException("comparator must not be null (omit the arg to use the default \"eq\")")
-    }
-    def validComparators = ["eq", "ne", "gt", "gte", "lt", "lte", "between"]
-    def comparator = (args.comparator != null) ? args.comparator : "eq"
-    if (!(comparator instanceof String) || !validComparators.contains(comparator)) {
-        throw new IllegalArgumentException("comparator must be one of ${validComparators} (got: ${_describeValueForError(args.comparator)})")
-    }
-    def numericComparators = ["gt", "gte", "lt", "lte"] as Set
-    def numericThreshold = null
-    def betweenLow = null
-    def betweenHigh = null
-    if (numericComparators.contains(comparator)) {
-        if (hasExpectedValues) {
-            throw new IllegalArgumentException("comparator '${comparator}' takes a single numeric threshold via expectedValue, not expectedValues")
-        }
-        numericThreshold = _parseBigDecimalOrNull(args.expectedValue)
-        if (numericThreshold == null) {
-            throw new IllegalArgumentException("comparator '${comparator}' requires expectedValue to be a numeric-parseable string (got: ${_describeValueForError(args.expectedValue)})")
-        }
-    } else if (comparator == "between") {
-        if (hasExpectedValue) {
-            throw new IllegalArgumentException("comparator 'between' takes two numeric bounds via expectedValues, not expectedValue")
-        }
-        if (args.expectedValues.size() != 2) {
-            throw new IllegalArgumentException("comparator 'between' requires expectedValues to have exactly 2 numeric bounds [low, high] (got ${args.expectedValues.size()})")
-        }
-        betweenLow  = _parseBigDecimalOrNull(args.expectedValues[0])
-        betweenHigh = _parseBigDecimalOrNull(args.expectedValues[1])
-        if (betweenLow == null || betweenHigh == null) {
-            throw new IllegalArgumentException("comparator 'between' requires both expectedValues bounds to be numeric-parseable strings (got: ${args.expectedValues})")
-        }
-        if (betweenLow > betweenHigh) {
-            throw new IllegalArgumentException("comparator 'between' requires low <= high (got low=${args.expectedValues[0]}, high=${args.expectedValues[1]})")
-        }
-    }
-    if (args.containsKey("stableForMs") && args.stableForMs == null) {
-        throw new IllegalArgumentException("stableForMs must not be null (omit the arg to use default 0)")
-    }
-    def stableForMs = (args.stableForMs != null) ? args.stableForMs : 0
-    if (!(stableForMs instanceof Number)) {
-        throw new IllegalArgumentException("stableForMs must be an integer (got: ${_describeValueForError(args.stableForMs)})")
-    }
-    stableForMs = stableForMs as Integer
-    if (stableForMs < 0) {
-        throw new IllegalArgumentException("stableForMs must be >= 0 (got: ${stableForMs})")
-    }
-    if (stableForMs >= timeoutMs) {
-        throw new IllegalArgumentException("stableForMs (${stableForMs}) must be less than timeoutMs (${timeoutMs}) -- the condition could never hold long enough to converge")
-    }
-    def devices = []
-    def deviceLabels = []
-    for (did in deviceIdList) {
-        def full = _fetchDeviceFullJson(did)
-        if (!(full?.device instanceof Map)) {
-            return [success: false, isError: true, readError: true, deviceId: did,
-                    error: "Native device identity is unavailable for device ${did}; polling was not started.",
-                    note: 'Verify the device ID and native connectivity before starting a new poll.']
-        }
-        devices << [initial: full]
-        deviceLabels << _bypassDeviceLabel(full, did)
-    }
-    def deviceLabel = deviceLabels[0]
+    return result
+}
+def _waitForCore(Map spec, List ids, boolean page, first, Long deadlineMs) {
+    int n = ids.size()
+    int timeoutMs = spec.timeoutMs
     boolean budgetCut = false
     if (deadlineMs != null && deadlineMs - now() < timeoutMs) {
         timeoutMs = Math.max(0L, deadlineMs - now()) as Integer
         budgetCut = true
     }
-    def matchSet = [] as Set
-    if (hasExpectedValue)  matchSet << args.expectedValue
-    if (hasExpectedValues) matchSet.addAll(args.expectedValues)
-    if (multiDevice) {
-        return _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator,
-                                matchSet, numericThreshold, betweenLow, betweenHigh,
-                                timeoutMs, pollIntervalMs, stableForMs, deadlineMs, budgetCut)
-    }
-    def maxPolls    = ((timeoutMs / pollIntervalMs) as Integer) + 1
-    def startMs     = now()
-    def polledCount = 0
-    def finalValue  = null
-    def everNonNull = false
-    def sawChange      = false
-    def lastNonNull    = null
-    def sawNumeric     = false
-    def sawReadError   = false
-    def conditionTrueSince = null
+    String attribute = spec.attribute
+    String comparator = spec.comparator
+    int maxPolls = ((timeoutMs / (spec.pollIntervalMs as Integer)) as Integer) + 1
+    long startMs = now()
+    int polledCount = 0
+    int elapsedMs = 0
+    List values = (0..<n).collect { null }
+    List matched = (0..<n).collect { false }
+    List everNonNull = (0..<n).collect { false }
+    List sawNumeric = (0..<n).collect { false }
+    List sawChange = (0..<n).collect { false }
+    List lastNonNull = (0..<n).collect { null }
+    List readError = (0..<n).collect { false }
+    def last = page ? [:] : first
+    def pending = first
+    Long conditionTrueSince = null
+    boolean pastDeadline = false
+    String outcome
     while (true) {
         long tickStartMs = now()
-        try {
-            finalValue = _readPollValue(devices[0], deviceIdList[0], args.attribute)
-        } catch (Exception e) {
-            finalValue = null
-            if (!sawReadError) mcpLog("warn", "device", "poll_until_attribute read failed for '${deviceLabel}' on poll ${polledCount + 1}: ${e.message ?: e.toString()}")
-            sawReadError = true
+        if (page) {
+            Map records = pending
+            pending = null
+            if (records == null) {
+                records = [:]
+                try {
+                    for (rec in _readDevicesPage(ids as Set)) records.put(rec.id, rec)
+                } catch (IllegalStateException e) {
+                    if (!readError.any()) mcpLog("warn", "device", "waitFor Devices page read failed on check ${polledCount + 1}: ${e.message}")
+                }
+            }
+            last.putAll(records)
+            for (int i = 0; i < n; i++) {
+                Map rec = records.get(ids[i])
+                if (rec == null) readError[i] = true
+                values[i] = rec?.currentStates?.get(attribute)
+            }
+        } else {
+            Map fj = pending ?: _fetchDeviceFullJson(ids[0])
+            pending = null
+            if (fj?.device?.currentStates instanceof Map) {
+                last = fj
+                values[0] = _readBypassAttrValueFrom(fj, attribute)
+            } else {
+                values[0] = null
+                readError[0] = true
+            }
         }
         polledCount++
-        if (finalValue != null) {
-            everNonNull = true
-            def cur = finalValue.toString()
-            if (lastNonNull != null && cur != lastNonNull) sawChange = true
-            lastNonNull = cur
-        }
-        def elapsedMs = (now() - startMs) as Integer
-        def evalResult = _evalAttrCondition(finalValue, comparator, matchSet, numericThreshold, betweenLow, betweenHigh)
-        def condition = evalResult[0]
-        if (evalResult[1]) sawNumeric = true
-        if (condition) {
-            if (conditionTrueSince == null) conditionTrueSince = now()
-            if ((now() - conditionTrueSince) >= stableForMs) {
-                def okResponse = [
-                    success     : true,
-                    finalValue  : finalValue,
-                    elapsedMs   : elapsedMs,
-                    polledCount : polledCount,
-                    timedOut    : false
-                ]
-                if (sawReadError) okResponse.readError = true
-                return okResponse
+        for (int i = 0; i < n; i++) {
+            def v = values[i]
+            if (v != null) {
+                everNonNull[i] = true
+                String cur = v.toString()
+                if (lastNonNull[i] != null && cur != lastNonNull[i]) sawChange[i] = true
+                lastNonNull[i] = cur
             }
+            def eval = _evalAttrCondition(v, comparator, spec.matchSet, spec.numericThreshold, spec.betweenLow, spec.betweenHigh)
+            matched[i] = eval[0]
+            if (eval[1]) sawNumeric[i] = true
+        }
+        elapsedMs = (now() - startMs) as Integer
+        int count = matched.count { it }
+        if (spec.mode == "any" ? count > 0 : count == n) {
+            if (conditionTrueSince == null) conditionTrueSince = now()
+            if (now() - conditionTrueSince >= (spec.stableForMs as long)) { outcome = "converged"; break }
         } else {
             conditionTrueSince = null
         }
-        boolean pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
-        if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) {
-            def response = [
-                success     : false,
-                finalValue  : finalValue,
-                elapsedMs   : elapsedMs,
-                polledCount : polledCount,
-                timedOut    : true,
-                transitioning : sawChange
-            ]
-            if (sawReadError) response.readError = true
-            if (!everNonNull) response.neverReported = true
-            if (budgetCut || pastDeadline) response.budgetStopped = true
-            if (comparator != "eq" && comparator != "ne" && everNonNull && !sawNumeric) {
-                response.nonNumericAttribute = true
-                response.note = "comparator '${comparator}' can never match attribute '${args.attribute}' -- it reported a non-numeric value the whole window (use eq/ne for a string attribute)".toString()
-                response.transitioning = false
-            }
-            return response
-        }
-        def sleepMs = _pollSleepMs(pollIntervalMs, timeoutMs - elapsedMs, now() - tickStartMs)
+        long tickMs = now() - tickStartMs
+        int sleepMs = _pollSleepMs(spec.pollIntervalMs, timeoutMs - elapsedMs, tickMs)
+        pastDeadline = deadlineMs != null && now() + sleepMs + tickMs >= deadlineMs
+        if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) { outcome = "timedOut"; break }
         try {
             if (sleepMs > 0) pauseExecution(sleepMs)
         } catch (InterruptedException e) {
             elapsedMs = (now() - startMs) as Integer
-            mcpLog("warn", "device", "poll_until_attribute interrupted after ${polledCount} poll(s) (elapsed=${elapsedMs}ms): ${e.message}")
-            def intResponse = [
-                success     : false,
-                interrupted : true,
-                finalValue  : finalValue,
-                elapsedMs   : elapsedMs,
-                polledCount : polledCount
-            ]
-            if (sawReadError) intResponse.readError = true
-            return intResponse
+            mcpLog("warn", "device", "waitFor interrupted after ${polledCount} check(s) (${elapsedMs} ms): ${e.message}")
+            outcome = "interrupted"
+            break
         }
     }
+    boolean timedOut = outcome == "timedOut"
+    boolean numericComparator = !(comparator in ["eq", "ne"])
+    int nonNumeric = 0
+    boolean transitioning = false
+    List rows = (0..<n).collect { i ->
+        Map row = [deviceId: ids[i], finalValue: values[i], matched: matched[i]]
+        if (readError[i]) row.readError = true
+        if (timedOut) {
+            if (!everNonNull[i]) row.neverReported = true
+            if (numericComparator && everNonNull[i] && !sawNumeric[i]) {
+                row.nonNumericAttribute = true
+                nonNumeric++
+            } else if (sawChange[i]) {
+                transitioning = true
+            }
+        }
+        row
+    }
+    Map result = [converged: outcome == "converged", elapsedMs: elapsedMs, polledCount: polledCount,
+                  convergedCount: matched.count { it }, devices: rows, last: last]
+    if (timedOut) {
+        result.timedOut = true
+        result.transitioning = transitioning
+        if (budgetCut || pastDeadline) result.budgetStopped = true
+    }
+    if (outcome == "interrupted") result.interrupted = true
+    if (readError.any()) result.readError = true
+    if (nonNumeric > 0) {
+        result.note = "comparator '${comparator}' can never match attribute '${attribute}' on ${nonNumeric} device(s) that reported a non-numeric value the whole window (use eq/ne for a string attribute)".toString()
+    }
+    return result
+}
+private Map _waitForBlock(Map spec, Map r, boolean multi) {
+    Map block = [attribute: spec.attribute, expected: spec.expected]
+    if (multi) block.mode = spec.mode
+    block.converged = r.converged == true
+    Map row = r.devices ? r.devices[0] : [:]
+    if (multi) block.convergedCount = r.convergedCount
+    else block.finalValue = row.finalValue
+    block.elapsedMs = r.elapsedMs
+    block.polledCount = r.polledCount
+    if (multi) block.devices = r.devices
+    for (k in ["timedOut", "transitioning", "interrupted", "readError", "neverReported", "nonNumericAttribute",
+               "note", "budgetLimited", "budgetNote", "requestedTimeoutMs", "timeoutMs"]) {
+        def v = multi || r.containsKey(k) ? r.get(k) : row.get(k)
+        if (v != null && v != false || (k == "transitioning" && r.containsKey(k))) block.put(k, v)
+    }
+    return block
 }
 private Integer _pollSleepMs(pollIntervalMs, remainingMs, tickElapsedMs) {
     long requested = pollIntervalMs as Long
@@ -12333,148 +12167,6 @@ private Integer _pollSleepMs(pollIntervalMs, remainingMs, tickElapsedMs) {
     long interval = Math.max(requested - (tickElapsedMs as Long), floor)
     long remaining = remainingMs > 0 ? (remainingMs as Long) : interval
     return Math.min(interval, remaining) as Integer
-}
-private _readPollValue(dev, deviceId, attribute) {
-    def full = dev instanceof Map && dev.containsKey('initial') ? dev.remove('initial') : _fetchDeviceFullJson(deviceId)
-    if (!(full?.device instanceof Map) || !(full.device.currentStates instanceof Map)) {
-        throw new RuntimeException("Native current states unavailable for device ${deviceId}")
-    }
-    return _readBypassAttrValueFrom(full, attribute)
-}
-def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator,
-                     matchSet, numericThreshold, betweenLow, betweenHigh,
-                     timeoutMs, pollIntervalMs, stableForMs, Long deadlineMs = null, boolean budgetCut = false) {
-    timeoutMs      = (timeoutMs != null && (timeoutMs > 0 || deadlineMs != null)) ? timeoutMs : 5000
-    pollIntervalMs = (pollIntervalMs && pollIntervalMs > 0) ? pollIntervalMs : 200
-    stableForMs    = (stableForMs && stableForMs > 0) ? stableForMs : 0
-    def n           = devices.size()
-    def maxPolls    = ((timeoutMs / pollIntervalMs) as Integer) + 1
-    def startMs     = now()
-    def polledCount = 0
-    def everNonNull = (0..<n).collect { false }
-    def sawNumeric  = (0..<n).collect { false }
-    def sawChange   = (0..<n).collect { false }
-    def lastNonNull = (0..<n).collect { null }
-    def finalValue  = (0..<n).collect { null }
-    def matched     = (0..<n).collect { false }
-    def sawReadError = (0..<n).collect { false }
-    def conditionTrueSince = null
-    while (true) {
-        long tickStartMs = now()
-        for (int i = 0; i < n; i++) {
-            def v
-            try {
-                v = _readPollValue(devices[i], deviceIdList[i], args.attribute)
-            } catch (Exception e) {
-                v = null
-                if (!sawReadError[i]) mcpLog("warn", "device", "poll_until_attribute (multi-device) read failed for '${deviceLabels[i]}' on poll ${polledCount + 1}: ${e.message ?: e.toString()}")
-                sawReadError[i] = true
-            }
-            finalValue[i] = v
-            if (v != null) {
-                everNonNull[i] = true
-                def cur = v.toString()
-                if (lastNonNull[i] != null && cur != lastNonNull[i]) sawChange[i] = true
-                lastNonNull[i] = cur
-            }
-            def evalResult = _evalAttrCondition(v, comparator, matchSet, numericThreshold, betweenLow, betweenHigh)
-            if (evalResult[1]) sawNumeric[i] = true
-            matched[i] = evalResult[0]
-        }
-        polledCount++
-        def elapsedMs = (now() - startMs) as Integer
-        def convergedCount = matched.count { it }
-        def aggregate = (mode == "any") ? (convergedCount > 0) : (convergedCount == n)
-        if (aggregate) {
-            if (conditionTrueSince == null) conditionTrueSince = now()
-            if ((now() - conditionTrueSince) >= stableForMs) {
-                return [
-                    success        : true,
-                    mode           : mode,
-                    devices        : (0..<n).collect { i ->
-                        def entry = [
-                            deviceId  : deviceIdList[i],
-                            device    : deviceLabels[i],
-                            finalValue: finalValue[i],
-                            matched   : matched[i]
-                        ]
-                        if (sawReadError[i]) entry.readError = true
-                        entry
-                    },
-                    convergedCount : convergedCount,
-                    elapsedMs      : elapsedMs,
-                    polledCount    : polledCount,
-                    timedOut       : false
-                ]
-            }
-        } else {
-            conditionTrueSince = null
-        }
-        boolean pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
-        if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) {
-            def numericComparator = (comparator != "eq" && comparator != "ne")
-            def nonNumericCount = 0
-            def anyTransitioning = false
-            def deviceResults = (0..<n).collect { i ->
-                def entry = [
-                    deviceId  : deviceIdList[i],
-                    device    : deviceLabels[i],
-                    finalValue: finalValue[i],
-                    matched   : matched[i]
-                ]
-                if (sawReadError[i]) entry.readError = true
-                if (!everNonNull[i]) entry.neverReported = true
-                def deviceNonNumeric = numericComparator && everNonNull[i] && !sawNumeric[i]
-                if (deviceNonNumeric) {
-                    entry.nonNumericAttribute = true
-                    nonNumericCount++
-                } else if (sawChange[i]) {
-                    anyTransitioning = true
-                }
-                entry
-            }
-            def response = [
-                success        : false,
-                mode           : mode,
-                devices        : deviceResults,
-                convergedCount : convergedCount,
-                elapsedMs      : elapsedMs,
-                polledCount    : polledCount,
-                timedOut       : true,
-                transitioning  : anyTransitioning
-            ]
-            if (nonNumericCount > 0) {
-                response.note = "comparator '${comparator}' can never match attribute '${args.attribute}' on ${nonNumericCount} device(s) that reported a non-numeric value the whole window (use eq/ne for a string attribute)"
-            }
-            if (budgetCut || pastDeadline) response.budgetStopped = true
-            return response
-        }
-        def sleepMs = _pollSleepMs(pollIntervalMs, timeoutMs - elapsedMs, now() - tickStartMs)
-        try {
-            if (sleepMs > 0) pauseExecution(sleepMs)
-        } catch (InterruptedException e) {
-            elapsedMs = (now() - startMs) as Integer
-            mcpLog("warn", "device", "poll_until_attribute (multi-device, ${n}) interrupted after ${polledCount} poll(s) (elapsed=${elapsedMs}ms): ${e.message}")
-            return [
-                success        : false,
-                interrupted    : true,
-                mode           : mode,
-                devices        : (0..<n).collect { i ->
-                    def entry = [
-                        deviceId  : deviceIdList[i],
-                        device    : deviceLabels[i],
-                        finalValue: finalValue[i],
-                        matched   : matched[i]
-                    ]
-                    if (sawReadError[i]) entry.readError = true
-                    entry
-                },
-                convergedCount : matched.count { it },
-                elapsedMs      : elapsedMs,
-                polledCount    : polledCount
-            ]
-        }
-    }
 }
 def _resolveSinceWindow(args, hoursBack) {
     if (args.since == null) {
@@ -13991,11 +13683,23 @@ private boolean _deviceSwapCleanup(Integer appId) {
         return false
     }
 }
+private Map _waitForSchema(boolean multi) {
+    Map props = [attribute: [type: "string"],
+        expectedValue: [type: "string", description: "Value or numeric threshold"],
+        expectedValues: [type: "array", items: [type: "string"], description: "Value set, or between [low, high]"],
+        comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Default eq"],
+        stableForMs: [type: "integer", minimum: 0, description: "Default 0"],
+        timeoutMs: [type: "integer", minimum: 100, maximum: 60000, description: "Default 5000"],
+        pollIntervalMs: [type: "integer", minimum: 50, maximum: 5000, description: "Default 200"]]
+    if (multi) props.mode = [type: "string", enum: ["any", "all"], description: "Default all"]
+    return [type: "object", description: multi ? "Wait until deviceIds (max 20) match" : "Wait until it matches; summary mode",
+            properties: props, required: ["attribute"]]
+}
 def _getAllToolDefinitions_partDevices() {
     def defs = { [
         [
             name: "hub_list_devices",
-            description: """List devices with current states from the hub's Devices page, filtered and paged on the hub. format='context' = plain-text house snapshot, the best first call for "what's going on". unfilteredTotal = devices in scope before filters. Control only devices the user named exactly. Guide: hub_get_tool_guide(section='performance_devices').""",
+            description: """List devices with current states from the hub's Devices page, filtered and paged on the hub. format='context' = plain-text house snapshot, the best first call for "what's going on". unfilteredTotal = devices in scope before filters. deviceIds + waitFor blocks until an attribute matches, e.g. to confirm a command batch. Control only devices the user named exactly. Guide: hub_get_tool_guide(section='performance_devices').""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -14008,16 +13712,18 @@ def _getAllToolDefinitions_partDevices() {
                     staleHours: [type: "number", description: "Inactive this many hours"],
                     changedSince: [type: ["string", "integer"], description: "Active since: epoch ms or ISO-8601 with offset"],
                     stateFilter: [type: "object", description: "e.g. {\"switch\":\"on\"}"],
-                    attributeNames: [type: "array", items: [type: "string"], description: "Attributes to show in currentStates and context lines"],
-                    fields: [type: "array", items: [type: "string"], description: "Record fields (names in the guide)"],
+                    attributeNames: [type: "array", items: [type: "string"], description: "Attributes shown; summary/context only"],
+                    fields: [type: "array", items: [type: "string"], description: "Record fields (names in guide); summary/detailed only"],
                     limit: [type: "integer", description: "Page size; omit for all"],
-                    cursor: [type: "string", description: "\"\" first, then nextCursor"]
+                    cursor: [type: "string", description: "\"\" first, then nextCursor"],
+                    deviceIds: [type: "array", items: [type: ["string", "integer"]], description: "Only these devices"],
+                    waitFor: _waitForSchema(true)
                 ]
             ]
         ],
         [
             name: "hub_get_device",
-            description: """Inspect one device. Default summary gives capabilities, current attributes and commands. Use mode='configuration' before updates[[FLAT_TRIM]] to discover editable fields, saved preferences, types/defaults/options and driver information; mode='details' exposes configuration and other device information by section[[/FLAT_TRIM]].[[FLAT_TRIM]] Read status distinguishes unavailable information from unset values.[[/FLAT_TRIM]]""",
+            description: """Inspect one device. Default summary gives capabilities, current attributes and commands; waitFor blocks until an attribute matches. Use mode='configuration' before updates[[FLAT_TRIM]] to discover editable fields, saved preferences, types/defaults/options and driver information; mode='details' exposes configuration and other device information by section[[/FLAT_TRIM]].[[FLAT_TRIM]] Read status distinguishes unavailable information from unset values.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -14027,41 +13733,17 @@ def _getAllToolDefinitions_partDevices() {
                     sections: [type: "array", items: [type: "string", enum: _deviceDetailSections()],
                                description: "details mode only: non-empty section selection. Omit for all sections.[[FLAT_TRIM]] Large histories remain reachable through read-tool references.[[/FLAT_TRIM]]"],
                     fields: [type: "array", items: [type: "string"], description: "configuration/details only: omit for all values, [] for availableFields name discovery, or select exact field/preference names.[[FLAT_TRIM]] For commands/jobs use row indices from availableFields; attributes also accepts individual attribute names.[[/FLAT_TRIM]]"],
-                    cursor: [type: "string", description: "Oversized reads return contentFormat=json-fragment and nextCursor. Repeat with unchanged arguments within five minutes, concatenate content, then parse JSON.[[FLAT_TRIM]] Expired/evicted snapshots require restarting. Prefer fields/sections for smaller reads.[[/FLAT_TRIM]]"]
+                    cursor: [type: "string", description: "Oversized reads return contentFormat=json-fragment and nextCursor. Repeat with unchanged arguments within five minutes, concatenate content, then parse JSON.[[FLAT_TRIM]] Expired/evicted snapshots require restarting. Prefer fields/sections for smaller reads.[[/FLAT_TRIM]]"],
+                    waitFor: _waitForSchema(false)
                 ],
                 required: ["deviceId"]
             ]
         ],
         [
-            name: "hub_get_device_attribute",
-            description: """Get a device attribute's current value, or block-poll until it reaches an expected value.
-
-[[FLAT_TRIM]]
-One-shot read by default (deviceId + attribute). Provide expectedValue or expectedValues (exactly one) to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: ["string", "integer"], description: "Device ID from hub_list_devices."],
-                    deviceIds: [type: "array", items: [type: ["string", "integer"]], description: "Array of device IDs for a multi-device poll (mutually exclusive with deviceId; max 20)."],
-                    mode: [type: "string", enum: ["any", "all"], description: "Multi-device aggregate.", default: "all"],
-                    attribute: [type: "string", description: "Attribute name."],
-                    expectedValue: [type: "string", description: "If set, block-poll until currentValue matches per comparator (enables poll mode). Single value, e.g. \"72\".[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"],
-                    expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue matches per comparator (enables poll mode). For between, two numeric bounds [low, high].[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"],
-                    comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq (value in the expected set).", default: "eq"],
-                    stableForMs: [type: "integer", description: "Debounce: the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match).", default: 0, minimum: 0],
-                    timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
-                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] Target cadence: each tick's native read latency is subtracted from the sleep, down to a floor of half the interval, so slow reads space ticks by the reads plus that floor; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it. (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
-                ],
-                required: ["attribute"]
-            ]
-        ],
-        [
             name: "hub_call_device_command",
-            description: """Send a command (e.g. on, off, setLevel) to one device, or to SEVERAL at once via `commands`. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead.
+            description: """Send a command (e.g. on, off, setLevel) to one device, or to SEVERAL at once via `commands`. Use to actuate or control a device; for read-only checks use hub_get_device instead.
 
-For more than one device pass `commands` (max 20) rather than calling this repeatedly: one round trip instead of N.[[FLAT_TRIM]] Entries are independent -- one failing entry does not stop the others; check results[] for per-entry success. Confirm a batch with hub_get_device_attribute's deviceIds form. The round trip, not the hub actuating the device, is most of the wall-clock time, so this is the biggest win available on a multi-device intent; mixed devices and mixed commands go in one batch. For a set commanded repeatedly a group or scene is better still - one device to command, with the hub fanning out; `commands` is for the ad-hoc set nobody defined in advance.[[/FLAT_TRIM]]
+For more than one device pass `commands` (max 20) rather than calling this repeatedly: one round trip instead of N.[[FLAT_TRIM]] Entries are independent -- one failing entry does not stop the others; check results[] for per-entry success. Confirm a batch with hub_list_devices' deviceIds + waitFor. The round trip, not the hub actuating the device, is most of the wall-clock time, so this is the biggest win available on a multi-device intent; mixed devices and mixed commands go in one batch. For a set commanded repeatedly a group or scene is better still - one device to command, with the hub fanning out; `commands` is for the ad-hoc set nobody defined in advance.[[/FLAT_TRIM]]
 
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
@@ -14090,7 +13772,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". NOT checked before the command fires (native metadata lists reported attributes only): a name the device never reports times out with neverReported after the command has already executed."],
                         expectedValue: [type: "string", description: "Awaited value: eq/ne in-set, or gt/gte/lt/lte numeric threshold."],
                         expectedValues: [type: "array", items: [type: "string"], description: "Awaited set: eq/ne value list (OR), or between's two bounds [low, high]."],
-                        comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator, as on hub_get_device_attribute. Default eq.", default: "eq"],
+                        comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq.", default: "eq"],
                         stableForMs: [type: "integer", description: "Debounce ms; match must hold this long before converging. Default 0, < timeoutMs.", default: 0, minimum: 0],
                         timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 30000. BLOCKS a hub thread for the full timeout, so keep it tight.", default: 5000, minimum: 100, maximum: 30000],
                         pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] Target cadence: read latency is subtracted from the sleep down to a floor of half the interval; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it.[[/FLAT_TRIM]]", default: 250, minimum: 50, maximum: 5000]
@@ -14211,7 +13893,7 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
 }
 def _readOnlyToolNames_partDevices() {
     return [
-        "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
+        "hub_list_devices", "hub_get_device", "hub_list_device_events",
         "hub_get_compatible_devices"
     ]
 }
@@ -14224,7 +13906,6 @@ def _toolDisplayMeta_partDevices() {
     return [
         hub_list_devices: [title: "List Devices", summary: "List devices from the hub's Devices page with state filters, projection, a house snapshot and paging."],
         hub_get_device: [title: "Get Device Details", summary: "Inspect a device summary, configuration and preferences, or detailed information by section."],
-        hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
         hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location and hub events when neither is given."],
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
         hub_call_device_swap: [title: "Swap Device", summary: "Exchange two devices' identities so the apps on one run on the other's hardware."],
@@ -28925,7 +28606,9 @@ def handleToolsCall(msg) {
             if (readLeaf) {
                 Map readArgs = _mrtrCopyMap(args as Map)
                 readArgs.__reqT0 = reqT0
-                if (_mrtrSnapshotReadTools().contains(leafName)) readSnapshotId = java.util.UUID.randomUUID().toString()
+                if (_deviceSnapshotRead(leafName, _mrtrLeafArguments(toolName?.toString(), leafName, args as Map))) {
+                    readSnapshotId = java.util.UUID.randomUUID().toString()
+                }
                 def readResult = _executeWithDeviceReadContext(toolName, readArgs,
                     readSnapshotId ? [id: readSnapshotId, fresh: true] : null)
                 if (!(readResult instanceof Map && readResult.status == "in_progress")) {
@@ -29279,7 +28962,7 @@ def _budgetAwareTools() {
             "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule",
             "hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_libraries",
-            "hub_get_device_attribute", "hub_list_rules"] as Set
+            "hub_list_rules"] as Set
 }
 def _mrtrWriteTools() {
     return ["hub_set_native_app", "hub_set_rule", "hub_call_rule",
@@ -29294,6 +28977,9 @@ def _mrtrReadTools() {
             "hub_get_device_health", "hub_list_libraries", "hub_list_rules"] as Set
 }
 private Set _mrtrSnapshotReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_rules"] as Set }
+private boolean _deviceSnapshotRead(leaf, leafArgs) {
+    return _mrtrSnapshotReadTools().contains(leaf?.toString()) && !(leafArgs instanceof Map && leafArgs.waitFor != null)
+}
 private def _executeWithDeviceReadContext(tool, Map args, Map context, boolean bpsChecked = false) {
     Map previous = deviceReadContext
     if (context != null) context.outerTool = tool?.toString()
@@ -31332,20 +31018,18 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_devices: [
-            description: "Read-only device inspection: list devices with current states; inspect one device in summary, configuration, or sectioned details mode; read or block-poll an attribute; read device/location event history; search Hubitat's compatible-device catalog; and read Hub Mesh (hub-to-hub device/variable sharing between Hubitat hubs on the LAN). All operations are read-only; device commands, updates, and Hub Mesh writes live in hub_manage_devices.",
-            tools: ["hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events", "hub_get_compatible_devices", "hub_get_hub_mesh"],
+            description: "Read-only device inspection: list devices with current states; inspect one device in summary, configuration, or sectioned details mode; wait for an attribute to reach a value on one device or several; read device/location event history; search Hubitat's compatible-device catalog; and read Hub Mesh (hub-to-hub device/variable sharing between Hubitat hubs on the LAN). All operations are read-only; device commands, updates, and Hub Mesh writes live in hub_manage_devices.",
+            tools: ["hub_list_devices", "hub_get_device", "hub_list_device_events", "hub_get_compatible_devices", "hub_get_hub_mesh"],
             summaries: [
-                hub_list_devices: "List devices with current states from the hub's Devices page; format='context' = plain-text house snapshot (mode + one line per device). Args: scope? (authorized/all/owned), format? (summary/detailed/ids/context), labelFilter?, capabilityFilter?, roomFilter?, disabled?, staleHours?, changedSince?, stateFilter?, attributeNames?, fields?, limit?, cursor?",
-                hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields, saved preferences, driver identity, and read status before an update.",
-                hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
+                hub_list_devices: "List devices with current states from the hub's Devices page; format='context' = plain-text house snapshot (mode + one line per device). Args: scope? (authorized/all/owned), format? (summary/detailed/ids/context), labelFilter?, capabilityFilter?, roomFilter?, disabled?, staleHours?, changedSince?, stateFilter?, attributeNames?, fields?, limit?, cursor?, deviceIds?, waitFor? (needs deviceIds, max 20: block until an attribute matches, mode any/all)",
+                hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar), waitFor? (summary mode: block until an attribute matches). Configuration mode discovers editable fields, saved preferences, driver identity, and read status before an update.",
                 hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date) with an optional end (until), per-app events (appId), or location and hub events (mode/HSM/hub-variable, reboots/low memory; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?"
             ],
             searchHints: [
-                hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room stale disabled virtual owned",
-                hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
-                hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
+                hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room stale disabled virtual owned deviceIds wait until poll verify confirm batch multiple devices any all converge across",
+                hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings read attribute value wait until poll threshold sensor verify state changed inclusion compare numeric range debounce stable",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity hub reboot restart low memory lowMemory startup app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
                 hub_get_compatible_devices: "compatible devices catalog supported hardware brands models pairing join exclude factory reset instructions how to pair driver protocol zigbee zwave matter lan",
                 hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub"
@@ -31391,16 +31075,15 @@ def getGatewayConfig() {
         ],
         hub_manage_devices: [
             description: "Control and inspect devices: send commands; inspect configuration before changing identity, preferences, native properties, integration assignments, or driver; create a device from a driver type; and swap/replace a device across all referencing apps; plus Hub Mesh read+write (hub-to-hub device/variable sharing between Hubitat hubs on the LAN — enable/disable, sync interval, follow a peer's modes, peer mesh token). Device and Hub Mesh reads are also in hub_read_devices.",
-            tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_create_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events", "hub_get_hub_mesh", "hub_update_hub_mesh"],
+            tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_create_device", "hub_list_devices", "hub_get_device", "hub_list_device_events", "hub_get_hub_mesh", "hub_update_hub_mesh"],
             summaries: [
                 hub_call_device_command: "Send one device command, or batch up to 20 mixed commands in one call (commands cannot be combined with waitFor). Args: deviceId, command, parameters?, waitFor? | commands: [{deviceId, command, parameters?}]",
                 hub_call_device_swap: "Swap a device: apps/rules using from_device_id run on to_device_id's hardware afterwards (the hub exchanges the two identities). Args: from_device_id, to_device_id, confirm",
                 hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
                 hub_update_device: "Change a device's Device Info fields, driver preferences, assistants or enabled state after hub_get_device(mode='configuration'). Args: deviceId, fields?, preferences?, confirm (for requiresConfirmation fields)",
                 hub_create_device: "Create a device from a driver-type id (hub_list_drivers include='all'); for LAN/integration/software drivers, NOT radio hardware (pair those). Args: deviceTypeId, label?, confirm",
-                hub_list_devices: "List devices with current states from the hub's Devices page; format='context' = plain-text house snapshot. Args: scope?, format?, labelFilter?, capabilityFilter?, roomFilter?, disabled?, staleHours?, changedSince?, stateFilter?, attributeNames?, fields?, limit?, cursor?",
-                hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields and preference definitions/current values before an update.",
-                hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
+                hub_list_devices: "List devices with current states from the hub's Devices page; format='context' = plain-text house snapshot. Args: scope?, format?, labelFilter?, capabilityFilter?, roomFilter?, disabled?, staleHours?, changedSince?, stateFilter?, attributeNames?, fields?, limit?, cursor?, deviceIds?, waitFor? (needs deviceIds, max 20: block until an attribute matches, mode any/all)",
+                hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar), waitFor? (summary mode: block until an attribute matches). Configuration mode discovers editable fields and preference definitions/current values before an update.",
                 hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location and hub events (reboots, low memory). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
                 hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device fields.meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
@@ -31411,9 +31094,8 @@ def getGatewayConfig() {
                 hub_call_device_replace: "replace device hardware failed dead broken re-point preserve keep id references rules dashboard compatible replacement candidates getReplacementOptions",
                 hub_update_device: "rename relabel move room device edit configuration preferences driver type zigbee history limits dashboard mesh retry homekit alexa google assistant tags",
                 hub_create_device: "create add device from driver type instantiate lan integration cloud software component install new deviceTypeId driverId",
-                hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room stale disabled virtual owned",
-                hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
-                hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
+                hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room stale disabled virtual owned deviceIds wait until poll verify confirm batch multiple devices any all converge across",
+                hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings read attribute value wait until poll threshold sensor verify state changed inclusion compare numeric range debounce stable",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity hub reboot restart low memory lowMemory startup app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
                 hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub",
                 hub_update_hub_mesh: "enable disable hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval full refresh linked device hub to hub"
@@ -31995,12 +31677,12 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         }
     }
     _rejectUnknownArgs(toolName, args)
-    if (deviceReadContext != null && _mrtrSnapshotReadTools().contains(toolName?.toString())) {
+    if (deviceReadContext != null && _deviceSnapshotRead(toolName, args)) {
         return _deviceReadSnapshot(toolName.toString(), args as Map, deviceReadContext)
     }
     switch (toolName) {
         case "hub_list_devices": return toolListDevices(args)
-        case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.get("fields"), args.cursor)
+        case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.get("fields"), args.cursor, args.waitFor, args.__reqT0)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0, args.includeState != false)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_call_device_replace": return toolCallDeviceReplace(args)
@@ -32010,18 +31692,6 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             if (args.deviceId != null && args.hoursBack == null && args.attribute == null && args.since == null && args.until == null)
                 return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
             return toolGetDeviceHistory(args)
-        case "hub_get_device_attribute":
-            if (args.expectedValue != null || args.expectedValues != null || args.timeoutMs != null || args.pollIntervalMs != null || args.comparator != null || args.stableForMs != null || args.containsKey("deviceIds") || args.containsKey("mode")) {
-                return toolPollUntilAttribute(args)
-            }
-            def oneShotId = _canonicalDeviceIdArg(args.deviceId)
-            if (oneShotId == null) {
-                boolean missing = args.deviceId == null || (args.deviceId instanceof CharSequence && !args.deviceId.toString().trim())
-                throw new IllegalArgumentException(missing
-                    ? "deviceId is required (or use deviceIds for multi-device polling)"
-                    : "deviceId must be a non-empty string or integral number (got: ${_describeValueForError(args.deviceId)})".toString())
-            }
-            return toolGetAttribute(oneShotId, args.attribute)
         case "hub_get_custom_rule":
             if (args.detailed == true && args.ruleId == null)
                 throw new IllegalArgumentException("detailed=true requires a ruleId (it returns per-rule diagnostics). Omit detailed to list all rules.")
@@ -35017,7 +34687,6 @@ def _guideSectionForTool(toolName) {
               'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
     if (t in ['hub_update_app', 'hub_update_driver', 'hub_update_library', 'hub_create_app', 'hub_create_driver',
               'hub_create_library', 'hub_update_package']) return 'hub_admin_write_code'
-    if (t == 'hub_get_device_attribute') return 'device_authorization'
     if (t == 'hub_report_issue') return 'performance_diagnostics'
     return null
 }
@@ -35313,18 +34982,18 @@ hub_update_driver bulk mode: `updates=[{driverId, sourceFile|source|importUrl|re
 
 **Uncertain command outcome:** `outcomeUnknown: true` means the native command request failed without proving whether the device acted. Read the device state or event history before deciding whether to retry; blindly repeating a non-idempotent command can apply it twice.
 
-**Response `state` snapshot (single-device form only -- the `commands` form returns none).** Returns a native `state` snapshot with per-attribute values and freshness timestamps after dispatch. It may still show the previous state if the driver has not reported the effect. To confirm the resulting state, pass `waitFor` and check convergence, or read hub_get_device_attribute separately. With `waitFor`, the snapshot follows polling and the `waitFor` result reports whether the expected value converged. Native command rejection returns success: false for both selected and bypass-accessible devices.
+**Response `state` snapshot (single-device form only -- the `commands` form returns none).** Returns a native `state` snapshot with per-attribute values and freshness timestamps after dispatch. It may still show the previous state if the driver has not reported the effect. To confirm the resulting state, pass `waitFor` and check convergence, or read hub_get_device separately. With `waitFor`, the snapshot follows polling and the `waitFor` result reports whether the expected value converged. Native command rejection returns success: false for both selected and bypass-accessible devices.
 
 **`parameters` arg.** Omit for no-arg commands like on/off. Each element is a string; numbers and JSON-object values are passed as strings (e.g. `["{\"hue\":0,\"saturation\":100,\"level\":50}"]`) and coerced hub-side.
 
-**`waitFor` arg.** comparator (eq/ne/gt/gte/lt/lte/between) and stableForMs (debounce) work as on hub_get_device_attribute. BLOCKS the request up to timeoutMs and queues concurrent MCP calls; reuses the hub_get_device_attribute poll engine.
+**`waitFor` arg.** Same keys and `waitFor` result as hub_get_device's waitFor (see that section), with timeoutMs up to 30000 and a 250 ms default pollIntervalMs. BLOCKS the request up to timeoutMs and queues concurrent MCP calls.
 
 A malformed `waitFor` spec is rejected before the command fires, so the device is not actuated. The attribute name is the exception: a mistyped name still fires the command, then times out with `neverReported`.
 
 **`commands` arg (several devices in one call).** Up to 20 entries of `{deviceId, command, parameters?}`, sent in the order given. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades"): the per-call round trip -- not the hub actuating the device -- is nearly the whole cost. Measured on a live hub over LAN: one command ~1.0s end to end; six sent separately ~4.4s (~0.73s each); the same six Z-Wave switches as one batch ~1.5s; a batch of 1, 2 or 4 flat at ~0.95s. Firing separate calls in parallel does NOT help; the hub serialises them anyway. Devices behind a bridge carry real per-device time that batching cannot remove -- six Bond-bridged shades batched came back at ~2.75s, against ~5.0s sent separately.
 
 - **Mutually exclusive with `deviceId`/`command`**, and cannot be combined with `waitFor` -- that would block a hub thread per device.
-- **Batch entries return no state snapshot.** Confirm with hub_get_device_attribute's `deviceIds` form: one call to fire, one to confirm.
+- **Batch entries return no state snapshot.** Confirm with hub_list_devices `deviceIds` + `waitFor`: one call to fire, one to confirm each target state (a waitFor applies one condition to every listed device).
 - **What it does NOT change.** The hub still actuates the devices one at a time, so they do not all move simultaneously. What disappears is the protocol overhead, not the hub's own work.
 - **Entries are independent.** Mixed devices and mixed commands. A bad entry (unknown id, unsupported command) is reported in its own `results[]` slot and the remaining entries are still sent; `success` is true only when every entry was sent. A partly-failed batch carries `failedDeviceIds` plus `partial: true` -- re-send ONLY those ids, because the successful entries have already actuated. Malformed input -- a missing deviceId, a `parameters` value that is neither an array nor a string, more than 20 entries -- is rejected before anything is sent, so a bad request never actuates part of a batch.
 - **A very large batch of slow bridged devices can stop early.** As the request nears the relay time budget the batch returns `stoppedEarly: true` with `remainingCommands` -- the untried tail, verbatim. Re-send exactly that in a new call; the attempted entries already went.
@@ -35848,7 +35517,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - Entries are independent, so mixed devices and mixed commands go in one batch. Max 20. A partly-failed batch reports failedDeviceIds plus partial:true -- re-send only those ids; the rest already actuated.
 - The batch result always carries `count` (entries attempted), `sentCount`, `failedCount` and a per-entry `results[]`. Any failure adds `failedDeviceIds`, `error` and `note`. A result with `success: false` (a failed entry or an early stop) is sent with `isError: true`. An entry's `deviceId` may be a string or an integer.
 
-- Batch entries return NO state snapshot, and waitFor is not accepted with `commands`. To confirm, follow with hub_get_device_attribute using deviceIds (multi-device convergence): one batch to fire, one poll to confirm -- two round trips for the whole group.
+- Batch entries return NO state snapshot, and waitFor is not accepted with `commands`. To confirm, follow with hub_list_devices using deviceIds + waitFor (multi-device convergence): one batch to fire, one poll to confirm -- two round trips for a group that shares a target state (one poll per target state otherwise).
 - A very large batch of slow bridged devices can stop early at the relay time budget: the result carries stoppedEarly:true with remainingCommands, the untried tail verbatim, to re-send in a new call; it is `success: false` and flagged `isError: true` even when no entry failed.
 - For a set commanded repeatedly, a group or scene beats both: one device to command and the hub fans out. `commands` is for the ad-hoc set that was never defined in advance.
 
@@ -35948,41 +35617,29 @@ Issue-type routing: `issueType` picks the GitHub issue template behind `submitUr
 
 **Summary record.** `{id, label, name, driver, room, disabled, deviceNetworkId, lastActivity, currentStates}` plus `protocol` (zigbee/zwave/matter/network/bluetooth/virtual), `parentDeviceId` on child devices, `mcpManaged`, `linked` (Hub Mesh) and `tags` when they apply. `label` is the display name; group by `parentDeviceId` to count a parent's children.
 
-**Filters** apply before paging, in this order: scope, `disabled` (true = only disabled, false = only enabled), `labelFilter` (label substring), `capabilityFilter` (exact capability name), `roomFilter` (exact room name), `stateFilter` (`{"switch":"on"}`: every named attribute must read that value; a credential-named attribute is refused while Hide passwords and credentials is on), `staleHours` (no activity for that long; never-active devices count as stale), `changedSince` (active at or after epoch ms or ISO-8601 with an offset; a returned `lastActivity` round-trips). A device whose page entry carries no usable value for a filtered field is excluded and named in `metadataUnavailableIds` with `partial: true`; a record missing such a field carries `metadataUnavailable: true`. A zero match carries `capabilityFilterMatchedKnownCapability` or `roomFilterMatchedKnownRoom` to tell a typo from an empty result. If the capability feed cannot be read or lists no device the response carries `capabilitiesUnavailable: true` and capabilityFilter matches nothing.
+**Filters** apply before paging, in this order: scope, `disabled` (true = only disabled, false = only enabled), `labelFilter` (label substring), `capabilityFilter` (exact capability name), `roomFilter` (exact room name), `stateFilter` (`{"switch":"on"}`: every named attribute must read that value; a credential-named attribute is refused while Hide passwords and credentials is on), `staleHours` (no activity for that long; never-active devices count as stale), `changedSince` (active at or after epoch ms or ISO-8601 with an offset; a returned `lastActivity` round-trips). A device the capability feed does not list (for `capabilityFilter`) or whose `lastActivity` does not parse (for `staleHours`/`changedSince`) is excluded and named in `metadataUnavailableIds` with `partial: true`; a record showing `capabilities` or `buttonCount` for a device the feed does not list carries `metadataUnavailable: true`. A zero match carries `capabilityFilterMatchedKnownCapability` or `roomFilterMatchedKnownRoom` to tell a typo from an empty result. If the capability feed cannot be read or lists no device the response carries `capabilitiesUnavailable: true` and capabilityFilter matches nothing.
 
-**Projection.** `fields` picks record fields (`id` always kept): id, label, name, driver, room, roomId, disabled, deviceNetworkId, lastActivity, protocol, parentDeviceId, mcpManaged, linked, tags, notes, source, currentStates, capabilities, attributes, commands. `attributeNames` picks the attributes in `currentStates` and context lines; the default set is switch, level, motion, contact, presence, lock, temperature, humidity, illuminance, battery, power, energy, thermostatMode, thermostatOperatingState, heatingSetpoint, coolingSetpoint, speed, position, valve, water and smoke. An explicit set that matches nothing in context returns `attributeNamesMatchedNoAttributes: true`.
+**Projection.** `fields` (format summary or detailed only) picks record fields (`id` always kept): id, label, name, driver, room, roomId, disabled, deviceNetworkId, lastActivity, protocol, parentDeviceId, mcpManaged, linked, tags, notes, source, currentStates, capabilities, attributes, commands, orphan (its parent device is gone), user (user-installed driver), defaultCurrentState, meshEnabled (shared over Hub Mesh), homekit (exposed to HomeKit; false while the HomeKit integration is off), showOnHome, dashboardTypes, defaultIcon, remoteDeviceUrl (a linked device's page on its source hub), buttonCount (button devices only; 1 when the driver reports no numberOfButtons). With `scope='all'`, `fields` takes identity fields only (the refusal lists them). `attributeNames` (format summary or context only) picks the attributes in `currentStates` and context lines; the default set is switch, level, motion, contact, presence, lock, temperature, humidity, illuminance, battery, power, energy, thermostatMode, thermostatOperatingState, heatingSetpoint, coolingSetpoint, speed, position, valve, water and smoke. An explicit set that matches nothing in context returns `attributeNamesMatchedNoAttributes: true`.
 
 **format='ids'** returns `{deviceIds, count, total}`. **format='context'** returns `summary`: `Mode:`, `HSM:` when available, `Devices: N of M` (with the next cursor when more remain), then `- Label (id, room) - Cap1, Cap2; attr=value` lines; it pages at 50 unless `limit` is set. A cursor past the end (the result shrank between pages) returns an empty last page.
 
+**deviceIds** keeps only those devices (string or integer ids), applied with the other filters before paging. Ids outside the scope come back in `deviceIdsNotFound`; duplicates are refused.
+
+**waitFor** (needs `deviceIds`, 1 to 20; not with a cursor or `scope='all'`) takes hub_get_device's waitFor keys plus `mode`: `all` (default) converges when every listed device matches, `any` on the first. An id outside the scope is refused before waiting. Each check reads the Devices page once for all of them (string values, no units). The listing comes from the last check, plus a `waitFor` block `{attribute, expected, mode, converged, convergedCount, elapsedMs, polledCount, devices: [{deviceId, finalValue, matched}]}`; `readError`, `neverReported` and `nonNumericAttribute` are per device. Use it to confirm a hub_call_device_command `commands` batch: one call to fire, one to confirm.
+
 ### hub_get_device
 
-Use when you need a single device's complete profile — e.g. to discover which commands it supports and which attributes it has reported before calling hub_call_device_command or hub_get_device_attribute. Attributes are reported current states only (details mode says so via `attributeCoverage`): an attribute the driver declares but has never set is absent, not unsupported. For a multi-device listing use hub_list_devices instead.
+Use when you need a single device's complete profile — e.g. to discover which commands it supports and which attributes it has reported before calling hub_call_device_command. Attributes are reported current states only (details mode says so via `attributeCoverage`): an attribute the driver declares but has never set is absent, not unsupported. For a multi-device listing use hub_list_devices instead.
 
 Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.
 
-### hub_get_device_attribute
+To read one attribute, take it from `attributes[]` by name; an absent entry means the driver never reported it.
 
-Get a device attribute's current value, or block-poll until it reaches an expected value. Polls one device, or several at once via deviceIds.
-
-One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses. A credential-named attribute (lockCodes, a PIN or code) reads as the redaction marker while Hide passwords and credentials is on, and a poll or `hub_call_device_command` `waitFor` on one is refused, since a match would confirm a guess.
-
-A single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished). comparator controls the match: eq (default, in-set), ne (not in-set), gt/gte/lt/lte (numeric threshold via expectedValue), between (numeric inclusive range via expectedValues [low, high]). stableForMs requires the condition to hold continuously for that many ms before converging (debounce). For MULTI-DEVICE convergence pass deviceIds (a list, mutually exclusive with deviceId, max 20) instead of deviceId: the same condition is applied to every device and mode controls the aggregate -- "all" (default) converges when every device matches, "any" on the first to match; the result is a compact per-device array (not full device objects) plus convergedCount. Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.
-
-Only query devices the user has mentioned or that are relevant to their request.
-
-**Parameters:**
-
-- **deviceId** (Device ID from hub_list_devices): Required for single-device mode; omit when using deviceIds. Provide exactly ONE of deviceId or deviceIds, not both.
-- **deviceIds** (multi-device poll): Mutually exclusive with deviceId. The same condition (attribute + comparator + expectedValue(s) + stableForMs) is applied to every device; mode controls the aggregate (any/all). Max 20 devices, no duplicates. The result is a compact per-device array (deviceId/device/finalValue/matched, plus per-device neverReported/nonNumericAttribute on timeout) plus convergedCount -- not full device objects.
-- **mode** (multi-device aggregate): Used with deviceIds. all (default) converges when EVERY device matches; any on the first to match. Rejected if passed with a single deviceId. Also drives stableForMs (the whole any/all condition must hold for the window).
-- **attribute** (attribute name): The same attribute is read on every device in multi-device mode.
-- **expectedValue**: For eq/ne it is one of the in-set values; for gt/gte/lt/lte it is the single numeric threshold (e.g. "72"). Provide exactly ONE of expectedValue or expectedValues, not both.
-- **expectedValues**: For eq/ne it is the value set (OR semantics -- match any member); for between it is exactly two numeric bounds [low, high]. Provide exactly ONE of expectedValue or expectedValues, not both.
-- **comparator** (default eq, value in the expected set): ne = NOT in the set. gt/gte/lt/lte = numeric compare against expectedValue. between = numeric inclusive low<=value<=high from expectedValues (exactly 2). Numeric comparators never match a null/non-numeric value (keep polling).
-- **stableForMs** (debounce, default 0 = first match): Must be < timeoutMs. A value that flaps out of the condition restarts the window.
-- **pollIntervalMs** (poll mode re-check interval, default 200): the TARGET cadence. Every tick costs one native read per device, and that latency is subtracted from the sleep so fast reads keep the requested spacing; the sleep never drops below half the interval, so slow reads (or many devices) space ticks by the reads plus that floor rather than saturating the hub. (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)
-- **Poll result:** on convergence, `success: true, finalValue, elapsedMs, polledCount, timedOut: false`. On timeout, `success: false, timedOut: true` with the last `finalValue` and `transitioning` (value still changing), plus `neverReported: true` (no non-null value all window) or `nonNumericAttribute: true` with a `note` (numeric comparator on a non-numeric value). `readError: true` (success or timeout) means a read threw on some tick, e.g. the device was removed, and that tick counted as unread. A hub reload mid-poll returns `interrupted: true`. Multi-device results carry these per device, with `transitioning`/`note` at the top level on timeout.
-- `ne` never matches a null or never-reported value. Any poll argument (comparator, stableForMs, timeoutMs, pollIntervalMs, deviceIds, mode) switches to poll mode, which then requires expectedValue or expectedValues.
+**waitFor** (summary mode only) blocks until an attribute matches, then returns the summary from the last check plus a `waitFor` block `{attribute, expected, converged, finalValue, elapsedMs, polledCount}`. One call replaces client-side read-and-sleep loops: confirm a command took effect, wait for a sensor threshold, detect that Z-Wave inclusion finished. Each check reads the device once; the first check is the summary read itself.
+- Keys: `attribute` plus exactly one of `expectedValue` / `expectedValues`. `comparator`: eq (default, value in the set), ne (a non-null value not in the set), gt/gte/lt/lte (numeric threshold in `expectedValue`), between (inclusive `[low, high]` in `expectedValues`); a numeric comparator never matches a null or non-numeric value. `stableForMs` (default 0, below timeoutMs): the match must hold that long, and a value that leaves the condition restarts the window. `timeoutMs` 100-60000 (default 5000). `pollIntervalMs` 50-5000 (default 200, clamped to timeoutMs) is the target cadence: each check's read time comes off the sleep, down to half the interval. Unknown keys are refused.
+- A wait that does not converge is not an error: `converged: false`, `timedOut: true`, the last `finalValue` and `transitioning` (the value was still changing). `neverReported: true` means no value all window (often a misspelled attribute); `nonNumericAttribute: true` with a `note` means a numeric comparator met a non-numeric value. `readError: true` means a read failed on some check, which counted as no value; `interrupted: true` means the hub reloaded mid-wait.
+- On the cloud relay, or with a LAN time budget set, the wait ends by the request deadline: `budgetLimited: true` with `budgetNote`, `requestedTimeoutMs` and `timeoutMs`; wait again in a new call. A `stableForMs` that cannot settle in the time left is refused.
+- The wait BLOCKS the request and queues concurrent MCP calls; keep timeoutMs tight. A credential-named attribute (lockCodes, a PIN or code) reads as the redaction marker while Hide passwords and credentials is on, and a wait on one is refused, since a match would confirm a guess.
 
 ### hub_list_device_events
 - Higher limits (50+) may slow the hub; default limit applies otherwise.
