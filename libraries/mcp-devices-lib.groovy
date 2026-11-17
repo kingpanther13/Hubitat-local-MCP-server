@@ -163,7 +163,7 @@ private Map _listDevicesOptions(Map args) {
         if (dupes) throw new IllegalArgumentException("deviceIds contains duplicate entries: ${dupes} -- each device may appear once")
     }
     if (args.waitFor != null) {
-        if (deviceIds == null || deviceIds.size() > 20) throw new IllegalArgumentException("waitFor needs deviceIds with 1 to 20 devices")
+        if (deviceIds == null || deviceIds.size() > 20) throw new IllegalArgumentException("waitFor requires deviceIds with 1 to 20 devices")
         if (args.cursor) throw new IllegalArgumentException("waitFor cannot be combined with cursor")
         if (args.scope == "all") throw new IllegalArgumentException("waitFor reads states, which scope='all' does not list; use scope 'authorized' or 'owned'")
     }
@@ -1534,12 +1534,17 @@ private Map _deviceReadPage(Map result, String selection) {
 }
 
 def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cursor = null, waitFor = null, reqT0 = null) {
+    def canonicalId = _canonicalDeviceIdArg(deviceId)
+    if (canonicalId == null) {
+        throw new IllegalArgumentException("deviceId must be a non-empty string or integral number (got: ${_describeValueForError(deviceId)})")
+    }
+    deviceId = canonicalId
     String selectedMode = mode == null ? 'summary' : mode.toString()
     if (!(selectedMode in ['summary', 'configuration', 'details'])) {
         throw new IllegalArgumentException("mode must be summary, configuration, or details.")
     }
     if (waitFor != null && (selectedMode != 'summary' || cursor != null)) {
-        throw new IllegalArgumentException("waitFor applies to the default summary mode only, without cursor.")
+        throw new IllegalArgumentException("waitFor applies to summary mode only, without cursor.")
     }
     Map waitSpec = waitFor != null ? _waitForSpec(waitFor, false, 60000, 200) : null
     if (sections != null && (selectedMode != 'details' || !(sections instanceof List) || sections.isEmpty() ||

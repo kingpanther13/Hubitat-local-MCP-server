@@ -1101,7 +1101,7 @@ class ToolWaitForComparatorSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('waitFor needs deviceIds with 1 to 20 devices')
+        ex.message.contains('waitFor requires deviceIds with 1 to 20 devices')
     }
 
     def "a missing id in deviceIds -> IAE naming WHICH id"() {
@@ -1194,7 +1194,7 @@ class ToolWaitForComparatorSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('waitFor needs deviceIds')
+        ex.message.contains('waitFor requires deviceIds')
     }
 
     def "empty deviceIds list -> IAE"() {
@@ -1212,7 +1212,7 @@ class ToolWaitForComparatorSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('waitFor needs deviceIds with 1 to 20 devices')
+        ex.message.contains('waitFor requires deviceIds with 1 to 20 devices')
         hubGet.calls.empty
     }
 
@@ -1267,13 +1267,13 @@ class ToolWaitForComparatorSpec extends ToolSpecBase {
         numeric.finalValue == strung.finalValue
     }
 
-    def "a non-numeric single deviceId -> IAE naming the id format"() {
+    def "a non-string, non-numeric single deviceId -> IAE naming the accepted forms"() {
         when: 'a boolean is neither a device id nor coercible to one'
         poll([deviceId: true, attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('deviceId must contain only decimal digits')
+        ex.message.contains('deviceId must be a non-empty string or integral number')
     }
 
     def "per-device neverReported and nonNumericAttribute surface on a multi-device timeout"() {
@@ -1597,7 +1597,7 @@ class ToolWaitForComparatorSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('summary mode only, without cursor')
+        ex.message.contains('waitFor applies to summary mode only')
         hubGet.calls.empty
     }
 
@@ -1620,6 +1620,37 @@ class ToolWaitForComparatorSpec extends ToolSpecBase {
         tool               | keys
         'hub_get_device'   | ['attribute', 'expectedValue', 'expectedValues', 'comparator', 'stableForMs', 'timeoutMs', 'pollIntervalMs']
         'hub_list_devices' | ['attribute', 'expectedValue', 'expectedValues', 'comparator', 'stableForMs', 'timeoutMs', 'pollIntervalMs', 'mode']
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_device refuses a #scenario deviceId in #mode mode before any read"() {
+        when:
+        script.toolGetDevice(id, mode)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('deviceId must be a non-empty string or integral number')
+        hubGet.calls.empty
+
+        where:
+        scenario     | id  | mode
+        'fractional' | 1.5 | 'summary'
+        'empty'      | ''  | 'configuration'
+        'blank'      | ' ' | 'details'
+    }
+
+    def "deviceIdsNotFound and waitFor rows carry string ids in the caller's order"() {
+        given:
+        nativePollDevice(new TestDevice(id: 1140, label: 'Order A', attributeValues: [switch: 'on']))
+        nativePollDevice(new TestDevice(id: 1141, label: 'Order B', attributeValues: [switch: 'on']))
+
+        when:
+        def listed = script.toolListDevices([deviceIds: [9002, '1141', 9001, 1140]])
+        def waited = poll([deviceIds: [1141, '1140'], attribute: 'switch', expectedValue: 'on'])
+
+        then:
+        listed.deviceIdsNotFound == ['9002', '9001']
+        waited.devices*.deviceId == ['1141', '1140']
     }
 
     def "hub_list_devices declares deviceIds as string or integer ids"() {

@@ -1415,7 +1415,7 @@ class ToolWaitForSpec extends ToolSpecBase {
             ['an unknown device', [deviceId: '9999', waitFor: [attribute: 'switch', expectedValue: 'on']], ['9999']],
             ['no expected value', [deviceId: '1030', waitFor: [attribute: 'switch', timeoutMs: 1000]], ['exactly one of expectedValue or expectedValues']],
             ['an unknown waitFor key', [deviceId: '1030', waitFor: [attribute: 'switch', expectedValue: 'on', timeoutSeconds: 10]], ['timeoutSeconds', 'timeoutMs']],
-            ['a details-mode wait', [deviceId: '1030', mode: 'details', waitFor: [attribute: 'switch', expectedValue: 'on']], ['summary mode']],
+            ['a details-mode wait', [deviceId: '1030', mode: 'details', waitFor: [attribute: 'switch', expectedValue: 'on']], ['waitFor applies to summary mode only']],
             ['mode inside a single-device wait', [deviceId: '1030', waitFor: [attribute: 'switch', expectedValue: 'on', mode: 'any']], ['unknown key: mode']]
         ]].combinations().collect { [it[0]] + it[1] }
     }
