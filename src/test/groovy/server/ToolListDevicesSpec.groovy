@@ -281,6 +281,61 @@ class ToolListDevicesSpec extends ToolSpecBase {
         !fullJsonReads()
     }
 
+    def "Devices-page facts are opt-in fields, and buttonCount alone reads the capability feed"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: [
+            [data: [id: 1, name: 'Remote', disabled: false, roomName: '', lastActivity: null, currentStates: [],
+                isOrphan: true, user: true, defaultCurrentState: 'pushed', hubMesh: true, homekit: true, showOnHome: true,
+                dashboardTypes: ['button'], defaultIcon: 'remote', remoteDeviceUrl: 'http://10.0.0.2/device/edit/9']],
+            [data: [id: 2, name: 'Plain', disabled: false, roomName: '', lastActivity: null, currentStates: [],
+                isOrphan: false, user: false, defaultCurrentState: null, hubMesh: false, homekit: false, showOnHome: false,
+                dashboardTypes: [], defaultIcon: null, remoteDeviceUrl: '']]
+        ]]) }
+        hubGet.register('/hub2/vrb/devices') { JsonOutput.toJson([
+            [id: 1, capabilities: ['PushableButton'], buttonCount: 4], [id: 2, capabilities: ['Switch'], buttonCount: null]]) }
+        List names = ['orphan', 'user', 'defaultCurrentState', 'meshEnabled', 'homekit', 'showOnHome', 'dashboardTypes', 'defaultIcon', 'remoteDeviceUrl']
+
+        when:
+        def pageOnly = script.toolListDevices([fields: names])
+
+        then: 'each fact comes from the page under its name, with no feed or device read'
+        pageOnly.devices == [
+            [id: '1', orphan: true, user: true, defaultCurrentState: 'pushed', meshEnabled: true, homekit: true, showOnHome: true,
+             dashboardTypes: ['button'], defaultIcon: 'remote', remoteDeviceUrl: 'http://10.0.0.2/device/edit/9'],
+            [id: '2', orphan: false, user: false, defaultCurrentState: null, meshEnabled: false, homekit: false, showOnHome: false,
+             dashboardTypes: [], defaultIcon: null, remoteDeviceUrl: null]]
+        hubGet.calls*.path == ['/hub2/devicesList']
+
+        and: 'the default record carries none of them'
+        script.toolListDevices([:]).devices.every { d -> !names.any { d.containsKey(it) } && !d.containsKey('buttonCount') }
+
+        when:
+        hubGet.calls.clear()
+        def buttons = script.toolListDevices([fields: ['buttonCount']])
+
+        then: 'buttonCount reads the feed and shows only on button devices'
+        buttons.devices == [[id: '1', buttonCount: 4], [id: '2']]
+        hubGet.calls*.path == ['/hub2/devicesList', '/hub2/vrb/devices']
+    }
+
+    def "scope='all' takes the identity facts orphan, user and remoteDeviceUrl, not settings"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        expect:
+        script.toolListDevices([scope: 'all', fields: ['orphan', 'user', 'remoteDeviceUrl']]).devices*.keySet()*.toList() ==
+            [['id', 'orphan', 'user', 'remoteDeviceUrl', 'mcpAuthorized']]
+
+        when:
+        script.toolListDevices([scope: 'all', fields: ['homekit']])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("scope='all' lists identity only")
+        ex.message.contains('remoteDeviceUrl')
+    }
+
     def "an empty fields list is the default record"() {
         given:
         settingsMap.selectedDevices = [makeDevice(id: 1)]
@@ -347,41 +402,28 @@ class ToolListDevicesSpec extends ToolSpecBase {
         script.toolListDevices([stateFilter: [lockCodes: '{"1":{"code":"1234"}}']]).devices*.id == ['1']
     }
 
-    def "a page entry missing a filtered field, or with an unparseable activity, is excluded and named"() {
-        given: 'the bypass authorizes a hand-built page: one full entry, one bare entry, one with garbage activity'
+    def "a page entry with an unparseable activity is excluded from the activity filters and named"() {
+        given: 'the bypass authorizes a hand-built page: one entry never active, one with garbage activity'
         settingsMap.bypassDeviceAllowlist = true
         hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: [
             [data: [id: 1, name: 'Full', disabled: false, roomName: 'Den', lastActivity: null, currentStates: [[key: 'switch', value: 'on']]]],
-            [data: [id: 2, name: 'Bare']],
-            [data: [id: 3, name: 'Odd', disabled: false, roomName: null, lastActivity: 'yesterday-ish', currentStates: []]]
+            [data: [id: 3, name: 'Odd', disabled: false, roomName: '', lastActivity: 'yesterday-ish', currentStates: []]]
         ]]) }
 
-        expect: 'each filter excludes the entry that cannot answer it and says which'
-        script.toolListDevices([disabled: false]).devices*.id == ['1', '3']
-        script.toolListDevices([disabled: false]).metadataUnavailableIds == ['2']
-        script.toolListDevices([roomFilter: 'Den']).metadataUnavailableIds == ['2']
-        script.toolListDevices([stateFilter: [switch: 'on']]).metadataUnavailableIds == ['2']
+        expect: 'only the activity filters cannot judge it'
         script.toolListDevices([staleHours: 1]).devices*.id == ['1']
-        script.toolListDevices([staleHours: 1]).metadataUnavailableIds == ['2', '3']
+        script.toolListDevices([staleHours: 1]).metadataUnavailableIds == ['3']
         script.toolListDevices([changedSince: 0]).devices*.id == []
         script.toolListDevices([changedSince: 0]).partial == true
+        script.toolListDevices([disabled: false]).with { devices*.id == ['1', '3'] && !containsKey('metadataUnavailableIds') && !containsKey('partial') }
 
-        and: 'a bare record is marked, a full one is not, and the context line does not invent a room'
-        script.toolListDevices([:]).devices.find { it.id == '2' }.metadataUnavailable == true
-        !script.toolListDevices([:]).devices.find { it.id == '1' }.containsKey('metadataUnavailable')
-        script.toolListDevices([format: 'context']).summary.contains('- Bare (2, room unknown)')
+        and: 'the label filter runs first, so a device it excludes is not reported'
+        script.toolListDevices([labelFilter: 'Full', staleHours: 1]).with { devices*.id == ['1'] && !containsKey('metadataUnavailableIds') && !containsKey('partial') }
+
+        and: 'an empty room reads as No room, and no record is marked'
         script.toolListDevices([format: 'context']).summary.contains('- Odd (3, No room)')
-
-        and: 'a device the label filter excludes is not reported, and a missing field the record neither shows nor filters on marks nothing'
-        script.toolListDevices([labelFilter: 'Full', disabled: false]).with { devices*.id == ['1'] && !containsKey('metadataUnavailableIds') && !containsKey('partial') }
-        !script.toolListDevices([fields: ['id', 'label']]).devices.find { it.id == '2' }.containsKey('metadataUnavailable')
-        script.toolListDevices([fields: ['id', 'room']]).devices.find { it.id == '2' }.metadataUnavailable == true
-
-        and: 'the context resource files a missing room as unknown and marks the record'
-        def ctx = script._buildContextJson()
-        ctx.rooms.find { it.name == 'Room unknown' }.deviceIds == ['2']
-        ctx.devices.find { it.id == '2' }.metadataUnavailable == true
-        !ctx.devices.find { it.id == '3' }.containsKey('metadataUnavailable')
+        !script.toolListDevices([:]).devices.any { it.containsKey('metadataUnavailable') }
+        script._buildContextJson().rooms.find { it.name == 'No room' }.deviceIds == ['3']
     }
 
     def "an empty lastActivity string is unanswered for the activity filters, not never-active"() {

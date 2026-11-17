@@ -45,12 +45,6 @@ private void _flattenDevicesPage(List nodes, String parentId, List out, Set only
             for (t in (data.tags instanceof List ? data.tags : (data.tags ? data.tags.toString().tokenize(",") : []))) {
                 if (t?.toString()?.trim()) tags << t.toString().trim()
             }
-            // A page entry without one of these carries no answer for it, which is not "No room", enabled or no states.
-            List missing = []
-            if (!(data.disabled instanceof Boolean)) missing << "disabled"
-            if (!data.containsKey("roomName")) missing << "room"
-            if (!data.containsKey("lastActivity")) missing << "lastActivity"
-            if (!(data.currentStates instanceof List)) missing << "currentStates"
             out << [id: id, label: label, name: data.secondaryName ? data.secondaryName.toString() : label,
                 driver: data.type, deviceTypeId: data.deviceTypeId, source: data.source,
                 deviceNetworkId: data.dni, zigbeeId: data.zigbeeId,
@@ -58,27 +52,34 @@ private void _flattenDevicesPage(List nodes, String parentId, List out, Set only
                     data.isNetwork == true ? "network" : data.isBluetooth == true ? "bluetooth" : data.isVirtual == true ? "virtual" : null,
                 linked: data.isLinked == true, disabled: data.disabled == true, lastActivity: data.lastActivity,
                 roomId: data.roomId, roomName: data.roomName ? data.roomName.toString() : null, parentDeviceId: parentId,
-                tags: tags, notes: data.notes ? data.notes.toString() : null, currentStates: states, missingFields: missing]
+                tags: tags, notes: data.notes ? data.notes.toString() : null, currentStates: states,
+                orphan: data.isOrphan == true, user: data.user == true, defaultCurrentState: data.defaultCurrentState ?: null,
+                meshEnabled: data.hubMesh == true, homekit: data.homekit == true, showOnHome: data.showOnHome == true,
+                dashboardTypes: data.dashboardTypes instanceof List ? data.dashboardTypes : [], defaultIcon: data.defaultIcon ?: null,
+                remoteDeviceUrl: data.remoteDeviceUrl ?: null]
         }
         if (node.children instanceof List) _flattenDevicesPage(node.children, id, out, onlyIds)
     }
 }
 
 // The capability feed for these page records; an empty feed beside devices is a bad read (null).
-private Map _capabilityFeedFor(List population) {
-    Map caps = _readCapabilityFeed()
+private Map _capabilityFeedFor(List population, Map buttonCounts = null) {
+    Map caps = _readCapabilityFeed(buttonCounts)
     return caps != null && caps.isEmpty() && population ? null : caps
 }
 
 // Capability names for every hub device by id string; null when the feed cannot be read.
-private Map _readCapabilityFeed() {
+// buttonCounts, when given, collects each button device's count.
+private Map _readCapabilityFeed(Map buttonCounts = null) {
     try {
         def txt = hubInternalGet("/hub2/vrb/devices")
         def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
         if (!(parsed instanceof List)) return null
         Map caps = [:]
         for (entry in parsed) {
-            if (entry instanceof Map && entry.id != null) caps.put(entry.id.toString(), _capabilityNames(entry.capabilities))
+            if (!(entry instanceof Map) || entry.id == null) continue
+            caps.put(entry.id.toString(), _capabilityNames(entry.capabilities))
+            if (buttonCounts != null && entry.buttonCount instanceof Number) buttonCounts.put(entry.id.toString(), ((Number) entry.buttonCount).intValue())
         }
         return caps
     } catch (Exception e) {
@@ -103,7 +104,9 @@ private Set _mcpAuthorizedIds(List children) {
 
 private List _listDeviceFieldNames() {
     ["id", "label", "name", "driver", "room", "roomId", "disabled", "deviceNetworkId", "lastActivity", "protocol",
-     "parentDeviceId", "mcpManaged", "linked", "tags", "notes", "source", "currentStates", "capabilities", "attributes", "commands"]
+     "parentDeviceId", "mcpManaged", "linked", "tags", "notes", "source", "currentStates", "capabilities", "attributes", "commands",
+     "orphan", "user", "defaultCurrentState", "meshEnabled", "homekit", "showOnHome", "dashboardTypes", "defaultIcon",
+     "remoteDeviceUrl", "buttonCount"]
 }
 
 // Every argument check, before any hub read. Returns the normalized options.
@@ -172,7 +175,8 @@ private Map _listDevicesOptions(Map args) {
     String format = args.format ?: "summary"
     List fields = args.get("fields") ?: null
     if (scope == "all") {
-        List identity = ["id", "label", "name", "driver", "room", "roomId", "protocol", "disabled", "parentDeviceId", "source", "linked", "capabilities"]
+        List identity = ["id", "label", "name", "driver", "room", "roomId", "protocol", "disabled", "parentDeviceId", "source", "linked", "capabilities",
+                         "orphan", "user", "remoteDeviceUrl"]
         if (!(format in ["summary", "ids"])) throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only")
         if (stateFilter || args.staleHours != null || since != null || args.attributeNames || fields?.any { !(it in identity) }) {
             throw new IllegalArgumentException("scope='all' lists identity only (fields: ${identity.join(', ')}); states need scope='authorized'")
@@ -208,7 +212,7 @@ private Map _listDevicesOptions(Map args) {
     opts.filtered = [opts.labelFilter, opts.capabilityFilter, opts.roomFilter, opts.disabled, opts.staleHours,
                      opts.stateFilter, sinceDate, deviceIds].any { it != null }
     opts.wantFull = fieldSet.contains("attributes") || fieldSet.contains("commands")
-    opts.wantCaps = opts.capabilityFilter != null || format == "context" || fieldSet.contains("capabilities")
+    opts.wantCaps = opts.capabilityFilter != null || format == "context" || fieldSet.contains("capabilities") || fieldSet.contains("buttonCount")
     return opts
 }
 
@@ -254,7 +258,8 @@ def toolListDevices(Map args) {
         wait = _waitForRun(opts.waitFor, deviceIds, true, first, reqT0)
         population = population.collect { wait.last.get(it.id) ?: it }
     }
-    Map caps = opts.wantCaps ? _capabilityFeedFor(population) : null
+    Map buttons = opts.fieldSet.contains("buttonCount") ? [:] : null
+    Map caps = opts.wantCaps ? _capabilityFeedFor(population, buttons) : null
 
     String lf = opts.labelFilter?.toLowerCase()
     String cf = opts.capabilityFilter
@@ -264,34 +269,24 @@ def toolListDevices(Map args) {
     Long sinceMs = opts.sinceDate?.time
     long nowMs = now()
     List matched = []
-    // Devices with no usable value for a filtered field: excluded and named, never guessed. The
-    // label filter runs first so a device it excludes is not reported.
+    // Devices a filter cannot judge (not in the capability feed, unparseable activity): excluded
+    // and named, never guessed. The label filter runs first so a device it excludes is not reported.
     List unanswered = []
     for (candidate in population) {
-        List missing = candidate.missingFields
         if (idSet != null && !idSet.contains(candidate.id)) continue
         if (lf != null && !candidate.label.toLowerCase().contains(lf)) continue
         if (cf != null && caps != null) {
             if (!caps.containsKey(candidate.id)) { unanswered << candidate.id; continue }
             if (!caps.get(candidate.id).any { it.equalsIgnoreCase(cf) }) continue
         } else if (cf != null) continue
-        if (opts.disabled != null) {
-            if ("disabled" in missing) { unanswered << candidate.id; continue }
-            if (candidate.disabled != opts.disabled) continue
-        }
-        if (rf != null) {
-            if ("room" in missing) { unanswered << candidate.id; continue }
-            if (!rf.equalsIgnoreCase(candidate.roomName ?: "")) continue
-        }
-        if (stateFilter != null) {
-            if ("currentStates" in missing) { unanswered << candidate.id; continue }
-            if (stateFilter.any { k, v -> candidate.currentStates.get(k) != v }) continue
-        }
+        if (opts.disabled != null && candidate.disabled != opts.disabled) continue
+        if (rf != null && !rf.equalsIgnoreCase(candidate.roomName ?: "")) continue
+        if (stateFilter != null && stateFilter.any { k, v -> candidate.currentStates.get(k) != v }) continue
         if (staleMs != null || sinceMs != null) {
             // A device that never reported counts as stale and as not changed; an activity value
             // that does not parse is unknown, so neither filter keeps it.
             Date la = candidate.lastActivity ? _parseSinceArg(candidate.lastActivity) : null
-            if ("lastActivity" in missing || (candidate.lastActivity != null && la == null)) { unanswered << candidate.id; continue }
+            if (candidate.lastActivity != null && la == null) { unanswered << candidate.id; continue }
             if (staleMs != null && la != null && nowMs - la.time < staleMs) continue
             if (sinceMs != null && (la == null || la.time < sinceMs)) continue
         }
@@ -316,7 +311,7 @@ def toolListDevices(Map args) {
     if (rf != null && total == 0) common.roomFilterMatchedKnownRoom = population.any { rf.equalsIgnoreCase(it.roomName ?: "") }
     if (opts.wantCaps && caps == null) {
         common.capabilitiesUnavailable = true
-        common.note = "The hub's capability feed (/hub2/vrb/devices) could not be read or listed no device, so capabilities are omitted and capabilityFilter matches nothing. Retry."
+        common.note = "The hub's capability feed (/hub2/vrb/devices) could not be read or listed no device, so capabilities and buttonCount are omitted and capabilityFilter matches nothing. Retry."
     }
 
     // A live filter can shrink the result between pages; a cursor past the end is an empty last page.
@@ -357,7 +352,7 @@ def toolListDevices(Map args) {
                 }
                 fj = _fetchDeviceFullJson(rec.id)
             }
-            Map row = _listDeviceRecord(rec, opts, attrNames, caps, childIds, fj)
+            Map row = _listDeviceRecord(rec, opts, attrNames, caps, buttons, childIds, fj)
             if (scope == "all") row.mcpAuthorized = authorized == null || authorized.contains(rec.id)
             devices << row
         }
@@ -383,7 +378,7 @@ def toolListDevices(Map args) {
     return result
 }
 
-private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set childIds, Map fj) {
+private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Map buttons, Set childIds, Map fj) {
     Set f = opts.fieldSet
     Map row = [id: rec.id]
     if (f.contains("label")) row.label = rec.label
@@ -401,6 +396,9 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
     if (f.contains("tags") && rec.tags) row.tags = rec.tags
     if (f.contains("notes")) row.notes = rec.notes
     if (f.contains("source")) row.source = rec.source
+    for (key in ["orphan", "user", "defaultCurrentState", "meshEnabled", "homekit", "showOnHome", "dashboardTypes", "defaultIcon", "remoteDeviceUrl"]) {
+        if (f.contains(key)) row.put(key, rec.get(key))
+    }
     if (f.contains("currentStates")) {
         Map states = [:]
         for (an in attrNames) {
@@ -409,12 +407,10 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
         }
         row.currentStates = states
     }
-    boolean capsMissing = f.contains("capabilities") && caps != null && !caps.containsKey(rec.id)
+    boolean capsMissing = (f.contains("capabilities") || f.contains("buttonCount")) && caps != null && !caps.containsKey(rec.id)
     if (f.contains("capabilities") && caps != null && !capsMissing) row.capabilities = caps.get(rec.id)
-    // Marked only for a missing field the record shows; a filter on one excludes the device before this.
-    Map shownBy = [disabled: f.contains("disabled"), room: f.contains("room") || f.contains("roomId"),
-                   lastActivity: f.contains("lastActivity"), currentStates: f.contains("currentStates")]
-    if (capsMissing || rec.missingFields.any { shownBy.get(it) }) row.metadataUnavailable = true
+    if (f.contains("buttonCount") && buttons?.get(rec.id) != null) row.buttonCount = buttons.get(rec.id)
+    if (capsMissing) row.metadataUnavailable = true
     if (!opts.wantFull) return row
     Map detail = null
     try {
@@ -511,7 +507,7 @@ private String _contextDeviceLine(Map rec, Map caps, List attrNames, boolean red
         def v = rec.currentStates.get(an)
         if (v != null) parts << "${an}=${_listStateValue(an, v, redact)}".toString()
     }
-    String room = "room" in rec.missingFields ? "room unknown" : (rec.roomName ?: "No room")
+    String room = rec.roomName ?: "No room"
     String line = "- ${rec.label} (${rec.id}, ${room})"
     List c = caps?.get(rec.id)
     if (c) line += " - ${c.join(', ')}"
@@ -607,7 +603,7 @@ def _buildContextJson() {
     def contextAttrs = _contextAttributeNames()
     def roomIndex = [:]
     for (d in allDevices) {
-        String r = "room" in d.missingFields ? "Room unknown" : (d.roomName ?: "No room")
+        String r = d.roomName ?: "No room"
         if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
         roomIndex.get(r) << d.id
     }
@@ -637,7 +633,7 @@ def _buildContextJson() {
         }
         Map rec = [id: d.id, label: d.label, room: d.roomName, capabilities: caps?.get(d.id) ?: [], attributes: attrs]
         if (caps == null) rec.capabilitiesUnavailable = true
-        if (d.missingFields.any { it in ["room", "currentStates"] } || (caps != null && !caps.containsKey(d.id))) rec.metadataUnavailable = true
+        if (caps != null && !caps.containsKey(d.id)) rec.metadataUnavailable = true
         used += _escapedLen(groovy.json.JsonOutput.toJson(rec))
         if (used > budget) {
             truncated = true
@@ -2263,7 +2259,7 @@ def _waitForCore(Map spec, List ids, boolean page, first, Long deadlineMs) {
             last.putAll(records)
             for (int i = 0; i < n; i++) {
                 Map rec = records.get(ids[i])
-                if (rec == null || "currentStates" in rec.missingFields) readError[i] = true
+                if (rec == null) readError[i] = true
                 values[i] = rec?.currentStates?.get(attribute)
             }
         } else {

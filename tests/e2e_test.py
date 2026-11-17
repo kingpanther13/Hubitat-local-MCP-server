@@ -2993,6 +2993,15 @@ class TestRunner:
         first = devices[0]
         assert "id" in first, "Device missing 'id'"
         assert "label" in first or "name" in first, "Device missing label/name"
+        # Devices-page facts are opt-in: absent by default, typed when named in fields.
+        assert not {"orphan", "meshEnabled", "dashboardTypes", "buttonCount"} & set(first), f"default record grew opt-in fields: {first}"
+        facts = self.client.call_tool("hub_list_devices", {"fields": ["orphan", "meshEnabled", "dashboardTypes", "buttonCount"]})
+        assert facts.get("devices"), f"fields projection returned no devices: {facts}"
+        for d in facts["devices"]:
+            assert isinstance(d.get("orphan"), bool) and isinstance(d.get("meshEnabled"), bool), f"orphan/meshEnabled must be booleans: {d}"
+            assert isinstance(d.get("dashboardTypes"), list), f"dashboardTypes must be a list: {d}"
+            count = d.get("buttonCount")
+            assert count is None or (type(count) is int and count >= 1), f"buttonCount must be a positive integer when present: {d}"
 
     @test("devices")
     def test_list_devices_scope_all(self) -> None:
