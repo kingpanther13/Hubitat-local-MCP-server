@@ -10611,8 +10611,8 @@ List _rmOrderedActionIndices(Integer appId) {
  * Build the structural-balance sequence for a rule. MEMBERSHIP is orderedIndices (the compiled
  * actionList) when the caller has it: appSettings retains rows the rule no longer contains, and
  * walking those makes a balanced rule read as damaged (a stale IF reports "never closed" forever).
- * Without it, every index either key mentions in numeric order: the pre-membership behaviour, still foolable by a stale row, but the honest best
- * effort when the rule itself cannot be read.
+ * Without it, every index either key mentions is walked in numeric order; a stale row can still
+ * fool that, but it is the best available when the rule itself cannot be read.
  * VALUES always come from settings. excludeIndices (_rmDeleteAction's pre-flight) skips listed
  * indices so the walker sees the post-deletion state.
  */
