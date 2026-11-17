@@ -1531,6 +1531,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
         then: 'overall success with both items created'
         result.success == true
+        !result.containsKey('isError')
         result.createdCount == 2
         result.failedCount == 0
 
@@ -1555,8 +1556,9 @@ class ToolHubVariablesSpec extends ToolSpecBase {
             [name: 'goodTwo', type: 'Number', value: 3]
         ]])
 
-        then: 'overall failure, but the two good items still created'
+        then: 'overall failure, flagged isError, but the two good items still created'
         result.success == false
+        result.isError == true
         result.createdCount == 2
         result.failedCount == 1
         result.results[0].success == true

@@ -1017,6 +1017,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         then:
         r.success == false
+        r.isError == true
         r.note.contains('load limiter')
         !r.note.contains('Hub Mesh')
     }
@@ -1685,8 +1686,10 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         then:
         refused.success == false
+        refused.isError == true
         refused.error.contains('did not apply')
         threw.success == false
+        threw.isError == true
         threw.error.contains('linked variable')
     }
 
@@ -1714,6 +1717,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         then:
         r.success == false
+        r.isError == true
         r.note.contains('Nothing was changed')
         adds.isEmpty()
     }

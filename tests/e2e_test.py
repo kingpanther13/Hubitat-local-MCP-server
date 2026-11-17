@@ -12353,9 +12353,14 @@ def updated() {}
         assert not self._hub_variable_visible_in_bulk(bad_name), "a refused name left a variable behind"
 
         # A misspelt key in a bulk item fails that item by name, before anything is sent.
-        typo = self.client.call_tool_failure("hub_manage_variables", {
-            "tool": "hub_create_variable",
-            "args": {"variables": [{"nmae": f"{PREFIX}HubVar_Typo", "type": "String", "value": "x"}], "confirm": True}})
+        try:
+            typo_result = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_create_variable",
+                "args": {"variables": [{"nmae": f"{PREFIX}HubVar_Typo", "type": "String", "value": "x"}], "confirm": True}})
+        except McpToolError as exc:
+            typo = _tool_error_payload(exc)
+        else:
+            raise AssertionError(f"a bulk create with a failed item did not set isError: {typo_result}")
         assert typo.get("createdCount") == 0 and typo.get("failedCount") == 1, f"bulk typo counts are wrong: {typo}"
         assert "unknown key(s): nmae" in str((typo.get("results") or [{}])[0].get("error")), \
             f"the bulk typo was not named: {typo}"
@@ -12540,8 +12545,14 @@ def updated() {}
             # never add twice). A refused call is retried after the reset and then after two short
             # waits, which stay for runs whose reset fails (no watchdog): the busy budget grows with
             # uptime, so a call just over the limit can clear without one.
-            inc = self.client.call_tool_result("hub_manage_variables", {
-                "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
+            def increment() -> dict:
+                # A refused increment is an isError failure; its payload says why.
+                try:
+                    return self.client.call_tool("hub_manage_variables", {
+                        "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
+                except McpToolError as exc:
+                    return _tool_error_payload(exc)
+            inc = increment()
             for wait_s in (0, 10, 20):
                 if "excessive hub load" not in str(inc.get("error", "")):
                     break
@@ -12554,8 +12565,7 @@ def updated() {}
                 if now_val != 1:
                     inc = {"success": now_val == 6, "previousValue": 1, "value": now_val}
                     break
-                inc = self.client.call_tool_result("hub_manage_variables", {
-                    "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
+                inc = increment()
             assert inc.get("success") is True and inc.get("previousValue") == 1 and inc.get("value") == 6, \
                 f"increment did not add 5 to 1: {inc}"
             self._expect_tool_refusal("hub_set_variable", {"name": names[1], "increment": 1}, "Number or Decimal hub variable")

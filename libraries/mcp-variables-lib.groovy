@@ -288,7 +288,8 @@ private void _hubVarsNativePost(String action, Map body) {
     def response
     try { response = hubInternalPostJson("/hub2/variables/${action}", groovy.json.JsonOutput.toJson(body)) }
     catch (Exception e) { throw new IllegalStateException("Hub Variables ${action} failed: ${_hubVarsHubMessage(e)}", e) }
-    if (response instanceof Map && (response.error || response.success == false || response._unparseable)) {
+    // An unreadable 2xx body proves nothing either way; the caller's read-back decides.
+    if (response instanceof Map && (response.error || response.success == false)) {
         throw new IllegalStateException("Hub Variables ${action} failed: ${response.message ?: response.error ?: 'invalid response'}")
     }
 }
@@ -577,12 +578,14 @@ private Map _createVariablesBulk(variables) {
         }
     }
 
-    return [
+    Map result = [
         success: failedCount == 0,
         results: results,
         createdCount: createdCount,
         failedCount: failedCount
     ]
+    if (failedCount) result.isError = true
+    return result
 }
 
 // A null value cannot be stored; an empty String can.
@@ -845,7 +848,7 @@ private Map _incrementHubVariable(String name, increment) {
     def hv
     try { hv = getGlobalVar(name) } catch (Exception e) {
         mcpLogError("variables", "getGlobalVar failed for '${name}'", e)
-        return [success: false, name: name, error: "Could not read hub variable '${name}': ${e.message ?: e}", note: "Nothing was changed. Retry."]
+        return [success: false, isError: true, name: name, error: "Could not read hub variable '${name}': ${e.message ?: e}", note: "Nothing was changed. Retry."]
     }
     if (hv == null) throw new IllegalArgumentException("increment applies only to hub variables; '${name}' is not a hub variable.")
     def type = hv.type?.toString()?.toLowerCase()
@@ -860,7 +863,7 @@ private Map _incrementHubVariable(String name, increment) {
         def note = why.contains("excessive hub load") ? "The hub's per-app load limiter refused the call. Check the value with hub_get_variable; retry only if it did not change." :
                    "Check the value with hub_get_variable before retrying."
         if (why.toLowerCase().contains("mesh") || why.toLowerCase().contains("linked")) note += " A variable linked from another hub over Hub Mesh is changed on its source hub."
-        return [success: false, name: name, error: "Increment failed: ${why}", note: note]
+        return [success: false, isError: true, name: name, error: "Increment failed: ${why}", note: note]
     }
     def after = null
     boolean readBack = true
@@ -869,7 +872,7 @@ private Map _incrementHubVariable(String name, increment) {
         mcpLog("warn", "variables", "increment of '${name}' applied but the read-back failed: ${e.message}")
     }
     if (ok == false) {
-        return [success: false, name: name, value: after, error: "The hub did not apply the increment.",
+        return [success: false, isError: true, name: name, value: after, error: "The hub did not apply the increment.",
                 note: "Check the value with hub_get_variable before retrying. One cause: a variable linked from another hub over Hub Mesh is changed on its source hub."]
     }
     def out = [success: true, name: name, source: "hub", type: hv.type, increment: amount, previousValue: before, value: after]

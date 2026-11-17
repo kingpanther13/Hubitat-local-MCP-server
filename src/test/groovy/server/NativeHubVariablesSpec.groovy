@@ -159,6 +159,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         !variables.containsKey('Missing')
     }
 
+    // Defensive: no live capture of a 2xx error body; a success is HTTP 204 with an empty body.
     def 'a POST answered with an error body instead of the empty 204 is a failure'() {
         given:
         postResponse = [success: false, error: 'Rejected']
@@ -527,6 +528,18 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         'login page'     | '<html><title>Login</title></html>' | 'Could not read the Hub Variables JSON model'
         'JSON array'     | '[1, 2]'                | 'Hub Variables returned an unexpected JSON model'
         'no variables'   | '{"variables": "none"}' | 'Hub Variables returned an unexpected JSON model'
+    }
+
+    def 'an unreadable 2xx body leaves the outcome to the read-back'() {
+        given: 'hubInternalPostJson reports a non-JSON 2xx body, and the variable did land'
+        postResponse = [_unparseable: true, message: 'hub returned a non-JSON body']
+        int reads = 0
+        script.metaClass.getGlobalVar = { String n -> reads++ == 0 ? null : [name: n, type: 'integer', value: 3L] }
+        when:
+        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        then:
+        result.success
+        posts()*.path == ['/hub2/variables/create']
     }
 
     def 'a create sends its POST without reading the Hub Variables page'() {
