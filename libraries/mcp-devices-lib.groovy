@@ -2299,9 +2299,11 @@ def _waitForCore(Map spec, List ids, boolean page, first, Long deadlineMs) {
         } else {
             conditionTrueSince = null
         }
-        pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
+        long tickMs = now() - tickStartMs
+        int sleepMs = _pollSleepMs(spec.pollIntervalMs, timeoutMs - elapsedMs, tickMs)
+        // The next check is this sleep plus a read like the last one; it must end by the deadline.
+        pastDeadline = deadlineMs != null && now() + sleepMs + tickMs >= deadlineMs
         if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) { outcome = "timedOut"; break }
-        int sleepMs = _pollSleepMs(spec.pollIntervalMs, timeoutMs - elapsedMs, now() - tickStartMs)
         try {
             if (sleepMs > 0) pauseExecution(sleepMs)
         } catch (InterruptedException e) {

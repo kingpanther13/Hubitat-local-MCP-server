@@ -246,7 +246,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` (on), then `hub_get_device` with `waitFor={attribute:"switch", expectedValue:"on", timeoutMs:5000}` (the command's own `waitFor` also meets the goal). The `waitFor` block reports `converged: true` with no `timedOut`.
+**Expected**: Calls `hub_call_device_command` (on), then `hub_get_device` with `waitFor={attribute:"switch", expectedValue:"on", timeoutMs:5000}`. The `waitFor` block of that `hub_get_device` call reports `converged: true` with no `timedOut`.
 
 ### T07c — attribute wait on hub_get_device (timeout path)
 

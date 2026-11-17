@@ -551,6 +551,30 @@ class ToolWaitForComparatorSpec extends ToolSpecBase {
     // stableForMs (debounce)
     // -------------------------------------------------------------------------
 
+    // 100 ms reads against a 250 ms deadline: after the first read 150 ms remain, so a sleep
+    // followed by a second read would finish past the deadline.
+    @IgnoreIf({ System.getProperty('harnessStrictMetaClass') == 'true' })  // virtual clock, as below
+    def "a budgeted wait starts no read that cannot finish by the request deadline"() {
+        given:
+        def clock = installVirtualClock()
+        int reads = 0
+        hubGet.register('/device/fullJson/10') { Map params ->
+            reads++
+            clock[0] = clock[0] + 100
+            groovy.json.JsonOutput.toJson([device: [id: 10, currentStates: [switch: [value: 'off']]]])
+        }
+        Map spec = script._waitForSpec([attribute: 'switch', expectedValue: 'on', timeoutMs: 5000], false, 60000, 200)
+
+        when:
+        Map r = script._waitForCore(spec, ['10'], false, null, 1_000_000L + 250)
+
+        then:
+        r.timedOut == true
+        r.budgetStopped == true
+        reads == 1
+        clock[0] <= 1_000_000L + 250
+    }
+
     // LOAD-BEARING GUARD (both-ways VERIFIED RED on revert, orchestrator): asserts the debounce
     // does NOT converge on the first matching poll -- it must hold for stableForMs
     // of virtual time first. If the debounce gate were removed (converge on first

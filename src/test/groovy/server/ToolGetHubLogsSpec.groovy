@@ -1130,7 +1130,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('101')
         ex.message.toLowerCase().contains('100')
-        ex.message.contains("split it across patterns (patternMode 'any' matches either)")
+        ex.message.contains("split an alternation's alternatives across patterns (patternMode 'any'); otherwise shorten it")
     }
 
     def "pattern element in patterns list longer than 100 chars throws naming the index"() {

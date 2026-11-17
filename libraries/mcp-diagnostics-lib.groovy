@@ -628,7 +628,7 @@ private Map _logsPatterns(Map args) {
     def compile = { String label, p ->
         if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
         if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
-        if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars); split it across patterns (patternMode 'any' matches either)")
+        if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars); split an alternation's alternatives across patterns (patternMode 'any'); otherwise shorten it")
         try {
             return java.util.regex.Pattern.compile(p, java.util.regex.Pattern.CASE_INSENSITIVE)
         } catch (java.util.regex.PatternSyntaxException e) {
