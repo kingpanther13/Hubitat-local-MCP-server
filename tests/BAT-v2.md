@@ -556,6 +556,8 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_set_variable` with `name: "vacationMode"` and `mesh_shared: true` (no `value` needed — mesh_shared may stand alone), reports `meshShared: true` and, when the read-back is readable, `meshShareConfirmed: true` (the variable now appears in `hub_get_hub_mesh` `sharedHubVariables`). Then `mesh_shared: false` to stop. `mesh_shared` applies to HUB variables only — a rule-only name is rejected by validation before any hub call (`isError`), as is a call with neither `value` nor `mesh_shared`. Sharing/unsharing is reversible (no `confirm`). Distinct from per-DEVICE sharing (`hub_update_device` `meshEnabled`).
 
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- `hub_set_variable(mesh_shared:true)` on a throwaway `vacationMode`, `meshShared:true` and `meshShareConfirmed:true` (the hub then lists its Hub Mesh app as using the variable), then `mesh_shared:false`, confirmed, and `hub_get_hub_mesh` showed no shared variables.
+
 ### T14l — link a device or variable a peer hub shares (hub_create_device / hub_create_variable mesh link)
 
 > **Conditional** — only runnable when a peer hub is actually sharing something (`hub_get_hub_mesh` `availableLinkedDevices[]` / `availableLinkedHubVariables[]` non-empty). Otherwise verify the validation contract only.
@@ -793,6 +795,8 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_manage_variables` → `hub_list_variables`.
 
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- `hub_list_variables` in one call; the three time-only DateTime variables were labelled from `dateTimeKind`.
+
 ### T25 — Discover hub_set_variable (hub_manage_variables)
 
 ```json
@@ -803,6 +807,8 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 ```
 
 **Expected v0.8.0**: Discovers `hub_manage_variables` → `hub_set_variable`.
+
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- read the `variables` guide, then `hub_create_variable` (String, `hello`) and a read-back; the extra calls went to finding the best-practice key.
 
 ### T26 — Discover hub_get_variable (hub_manage_variables)
 
@@ -815,6 +821,8 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 ```
 
 **Expected v0.8.0**: Discovers `hub_manage_variables` → `hub_get_variable`.
+
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- `hub_get_variable` in one call (a rule-engine variable).
 
 ### T27 — Discover hub_list_rooms (hub_manage_rooms)
 
@@ -1296,6 +1304,8 @@ Casual natural language prompts that must route to the correct tool/gateway.
 
 **Expected**: Routes to `hub_list_variables`.
 
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- the `variables` guide, then `hub_list_variables`.
+
 ### T72 — "Save a counter" → hub variables
 
 ```json
@@ -1306,6 +1316,8 @@ Casual natural language prompts that must route to the correct tool/gateway.
 ```
 
 **Expected**: Routes to `hub_set_variable`.
+
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass on the result, partial on calls -- `hub_create_variable` (Number, 42) and a read-back, after 18 calls, most of them spent finding the best-practice key.
 
 ### T73 — "Show me what's in files" → file manager
 
@@ -1489,6 +1501,8 @@ Complex scenarios spanning multiple tools and gateways.
 
 **Expected**: All via `hub_manage_variables` (set, get, set, get, list).
 
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- `hub_create_variable` (the name did not exist yet), `hub_get_variable`, `hub_set_variable`, `hub_get_variable`, `hub_list_variables`; one detour for the best-practice key.
+
 ### T86a — Set a time-only DateTime variable from a plain time
 
 ```json
@@ -1500,6 +1514,8 @@ Complex scenarios spanning multiple tools and gateways.
 ```
 
 **Expected**: `hub_get_variable` shows `dateTimeKind: "time"` (value `9999-99-99T07:30:00.000<offset>`), then `hub_set_variable` with `value: "06:45"` (or the stored form). The stored value becomes `9999-99-99T06:45:00.000<offset>` and the variable stays time-only. **Fail** if the variable becomes a full date-and-time, or if a value was saved as a rule-engine variable of the same name.
+
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- `hub_get_variable` showed `dateTimeKind: "time"`, then `hub_set_variable(value:"06:45")` stored `9999-99-99T06:45:00.000-0500`; the variable stayed time-only and no rule-engine copy was made. An earlier wording without "variable" sent the client looking for a rule first.
 
 ### T86b — A value that does not fit a hub variable's type is refused
 
@@ -1513,6 +1529,8 @@ Complex scenarios spanning multiple tools and gateways.
 
 **Expected**: Either the AI reads the variable's type with `hub_get_variable` and declines before writing, or it calls `hub_set_variable`, which returns `isError: true` naming the Number type and the accepted whole-number range. Either way the AI asks for a number. `hub_get_variable` still shows 3, and `hub_list_variables` has no rule-engine variable named `BAT_Guest_Count`.
 
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- one `hub_get_variable` call showed a Number; the AI declined to store "a few" and asked for a number. The value stayed 3 and no rule-engine copy was made.
+
 ### T86c — When did a hub variable last change?
 
 ```json
@@ -1524,6 +1542,8 @@ Complex scenarios spanning multiple tools and gateways.
 ```
 
 **Expected**: `hub_get_logs` with `mode: "locationEvents"` and a pattern matching only that variable (ideally anchored, `^variable:BAT_Alarm_Count$`). The answer lists the changes to 2 and 5 with their times. **Partial** if the pattern also returns other variables' rows and the AI filters them itself.
+
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- `hub_get_variable`, then `hub_get_logs(mode:"locationEvents")` with the variable name as the pattern; the answer listed the changes to 1, 2 and 5 with their times. The pattern was not anchored, which was enough for this unique name.
 
 ---
 
@@ -1776,6 +1796,8 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (11 flat + 19
 ```
 
 **v0.7.7**: Calls `hub_list_variables` directly. **v0.8.0**: Via `hub_manage_variables`. Compare discovery efficiency.
+
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- `hub_list_variables` in one call.
 
 ### T113 — Export a rule (moved to gateway in v0.8.0)
 
@@ -2271,6 +2293,8 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 **Expected**: `hub_list_variables`.
 **Equivalent to**: T24
 
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- the `hub_read_variables` catalog, then `hub_list_variables`.
+
 #### T251 — Remember a number for me
 
 ```json
@@ -2694,6 +2718,8 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 
 **Expected**: `hub_set_variable` → `hub_get_variable` → `hub_set_variable` → `hub_get_variable` → `hub_list_variables`.
 **Equivalent to**: T86
+
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass on the result, partial on calls -- create, get, set, get and list as expected, after 17 calls, most of them spent finding the best-practice key.
 
 #### T302 — Pause a whole set of automations at once
 
@@ -3241,6 +3267,8 @@ This scenario requires no room creation or device command.
 
 **Expected**: AI calls `hub_manage_variables(tool='hub_delete_variable', args={name:'BAT_E2E_DELETE_TEST', confirm:true})`. Result: `{success:true, name:'BAT_E2E_DELETE_TEST', deleted:true, source:'rule_engine', previousValue:'scratch'}`. Follow-up `hub_get_variable` returns "Variable not found". Hub log shows a WARN-level `[developer-mode] hub_delete_variable: removed 'BAT_E2E_DELETE_TEST'` audit entry.
 
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- `hub_delete_variable(confirm:true)` returned `source: rule_engine` and `previousValue: "scratch"`; the read-back said "Variable not found".
+
 ### T225 — hub_delete_variable deletes a hub variable created in the UI
 
 ```json
@@ -3252,6 +3280,8 @@ This scenario requires no room creation or device command.
 
 **Expected**: AI calls `hub_delete_variable(name='BAT_UI_VAR', confirm=true)`. The hub variable is deleted (a hub variable no rule uses needs no force) and `hub_list_variables` no longer lists it.
 
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- `hub_get_variable(includeDependents:true)` showed no consumers, then `hub_delete_variable(confirm:true)`; the read-back said "Variable not found".
+
 ### T226 — hub_delete_variable refuses without confirm flag (the Write master 24h gate)
 
 ```json
@@ -3262,6 +3292,8 @@ This scenario requires no room creation or device command.
 ```
 
 **Expected**: Gateway parameter validation returns an `isError: true` result with message `"Missing required parameter for hub_delete_variable: confirm."` and a `parameters` description listing the schema (name, confirm, force). No JSON-RPC error code is set — the validation happens at the gateway layer before tool dispatch. The variable is preserved. AI relays the gate requirement and offers to retry with `confirm=true`.
+
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- the call without `confirm` was refused with "Missing required parameter for hub_delete_variable: confirm." and the variable was kept.
 
 ### T660 — hub_update_mcp_settings selectedDevices re-scopes the MCP server's device access (add then remove, net no-op)
 
