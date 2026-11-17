@@ -1128,7 +1128,6 @@ def toolGetRoom(args) {
         Map states = [:]
         for (st in rec.currentStates) states.put(st.key, _listStateValue(st.key, st.value, redact))
         if (states) devInfo.currentStates = states
-        if ("currentStates" in rec.missingFields) devInfo.metadataUnavailable = true
         devices << devInfo
     }
     return [
@@ -6604,7 +6603,7 @@ private Map _logsPatterns(Map args) {
     def compile = { String label, p ->
         if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
         if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
-        if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars); split it across patterns (patternMode 'any' matches either)")
+        if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars); split an alternation's alternatives across patterns (patternMode 'any'); otherwise shorten it")
         try {
             return java.util.regex.Pattern.compile(p, java.util.regex.Pattern.CASE_INSENSITIVE)
         } catch (java.util.regex.PatternSyntaxException e) {
@@ -10207,11 +10206,6 @@ private void _flattenDevicesPage(List nodes, String parentId, List out, Set only
             for (t in (data.tags instanceof List ? data.tags : (data.tags ? data.tags.toString().tokenize(",") : []))) {
                 if (t?.toString()?.trim()) tags << t.toString().trim()
             }
-            List missing = []
-            if (!(data.disabled instanceof Boolean)) missing << "disabled"
-            if (!data.containsKey("roomName")) missing << "room"
-            if (!data.containsKey("lastActivity")) missing << "lastActivity"
-            if (!(data.currentStates instanceof List)) missing << "currentStates"
             out << [id: id, label: label, name: data.secondaryName ? data.secondaryName.toString() : label,
                 driver: data.type, deviceTypeId: data.deviceTypeId, source: data.source,
                 deviceNetworkId: data.dni, zigbeeId: data.zigbeeId,
@@ -10219,23 +10213,29 @@ private void _flattenDevicesPage(List nodes, String parentId, List out, Set only
                     data.isNetwork == true ? "network" : data.isBluetooth == true ? "bluetooth" : data.isVirtual == true ? "virtual" : null,
                 linked: data.isLinked == true, disabled: data.disabled == true, lastActivity: data.lastActivity,
                 roomId: data.roomId, roomName: data.roomName ? data.roomName.toString() : null, parentDeviceId: parentId,
-                tags: tags, notes: data.notes ? data.notes.toString() : null, currentStates: states, missingFields: missing]
+                tags: tags, notes: data.notes ? data.notes.toString() : null, currentStates: states,
+                orphan: data.isOrphan == true, user: data.user == true, defaultCurrentState: data.defaultCurrentState ?: null,
+                meshEnabled: data.hubMesh == true, homekit: data.homekit == true, showOnHome: data.showOnHome == true,
+                dashboardTypes: data.dashboardTypes instanceof List ? data.dashboardTypes : [], defaultIcon: data.defaultIcon ?: null,
+                remoteDeviceUrl: data.remoteDeviceUrl ?: null]
         }
         if (node.children instanceof List) _flattenDevicesPage(node.children, id, out, onlyIds)
     }
 }
-private Map _capabilityFeedFor(List population) {
-    Map caps = _readCapabilityFeed()
+private Map _capabilityFeedFor(List population, Map buttonCounts = null) {
+    Map caps = _readCapabilityFeed(buttonCounts)
     return caps != null && caps.isEmpty() && population ? null : caps
 }
-private Map _readCapabilityFeed() {
+private Map _readCapabilityFeed(Map buttonCounts = null) {
     try {
         def txt = hubInternalGet("/hub2/vrb/devices")
         def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
         if (!(parsed instanceof List)) return null
         Map caps = [:]
         for (entry in parsed) {
-            if (entry instanceof Map && entry.id != null) caps.put(entry.id.toString(), _capabilityNames(entry.capabilities))
+            if (!(entry instanceof Map) || entry.id == null) continue
+            caps.put(entry.id.toString(), _capabilityNames(entry.capabilities))
+            if (buttonCounts != null && entry.buttonCount instanceof Number) buttonCounts.put(entry.id.toString(), ((Number) entry.buttonCount).intValue())
         }
         return caps
     } catch (Exception e) {
@@ -10255,7 +10255,9 @@ private Set _mcpAuthorizedIds(List children) {
 }
 private List _listDeviceFieldNames() {
     ["id", "label", "name", "driver", "room", "roomId", "disabled", "deviceNetworkId", "lastActivity", "protocol",
-     "parentDeviceId", "mcpManaged", "linked", "tags", "notes", "source", "currentStates", "capabilities", "attributes", "commands"]
+     "parentDeviceId", "mcpManaged", "linked", "tags", "notes", "source", "currentStates", "capabilities", "attributes", "commands",
+     "orphan", "user", "defaultCurrentState", "meshEnabled", "homekit", "showOnHome", "dashboardTypes", "defaultIcon",
+     "remoteDeviceUrl", "buttonCount"]
 }
 private Map _listDevicesOptions(Map args) {
     if (args.scope != null && !(args.scope in ["authorized", "all", "owned"])) {
@@ -10320,7 +10322,8 @@ private Map _listDevicesOptions(Map args) {
     String format = args.format ?: "summary"
     List fields = args.get("fields") ?: null
     if (scope == "all") {
-        List identity = ["id", "label", "name", "driver", "room", "roomId", "protocol", "disabled", "parentDeviceId", "source", "linked", "capabilities"]
+        List identity = ["id", "label", "name", "driver", "room", "roomId", "protocol", "disabled", "parentDeviceId", "source", "linked", "capabilities",
+                         "orphan", "user", "remoteDeviceUrl"]
         if (!(format in ["summary", "ids"])) throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only")
         if (stateFilter || args.staleHours != null || since != null || args.attributeNames || fields?.any { !(it in identity) }) {
             throw new IllegalArgumentException("scope='all' lists identity only (fields: ${identity.join(', ')}); states need scope='authorized'")
@@ -10354,7 +10357,7 @@ private Map _listDevicesOptions(Map args) {
     opts.filtered = [opts.labelFilter, opts.capabilityFilter, opts.roomFilter, opts.disabled, opts.staleHours,
                      opts.stateFilter, sinceDate, deviceIds].any { it != null }
     opts.wantFull = fieldSet.contains("attributes") || fieldSet.contains("commands")
-    opts.wantCaps = opts.capabilityFilter != null || format == "context" || fieldSet.contains("capabilities")
+    opts.wantCaps = opts.capabilityFilter != null || format == "context" || fieldSet.contains("capabilities") || fieldSet.contains("buttonCount")
     return opts
 }
 def toolListDevices(Map args) {
@@ -10398,7 +10401,8 @@ def toolListDevices(Map args) {
         wait = _waitForRun(opts.waitFor, deviceIds, true, first, reqT0)
         population = population.collect { wait.last.get(it.id) ?: it }
     }
-    Map caps = opts.wantCaps ? _capabilityFeedFor(population) : null
+    Map buttons = opts.fieldSet.contains("buttonCount") ? [:] : null
+    Map caps = opts.wantCaps ? _capabilityFeedFor(population, buttons) : null
     String lf = opts.labelFilter?.toLowerCase()
     String cf = opts.capabilityFilter
     String rf = opts.roomFilter
@@ -10409,28 +10413,18 @@ def toolListDevices(Map args) {
     List matched = []
     List unanswered = []
     for (candidate in population) {
-        List missing = candidate.missingFields
         if (idSet != null && !idSet.contains(candidate.id)) continue
         if (lf != null && !candidate.label.toLowerCase().contains(lf)) continue
         if (cf != null && caps != null) {
             if (!caps.containsKey(candidate.id)) { unanswered << candidate.id; continue }
             if (!caps.get(candidate.id).any { it.equalsIgnoreCase(cf) }) continue
         } else if (cf != null) continue
-        if (opts.disabled != null) {
-            if ("disabled" in missing) { unanswered << candidate.id; continue }
-            if (candidate.disabled != opts.disabled) continue
-        }
-        if (rf != null) {
-            if ("room" in missing) { unanswered << candidate.id; continue }
-            if (!rf.equalsIgnoreCase(candidate.roomName ?: "")) continue
-        }
-        if (stateFilter != null) {
-            if ("currentStates" in missing) { unanswered << candidate.id; continue }
-            if (stateFilter.any { k, v -> candidate.currentStates.get(k) != v }) continue
-        }
+        if (opts.disabled != null && candidate.disabled != opts.disabled) continue
+        if (rf != null && !rf.equalsIgnoreCase(candidate.roomName ?: "")) continue
+        if (stateFilter != null && stateFilter.any { k, v -> candidate.currentStates.get(k) != v }) continue
         if (staleMs != null || sinceMs != null) {
             Date la = candidate.lastActivity ? _parseSinceArg(candidate.lastActivity) : null
-            if ("lastActivity" in missing || (candidate.lastActivity != null && la == null)) { unanswered << candidate.id; continue }
+            if (candidate.lastActivity != null && la == null) { unanswered << candidate.id; continue }
             if (staleMs != null && la != null && nowMs - la.time < staleMs) continue
             if (sinceMs != null && (la == null || la.time < sinceMs)) continue
         }
@@ -10454,7 +10448,7 @@ def toolListDevices(Map args) {
     if (rf != null && total == 0) common.roomFilterMatchedKnownRoom = population.any { rf.equalsIgnoreCase(it.roomName ?: "") }
     if (opts.wantCaps && caps == null) {
         common.capabilitiesUnavailable = true
-        common.note = "The hub's capability feed (/hub2/vrb/devices) could not be read or listed no device, so capabilities are omitted and capabilityFilter matches nothing. Retry."
+        common.note = "The hub's capability feed (/hub2/vrb/devices) could not be read or listed no device, so capabilities and buttonCount are omitted and capabilityFilter matches nothing. Retry."
     }
     int start = opts.cursor != null ? Math.min(_parseListCursor(opts.cursor, Integer.MAX_VALUE, "hub_list_devices"), total) : 0
     int end = paged ? (int) Math.min((long) start + pageSize, (long) total) : total
@@ -10491,7 +10485,7 @@ def toolListDevices(Map args) {
                 }
                 fj = _fetchDeviceFullJson(rec.id)
             }
-            Map row = _listDeviceRecord(rec, opts, attrNames, caps, childIds, fj)
+            Map row = _listDeviceRecord(rec, opts, attrNames, caps, buttons, childIds, fj)
             if (scope == "all") row.mcpAuthorized = authorized == null || authorized.contains(rec.id)
             devices << row
         }
@@ -10516,7 +10510,7 @@ def toolListDevices(Map args) {
     }
     return result
 }
-private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set childIds, Map fj) {
+private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Map buttons, Set childIds, Map fj) {
     Set f = opts.fieldSet
     Map row = [id: rec.id]
     if (f.contains("label")) row.label = rec.label
@@ -10534,6 +10528,9 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
     if (f.contains("tags") && rec.tags) row.tags = rec.tags
     if (f.contains("notes")) row.notes = rec.notes
     if (f.contains("source")) row.source = rec.source
+    for (key in ["orphan", "user", "defaultCurrentState", "meshEnabled", "homekit", "showOnHome", "dashboardTypes", "defaultIcon", "remoteDeviceUrl"]) {
+        if (f.contains(key)) row.put(key, rec.get(key))
+    }
     if (f.contains("currentStates")) {
         Map states = [:]
         for (an in attrNames) {
@@ -10542,11 +10539,10 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
         }
         row.currentStates = states
     }
-    boolean capsMissing = f.contains("capabilities") && caps != null && !caps.containsKey(rec.id)
+    boolean capsMissing = (f.contains("capabilities") || f.contains("buttonCount")) && caps != null && !caps.containsKey(rec.id)
     if (f.contains("capabilities") && caps != null && !capsMissing) row.capabilities = caps.get(rec.id)
-    Map shownBy = [disabled: f.contains("disabled"), room: f.contains("room") || f.contains("roomId"),
-                   lastActivity: f.contains("lastActivity"), currentStates: f.contains("currentStates")]
-    if (capsMissing || rec.missingFields.any { shownBy.get(it) }) row.metadataUnavailable = true
+    if (f.contains("buttonCount") && buttons?.get(rec.id) != null) row.buttonCount = buttons.get(rec.id)
+    if (capsMissing) row.metadataUnavailable = true
     if (!opts.wantFull) return row
     Map detail = null
     try {
@@ -10629,7 +10625,7 @@ private String _contextDeviceLine(Map rec, Map caps, List attrNames, boolean red
         def v = rec.currentStates.get(an)
         if (v != null) parts << "${an}=${_listStateValue(an, v, redact)}".toString()
     }
-    String room = "room" in rec.missingFields ? "room unknown" : (rec.roomName ?: "No room")
+    String room = rec.roomName ?: "No room"
     String line = "- ${rec.label} (${rec.id}, ${room})"
     List c = caps?.get(rec.id)
     if (c) line += " - ${c.join(', ')}"
@@ -10698,7 +10694,7 @@ def _buildContextJson() {
     def contextAttrs = _contextAttributeNames()
     def roomIndex = [:]
     for (d in allDevices) {
-        String r = "room" in d.missingFields ? "Room unknown" : (d.roomName ?: "No room")
+        String r = d.roomName ?: "No room"
         if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
         roomIndex.get(r) << d.id
     }
@@ -10727,7 +10723,7 @@ def _buildContextJson() {
         }
         Map rec = [id: d.id, label: d.label, room: d.roomName, capabilities: caps?.get(d.id) ?: [], attributes: attrs]
         if (caps == null) rec.capabilitiesUnavailable = true
-        if (d.missingFields.any { it in ["room", "currentStates"] } || (caps != null && !caps.containsKey(d.id))) rec.metadataUnavailable = true
+        if (caps != null && !caps.containsKey(d.id)) rec.metadataUnavailable = true
         used += _escapedLen(groovy.json.JsonOutput.toJson(rec))
         if (used > budget) {
             truncated = true
@@ -12063,7 +12059,7 @@ def _waitForCore(Map spec, List ids, boolean page, first, Long deadlineMs) {
             last.putAll(records)
             for (int i = 0; i < n; i++) {
                 Map rec = records.get(ids[i])
-                if (rec == null || "currentStates" in rec.missingFields) readError[i] = true
+                if (rec == null) readError[i] = true
                 values[i] = rec?.currentStates?.get(attribute)
             }
         } else {
@@ -12098,9 +12094,10 @@ def _waitForCore(Map spec, List ids, boolean page, first, Long deadlineMs) {
         } else {
             conditionTrueSince = null
         }
-        pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
+        long tickMs = now() - tickStartMs
+        int sleepMs = _pollSleepMs(spec.pollIntervalMs, timeoutMs - elapsedMs, tickMs)
+        pastDeadline = deadlineMs != null && now() + sleepMs + tickMs >= deadlineMs
         if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) { outcome = "timedOut"; break }
-        int sleepMs = _pollSleepMs(spec.pollIntervalMs, timeoutMs - elapsedMs, now() - tickStartMs)
         try {
             if (sleepMs > 0) pauseExecution(sleepMs)
         } catch (InterruptedException e) {
@@ -34986,7 +34983,7 @@ A malformed `waitFor` spec is rejected before the command fires, so the device i
 **`commands` arg (several devices in one call).** Up to 20 entries of `{deviceId, command, parameters?}`, sent in the order given. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades"): the per-call round trip -- not the hub actuating the device -- is nearly the whole cost. Measured on a live hub over LAN: one command ~1.0s end to end; six sent separately ~4.4s (~0.73s each); the same six Z-Wave switches as one batch ~1.5s; a batch of 1, 2 or 4 flat at ~0.95s. Firing separate calls in parallel does NOT help; the hub serialises them anyway. Devices behind a bridge carry real per-device time that batching cannot remove -- six Bond-bridged shades batched came back at ~2.75s, against ~5.0s sent separately.
 
 - **Mutually exclusive with `deviceId`/`command`**, and cannot be combined with `waitFor` -- that would block a hub thread per device.
-- **Batch entries return no state snapshot.** Confirm with hub_list_devices `deviceIds` + `waitFor`: one call to fire, one to confirm.
+- **Batch entries return no state snapshot.** Confirm with hub_list_devices `deviceIds` + `waitFor`: one call to fire, one to confirm each target state (a waitFor applies one condition to every listed device).
 - **What it does NOT change.** The hub still actuates the devices one at a time, so they do not all move simultaneously. What disappears is the protocol overhead, not the hub's own work.
 - **Entries are independent.** Mixed devices and mixed commands. A bad entry (unknown id, unsupported command) is reported in its own `results[]` slot and the remaining entries are still sent; `success` is true only when every entry was sent. A partly-failed batch carries `failedDeviceIds` plus `partial: true` -- re-send ONLY those ids, because the successful entries have already actuated. Malformed input -- a missing deviceId, a `parameters` value that is neither an array nor a string, more than 20 entries -- is rejected before anything is sent, so a bad request never actuates part of a batch.
 - **A very large batch of slow bridged devices can stop early.** As the request nears the relay time budget the batch returns `stoppedEarly: true` with `remainingCommands` -- the untried tail, verbatim. Re-send exactly that in a new call; the attempted entries already went.
@@ -35510,7 +35507,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - Entries are independent, so mixed devices and mixed commands go in one batch. Max 20. A partly-failed batch reports failedDeviceIds plus partial:true -- re-send only those ids; the rest already actuated.
 - The batch result always carries `count` (entries attempted), `sentCount`, `failedCount` and a per-entry `results[]`. Any failure adds `failedDeviceIds`, `error` and `note`. A result with `success: false` (a failed entry or an early stop) is sent with `isError: true`. An entry's `deviceId` may be a string or an integer.
 
-- Batch entries return NO state snapshot, and waitFor is not accepted with `commands`. To confirm, follow with hub_list_devices using deviceIds + waitFor (multi-device convergence): one batch to fire, one poll to confirm -- two round trips for the whole group.
+- Batch entries return NO state snapshot, and waitFor is not accepted with `commands`. To confirm, follow with hub_list_devices using deviceIds + waitFor (multi-device convergence): one batch to fire, one poll to confirm -- two round trips for a group that shares a target state (one poll per target state otherwise).
 - A very large batch of slow bridged devices can stop early at the relay time budget: the result carries stoppedEarly:true with remainingCommands, the untried tail verbatim, to re-send in a new call; it is `success: false` and flagged `isError: true` even when no entry failed.
 - For a set commanded repeatedly, a group or scene beats both: one device to command and the hub fans out. `commands` is for the ad-hoc set that was never defined in advance.
 
@@ -35610,9 +35607,9 @@ Issue-type routing: `issueType` picks the GitHub issue template behind `submitUr
 
 **Summary record.** `{id, label, name, driver, room, disabled, deviceNetworkId, lastActivity, currentStates}` plus `protocol` (zigbee/zwave/matter/network/bluetooth/virtual), `parentDeviceId` on child devices, `mcpManaged`, `linked` (Hub Mesh) and `tags` when they apply. `label` is the display name; group by `parentDeviceId` to count a parent's children.
 
-**Filters** apply before paging, in this order: scope, `disabled` (true = only disabled, false = only enabled), `labelFilter` (label substring), `capabilityFilter` (exact capability name), `roomFilter` (exact room name), `stateFilter` (`{"switch":"on"}`: every named attribute must read that value; a credential-named attribute is refused while Hide passwords and credentials is on), `staleHours` (no activity for that long; never-active devices count as stale), `changedSince` (active at or after epoch ms or ISO-8601 with an offset; a returned `lastActivity` round-trips). A device whose page entry carries no usable value for a filtered field is excluded and named in `metadataUnavailableIds` with `partial: true`; a record missing such a field carries `metadataUnavailable: true`. A zero match carries `capabilityFilterMatchedKnownCapability` or `roomFilterMatchedKnownRoom` to tell a typo from an empty result. If the capability feed cannot be read or lists no device the response carries `capabilitiesUnavailable: true` and capabilityFilter matches nothing.
+**Filters** apply before paging, in this order: scope, `disabled` (true = only disabled, false = only enabled), `labelFilter` (label substring), `capabilityFilter` (exact capability name), `roomFilter` (exact room name), `stateFilter` (`{"switch":"on"}`: every named attribute must read that value; a credential-named attribute is refused while Hide passwords and credentials is on), `staleHours` (no activity for that long; never-active devices count as stale), `changedSince` (active at or after epoch ms or ISO-8601 with an offset; a returned `lastActivity` round-trips). A device the capability feed does not list (for `capabilityFilter`) or whose `lastActivity` does not parse (for `staleHours`/`changedSince`) is excluded and named in `metadataUnavailableIds` with `partial: true`; a record showing `capabilities` or `buttonCount` for a device the feed does not list carries `metadataUnavailable: true`. A zero match carries `capabilityFilterMatchedKnownCapability` or `roomFilterMatchedKnownRoom` to tell a typo from an empty result. If the capability feed cannot be read or lists no device the response carries `capabilitiesUnavailable: true` and capabilityFilter matches nothing.
 
-**Projection.** `fields` (format summary or detailed only) picks record fields (`id` always kept): id, label, name, driver, room, roomId, disabled, deviceNetworkId, lastActivity, protocol, parentDeviceId, mcpManaged, linked, tags, notes, source, currentStates, capabilities, attributes, commands. `attributeNames` (format summary or context only) picks the attributes in `currentStates` and context lines; the default set is switch, level, motion, contact, presence, lock, temperature, humidity, illuminance, battery, power, energy, thermostatMode, thermostatOperatingState, heatingSetpoint, coolingSetpoint, speed, position, valve, water and smoke. An explicit set that matches nothing in context returns `attributeNamesMatchedNoAttributes: true`.
+**Projection.** `fields` (format summary or detailed only) picks record fields (`id` always kept): id, label, name, driver, room, roomId, disabled, deviceNetworkId, lastActivity, protocol, parentDeviceId, mcpManaged, linked, tags, notes, source, currentStates, capabilities, attributes, commands, orphan (its parent device is gone), user (user-installed driver), defaultCurrentState, meshEnabled (shared over Hub Mesh), homekit (exposed to HomeKit; false while the HomeKit integration is off), showOnHome, dashboardTypes, defaultIcon, remoteDeviceUrl (a linked device's page on its source hub), buttonCount (button devices only; 1 when the driver reports no numberOfButtons). With `scope='all'`, `fields` takes identity fields only (the refusal lists them). `attributeNames` (format summary or context only) picks the attributes in `currentStates` and context lines; the default set is switch, level, motion, contact, presence, lock, temperature, humidity, illuminance, battery, power, energy, thermostatMode, thermostatOperatingState, heatingSetpoint, coolingSetpoint, speed, position, valve, water and smoke. An explicit set that matches nothing in context returns `attributeNamesMatchedNoAttributes: true`.
 
 **format='ids'** returns `{deviceIds, count, total}`. **format='context'** returns `summary`: `Mode:`, `HSM:` when available, `Devices: N of M` (with the next cursor when more remain), then `- Label (id, room) - Cap1, Cap2; attr=value` lines; it pages at 50 unless `limit` is set. A cursor past the end (the result shrank between pages) returns an empty last page.
 
