@@ -143,19 +143,6 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path.startsWith('/device/fullJson') }
     }
 
-    def "bypass OFF: toolGetAttribute throws for an unlisted device (no fullJson fetch)"() {
-        given:
-        settingsMap.bypassDeviceAllowlist = false
-
-        when:
-        script.toolGetAttribute(UNLISTED_ID, 'switch')
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message == "Device not found: ${UNLISTED_ID}"
-        !hubGet.calls.any { it.path.startsWith('/device/fullJson') }
-    }
-
     def "bypass OFF: toolGetDeviceHistory device branch throws for an unlisted device (no eventsJson fetch)"() {
         given:
         settingsMap.bypassDeviceAllowlist = false
@@ -182,12 +169,12 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path.startsWith('/device/eventsJson') }
     }
 
-    def "bypass OFF: toolPollUntilAttribute throws for an unlisted device"() {
+    def "bypass OFF: a hub_get_device wait throws for an unlisted device"() {
         given:
         settingsMap.bypassDeviceAllowlist = false
 
         when:
-        script.toolPollUntilAttribute([deviceId: UNLISTED_ID, attribute: 'switch', expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 50])
+        script.toolGetDevice(UNLISTED_ID, 'summary', null, null, null, [attribute: 'switch', expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 50])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -214,32 +201,17 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         result.commands*.name.containsAll(['on', 'off', 'setLevel'])
     }
 
-    def "bypass ON: toolGetAttribute reads the value from fullJson currentStates"() {
-        given:
-        settingsMap.bypassDeviceAllowlist = true
-        registerFullJson({ 'on' })
-
-        when:
-        def result = script.toolGetAttribute(UNLISTED_ID, 'switch')
-
-        then:
-        result.device == 'Unlisted Switch'
-        result.attribute == 'switch'
-        result.value == 'on'
-    }
-
-    def "bypass ON: toolGetAttribute returns null for an attribute absent from reported native states"() {
+    def "bypass ON: an attribute absent from reported native states is absent from the summary"() {
         given:
         settingsMap.bypassDeviceAllowlist = true
         registerFullJson()
 
         when:
-        def result = script.toolGetAttribute(UNLISTED_ID, 'contact')
+        def result = script.toolGetDevice(UNLISTED_ID)
 
         then:
-        result.device == 'Unlisted Switch'
-        result.attribute == 'contact'
-        result.value == null
+        result.label == 'Unlisted Switch'
+        !result.attributes.any { it.name == 'contact' }
         hubGet.calls.count { it.path == "/device/fullJson/${UNLISTED_ID}" } == 1
     }
 
@@ -705,34 +677,34 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
 
     // ---- toggle ON: poll path ---------------------------------------------------
 
-    def "bypass ON: toolPollUntilAttribute on a NOT-YET-REPORTED attribute times out neverReported (does not throw)"() {
+    def "bypass ON: a hub_get_device wait on a NOT-YET-REPORTED attribute times out neverReported (does not throw)"() {
         given: 'the attribute is absent from fullJson currentStates -- bypass can not enumerate declared attrs'
         settingsMap.bypassDeviceAllowlist = true
         registerFullJson()
 
         when:
-        def result = script.toolPollUntilAttribute([deviceId: UNLISTED_ID, attribute: 'power',
-            expectedValue: '5', timeoutMs: 200, pollIntervalMs: 50])
+        def result = script.toolGetDevice(UNLISTED_ID, 'summary', null, null, null, [attribute: 'power',
+            expectedValue: '5', timeoutMs: 200, pollIntervalMs: 50]).waitFor
 
-        then: 'no thrown "Attribute not found"; it polls and reports neverReported'
+        then: 'no thrown "Attribute not found"; it waits and reports neverReported'
         notThrown(IllegalArgumentException)
-        result.success == false
+        result.converged == false
         result.neverReported == true
     }
 
-    def "bypass ON: toolPollUntilAttribute converges via the fullJson value reader"() {
+    def "bypass ON: a hub_get_device wait converges via the fullJson value reader"() {
         given:
         settingsMap.bypassDeviceAllowlist = true
         registerFullJson({ 'on' })
 
         when:
-        def result = script.toolPollUntilAttribute([deviceId: UNLISTED_ID, attribute: 'switch',
-            expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 50])
+        def result = script.toolGetDevice(UNLISTED_ID, 'summary', null, null, null, [attribute: 'switch',
+            expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 50]).waitFor
 
         then:
-        result.success == true
+        result.converged == true
         result.finalValue == 'on'
-        result.timedOut == false
+        !result.timedOut
     }
 
     // ---- toggle ON: update path -------------------------------------------------
@@ -994,20 +966,19 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/10') { JsonOutput.toJson(nativeModel) }
 
         when:
-        def result = script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch',
-            expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 50])
+        def result = script.toolGetDevice('10', 'summary', null, null, null, [attribute: 'switch',
+            expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 50]).waitFor
 
         then:
-        result.success == true
+        result.converged == true
         result.finalValue == 'on'
         result.polledCount == 1
         hubGet.calls.count { it.path == '/device/fullJson/10' } == 1
     }
 
-    def "regression: _pollMultiDevice with a MIX of listed + unlisted deviceIds (bypass ON) converges both"() {
+    def "regression: a hub_list_devices wait over a MIX of listed + unlisted deviceIds (bypass ON) converges both"() {
         given: 'one listed device (10) and one unlisted device (555) reached via the bypass'
         settingsMap.bypassDeviceAllowlist = true
-        registerFullJson({ 'on' })
         def listed = Spy(TestDevice) {
             getId() >> 10
             getLabel() >> { throw new AssertionError('SDK label read is forbidden') }
@@ -1015,23 +986,21 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
             getCurrentStates() >> { throw new AssertionError('SDK state read is forbidden') }
         }
         childDevicesList << listed
-        def nativeModel = fullJsonModel('on')
-        nativeModel.device.id = 10
-        nativeModel.device.label = 'Listed Switch'
-        hubGet.register('/device/fullJson/10') { JsonOutput.toJson(nativeModel) }
+        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: [[10, 'Listed Switch'], [555, 'Unlisted Switch']].collect {
+            [data: [id: it[0], name: it[1], disabled: false, roomName: '', lastActivity: null, currentStates: [[key: 'switch', value: 'on']]]]
+        }]) }
 
         when: "mode 'all' over both ids"
-        def result = script.toolPollUntilAttribute([deviceIds: ['10', UNLISTED_ID], mode: 'all',
-            attribute: 'switch', expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 50])
+        def result = script.toolListDevices([deviceIds: ['10', UNLISTED_ID],
+            waitFor: [mode: 'all', attribute: 'switch', expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 50]])
 
-        then: 'both per-device value readers fired and the aggregate converged'
-        result.success == true
-        result.mode == 'all'
-        result.convergedCount == 2
-        result.devices.find { it.deviceId == '10' }?.matched == true
-        result.devices.find { it.deviceId == UNLISTED_ID }?.matched == true
-        hubGet.calls.count { it.path == "/device/fullJson/${UNLISTED_ID}" } == 1
-        hubGet.calls.count { it.path == '/device/fullJson/10' } == 1
+        then: 'one Devices page read answered both devices and the aggregate converged'
+        result.devices*.id == ['10', UNLISTED_ID]
+        result.waitFor.converged == true
+        result.waitFor.mode == 'all'
+        result.waitFor.convergedCount == 2
+        result.waitFor.devices*.matched == [true, true]
+        hubGet.calls*.path == ['/hub2/devicesList']
     }
 
     // ---- dispatch envelope ------------------------------------------------------

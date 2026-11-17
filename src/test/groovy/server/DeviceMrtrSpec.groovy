@@ -116,7 +116,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
         settingsMap.enableMandatoryBPS = true
         int reads = 0
         String label = 'Before'
-        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor ->
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor, waitFor, reqT0 ->
             reads++; clock.addAndGet(12000L)
             [id: '88', label: label, nextCursor: 'unchanged-cursor', preferences: [token: 'private-pref']]
         }
@@ -213,7 +213,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
     def "device read cannot replay a cached profile after scope is revoked"() {
         given:
         settingsMap.selectedDevices = [new TestDevice(id: 88, label: 'Private')]
-        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor ->
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor, waitFor, reqT0 ->
             [id: '88', label: 'private-device-profile']
         }
         Map args = [deviceId: '88']
@@ -234,7 +234,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
     def "a quickly completed device read needs one HTTP call but the next call is fresh"() {
         given:
         int reads = 0
-        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor ->
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor, waitFor, reqT0 ->
             [id: '88', label: "Read ${++reads}".toString()]
         }
         RUN_IN_MILLIS_OVERRIDE.set({ List scheduled ->
@@ -258,7 +258,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
     def "device read scheduler failure is an error with no inline fallback"() {
         given:
         int reads = 0
-        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor ->
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor, waitFor, reqT0 ->
             reads++; [id: '88']
         }
         RUN_IN_MILLIS_OVERRIDE.set({ List scheduled -> throw new IllegalStateException('scheduler unavailable') })
@@ -276,7 +276,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
     def "a lost device snapshot fails its continuation without starting another fetch"() {
         given:
         int reads = 0
-        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor -> reads++; [id: '88'] }
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor, waitFor, reqT0 -> reads++; [id: '88'] }
         String token = call('hub_get_device', [deviceId: '88']).result.requestState
         assert token != null
         (scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map).clear()

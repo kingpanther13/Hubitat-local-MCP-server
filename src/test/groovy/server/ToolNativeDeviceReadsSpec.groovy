@@ -8,6 +8,9 @@ import support.ToolSpecBase
 class ToolNativeDeviceReadsSpec extends ToolSpecBase {
     private Map nativeModel
 
+    // hub_get_device(waitFor) on device 10.
+    private Map wait(Map waitFor) { script.toolGetDevice('10', 'summary', null, null, null, waitFor) }
+
     private void fixture(String ownership) {
         def sdk = new TestDevice(id: 10, name: 'Stale SDK name',
             capabilities: [[name: 'Switch']], supportedCommands: [[name: 'on']],
@@ -40,8 +43,7 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         def result
         switch (operation) {
             case 'summary': result = script.toolGetDevice('10'); break
-            case 'attribute': result = script.toolGetAttribute('10', 'switch'); break
-            case 'poll': result = script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on']); break
+            case 'wait': result = wait([attribute: 'switch', expectedValue: 'on']); break
             case 'events': result = script.toolGetDeviceEvents('10', 10); break
             case 'history': result = script.toolGetDeviceHistory([deviceId: '10', since: '2026-09-10T10:00:00Z']); break
         }
@@ -52,15 +54,17 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
                 assert result.name == 'Native fixture'
                 assert result.attributes.find { it.name == 'switch' }.value == 'on'
                 break
-            case 'attribute': assert result.value == 'on'; break
-            case 'poll': assert result.success == true && result.finalValue == 'on'; break
+            case 'wait':
+                assert result.waitFor.converged == true && result.waitFor.finalValue == 'on'
+                assert result.attributes.find { it.name == 'switch' }.value == 'on'
+                break
             default:
                 assert result.count == 1
                 assert result.events[0].value == 'on'
         }
 
         where:
-        [operation, ownership, bypass] << ['summary', 'attribute', 'poll', 'events', 'history'].collectMany { op ->
+        [operation, ownership, bypass] << ['summary', 'wait', 'events', 'history'].collectMany { op ->
             ['selected', 'child'].collectMany { owner -> [false, true].collect { enabled -> [op, owner, enabled] } }
         }
     }
@@ -74,7 +78,7 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         when:
         switch (operation) {
             case 'summary': script.toolGetDevice('10'); break
-            case 'attribute': script.toolGetAttribute('10', 'switch'); break
+            case 'wait': wait([attribute: 'switch', expectedValue: 'on']); break
             case 'events': script.toolGetDeviceEvents('10', 10); break
             case 'history': script.toolGetDeviceHistory([deviceId: '10', hoursBack: 1]); break
         }
@@ -84,7 +88,7 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path.startsWith('/device/') }
 
         where:
-        operation << ['summary', 'attribute', 'events', 'history']
+        operation << ['summary', 'wait', 'events', 'history']
     }
 
     @Unroll
@@ -93,7 +97,7 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         settingsMap.bypassDeviceAllowlist = true
 
         when:
-        script.toolGetAttribute(deviceId, 'switch')
+        script.toolGetDevice(deviceId, 'summary', null, null, null, [attribute: 'switch', expectedValue: 'on'])
 
         then:
         thrown(IllegalArgumentException)
@@ -128,17 +132,38 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         disabled << [null, '', 'unknown', 0, [:], []]
     }
 
-    def 'native poll read failure is a read error rather than a never reported attribute'() {
+    def 'a native read failure during a wait is a read error rather than a never reported attribute'() {
+        given: 'the summary read lands, every later check fails'
+        fixture('selected')
+        int reads = 0
+        hubGet.register('/device/fullJson/10') {
+            if (++reads > 1) throw new IOException('unreachable')
+            JsonOutput.toJson(nativeModel)
+        }
+
+        when:
+        def result = wait([attribute: 'switch', expectedValue: 'off', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'the summary comes from the last read that landed'
+        result.attributes.find { it.name == 'switch' }.value == 'on'
+        result.waitFor.converged == false
+        result.waitFor.readError == true
+        !result.waitFor.neverReported
+        reads > 1
+    }
+
+    def 'a failed first read is a tool error, not a wait'() {
         given:
         fixture('selected')
         hubGet.register('/device/fullJson/10') { throw new IOException('unreachable') }
 
         when:
-        def result = script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on', timeoutMs: 100, pollIntervalMs: 100])
+        def result = wait([attribute: 'switch', expectedValue: 'on', timeoutMs: 100, pollIntervalMs: 100])
 
         then:
         result.success == false
-        result.readError == true
+        result.error.contains('/device/fullJson/10')
+        !result.containsKey('waitFor')
     }
 
     @Unroll
@@ -146,21 +171,23 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         given:
         settingsMap.bypassDeviceAllowlist = true
         fixture('selected')
-        hubGet.register('/device/fullJson/11') { JsonOutput.toJson(nativeModel + [device: nativeModel.device + [id: 11]]) }
+        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: [10, 11].collect { [data: [id: it, name: "D${it}".toString(), currentStates: [[key: 'switch', value: 'on']]]] }]) }
+        def spec = script._waitForSpec([attribute: 'switch', expectedValue: 'off', timeoutMs: 20000], page, 60000, 200)
 
         when:
-        def result = script._pollUntilAttributeCore([attribute: 'switch', expectedValue: 'off', timeoutMs: 20000] + target, script.now() - 1L)
+        def result = script._waitForCore(spec, ids, page, null, script.now() - 1L)
 
         then:
-        result.success == false
+        result.converged == false
         result.timedOut == true
         result.budgetStopped == true
         result.polledCount == 1
+        hubGet.calls.size() == 1
 
         where:
-        label    | target
-        'single' | [deviceId: '10']
-        'multi'  | [deviceIds: ['10', '11']]
+        label    | page  | ids
+        'single' | false | ['10']
+        'multi'  | true  | ['10', '11']
     }
 
     def 'with no request deadline the engine keeps its own timeout and reports no budget stop'() {
@@ -168,7 +195,7 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         fixture('selected')
 
         when:
-        def result = script._pollUntilAttributeCore([deviceId: '10', attribute: 'switch', expectedValue: 'off', timeoutMs: 100, pollIntervalMs: 100])
+        def result = script._waitForCore(script._waitForSpec([attribute: 'switch', expectedValue: 'off', timeoutMs: 100, pollIntervalMs: 100], false, 60000, 200), ['10'], false, null, null)
 
         then:
         result.timedOut == true
@@ -182,12 +209,11 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
 
         expect:
         script.toolGetDevice('10').attributes[0].value == 74.29
-        script.toolGetAttribute('10', 'temperature').value == 74.29
-        script.toolPollUntilAttribute([deviceId: '10', attribute: 'temperature', expectedValue: '74.29']).finalValue == 74.29
+        wait([attribute: 'temperature', expectedValue: '74.29']).waitFor.finalValue == 74.29
     }
 
     @Unroll
-    def 'lockCodes reads masked=#hide in the summary, the attribute read, a command snapshot and the event rows; a poll on it is refused only while masked'() {
+    def 'lockCodes reads masked=#hide in the summary, a command snapshot and the event rows; a wait on it is refused only while masked'() {
         given:
         fixture('selected')
         settingsMap.redactCredentials = hide
@@ -201,10 +227,9 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
 
         when:
         def summary = script.toolGetDevice('10')
-        def attribute = script.toolGetAttribute('10', 'lockCodes')
         def poll = null
         String pollRefusal = null
-        try { poll = script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: stored]) }
+        try { poll = wait([attribute: 'lockCodes', expectedValue: stored]).waitFor }
         catch (IllegalArgumentException e) { pollRefusal = e.message }
         def snapshot = script._snapshotBypassDeviceState('10', 'fixture')
         def events = script.toolGetDeviceEvents('10', 10).events
@@ -213,8 +238,7 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         then:
         summary.attributes.find { it.name == 'lockCodes' }.value == shown
         summary.attributes.find { it.name == 'switch' }.value == 'on'
-        attribute.value == shown
-        hide ? (poll == null && pollRefusal.contains('Cannot wait for a value of lockCodes')) : (pollRefusal == null && poll.success == true && poll.finalValue == stored)
+        hide ? (poll == null && pollRefusal.contains('Cannot wait for a value of lockCodes')) : (pollRefusal == null && poll.converged == true && poll.finalValue == stored)
         snapshot.lockCodes.value == shown
         snapshot.switch.value == 'on'
 
@@ -239,17 +263,18 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         hubGet.calls.clear()
 
         when:
-        if (surface == 'poll') script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: '{"1":{"code":"1234"}}'])
+        if (surface == 'hub_get_device') wait([attribute: 'lockCodes', expectedValue: '{"1":{"code":"1234"}}'])
+        else if (surface == 'hub_list_devices') script.toolListDevices([deviceIds: ['10'], waitFor: [attribute: 'lockCodes', expectedValue: 'x']])
         else script.toolSendCommand('10', 'on', [], [attribute: 'lockCodes', expectedValue: '{"1":{"code":"1234"}}'])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Cannot wait for a value of lockCodes')
         commands.empty
-        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') && surface == 'poll' }
+        surface == 'hub_call_device_command' || hubGet.calls.empty
 
         where:
-        surface << ['poll', 'waitFor']
+        surface << ['hub_get_device', 'hub_list_devices', 'hub_call_device_command']
     }
 
     def 'with redaction off a wait for a credential-named attribute matches the stored value'() {
@@ -259,23 +284,24 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         nativeModel.device.currentStates.lockCodes = [value: 'x1', dataType: 'STRING']
 
         expect:
-        script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: 'x1']).success == true
+        wait([attribute: 'lockCodes', expectedValue: 'x1']).waitFor.converged == true
     }
 
-    def 'unreported attribute discovery stays empty while an explicit read remains distinguishable from fetch failure'() {
+    def 'unreported attribute discovery stays empty while a wait on one stays distinguishable from fetch failure'() {
         given:
         fixture('selected')
         nativeModel.device.currentStates = [:]
 
         when:
         def summary = script.toolGetDevice('10')
-        def attribute = script.toolGetAttribute('10', 'learnedCode')
+        def waited = wait([attribute: 'learnedCode', expectedValue: 'x', timeoutMs: 100, pollIntervalMs: 50])
 
         then:
         summary.attributes == []
-        attribute.value == null
-        attribute.neverReported == true
-        !attribute.error
+        waited.waitFor.finalValue == null
+        waited.waitFor.neverReported == true
+        !waited.waitFor.readError
+        !waited.error
     }
 
     // Real /device/eventsJson wire shapes: producedBy is one hub-rendered <a> (or bare text) and

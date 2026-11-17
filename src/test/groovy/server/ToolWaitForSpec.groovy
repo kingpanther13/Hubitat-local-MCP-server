@@ -5,51 +5,24 @@ import support.TestDevice
 import support.ToolSpecBase
 
 /**
- * Spec for toolPollUntilAttribute (hubitat-mcp-server.groovy, DEVICE TOOLS section).
- *
- * Covers:
- *  - Match on first poll (already-expected value)
- *  - Match on Nth poll (value changes mid-sequence)
- *  - Timeout path (value never matches)
- *  - expectedValues (list) match
- *  - expectedValues (list) no match -> timeout
- *  - Both expectedValue and expectedValues set -> throws (exactly-one, matches the waitFor path)
- *  - Both null -> throws
- *  - Empty expectedValues list -> throws (B1)
- *  - Empty string expectedValue -> throws (W1)
- *  - Null value for present keys (timeoutMs, pollIntervalMs, expectedValue, expectedValues) -> throws (B2)
- *  - Type-validation throws: attribute as list, timeoutMs string (deviceId as int is now
- *    COERCED and reaches device resolution), expectedValues with int element, pollIntervalMs string, expectedValue as int
- *  - timeoutMs out of range (< 100, > 60000)
- *  - timeoutMs exact boundaries (99 throws, 60001 throws, 100 accepts, 60000 accepts) (W2)
- *  - pollIntervalMs out of range (< 50, > 5000)
- *  - pollIntervalMs exact boundaries (49 throws, 5001 throws, 50 accepts, 5000 accepts) (W2)
- *  - pollIntervalMs > timeoutMs -> auto-clamped (at least one poll still fires)
- *  - Device not found -> throws
- *  - Attribute absent from currentStates (neverReported=true path) (I5)
- *  - Attribute value transitions from null to wrong -> neverReported absent or false (I5)
- *  - Attribute name absent from native reported states -> times out with neverReported
- *  - Unknown arg (timeoutSeconds) -> throws with message naming the bad key and suggesting timeoutMs
- *  - Multiple unknown args -> all listed in the error plus gotcha hint
- *  - pauseExecution throws InterruptedException -> returns interrupted=true with context fields (I6)
- *  - pauseExecution throws non-InterruptedException -> propagates (not swallowed as interrupted=true)
- *  - pauseExecution throws InterruptedException -> emits mcpLog warn with poll count and elapsed
- *  - BigDecimal integer-equivalent (50.0) matches expectedValue '50' (numeric fallback, Number->String)
- *  - String "50.0" attribute matches expectedValue '50' (numeric fallback, String->String, B3)
- *  - expectedValue '50.0' matches Integer currentValue 50 (inverse direction, I8)
- *  - expectedValue '50' matches Double 50.0d (I8)
- *  - BigDecimal fractional (50.5) does NOT match expectedValue '50' (correct behavior)
- *  - Numeric finalValue against non-numeric expectedValue -> no match, no exception (isNumber() guard)
- *
- * pauseExecution() stubs inject via script.metaClass.pauseExecution (empirically
- * verified in scenarios 27, 30, 31); for normal test paths with no stub, the Mock
- * returns void silently, making sleeps instant.
+ * The waitFor engine shared by hub_get_device, hub_list_devices and hub_call_device_command:
+ * converge/timeout, expected-value matching (numeric fallback both ways), the single waitFor
+ * validator, neverReported / transitioning / interrupted, and dispatch through both catalog modes.
+ * Single-device waits run through hub_get_device(waitFor); poll() maps the old flat arguments there.
+ * pauseExecution() stubs inject via script.metaClass.pauseExecution; with no stub the Mock returns
+ * instantly, and the fixed harness now() ends a wait by its check count.
  */
-class ToolPollUntilAttributeSpec extends ToolSpecBase {
+class ToolWaitForSpec extends ToolSpecBase {
 
     private void nativePollDevice(TestDevice device) {
         childDevicesList << device
         NativePollFixture.register(hubGet, device)
+    }
+
+    // A single-device wait through hub_get_device; returns its waitFor block.
+    private Map poll(Map a) {
+        Map waitFor = a.findAll { it.key != 'deviceId' }
+        script.toolGetDevice(a.deviceId, 'summary', null, null, null, waitFor).waitFor
     }
 
     @spock.lang.Unroll
@@ -74,7 +47,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on', comparator: 'bogus'])
+        poll([deviceId: '10', attribute: 'switch', expectedValue: 'on', comparator: 'bogus'])
 
         then:
         thrown(IllegalArgumentException)
@@ -97,7 +70,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '10',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -106,10 +79,10 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success     == true
+        result.converged     == true
         result.finalValue  == 'on'
         result.polledCount >= 1
-        result.timedOut    == false
+        !result.timedOut
         result.elapsedMs   >= 0
     }
 
@@ -134,7 +107,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '20',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -143,11 +116,11 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success     == true
+        result.converged     == true
         result.finalValue  == 'on'
         result.polledCount == 3
         hubGet.calls.findAll { it.path == '/device/fullJson/20' }.size() == result.polledCount
-        result.timedOut    == false
+        !result.timedOut
     }
 
     // ---------------------------------------------------------------------------
@@ -165,7 +138,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '30',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -174,7 +147,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success    == false
+        result.converged    == false
         result.timedOut   == true
         result.finalValue == 'off'
         result.polledCount >= 1
@@ -195,7 +168,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId       : '40',
             attribute      : 'contact',
             expectedValues : ['open', 'closed'],
@@ -204,9 +177,9 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success    == true
+        result.converged    == true
         result.finalValue == 'open'
-        result.timedOut   == false
+        !result.timedOut
     }
 
     // ---------------------------------------------------------------------------
@@ -224,7 +197,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId       : '50',
             attribute      : 'contact',
             expectedValues : ['closed'],
@@ -233,7 +206,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success  == false
+        result.converged  == false
         result.timedOut == true
     }
 
@@ -253,7 +226,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId       : '60',
             attribute      : 'switch',
             expectedValue  : 'on',
@@ -264,7 +237,6 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('exactly one of expectedValue or expectedValues')
-        ex.message.contains('not both')
     }
 
     // ---------------------------------------------------------------------------
@@ -282,7 +254,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId : '70',
             attribute: 'switch',
             timeoutMs: 1000
@@ -290,7 +262,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Poll mode needs expectedValue or expectedValues; for a one-shot read pass only deviceId and attribute')
+        ex.message.contains('exactly one of expectedValue or expectedValues is required')
     }
 
     // ---------------------------------------------------------------------------
@@ -299,7 +271,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
     def "an integer deviceId is coerced past validation and reaches device resolution"() {
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId      : 99,          // numeric form, coerced to '99'
             attribute     : 'switch',
             expectedValue : 'on'
@@ -321,7 +293,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId      : '80',
             attribute     : ['switch'],  // should be String
             expectedValue : 'on'
@@ -343,7 +315,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId      : '81',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -366,7 +338,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId       : '82',
             attribute      : 'switch',
             expectedValues : ['on', 42]  // 42 is not a string
@@ -388,7 +360,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId      : '90',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -408,7 +380,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId      : '91',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -432,7 +404,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId       : '100',
             attribute      : 'switch',
             expectedValue  : 'on',
@@ -453,7 +425,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId       : '101',
             attribute      : 'switch',
             expectedValue  : 'on',
@@ -484,7 +456,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId       : '110',
             attribute      : 'switch',
             expectedValue  : 'on',
@@ -493,9 +465,9 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success    == true
+        result.converged    == true
         result.polledCount >= 1
-        result.timedOut   == false
+        !result.timedOut
     }
 
     // ---------------------------------------------------------------------------
@@ -508,7 +480,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         settingsMap.selectedDevices = []
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId      : '999',
             attribute     : 'switch',
             expectedValue : 'on'
@@ -535,7 +507,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '120',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -544,7 +516,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success    == false
+        result.converged    == false
         result.timedOut   == true
         result.finalValue == null   // null is valid -- did not throw
         result.polledCount >= 1
@@ -565,7 +537,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '130',
             attribute     : 'swich',
             expectedValue : 'on',
@@ -574,7 +546,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success == false
+        result.converged == false
         result.timedOut == true
         result.neverReported == true
         result.finalValue == null
@@ -596,12 +568,12 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId: '131', attribute: 'customValue', expectedValue: 'ready', timeoutMs: 500, pollIntervalMs: 50
         ])
 
         then:
-        result.success == true
+        result.converged == true
         result.finalValue == 'ready'
         result.polledCount == 2
         reads == 2
@@ -617,7 +589,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         NativePollFixture.register(hubGet, device)
 
         when:
-        script.toolPollUntilAttribute([deviceId: '132', attribute: 'switch', expectedValue: 'on', timeoutMs: 100])
+        poll([deviceId: '132', attribute: 'switch', expectedValue: 'on', timeoutMs: 100])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -640,7 +612,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId       : '140',
             attribute      : 'switch',
             expectedValue  : 'on',
@@ -668,7 +640,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId          : '141',
             attribute         : 'switch',
             expectedValue     : 'on',
@@ -700,7 +672,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '170',
             attribute     : 'level',
             expectedValue : '50',
@@ -709,8 +681,8 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success    == true
-        result.timedOut   == false
+        result.converged    == true
+        !result.timedOut
         result.polledCount >= 1
     }
 
@@ -729,7 +701,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '171',
             attribute     : 'level',
             expectedValue : '50',
@@ -738,7 +710,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success  == false
+        result.converged  == false
         result.timedOut == true
     }
 
@@ -757,7 +729,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '172',
             attribute     : 'level',
             expectedValue : 'abc',
@@ -767,7 +739,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
         then:
         notThrown(Exception)
-        result.success  == false
+        result.converged  == false
         result.timedOut == true
     }
 
@@ -786,7 +758,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId       : '200',
             attribute      : 'switch',
             expectedValues : []   // empty -- not a valid filter
@@ -813,7 +785,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId      : '201',
             attribute     : 'switch',
             expectedValue : ''   // empty string -- ambiguous semantics; reject
@@ -840,7 +812,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId      : '210',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -864,7 +836,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId       : '211',
             attribute      : 'switch',
             expectedValue  : 'on',
@@ -892,7 +864,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId       : '220',
             attribute      : 'switch',
             expectedValue  : 'on',
@@ -915,7 +887,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId      : '221',
             attribute     : 'level',
             expectedValue : 50   // should be String "50", not Integer
@@ -937,7 +909,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([deviceId: '230', attribute: 'switch',
+        poll([deviceId: '230', attribute: 'switch',
             expectedValue: 'on', timeoutMs: 99])
 
         then:
@@ -952,7 +924,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([deviceId: '231', attribute: 'switch',
+        poll([deviceId: '231', attribute: 'switch',
             expectedValue: 'on', timeoutMs: 60001])
 
         then:
@@ -967,12 +939,12 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([deviceId: '232', attribute: 'switch',
+        def result = poll([deviceId: '232', attribute: 'switch',
             expectedValue: 'on', timeoutMs: 100])
 
         then:
         notThrown(IllegalArgumentException)
-        result.success == true
+        result.converged == true
     }
 
     def "accepts timeoutMs at exact maximum (60000)"() {
@@ -982,12 +954,12 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([deviceId: '233', attribute: 'switch',
+        def result = poll([deviceId: '233', attribute: 'switch',
             expectedValue: 'on', timeoutMs: 60000])
 
         then:
         notThrown(IllegalArgumentException)
-        result.success == true
+        result.converged == true
     }
 
     // ---------------------------------------------------------------------------
@@ -1001,7 +973,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([deviceId: '240', attribute: 'switch',
+        poll([deviceId: '240', attribute: 'switch',
             expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 49])
 
         then:
@@ -1016,7 +988,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([deviceId: '241', attribute: 'switch',
+        poll([deviceId: '241', attribute: 'switch',
             expectedValue: 'on', timeoutMs: 60000, pollIntervalMs: 5001])
 
         then:
@@ -1031,12 +1003,12 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([deviceId: '242', attribute: 'switch',
+        def result = poll([deviceId: '242', attribute: 'switch',
             expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 50])
 
         then:
         notThrown(IllegalArgumentException)
-        result.success == true
+        result.converged == true
     }
 
     def "accepts pollIntervalMs at exact maximum (5000)"() {
@@ -1047,12 +1019,12 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
         when:
         // pollIntervalMs=5000 > timeoutMs=200 so it gets clamped -- still accepts, not throws
-        def result = script.toolPollUntilAttribute([deviceId: '243', attribute: 'switch',
+        def result = poll([deviceId: '243', attribute: 'switch',
             expectedValue: 'on', timeoutMs: 200, pollIntervalMs: 5000])
 
         then:
         notThrown(IllegalArgumentException)
-        result.success == true
+        result.converged == true
     }
 
     // ---------------------------------------------------------------------------
@@ -1070,7 +1042,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '250',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1079,7 +1051,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success      == false
+        result.converged      == false
         result.timedOut     == true
         result.neverReported == true
     }
@@ -1100,7 +1072,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '251',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1109,7 +1081,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success      == false
+        result.converged      == false
         result.timedOut     == true
         !result.neverReported   // key absent or false -- attribute did report eventually
     }
@@ -1134,7 +1106,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '260',
             attribute     : 'level',
             expectedValue : '99',
@@ -1143,7 +1115,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then: 'timed out, and transitioning is true because >=2 distinct non-null values were seen'
-        result.success      == false
+        result.converged      == false
         result.timedOut     == true
         result.transitioning == true
     }
@@ -1159,7 +1131,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '261',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1168,7 +1140,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then: 'timed out, and transitioning is false because every read was the same value'
-        result.success      == false
+        result.converged      == false
         result.timedOut     == true
         result.transitioning == false
     }
@@ -1193,7 +1165,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '260',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1202,7 +1174,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success      == false
+        result.converged      == false
         result.interrupted  == true
         result.polledCount  >= 1
         result.finalValue   == 'off'
@@ -1225,7 +1197,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '280',
             attribute     : 'level',
             expectedValue : '50',
@@ -1234,8 +1206,8 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success    == true
-        result.timedOut   == false
+        result.converged    == true
+        !result.timedOut
         result.polledCount >= 1
     }
 
@@ -1254,7 +1226,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '290',
             attribute     : 'level',
             expectedValue : '50.0',
@@ -1263,8 +1235,8 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success    == true
-        result.timedOut   == false
+        result.converged    == true
+        !result.timedOut
     }
 
     def "matches when decimal-valued attribute '50.0' is compared to expectedValue '50'"() {
@@ -1278,7 +1250,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '291',
             attribute     : 'level',
             expectedValue : '50',
@@ -1287,8 +1259,8 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success    == true
-        result.timedOut   == false
+        result.converged    == true
+        !result.timedOut
     }
 
     // ---------------------------------------------------------------------------
@@ -1313,7 +1285,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolPollUntilAttribute([
+        poll([
             deviceId      : '300',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1356,7 +1328,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolPollUntilAttribute([
+        def result = poll([
             deviceId      : '310',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1365,239 +1337,124 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        result.success     == false
+        result.converged     == false
         result.interrupted == true
         // A warn was emitted via mcpLog naming the poll count and component
         mcpLogCalls.any { it.level == 'warn' && it.component == 'device' &&
-                          it.msg ==~ /poll_until_attribute interrupted after \d+ poll\(s\).*/ }
+                          it.msg ==~ /waitFor interrupted after \d+ check\(s\).*/ }
     }
 
     // ---------------------------------------------------------------------------
-    // Dispatch-envelope counterparts (issue #187)
-    //
-    // hub_get_device_attribute poll mode is wired through the executeTool switch (no gateway
-    // group), so useGateways doesn't change routing — the parameter is varied
-    // here to assert the JSON-RPC envelope behaves identically in both modes.
-    // The set is intentionally selective: hub_get_device_attribute poll mode has 30+ direct
-    // features, and the dispatch path differs only by envelope shape per
-    // outcome class. We cover one feature per distinct envelope:
-    //   - success-immediate (success envelope with result body)
-    //   - timeout (success envelope, success=false/timedOut=true)
-    //   - IAE validation -> isError validation result (device not found)
-    //   - IAE validation -> isError validation result (missing both expectedValue/expectedValues)
-    //   - IAE validation -> isError validation result (unknown arg / typo hint)
-    //   - InterruptedException -> success envelope with interrupted=true
-    //   - non-IAE RuntimeException -> isError success envelope (MCP spec)
+    // Dispatch-envelope counterparts (issue #187): hub_get_device(waitFor) through executeTool,
+    // flat and gateway catalogs. A wait that does not converge is a successful read, not an error.
     // ---------------------------------------------------------------------------
 
     @spock.lang.Unroll
-    def "hub_get_device_attribute poll-mode via dispatch returns success immediately when value already matches (useGateways=#useGateways)"() {
+    def "hub_get_device waitFor via dispatch converges at once when the value already matches (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        def device = new TestDevice(
-            id: 1010,
-            name: 'DispatchSwitch',
-            label: 'Dispatch Switch',
-            supportedAttributes: [[name: 'switch']],
-            attributeValues: [switch: 'on']
-        )
-        nativePollDevice(device)
+        nativePollDevice(new TestDevice(id: 1010, name: 'DispatchSwitch', label: 'Dispatch Switch', attributeValues: [switch: 'on']))
 
         when:
-        def response = mcpDriver.callTool('hub_get_device_attribute', [
-            deviceId      : '1010',
-            attribute     : 'switch',
-            expectedValue : 'on',
-            timeoutMs     : 5000,
-            pollIntervalMs: 200
-        ])
+        def response = mcpDriver.callTool('hub_get_device', [deviceId: '1010',
+            waitFor: [attribute: 'switch', expectedValue: 'on', timeoutMs: 5000, pollIntervalMs: 200]])
 
         then:
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.success == true
-        inner.finalValue == 'on'
-        inner.timedOut == false
+        inner.label == 'Dispatch Switch'
+        inner.attributes.find { it.name == 'switch' }.value == 'on'
+        inner.waitFor.converged == true
+        inner.waitFor.finalValue == 'on'
+        inner.waitFor.attribute == 'switch'
+        inner.waitFor.expected == 'on'
+        !inner.waitFor.containsKey('timedOut')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_get_device_attribute poll-mode via dispatch returns success=false/timedOut=true when no match (useGateways=#useGateways)"() {
+    def "hub_get_device waitFor via dispatch reports a timeout as converged false, not a tool error (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        def device = new TestDevice(
-            id: 1020,
-            label: 'Dispatch Stubborn',
-            supportedAttributes: [[name: 'switch']],
-            attributeValues: [switch: 'off']
-        )
-        nativePollDevice(device)
+        nativePollDevice(new TestDevice(id: 1020, label: 'Dispatch Stubborn', attributeValues: [switch: 'off']))
 
         when:
-        def response = mcpDriver.callTool('hub_get_device_attribute', [
-            deviceId      : '1020',
-            attribute     : 'switch',
-            expectedValue : 'on',
-            timeoutMs     : 100,
-            pollIntervalMs: 50
-        ])
+        def response = mcpDriver.callTool('hub_get_device', [deviceId: '1020',
+            waitFor: [attribute: 'switch', expectedValue: 'on', timeoutMs: 100, pollIntervalMs: 50]])
 
         then:
         response.error == null
-        response.result.isError == true
+        !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.timedOut == true
-        inner.finalValue == 'off'
+        inner.waitFor.converged == false
+        inner.waitFor.timedOut == true
+        inner.waitFor.finalValue == 'off'
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_get_device_attribute poll-mode via dispatch returns isError validation result when device is not found (useGateways=#useGateways)"() {
+    def "hub_get_device waitFor via dispatch returns an isError validation result for #scenario (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        childDevicesList.clear()
-        settingsMap.selectedDevices = []
+        nativePollDevice(new TestDevice(id: 1030, label: 'Dispatch Validation', attributeValues: [switch: 'off']))
 
         when:
-        def response = mcpDriver.callTool('hub_get_device_attribute', [
-            deviceId      : '9999',
-            attribute     : 'switch',
-            expectedValue : 'on'
-        ])
+        def response = mcpDriver.callTool('hub_get_device', args)
 
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('9999')
+        expected.every { mcpDriver.parseInner(response).error.contains(it) }
 
         where:
-        useGateways << [true, false]
+        [useGateways, scenario, args, expected] << [[true, false], [
+            ['an unknown device', [deviceId: '9999', waitFor: [attribute: 'switch', expectedValue: 'on']], ['9999']],
+            ['no expected value', [deviceId: '1030', waitFor: [attribute: 'switch', timeoutMs: 1000]], ['exactly one of expectedValue or expectedValues']],
+            ['an unknown waitFor key', [deviceId: '1030', waitFor: [attribute: 'switch', expectedValue: 'on', timeoutSeconds: 10]], ['timeoutSeconds', 'timeoutMs']],
+            ['a details-mode wait', [deviceId: '1030', mode: 'details', waitFor: [attribute: 'switch', expectedValue: 'on']], ['summary mode']],
+            ['mode inside a single-device wait', [deviceId: '1030', waitFor: [attribute: 'switch', expectedValue: 'on', mode: 'any']], ['unknown key: mode']]
+        ]].combinations().collect { [it[0]] + it[1] }
     }
 
     @spock.lang.Unroll
-    def "hub_get_device_attribute poll-mode via dispatch returns isError validation result when neither expectedValue nor expectedValues provided (useGateways=#useGateways)"() {
+    def "hub_get_device waitFor via dispatch reports interrupted when pauseExecution throws InterruptedException (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        def device = new TestDevice(
-            id: 1030,
-            label: 'Dispatch Missing EV',
-            supportedAttributes: [[name: 'switch']],
-            attributeValues: [switch: 'off']
-        )
-        nativePollDevice(device)
+        nativePollDevice(new TestDevice(id: 1050, label: 'Dispatch Interrupted', attributeValues: [switch: 'off']))
+        script.metaClass.pauseExecution = { long ms -> throw new InterruptedException("hub reloading") }
 
         when:
-        def response = mcpDriver.callTool('hub_get_device_attribute', [
-            deviceId : '1030',
-            attribute: 'switch',
-            timeoutMs: 1000
-        ])
+        def response = mcpDriver.callTool('hub_get_device', [deviceId: '1050',
+            waitFor: [attribute: 'switch', expectedValue: 'on', timeoutMs: 5000, pollIntervalMs: 200]])
 
-        then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('Poll mode needs expectedValue or expectedValues; for a one-shot read pass only deviceId and attribute')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    @spock.lang.Unroll
-    def "hub_get_device_attribute poll-mode via dispatch returns isError validation result when unknown arg is passed (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def device = new TestDevice(
-            id: 1040,
-            label: 'Dispatch Unknown Arg',
-            supportedAttributes: [[name: 'switch']],
-            attributeValues: [switch: 'off']
-        )
-        nativePollDevice(device)
-
-        when:
-        def response = mcpDriver.callTool('hub_get_device_attribute', [
-            deviceId       : '1040',
-            attribute      : 'switch',
-            expectedValue  : 'on',
-            timeoutSeconds : 10
-        ])
-
-        then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('timeoutSeconds')
-        mcpDriver.parseInner(response).error.contains('timeoutMs')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    @spock.lang.Unroll
-    def "hub_get_device_attribute poll-mode via dispatch returns an isError result with interrupted=true when pauseExecution throws InterruptedException (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def device = new TestDevice(
-            id: 1050,
-            label: 'Dispatch Interrupted',
-            supportedAttributes: [[name: 'switch']],
-            attributeValues: [switch: 'off']
-        )
-        nativePollDevice(device)
-
-        script.metaClass.pauseExecution = { long ms ->
-            throw new InterruptedException("hub reloading")
-        }
-
-        when:
-        def response = mcpDriver.callTool('hub_get_device_attribute', [
-            deviceId      : '1050',
-            attribute     : 'switch',
-            expectedValue : 'on',
-            timeoutMs     : 5000,
-            pollIntervalMs: 200
-        ])
-
-        then: 'InterruptedException is caught inside the tool and surfaced as a tool error result'
+        then: 'InterruptedException is caught inside the wait and reported in the waitFor block'
         response.error == null
-        response.result.isError == true
+        !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.interrupted == true
-        inner.finalValue == 'off'
+        inner.waitFor.converged == false
+        inner.waitFor.interrupted == true
+        inner.waitFor.finalValue == 'off'
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_get_device_attribute poll-mode via dispatch returns isError envelope when pauseExecution throws RuntimeException (useGateways=#useGateways)"() {
+    def "hub_get_device waitFor via dispatch returns isError envelope when pauseExecution throws RuntimeException (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        def device = new TestDevice(
-            id: 1060,
-            label: 'Dispatch Runtime Boom',
-            supportedAttributes: [[name: 'switch']],
-            attributeValues: [switch: 'off']
-        )
-        nativePollDevice(device)
-
-        script.metaClass.pauseExecution = { long ms ->
-            throw new RuntimeException("simulated bug in sleep path")
-        }
+        nativePollDevice(new TestDevice(id: 1060, label: 'Dispatch Runtime Boom', attributeValues: [switch: 'off']))
+        script.metaClass.pauseExecution = { long ms -> throw new RuntimeException("simulated bug in sleep path") }
 
         when:
-        def response = mcpDriver.callTool('hub_get_device_attribute', [
-            deviceId      : '1060',
-            attribute     : 'switch',
-            expectedValue : 'on',
-            timeoutMs     : 5000,
-            pollIntervalMs: 200
-        ])
+        def response = mcpDriver.callTool('hub_get_device', [deviceId: '1060',
+            waitFor: [attribute: 'switch', expectedValue: 'on', timeoutMs: 5000, pollIntervalMs: 200]])
 
-        then: 'non-IAE escapes the tool catch and lands in handleToolsCall generic-Exception path -> isError envelope per MCP spec'
+        then: 'non-IAE escapes the tool and lands in the generic-Exception path -> isError envelope per MCP spec'
         response.error == null
         response.result.isError == true
         response.result.content[0].type == 'text'
@@ -1608,56 +1465,25 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // ---------------------------------------------------------------------------
-    // One-shot read branch: with NO poll args (no expectedValue/expectedValues/
-    // timeoutMs/pollIntervalMs), executeTool routes hub_get_device_attribute to
-    // toolGetAttribute for a single read rather than the poll path -- assert the
-    // {device, attribute, value} envelope.
-    // ---------------------------------------------------------------------------
-
     @spock.lang.Unroll
-    def "hub_get_device_attribute one-shot read via dispatch returns device/attribute/value when no poll args given (useGateways=#useGateways)"() {
+    def "one attribute reads from hub_get_device attributes by name, an absent entry meaning never reported (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        def device = new TestDevice(
-            id: 1070,
-            name: 'DispatchReadSwitch',
-            label: 'Dispatch Read Switch',
-            supportedAttributes: [[name: 'switch']],
-            attributeValues: [switch: 'on']
-        )
-        nativePollDevice(device)
+        nativePollDevice(new TestDevice(id: 1070, name: 'DispatchReadSwitch', label: 'Dispatch Read Switch', attributeValues: [switch: 'on']))
 
         when:
-        def response = mcpDriver.callTool('hub_get_device_attribute', [
-            deviceId : deviceId,
-            attribute: 'switch'
-        ])
+        def response = mcpDriver.callTool('hub_get_device', [deviceId: deviceId])
 
         then:
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.device == 'Dispatch Read Switch'
-        inner.attribute == 'switch'
-        inner.value == 'on'
+        inner.label == 'Dispatch Read Switch'
+        inner.attributes.find { it.name == 'switch' }.value == 'on'
+        !inner.attributes.any { it.name == 'level' }
+        !inner.containsKey('waitFor')
 
-        where: 'the schema declares deviceId string|integer, and hub_list_devices format=ids returns integers'
+        where: 'hub_list_devices format=ids returns integer ids'
         [useGateways, deviceId] << [[true, false], ['1070', 1070]].combinations()
-    }
-
-    @spock.lang.Unroll
-    def "hub_get_device_attribute one-shot refuses a #scenario deviceId with the real reason"() {
-        when:
-        def response = mcpDriver.callTool('hub_get_device_attribute', args)
-
-        then:
-        response.result.isError
-        mcpDriver.parseInner(response).error.contains(expected)
-
-        where:
-        scenario     | args                                  || expected
-        'missing'    | [attribute: 'switch']                 || 'deviceId is required'
-        'fractional' | [deviceId: 1.5, attribute: 'switch']  || 'deviceId must be a non-empty string or integral number (got: 1.5'
     }
 }

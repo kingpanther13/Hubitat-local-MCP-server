@@ -128,14 +128,14 @@ echo "######## LIVE wedge matrix (sacrificial test devices only) ########"
 
 wedge_check_switch() { # $1 check label, $2 device id
   local label="$1" did="$2" cur val target
-  cur=$(mcp_text "$MCP_URL" "$(tool_rpc hub_get_device_attribute "{\"deviceId\":\"${did}\",\"attribute\":\"switch\"}")")
-  echo "[$label] device ${did} current state: ${cur}"
-  val=$(printf '%s' "$cur" | jq -r '.value // empty' 2>/dev/null)
+  cur=$(mcp_text "$MCP_URL" "$(tool_rpc hub_get_device "{\"deviceId\":\"${did}\"}")")
+  val=$(printf '%s' "$cur" | jq -r '.attributes[]? | select(.name == "switch") | .value // empty' 2>/dev/null)
+  echo "[$label] device ${did} current switch: ${val}"
   if [ "$val" = "on" ]; then target="off"; else target="on"; fi
   curl -sS --max-time 30 -X POST "$MCP_URL" -H "Content-Type: application/json" \
     --data-binary "$(tool_rpc hub_call_device_command "{\"deviceId\":\"${did}\",\"command\":\"${target}\"}")" >/dev/null
   section "[$label] poll device ${did} -> ${target} (timedOut=true = wedged)" "$MCP_URL" \
-    "$(tool_rpc hub_get_device_attribute "{\"deviceId\":\"${did}\",\"attribute\":\"switch\",\"expectedValue\":\"${target}\",\"timeoutMs\":4000}")"
+    "$(tool_rpc hub_get_device "{\"deviceId\":\"${did}\",\"waitFor\":{\"attribute\":\"switch\",\"expectedValue\":\"${target}\",\"timeoutMs\":4000}}")"
 }
 
 # A) the persistent BAT scaffold
@@ -158,14 +158,14 @@ fi
 # parent). Toggle its heating setpoint between 68 and 69 and poll for the change.
 THERMO_ID=$(printf '%s' "$ALL_DEVICES" | jq -r '.[] | select((.label // "") == "_CI_Virtual Thermostat") | .id' 2>/dev/null | head -1)
 if [ -n "$THERMO_ID" ]; then
-  CUR_SP=$(mcp_text "$MCP_URL" "$(tool_rpc hub_get_device_attribute "{\"deviceId\":\"${THERMO_ID}\",\"attribute\":\"heatingSetpoint\"}")")
-  echo "[C: non-MCP thermostat] device ${THERMO_ID} current heatingSetpoint: ${CUR_SP}"
-  SP_VAL=$(printf '%s' "$CUR_SP" | jq -r '.value // empty' 2>/dev/null | cut -d. -f1)
+  CUR_SP=$(mcp_text "$MCP_URL" "$(tool_rpc hub_get_device "{\"deviceId\":\"${THERMO_ID}\"}")")
+  SP_VAL=$(printf '%s' "$CUR_SP" | jq -r '.attributes[]? | select(.name == "heatingSetpoint") | .value // empty' 2>/dev/null | cut -d. -f1)
+  echo "[C: non-MCP thermostat] device ${THERMO_ID} current heatingSetpoint: ${SP_VAL}"
   if [ "$SP_VAL" = "69" ]; then SP_TARGET="68"; else SP_TARGET="69"; fi
   curl -sS --max-time 30 -X POST "$MCP_URL" -H "Content-Type: application/json" \
     --data-binary "$(tool_rpc hub_call_device_command "{\"deviceId\":\"${THERMO_ID}\",\"command\":\"setHeatingSetpoint\",\"parameters\":[\"${SP_TARGET}\"]}")" >/dev/null
   section "[C: non-MCP thermostat] poll heatingSetpoint -> ${SP_TARGET} (timedOut=true = wedged)" "$MCP_URL" \
-    "$(tool_rpc hub_get_device_attribute "{\"deviceId\":\"${THERMO_ID}\",\"attribute\":\"heatingSetpoint\",\"expectedValues\":[\"${SP_TARGET}\",\"${SP_TARGET}.0\"],\"timeoutMs\":4000}")"
+    "$(tool_rpc hub_get_device "{\"deviceId\":\"${THERMO_ID}\",\"waitFor\":{\"attribute\":\"heatingSetpoint\",\"expectedValues\":[\"${SP_TARGET}\",\"${SP_TARGET}.0\"],\"timeoutMs\":4000}}")"
 else
   echo "(C: no _CI_Virtual Thermostat found -- skipped)"
 fi

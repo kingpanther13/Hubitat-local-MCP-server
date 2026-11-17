@@ -30,7 +30,7 @@ def toolUpdateMcpSettings(args) {
     // bypassDeviceAllowlist is allowlisted: it is a plain bool preference whose EFFECT is INDEPENDENT
     // of Developer Mode (this tool is dev-mode-gated, but once the flag is ON the bypass works in
     // normal operation). WARNING: when ON it makes the per-device tools (hub_get_device,
-    // hub_get_device_attribute, hub_call_device_command, hub_update_device, hub_list_device_events)
+    // hub_call_device_command, hub_update_device, hub_list_device_events)
     // ignore the device allowlist (settings.selectedDevices) and reach ANY device on the hub by id;
     // default OFF. Native inventory, health, dependents, swap and replacement use the same access policy.
     // selectedDevices is ALSO allowed but is NOT in this scalar map: it is the MCP device-access
