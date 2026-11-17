@@ -196,7 +196,7 @@ class HandleGatewaySpec extends ToolSpecBase {
     def "hub_get_device dispatch forwards mode sections fields and cursor to the reader"() {
         given:
         def captured = [:]
-        script.metaClass.toolGetDevice = { deviceId, mode = 'summary', sections = null, fields = null, cursor = null ->
+        script.metaClass.toolGetDevice = { deviceId, mode = 'summary', sections = null, fields = null, cursor = null, waitFor = null, reqT0 = null ->
             captured.put('deviceId', deviceId)
             captured.put('mode', mode)
             captured.put('sections', sections)

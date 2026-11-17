@@ -36,7 +36,6 @@ def toolGetRoom(args) {
         Map states = [:]
         for (st in rec.currentStates) states.put(st.key, _listStateValue(st.key, st.value, redact))
         if (states) devInfo.currentStates = states
-        if ("currentStates" in rec.missingFields) devInfo.metadataUnavailable = true
         devices << devInfo
     }
     return [

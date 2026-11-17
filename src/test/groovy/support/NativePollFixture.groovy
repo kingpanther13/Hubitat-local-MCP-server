@@ -13,8 +13,8 @@ class NativePollFixture {
             }
             JsonOutput.toJson([
                 device: [id: device.id, name: device.name, label: device.label,
-                         currentStates: nativeStates],
-                commands: device.supportedCommands
+                         capabilities: device.capabilities ?: [], currentStates: nativeStates],
+                commands: device.supportedCommands ?: []
             ])
         }
     }

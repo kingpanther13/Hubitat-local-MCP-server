@@ -1,6 +1,8 @@
 package server
 
 import spock.lang.Unroll
+import support.NativeInventoryFixture
+import support.TestDevice
 import support.ToolSpecBase
 
 class RelayBudgetSpec extends ToolSpecBase {
@@ -166,28 +168,30 @@ class RelayBudgetSpec extends ToolSpecBase {
         !received.containsKey('__reqT0')
     }
 
+    // A waitFor on hub_get_device / hub_list_devices / hub_call_device_command, validated once.
+    private Map waitSpec(Map waitFor) { script._waitForSpec([attribute: 'switch', expectedValue: 'on'] + waitFor, false, 60000, 200) }
+
     @Unroll
-    def "a poll on a budgeted transport ends by the request deadline: #label"() {
+    def "a wait on a budgeted transport ends by the request deadline: #label"() {
         given:
         script.metaClass._isCloudRequest = { -> cloud }
         settingsMap.lanBudgetMs = lanBudget
         def captured = [:]
-        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> captured.args = a; captured.deadline = d; [success: false, timedOut: true, elapsedMs: 10] }
+        script.metaClass._waitForCore = { Map s, List ids, boolean page, first, Long d -> captured.spec = s; captured.deadline = d; [converged: false, timedOut: true, elapsedMs: 10] }
 
         when:
-        def r = script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on',
-                                               timeoutMs: asked, __reqT0: FIXED_NOW - spent])
+        def r = script._waitForRun(waitSpec(timeoutMs: asked), ['10'], false, null, FIXED_NOW - spent)
 
         then:
-        captured.args.timeoutMs == waited
+        captured.spec.timeoutMs == waited
         captured.deadline == deadline
         (r.budgetLimited == true) == limited
         !limited || r.requestedTimeoutMs == asked
 
         where:
         label                       | cloud | lanBudget | asked | spent || waited | limited | deadline
-        'cloud, long poll clamped'  | true  | null      | 25000 | 500   || 5500   | true    | FIXED_NOW + 5500
-        'cloud, short poll as asked'| true  | null      | 4000  | 500   || 4000   | false   | FIXED_NOW + 5500
+        'cloud, long wait clamped'  | true  | null      | 25000 | 500   || 5500   | true    | FIXED_NOW + 5500
+        'cloud, short wait as asked'| true  | null      | 4000  | 500   || 4000   | false   | FIXED_NOW + 5500
         'LAN, no budget'            | false | null      | 25000 | 500   || 25000  | false   | null
         'LAN with a budget'         | false | 8000      | 25000 | 1000  || 7000   | true    | FIXED_NOW + 7000
     }
@@ -195,11 +199,10 @@ class RelayBudgetSpec extends ToolSpecBase {
     def "the engine reporting a deadline stop marks the result budget-limited even when the ask fit"() {
         given:
         script.metaClass._isCloudRequest = { -> true }
-        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> [success: false, timedOut: true, elapsedMs: 3000, budgetStopped: true] }
+        script.metaClass._waitForCore = { Map s, List ids, boolean page, first, Long d -> [converged: false, timedOut: true, elapsedMs: 3000, budgetStopped: true] }
 
         when:
-        def r = script.toolPollUntilAttribute([deviceIds: ['10', '11'], attribute: 'switch', expectedValue: 'on',
-                                               timeoutMs: 4000, __reqT0: FIXED_NOW - 500])
+        def r = script._waitForRun(waitSpec(timeoutMs: 4000), ['10', '11'], true, [:], FIXED_NOW - 500)
 
         then:
         r.budgetLimited == true
@@ -208,17 +211,16 @@ class RelayBudgetSpec extends ToolSpecBase {
         r.budgetNote.contains('3000 ms')
     }
 
-    def "a poll that converged under the clamp is reported as converged, not as stopped"() {
+    def "a wait that converged under the clamp is reported as converged, not as stopped"() {
         given:
         script.metaClass._isCloudRequest = { -> true }
-        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> [success: true, finalValue: 'off', elapsedMs: 1] }
+        script.metaClass._waitForCore = { Map s, List ids, boolean page, first, Long d -> [converged: true, elapsedMs: 1] }
 
         when:
-        def r = script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'off',
-                                               timeoutMs: 25000, __reqT0: FIXED_NOW - 500])
+        def r = script._waitForRun(waitSpec(timeoutMs: 25000), ['10'], false, null, FIXED_NOW - 500)
 
         then:
-        r.success == true
+        r.converged == true
         !r.containsKey('budgetLimited')
         !r.containsKey('budgetNote')
     }
@@ -227,53 +229,53 @@ class RelayBudgetSpec extends ToolSpecBase {
         given:
         script.metaClass._isCloudRequest = { -> true }
         boolean engineRan = false
-        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> engineRan = true; [success: true] }
+        script.metaClass._waitForCore = { Map s, List ids, boolean page, first, Long d -> engineRan = true; [converged: true] }
 
         when:
-        script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on',
-                                       timeoutMs: 40000, stableForMs: 30000, __reqT0: FIXED_NOW - 500])
+        script._waitForRun(waitSpec(timeoutMs: 40000, stableForMs: 30000), ['10'], false, null, FIXED_NOW - 500)
 
         then:
         def e = thrown(IllegalArgumentException)
-        e.message.contains('stableForMs 30000')
+        e.message.contains('waitFor.stableForMs 30000')
         !engineRan
     }
 
-    def "a request with under 100 ms left answers without polling"() {
+    def "a request with under 100 ms left answers without waiting"() {
         given:
         script.metaClass._isCloudRequest = { -> true }
         boolean engineRan = false
-        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> engineRan = true; [success: true] }
+        script.metaClass._waitForCore = { Map s, List ids, boolean page, first, Long d -> engineRan = true; [converged: true] }
 
         when:
-        def r = script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on',
-                                               timeoutMs: 5000, __reqT0: FIXED_NOW - 5950])
+        def r = script._waitForRun(waitSpec(timeoutMs: 5000), ['10'], false, null, FIXED_NOW - 5950)
 
         then:
-        r.success == false
+        r.converged == false
         r.budgetLimited == true
         r.timeoutMs == 0
+        r.polledCount == 0
         !engineRan
     }
 
     @Unroll
     def "the wrapper hands #label straight to the engine without a deadline"() {
         given:
-        script.metaClass._isCloudRequest = { -> true }
+        script.metaClass._isCloudRequest = { -> cloud }
         def captured = [:]
-        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> captured.args = a; captured.deadline = d; [success: true] }
+        def spec = waitSpec(timeoutMs: 25000)
+        script.metaClass._waitForCore = { Map s, List ids, boolean page, first, Long d -> captured.spec = s; captured.deadline = d; [converged: true] }
 
         when:
-        script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on'] + extra)
+        script._waitForRun(spec, ['10'], false, null, reqT0)
 
         then:
         captured.deadline == null
-        !captured.args.containsKey('__reqT0')
+        captured.spec.is(spec)
 
         where:
-        label                     | extra
-        'a call with no clock'    | [timeoutMs: 25000]
-        'an out-of-range timeout' | [timeoutMs: 50, __reqT0: FIXED_NOW - 500]
+        label                              | cloud | reqT0
+        'a call with no clock'             | true  | null
+        'a LAN call with no budget set'    | false | FIXED_NOW - 500
     }
 
     // The other leaves in _budgetAwareTools alongside hub_set_rule. Each owns a
@@ -284,21 +286,30 @@ class RelayBudgetSpec extends ToolSpecBase {
     // runs unbounded. The loop behaviour itself is pinned in the tools' own specs; these
     // pin only DELIVERY.
 
-    def "the budget clock reaches hub_get_device_attribute polls through dispatch and the gateway"() {
+    @Unroll
+    def "the budget clock reaches #tool waits through dispatch and the gateway"() {
         given:
         settingsMap.useGateways = true
+        settingsMap.lanBudgetMs = 8000
+        childDevicesList << new TestDevice(id: 10, label: 'Budgeted', attributeValues: [switch: 'on'])
+        NativeInventoryFixture.registerDevicesPage(hubGet) { -> childDevicesList }
+        NativeInventoryFixture.register(hubGet, '10') { childDevicesList[0] }
         def captured = [:]
-        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> captured.args = a; [success: true, finalValue: 'on'] }
+        script.metaClass._waitForCore = { Map s, List ids, boolean page, first, Long d -> captured.deadline = d; [converged: true, devices: [], last: first] }
 
         when:
-        def response = mcpDriver.callTool('hub_read_devices', [tool: 'hub_get_device_attribute',
-            args: [deviceId: '10', attribute: 'switch', expectedValue: 'on', timeoutMs: 2000]])
+        def response = mcpDriver.callTool(gateway, [tool: tool, args: args + [waitFor: [attribute: 'switch', expectedValue: 'on', timeoutMs: 2000]]])
 
-        then: 'the wrapper consumed the clock; the engine never sees it'
+        then: 'the wrapper consumed the clock: the engine got a deadline'
         response.error == null
-        captured.args.timeoutMs == 2000
-        !captured.args.containsKey('__reqT0')
+        captured.deadline == FIXED_NOW + 8000
+
+        where:
+        gateway            | tool               | args
+        'hub_read_devices' | 'hub_get_device'   | [deviceId: '10']
+        'hub_read_devices' | 'hub_list_devices' | [deviceIds: ['10']]
     }
+
     def "the budget clock reaches hub_call_rule through dispatch and the gateway"() {
         given:
         settingsMap.useGateways = true
