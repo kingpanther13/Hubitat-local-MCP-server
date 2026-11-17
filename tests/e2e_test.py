@@ -5479,8 +5479,8 @@ class TestRunner:
     # pinToken-gated list (create succeeded but the dashboard isn't listable) skips,
     # since that is a hub-provisioning gap the e2e hub does not control.
 
-    def _find_dashboard_id_by_name(self, name: str) -> str | None:
-        """Return the installedAppId of the BAT dashboard with this exact name, or None."""
+    def _find_dashboard_id_by_name(self, name: str, exclude: set[str] | frozenset[str] = frozenset()) -> str | None:
+        """Return the installedAppId of the BAT dashboard with this exact name outside `exclude`, or None."""
         try:
             listed = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_list_dashboards", "args": {}})
         except Exception:
@@ -5488,7 +5488,7 @@ class TestRunner:
         if not isinstance(listed, dict):
             return None
         for d in listed.get("dashboards", []) or []:
-            if d.get("name") == name and d.get("id"):
+            if d.get("name") == name and d.get("id") and str(d["id"]) not in exclude:
                 return str(d["id"])
         return None
 
@@ -5534,7 +5534,10 @@ class TestRunner:
             "hub_create_dashboard(version=...) was refused but a dashboard was created anyway"
 
         # CREATE. showEdit is off, which the hub's create ignores, so the tool follows with an update
-        # that turns it off; the omitted showNavigation takes the hub's default (on).
+        # that turns it off; the omitted showNavigation takes the hub's default (on). The id comes from
+        # the answer, or after a lost answer from a dashboard that did not exist before: a rerun keeps
+        # the earlier attempt's same-named dashboard.
+        ids_before_create = self._dashboard_ids()
         cw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_create_dashboard",
@@ -5542,7 +5545,7 @@ class TestRunner:
                          "options": {"showClockTile": True, "theme": "dark", "dashboardPin": "4321",
                                      "localOnly": True, "showEdit": False}},
             }),
-            lambda: self._find_dashboard_id_by_name(dash_name),
+            lambda: self._find_dashboard_id_by_name(dash_name, ids_before_create),
             "create dashboard",
         )
         if cw["relayDropped"]:
@@ -5558,9 +5561,7 @@ class TestRunner:
             assert resp.get("success") is not False, f"hub_create_dashboard failed: {resp.get('error')}"
             assert resp.get("offAfterCreate") == ["showEdit"] and not resp.get("warnings"), \
                 f"the create did not report turning showEdit off: {resp}"
-            dash_id = self._find_dashboard_id_by_name(dash_name)
-            if not dash_id and resp.get("id"):
-                dash_id = str(resp["id"])
+            dash_id = str(resp.get("id") or self._find_dashboard_id_by_name(dash_name, ids_before_create) or "")
         if not dash_id:
             # Created (no error) but the list could not surface it -- almost certainly a
             # pinToken-gated /dashboard/all on this hub (a hub-provisioning gap, not a tool bug).
@@ -5664,11 +5665,13 @@ class TestRunner:
         assert (self._read_dashboard(dash_id) or {}).get("name") == dash_name, \
             "hub_update_dashboard(id=...) was refused but the dashboard was renamed anyway"
 
-        # COPY (hub_create_dashboard with sourceId: copy-by-value into "<name> (copy)").
+        # COPY (hub_create_dashboard with sourceId: copy-by-value into "<name> (copy)"). Recovery
+        # takes only a dashboard that did not exist before the copy, never an earlier attempt's.
+        ids_before = self._dashboard_ids()
         pw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_create_dashboard", "args": {"sourceId": dash_id}}),
-            lambda: self._find_dashboard_id_by_name(copy_name),
+            lambda: self._find_dashboard_id_by_name(copy_name, ids_before),
             "copy dashboard",
         )
         if pw["relayDropped"]:
@@ -5678,7 +5681,7 @@ class TestRunner:
             resp = pw["response"]
             assert isinstance(resp, dict) and resp.get("success"), f"hub_create_dashboard(sourceId) failed: {resp}"
             assert resp.get("sourceId") == dash_id, f"copy result lost its sourceId: {resp}"
-            copy_id = str(resp.get("id") or self._find_dashboard_id_by_name(copy_name) or "")
+            copy_id = str(resp.get("id") or self._find_dashboard_id_by_name(copy_name, ids_before) or "")
         assert copy_id and copy_id != dash_id, f"copy has no new id: {copy_id}"
         self.created_dashboard_ids.append(copy_id)
         copied = self._read_dashboard(copy_id)
@@ -5846,12 +5849,13 @@ class TestRunner:
         dash_name = f"{PREFIX}LegacyDash"
 
         # CREATE (type=legacy): starts with an empty layout; deviceIds is the authorized-device list.
+        ids_before_create = self._dashboard_ids()
         cw = self._soft_write(
             lambda: self.client.call_tool_result("hub_manage_dashboards", {
                 "tool": "hub_create_dashboard",
                 "args": {"name": dash_name, "type": "legacy", "deviceIds": [str(switch_id)]},
             }),
-            lambda: self._find_dashboard_id_by_name(dash_name),
+            lambda: self._find_dashboard_id_by_name(dash_name, ids_before_create),
             "create legacy dashboard",
         )
         if cw["relayDropped"]:
@@ -5862,9 +5866,7 @@ class TestRunner:
             resp = cw["response"]
             assert isinstance(resp, dict), f"hub_create_dashboard(legacy) returned non-dict: {resp}"
             assert resp.get("success") is not False, f"hub_create_dashboard(legacy) failed: {resp.get('error')}"
-            dash_id = self._find_dashboard_id_by_name(dash_name)
-            if not dash_id and resp.get("id"):
-                dash_id = str(resp["id"])
+            dash_id = str(resp.get("id") or self._find_dashboard_id_by_name(dash_name, ids_before_create) or "")
         if not dash_id:
             # Created (no error) but the list could not surface it -- pinToken-gated /dashboard/all,
             # a hub-provisioning gap, not a tool bug. Document and skip the rest.
@@ -5949,10 +5951,11 @@ class TestRunner:
 
         # COPY (hub_create_dashboard with sourceId): a new legacy dashboard with the source's layout.
         copy_name = f"{dash_name} (copy)"
+        ids_before = self._dashboard_ids()
         pw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_create_dashboard", "args": {"sourceId": dash_id}}),
-            lambda: self._find_dashboard_id_by_name(copy_name),
+            lambda: self._find_dashboard_id_by_name(copy_name, ids_before),
             "copy legacy dashboard",
         )
         if pw["relayDropped"]:
@@ -16310,9 +16313,10 @@ def updated() {}
         args = {"name": name, "type": "legacy"}
         if device_ids:
             args["deviceIds"] = device_ids
+        ids_before = self._dashboard_ids()
         cw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {"tool": "hub_create_dashboard", "args": args}),
-            lambda: self._find_dashboard_id_by_name(name),
+            lambda: self._find_dashboard_id_by_name(name, ids_before),
             f"create {name}",
         )
         if cw["relayDropped"]:
