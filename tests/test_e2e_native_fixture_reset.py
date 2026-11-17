@@ -17,9 +17,11 @@ def test_permanent_cleanup_counts_noop_resets_and_attempts_every_device(scenario
             if scenario == "multi" or args.get("deviceId") == "switch_b":
                 body_failed = True
                 raise RuntimeError("injected body failure")
-            if args.get("expectedValues") == ["50"]:
+            if (args.get("waitFor") or {}).get("expectedValues") == ["50"]:
                 raise et.McpError("invalid numeric comparator")
-            return {"success": True, "timedOut": False, "waitFor": {"converged": True}}
+            if args.get("mode") == "details":
+                raise et.McpToolError(name, "waitFor applies to summary mode only")
+            return {"success": True, "waitFor": {"converged": True, "elapsedMs": 300}}
         assert name == "hub_call_device_command"
         resets.append(args)
         # The transport accepted the reset, but the device remains at its test value.

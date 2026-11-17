@@ -3257,14 +3257,11 @@ class TestRunner:
             def _drive(value: str) -> bool:
                 self._native_device_command({"deviceId": dev_id, "command": value})
                 for _ in range(3):
-                    r = self.client.call_tool_result("hub_get_device_attribute", {
-                        "deviceId": dev_id, "attribute": "switch",
-                        "expectedValue": value, "timeoutMs": 4000})
-                    if isinstance(r, dict) and r.get("success") is True and r.get("finalValue") == value:
+                    r = self._wait_attribute(dev_id, "switch", value, timeoutMs=4000)
+                    if r.get("converged") is True and r.get("finalValue") == value:
                         return True
                 return False
-            cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": dev_id, "attribute": "switch"})
-            start = cur.get("value") if isinstance(cur, dict) else None
+            start = self._read_attribute(dev_id, "switch")
             a, b = ("off", "on") if start == "on" else ("on", "off")
             for v in (a, b):
                 if not _drive(v) and self._reset_app_runtime_stats(
@@ -3397,6 +3394,31 @@ class TestRunner:
             assert needle in str(exc), f"{name} refused, but not with {needle!r}: {exc}"
             return
         raise AssertionError(f"{name} must refuse {args} with {needle!r}, got: {str(result)[:400]}")
+
+    def _read_attribute(self, device_id: Any, attribute: str) -> Any:
+        """One attribute's value from hub_get_device's summary; None when it never reported."""
+        device = self.client.call_tool("hub_get_device", {"deviceId": str(device_id)})
+        rows = device.get("attributes") if isinstance(device, dict) else None
+        assert isinstance(rows, list), f"hub_get_device returned no attributes list: {device}"
+        return next((row.get("value") for row in rows if row.get("name") == attribute), None)
+
+    def _wait_attribute(self, device_id: Any, attribute: str, expected: Any, **opts: Any) -> dict:
+        """hub_get_device waitFor -> its waitFor block; a timeout is converged=False, not an error."""
+        key = "expectedValues" if isinstance(expected, list) else "expectedValue"
+        result = self.client.call_tool("hub_get_device", {
+            "deviceId": device_id, "waitFor": {"attribute": attribute, key: expected, **opts}})
+        block = result.get("waitFor") if isinstance(result, dict) else None
+        assert isinstance(block, dict), f"hub_get_device returned no waitFor block: {result}"
+        return block
+
+    def _wait_devices(self, device_ids: Any, attribute: str, expected: str, mode: str, **opts: Any) -> dict:
+        """hub_list_devices deviceIds + waitFor -> its waitFor block."""
+        result = self.client.call_tool("hub_list_devices", {
+            "deviceIds": [str(d) for d in device_ids],
+            "waitFor": {"attribute": attribute, "expectedValue": expected, "mode": mode, **opts}})
+        block = result.get("waitFor") if isinstance(result, dict) else None
+        assert isinstance(block, dict), f"hub_list_devices returned no waitFor block: {result}"
+        return block
 
     def _call_health_probe(self, args: dict) -> dict:
         try:
@@ -3817,8 +3839,8 @@ class TestRunner:
                 assert rows and all(e.get("value") == "***redacted (password)***" and "4321" not in str(e.get("description"))
                                     for e in rows), f"event rows must hide lockCodes: {rows}"
                 # Waiting for a hidden value would confirm a guess, so a poll or waitFor on it is refused.
-                self._expect_tool_refusal("hub_get_device_attribute", {
-                    "deviceId": lock_id, "attribute": "lockCodes", "expectedValue": "4321", "timeoutMs": 500},
+                self._expect_tool_refusal("hub_get_device", {
+                    "deviceId": lock_id, "waitFor": {"attribute": "lockCodes", "expectedValue": "4321", "timeoutMs": 500}},
                     "Cannot wait for a value of lockCodes")
                 self._expect_tool_refusal("hub_call_device_command", {
                     "deviceId": lock_id, "command": "lock", "waitFor": {"attribute": "lockCodes", "expectedValue": "4321"}},
@@ -4369,11 +4391,9 @@ class TestRunner:
         deadline = time.monotonic() + 10.0
         native = {}
         while True:
-            observed = self.client.call_tool("hub_get_device_attribute", {
-                "deviceId": device_id, "attribute": "nativeDeviceInfo",
-            })
-            if observed.get("value") is not None:
-                native = json.loads(observed["value"])
+            observed = self._read_attribute(device_id, "nativeDeviceInfo")
+            if observed is not None:
+                native = json.loads(observed)
                 if native.get("nonce") == nonce and str(native.get("deviceId")) == device_id:
                     return native
             remaining = deadline - time.monotonic()
@@ -4420,10 +4440,8 @@ class TestRunner:
                     "deviceId": device_id, "command": "sendLanProbe", "parameters": [nonce], "includeState": False,
                 }, f"{profile['path']} explicit asynchronous LAN probe")
                 assert result.get("success") is True, f"LAN command dispatch failed: {result}"
-                observed = self.client.call_tool_result("hub_get_device_attribute", {
-                    "deviceId": device_id, "attribute": "lanProbeAck", "expectedValue": nonce, "timeoutMs": 10000,
-                })
-                assert observed.get("success") is True and observed.get("finalValue") == nonce, (
+                observed = self._wait_attribute(device_id, "lanProbeAck", nonce, timeoutMs=10000)
+                assert observed.get("converged") is True and observed.get("finalValue") == nonce, (
                     f"No nonce-stamped LAN callback on {profile['path']}; provision the owned response file "
                     f"and inspect native routing independently: {observed}"
                 )
@@ -4434,37 +4452,11 @@ class TestRunner:
                         "deviceId": device_id, "command": "clearLanProbe", "includeState": False,
                     }, "persistent LAN probe reset")
                     assert reset.get("success") is True, f"LAN reset failed: {reset}"
-                    observed = self.client.call_tool("hub_get_device_attribute", {
-                        "deviceId": device_id, "attribute": "lanProbeAck",
-                    })
-                    assert observed.get("value") == "idle", f"LAN reset did not persist: {observed}"
+                    observed = self._read_attribute(device_id, "lanProbeAck")
+                    assert observed == "idle", f"LAN reset did not persist: {observed!r}"
                 except Exception as exc:
                     self._fixture_reset_failures.append(f"{profile['label']} LAN reset: {exc}")
                     raise
-
-    @test("devices")
-    def test_get_attribute(self) -> None:
-        # Read the attribute off the persistent BAT_E2E_ scaffold switch (find-or-reuse, always exposes
-        # `switch`) -- the assertion below is existence-only and device-identity-irrelevant, so the
-        # throwaway hub_list_devices switch-hunt was a pure read round-trip with nothing to bind to it.
-        switch_id = self.get_test_switch_id()
-        result = self.client.call_tool("hub_get_device_attribute", {
-            "deviceId": switch_id,
-            "attribute": "switch",
-        })
-        # Result should contain the value (on/off or similar)
-        assert result is not None, "hub_get_device_attribute returned None"
-        # The one-shot read coerces a whole-number id as the poll path does; a fraction is refused.
-        by_int = self.client.call_tool("hub_get_device_attribute", {
-            "deviceId": int(switch_id), "attribute": "switch"})
-        assert by_int.get("value") == result.get("value") and by_int.get("device") == result.get("device"), \
-            f"integer deviceId read differs from the string-id read: int={by_int} str={result}"
-        try:
-            frac = self.client.call_tool("hub_get_device_attribute", {"deviceId": 1.5, "attribute": "switch"})
-            raise AssertionError(f"a fractional deviceId should be refused, got: {frac}")
-        except (McpToolError, McpError) as exc:
-            assert "deviceId must be a non-empty string or integral number" in str(exc), \
-                f"fractional deviceId refused with the wrong message: {exc}"
 
     @test("devices")
     def test_send_command_error(self) -> None:
@@ -4863,13 +4855,8 @@ class TestRunner:
         def _poll_switch(expected: str) -> Any:
             result: Any = {}
             for _ in range(3):
-                result = self.client.call_tool_result("hub_get_device_attribute", {
-                    "deviceId": dev_id,
-                    "attribute": "switch",
-                    "expectedValue": expected,
-                    "timeoutMs": 4000,
-                })
-                if isinstance(result, dict) and result.get("timedOut") is False:
+                result = self._wait_attribute(dev_id, "switch", expected, timeoutMs=4000)
+                if result.get("converged") is True:
                     return result
             return result
 
@@ -4954,30 +4941,27 @@ class TestRunner:
             assert owned["devices"][0].get("currentStates", {}).get("switch") == value, owned
 
         try:
-            cur = self.client.call_tool("hub_get_device_attribute", {
-                "deviceId": dev_id, "attribute": "switch",
-            })
-            start = cur.get("value") if isinstance(cur, dict) else None
+            start = self._read_attribute(dev_id, "switch")
             # A fresh Virtual Switch is born with switch=null; toggling to "on" first
             # covers that edge identically to a real "off" start.
             first, second = ("off", "on") if start == "on" else ("on", "off")
 
             result = _drive(first)
             # Existing recovery may retry once; a command must still produce the requested state.
-            if (result.get("timedOut") is not False or result.get("finalValue") != first) \
+            if (result.get("converged") is not True or result.get("finalValue") != first) \
                     and self._reset_app_runtime_stats(f"'{first}' on fresh device {dev_id} never landed: {result}"):
                 result = _drive(first)
-            if result.get("timedOut") is not False or result.get("finalValue") != first:
+            if result.get("converged") is not True or result.get("finalValue") != first:
                 assert False, \
                     f"Expected switch={first} (from {start!r}) within the poll budget, got: {result}\n    DIAG {_switch_diagnostics()}"
             _assert_filtered_switch(first)
 
             # Toggle back the other way
             result = _drive(second, with_wait=True)
-            if (result.get("timedOut") is not False or result.get("finalValue") != second) \
+            if (result.get("converged") is not True or result.get("finalValue") != second) \
                     and self._reset_app_runtime_stats(f"'{second}' on fresh device {dev_id} never landed: {result}"):
                 result = _drive(second, with_wait=True)
-            if result.get("timedOut") is not False or result.get("finalValue") != second:
+            if result.get("converged") is not True or result.get("finalValue") != second:
                 assert False, \
                     f"Expected switch={second} (from {first!r}) within the poll budget, got: {result}\n    DIAG {_switch_diagnostics()}"
             _assert_filtered_switch(second)
@@ -4985,10 +4969,9 @@ class TestRunner:
             missing = f"{PREFIX}UnreportedAttribute"
             summary = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
             assert missing not in {row["name"] for row in summary["attributes"]}, summary
-            absent = self.client.call_tool_failure("hub_get_device_attribute", {
-                "deviceId": dev_id, "attribute": missing, "expectedValue": "never", "timeoutMs": 500,
-            })
-            assert absent.get("timedOut") is True, (
+            # A wait that does not converge is a successful read, not a tool error.
+            absent = self._wait_attribute(dev_id, missing, "never", timeoutMs=500)
+            assert absent.get("converged") is False and absent.get("timedOut") is True, (
                 f"Missing native attribute must be polled to timeout, not rejected: {absent}"
             )
             assert absent.get("finalValue") is None and absent.get("polledCount", 0) >= 1, absent
@@ -5001,7 +4984,7 @@ class TestRunner:
             assert waited["waitFor"].get("finalValue") is None, waited
             assert missing not in waited.get("state", {}), f"Snapshot invented an unreported attribute: {waited}"
             applied = _poll_switch(first)
-            assert applied.get("success") is True and applied.get("finalValue") == first, (
+            assert applied.get("converged") is True and applied.get("finalValue") == first, (
                 f"The command must execute even though its missing wait attribute times out: {applied}"
             )
 
@@ -5051,8 +5034,7 @@ class TestRunner:
         dev_id = self._ensure_perm_fixture("switch_a")
 
         # Start from a known opposite state so the command drives a real transition.
-        cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": dev_id, "attribute": "switch"})
-        start = cur.get("value") if isinstance(cur, dict) else None
+        start = self._read_attribute(dev_id, "switch")
         target = "off" if start == "on" else "on"
 
         cmd = self.client.call_tool("hub_call_device_command", {
@@ -5085,20 +5067,13 @@ class TestRunner:
         dim = self._ensure_perm_fixture("dimmer")
         switches = (sw_a, sw_b)
 
-        cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": sw_a, "attribute": "switch"})
-        start = cur.get("value") if isinstance(cur, dict) else None
+        start = self._read_attribute(sw_a, "switch")
         target = "off" if start == "on" else "on"
 
         def _confirm() -> Any:
             # The confirm half of the flow: the batch reads nothing back, so the whole group is
-            # converged in ONE multi-device poll.
-            return self.client.call_tool_result("hub_get_device_attribute", {
-                "deviceIds": list(switches),
-                "attribute": "switch",
-                "expectedValue": target,
-                "mode": "all",
-                "timeoutMs": 8000,
-            })
+            # converged in ONE hub_list_devices deviceIds + waitFor call.
+            return self._wait_devices(switches, "switch", target, "all", timeoutMs=8000)
 
 
         # sw_b goes in as an INTEGER on purpose: that is the shape hub_list_devices format='ids'
@@ -5131,7 +5106,7 @@ class TestRunner:
         # Reset the runtime statistics and re-drive once before believing a non-convergence, the
         # same way the sibling multi-device poll does: a limiter trip late in a run is a capacity
         # signal, not a product failure, and re-running after the reset tells the two apart.
-        if poll.get("success") is not True and self._reset_app_runtime_stats(
+        if poll.get("converged") is not True and self._reset_app_runtime_stats(
                 f"batched '{target}' never landed on both: {poll}"):
             self._native_device_command({"commands": [
                 {"deviceId": sw_a, "command": target},
@@ -5139,7 +5114,7 @@ class TestRunner:
             ]})
             poll = _confirm()
 
-        assert poll.get("success") is True, f"batched commands did not take effect on the hub: {poll}"
+        assert poll.get("converged") is True, f"batched commands did not take effect on the hub: {poll}"
 
     @test("virtual_device_lifecycle")
     def test_batch_commands_partial_failure_and_no_partial_send(self) -> None:
@@ -5155,9 +5130,7 @@ class TestRunner:
 
 
         def _poll_on() -> Any:
-            return self.client.call_tool_result("hub_get_device_attribute", {
-                "deviceId": sw_a, "attribute": "switch", "expectedValue": "on", "timeoutMs": 3000,
-            })
+            return self._wait_attribute(sw_a, "switch", "on", timeoutMs=3000)
 
         # --- 1. bad entry among good ones ---
         # A batch with a failed entry is success:false (partial), so it rides the isError envelope.
@@ -5200,17 +5173,17 @@ class TestRunner:
         # trusted if leg 1's "on" actually landed. A platform limiter that swallowed that event
         # would present as switch=off -- indistinguishable here from a partial send. Reset the
         # runtime statistics and re-poll, but never issue a command that could mask a partial send.
-        if after.get("success") is not True and self._reset_app_runtime_stats(
+        if after.get("converged") is not True and self._reset_app_runtime_stats(
                 f"batched 'on' never landed on {sw_a}: {after}"):
             after = _poll_on()
 
-        assert after.get("success") is True, \
+        assert after.get("converged") is True, \
             f"the rejected batch actuated its first entry -- validation must precede every send: {after}"
 
     @test("virtual_device_lifecycle")
     def test_poll_comparator_and_stable(self) -> None:
         # Exercises the read-side convergence extensions on a real hub:
-        #   - numeric comparator (gt) on a dimmer's level via hub_get_device_attribute poll mode
+        #   - numeric comparator (gt) plus stableForMs on a dimmer's level via hub_get_device waitFor
         #   - stableForMs (debounce) on a switch via the hub_call_device_command waitFor path
         # PERMANENT non-child fixtures (dimmer + switch): no per-test create/delete, and no `installed`
         # device-creation events. Both legs below DRIVE the attribute to a known
@@ -5226,37 +5199,33 @@ class TestRunner:
                 "deviceId": dim_id, "command": "setLevel", "parameters": ["60"],
                 "waitFor": {"attribute": "level", "comparator": "gte", "expectedValue": "60", "timeoutMs": 5000},
             })
-            poll = self.client.call_tool("hub_get_device_attribute", {
-                "deviceId": dim_id, "attribute": "level",
-                "comparator": "gt", "expectedValue": "50", "timeoutMs": 5000,
-            })
-            assert isinstance(poll, dict), f"comparator poll unexpected response: {poll!r}"
-            assert poll.get("success") is True, f"gt comparator should converge (level 60 > 50): {poll}"
-            assert poll.get("timedOut") is False, f"gt comparator should not time out: {poll}"
+            # The read-side stableForMs rides the same wait: level holds at 60, so it converges
+            # only after the 300 ms window.
+            poll = self._wait_attribute(dim_id, "level", "50", comparator="gt", stableForMs=300, timeoutMs=5000)
+            assert poll.get("converged") is True, f"gt comparator should converge (level 60 > 50): {poll}"
+            assert not poll.get("timedOut"), f"gt comparator should not time out: {poll}"
+            assert int(poll.get("elapsedMs", 0)) >= 300, f"read-side stableForMs converged before its window: {poll}"
 
             # A numeric comparator paired with expectedValues is rejected (invalid params).
             try:
-                self.client.call_tool("hub_get_device_attribute", {
-                    "deviceId": dim_id, "attribute": "level",
-                    "comparator": "gt", "expectedValues": ["50"], "timeoutMs": 1000,
-                })
+                self._wait_attribute(dim_id, "level", ["50"], comparator="gt", timeoutMs=1000)
                 raise AssertionError("numeric comparator with expectedValues should have errored")
             except (McpToolError, McpError):
                 pass
+            # A wait reads the summary record, so a configuration/details read refuses it.
+            self._expect_tool_refusal("hub_get_device", {
+                "deviceId": dim_id, "mode": "details",
+                "waitFor": {"attribute": "level", "expectedValue": "60", "timeoutMs": 1000}},
+                "waitFor applies to summary mode only")
 
             # between: level is at 60 (driven above), so a [50,70] inclusive range converges.
-            bpoll = self.client.call_tool("hub_get_device_attribute", {
-                "deviceId": dim_id, "attribute": "level",
-                "comparator": "between", "expectedValues": ["50", "70"], "timeoutMs": 5000,
-            })
-            assert isinstance(bpoll, dict), f"between poll unexpected response: {bpoll!r}"
-            assert bpoll.get("success") is True, f"between [50,70] should converge for level 60: {bpoll}"
-            assert bpoll.get("timedOut") is False, f"between should not time out: {bpoll}"
+            bpoll = self._wait_attribute(dim_id, "level", ["50", "70"], comparator="between", timeoutMs=5000)
+            assert bpoll.get("converged") is True, f"between [50,70] should converge for level 60: {bpoll}"
+            assert not bpoll.get("timedOut"), f"between should not time out: {bpoll}"
 
             # --- stableForMs debounce on a switch ---
             sw_id = self._ensure_perm_fixture("switch_b")
-            cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": sw_id, "attribute": "switch"})
-            start = cur.get("value") if isinstance(cur, dict) else None
+            start = self._read_attribute(sw_id, "switch")
             target = "off" if start == "on" else "on"
             cmd = self.client.call_tool("hub_call_device_command", {
                 "deviceId": sw_id, "command": target,
@@ -6010,8 +5979,7 @@ class TestRunner:
         # action is derived from the switch's CURRENT value so it drives a real transition.
         button = self._ensure_perm_fixture("button")
         switch = self._ensure_perm_fixture("switch_b")
-        cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": switch, "attribute": "switch"})
-        target = "off" if (cur.get("value") if isinstance(cur, dict) else None) == "on" else "on"
+        target = "off" if self._read_attribute(switch, "switch") == "on" else "on"
         app_id = self._create_native_rule("BtnProvenance", [native_change("trigger", capability="Button", fields=[
             native_field("tDev#", "capability.pushableButton", [str(button)]),
             native_field("tstate#", "enum", "pushed"), native_field("ButtontDev#", "number", 1)]),
@@ -7172,11 +7140,6 @@ def updated() {}
             "deviceId": str(device_id), "command": command,
             **({"parameters": [str(value) for value in values]} if values else {})})
         assert result.get("success") is True, result
-
-    def _rm_attribute(self, device_id: Any, attribute: str) -> Any:
-        result = self.client.call_tool("hub_get_device_attribute", {"deviceId": str(device_id), "attribute": attribute})
-        assert "value" in result, result
-        return result["value"]
 
     # ---- hub_set_rule surface: help, catalog, confirmation envelope ----
 
@@ -16173,7 +16136,7 @@ def updated() {}
 
         denied_calls = [
             ("hub_get_device", {"deviceId": unauth}),
-            ("hub_get_device_attribute", {"deviceId": unauth, "attribute": "switch"}),
+            ("hub_get_device", {"deviceId": unauth, "waitFor": {"attribute": "switch", "expectedValue": "on", "timeoutMs": 500}}),
             ("hub_list_device_events", {"deviceId": unauth}),
             ("hub_update_device", {"deviceId": unauth, "fields": {"label": f"{SCAFFOLD_PREFIX}Configuration_StandaloneBypass"}}),
             ("hub_call_device_command", {"deviceId": unauth, "command": "captureConfiguration", "parameters": ["0"]}),
@@ -16269,8 +16232,8 @@ def updated() {}
                 "deviceId": unauth, "command": "captureConfiguration", "parameters": [nonce], "includeState": False,
             })
             assert captured.get("success") is True, f"Bypass native command failed: {captured}"
-            observed = self.client.call_tool("hub_get_device_attribute", {"deviceId": unauth, "attribute": "nativeConfiguration"})
-            assert json.loads(observed["value"]).get("nonce") == nonce, f"Bypass native command did not execute: {observed}"
+            observed = self._read_attribute(unauth, "nativeConfiguration")
+            assert json.loads(observed).get("nonce") == nonce, f"Bypass native command did not execute: {observed}"
 
             # (c) room assignment on an unlisted device through the Device Info save. The leg owns its
             # input: it moves the device into the standing KEEP_ room and puts the original assignment
@@ -16908,25 +16871,24 @@ def updated() {}
         )
 
     # -----------------------------------------------------------------------
-    # GROUP 11: hub_get_device_attribute poll mode (2 tests -- wall-clock coverage, I7)
+    # GROUP 11: waitFor on hub_get_device / hub_list_devices (wall-clock coverage, I7)
     # These exercise the real pauseExecution + now() path that Spock unit tests
     # cannot reach because the test harness fixes now() to a constant.
     # -----------------------------------------------------------------------
 
     @test("poll_until_attribute")
     def test_poll_immediate_match(self) -> None:
-        """Happy path: device already in expected state -> polledCount=1, success=true."""
+        """Happy path: device already in expected state -> polledCount=1, converged=true."""
         dev_id = self.get_test_switch_id()
         # Poll the observed state; command delivery is a separate contract and can be throttled.
-        current = self.client.call_tool("hub_get_device_attribute", {
-            "deviceId": dev_id, "attribute": "switch",
-        }).get("value")
+        current = self._read_attribute(dev_id, "switch")
         assert current in ("on", "off"), f"Switch baseline is unavailable: {current!r}"
-        result = self.client.call_tool("hub_get_device_attribute", {
-            "deviceId": dev_id, "attribute": "switch", "expectedValue": current, "timeoutMs": 5000,
-        })
-        assert result.get("success") is True, f"Expected success=true, got: {result}"
-        assert result.get("timedOut") is False, f"Expected timedOut=false, got: {result}"
+        # An integer id (the shape format='ids' returns) is accepted; a fractional one is refused.
+        result = self._wait_attribute(int(dev_id), "switch", current, timeoutMs=5000)
+        self._expect_tool_refusal("hub_get_device", {"deviceId": 1.5},
+                                  "must be a non-empty string or integral number")
+        assert result.get("converged") is True, f"Expected converged=true, got: {result}"
+        assert not result.get("timedOut"), f"Expected no timedOut, got: {result}"
         assert result.get("polledCount") == 1, f"Expected an immediate match on the first poll, got: {result}"
         assert result.get("finalValue") == current, f"Poll returned a different value from the baseline: {result}"
 
@@ -16934,37 +16896,34 @@ def updated() {}
     def test_poll_timeout(self) -> None:
         """Timeout path: value won't match -> timedOut=true, elapsedMs approx timeoutMs."""
         dev_id = self.get_test_switch_id()
-        current = self.client.call_tool("hub_get_device_attribute", {
-            "deviceId": dev_id, "attribute": "switch",
-        }).get("value")
+        current = self._read_attribute(dev_id, "switch")
         assert current in ("on", "off"), f"Switch baseline is unavailable: {current!r}"
         expected = "off" if current == "on" else "on"
         t0 = time.monotonic()
-        result = self.client.call_tool_failure("hub_get_device_attribute", {
-            "deviceId": dev_id, "attribute": "switch", "expectedValue": expected, "timeoutMs": 2000,
-        })
+        # A wait that does not converge is a successful read, not a tool error.
+        result = self._wait_attribute(dev_id, "switch", expected, timeoutMs=2000)
         elapsed_wall = (time.monotonic() - t0) * 1000
-        assert result.get("timedOut") is True, f"Expected timedOut=true, got: {result}"
+        assert result.get("converged") is False and result.get("timedOut") is True, \
+            f"Expected converged=false, timedOut=true, got: {result}"
         assert result.get("finalValue") == current, f"Switch changed during the timeout probe: {result}"
         # Wall clock should reflect roughly the timeout (within 1 second of variance)
         assert elapsed_wall >= 1800, f"Wall clock too short ({elapsed_wall:.0f}ms); poll may not have blocked"
         # A poll longer than the cloud relay keeps a request open waits only the budget left and
         # says so, instead of being dropped by the relay; on LAN (no budget) it is not shortened.
-        long_poll = self.client.call_tool_failure("hub_get_device_attribute", {
-            "deviceId": dev_id, "attribute": "switch", "expectedValue": expected, "timeoutMs": 25000,
-        }) if self._client_source() == "cloud" else None
+        long_poll = self._wait_attribute(dev_id, "switch", expected, timeoutMs=25000) \
+            if self._client_source() == "cloud" else None
         if long_poll is not None:
             assert long_poll.get("timedOut") is True and long_poll.get("budgetLimited") is True \
                 and long_poll.get("requestedTimeoutMs") == 25000 and long_poll.get("timeoutMs", 25000) < 25000, \
                 f"a 25 s poll over the relay must stop at the budget and say so: {long_poll}"
             # A stableForMs that cannot settle in the time left is refused before anything is read.
-            self._expect_tool_refusal("hub_get_device_attribute", {
-                "deviceId": dev_id, "attribute": "switch", "expectedValue": expected,
-                "timeoutMs": 40000, "stableForMs": 30000}, "cannot settle")
+            self._expect_tool_refusal("hub_get_device", {"deviceId": dev_id, "waitFor": {
+                "attribute": "switch", "expectedValue": expected,
+                "timeoutMs": 40000, "stableForMs": 30000}}, "cannot settle")
 
     @test("poll_until_attribute")
     def test_poll_multi_device(self) -> None:
-        """Multi-device convergence: deviceIds + mode (any/all) on two PERMANENT non-child switches.
+        """Multi-device convergence: hub_list_devices deviceIds + waitFor mode (any/all) on two PERMANENT non-child switches.
 
         Uses the permanent fixtures rather than creating two throwaway children: this test drives both
         switches to a known state before every assertion, so carried-over state is irrelevant, and it
@@ -16978,22 +16937,28 @@ def updated() {}
                     "waitFor": {"attribute": "switch", "expectedValue": "on", "timeoutMs": 5000},
                 })
 
+            # deviceIds alone filters the listing (an integer id, as format='ids' returns, is accepted);
+            # an id outside it is named, never dropped.
+            missing_id = "99999"
+            listed = self.client.call_tool("hub_list_devices", {"deviceIds": [int(a_id), missing_id]})
+            assert [str(d.get("id")) for d in listed.get("devices", [])] == [str(a_id)] \
+                and [str(i) for i in listed.get("deviceIdsNotFound", [])] == [missing_id], \
+                f"deviceIds must list only {a_id} and name {missing_id} in deviceIdsNotFound: {listed}"
+            # A wait needs the devices named: waitFor without deviceIds is refused.
+            self._expect_tool_refusal("hub_list_devices", {
+                "waitFor": {"attribute": "switch", "expectedValue": "on", "timeoutMs": 1000}},
+                "waitFor requires deviceIds")
+
             # mode=all: both on -> converges, convergedCount == 2.
-            all_poll = self.client.call_tool_result("hub_get_device_attribute", {
-                "deviceIds": [a_id, b_id], "attribute": "switch",
-                "expectedValue": "on", "mode": "all", "timeoutMs": 5000,
-            })
-            assert isinstance(all_poll, dict), f"multi-device all poll unexpected: {all_poll!r}"
-            if all_poll.get("success") is not True and self._reset_app_runtime_stats(
+            all_poll = self._wait_devices((a_id, b_id), "switch", "on", "all", timeoutMs=5000)
+            if all_poll.get("converged") is not True and self._reset_app_runtime_stats(
                     f"multi-device 'on' never landed on both: {all_poll}"):
                 for did in (a_id, b_id):
                     self._native_device_command({
                         "deviceId": did, "command": "on",
                         "waitFor": {"attribute": "switch", "expectedValue": "on", "timeoutMs": 5000}})
-                all_poll = self.client.call_tool_result("hub_get_device_attribute", {
-                    "deviceIds": [a_id, b_id], "attribute": "switch",
-                    "expectedValue": "on", "mode": "all", "timeoutMs": 5000})
-            assert all_poll.get("success") is True, f"all-mode should converge (both on): {all_poll}"
+                all_poll = self._wait_devices((a_id, b_id), "switch", "on", "all", timeoutMs=5000)
+            assert all_poll.get("converged") is True, f"all-mode should converge (both on): {all_poll}"
             assert all_poll.get("mode") == "all", f"mode echo wrong: {all_poll}"
             assert all_poll.get("convergedCount") == 2, f"convergedCount should be 2: {all_poll}"
             assert isinstance(all_poll.get("devices"), list) and len(all_poll["devices"]) == 2, \
@@ -17003,14 +16968,10 @@ def updated() {}
             self._native_device_command({
                 "deviceId": b_id, "command": "off",
                 "waitFor": {"attribute": "switch", "expectedValue": "off", "timeoutMs": 5000}})
-            any_poll = self.client.call_tool("hub_get_device_attribute", {
-                "deviceIds": [a_id, b_id], "attribute": "switch",
-                "expectedValue": "on", "mode": "any", "timeoutMs": 5000,
-            })
-            assert isinstance(any_poll, dict), f"multi-device any poll unexpected: {any_poll!r}"
+            any_poll = self._wait_devices((a_id, b_id), "switch", "on", "any", timeoutMs=5000)
             # A on, B off: any-mode converges; exactly one device matches, so convergedCount is 1
             # (all-mode would have timed out here).
-            assert any_poll.get("success") is True, f"any-mode should converge (A on): {any_poll}"
+            assert any_poll.get("converged") is True, f"any-mode should converge (A on): {any_poll}"
             assert any_poll.get("mode") == "any", f"mode echo wrong: {any_poll}"
             assert any_poll.get("convergedCount") == 1, f"convergedCount should be exactly 1 (A on, B off): {any_poll}"
         finally:
@@ -18850,8 +18811,8 @@ def main() -> None:
                 if params:
                     cargs["parameters"] = params
                 client.call_tool("hub_call_device_command", cargs)
-                read = client.call_tool("hub_get_device_attribute", {"deviceId": dev_id, "attribute": attr})
-                assert read.get("value") is not None, \
+                read = runner._read_attribute(dev_id, attr)
+                assert read is not None, \
                     f"fixture '{label}' did not report '{attr}' after priming -- polling tests would throw: {read}"
             print(f"  {key:<10} id={dev_id:<6} '{label}' ({driver}) -- readable, primed")
         children = client.call_tool("hub_list_devices", {"scope": "owned"}).get("devices") or []
