@@ -1489,6 +1489,42 @@ Complex scenarios spanning multiple tools and gateways.
 
 **Expected**: All via `hub_manage_variables` (set, get, set, get, list).
 
+### T86a — Set a time-only DateTime variable from a plain time
+
+```json
+{
+  "setup_prompt": "hub_create_variable name 'BAT_Morning_Start', type 'DateTime', value '07:30' (a time-only variable), confirm true.",
+  "test_prompt": "Change my BAT_Morning_Start variable to 6:45 in the morning.",
+  "teardown_prompt": "hub_delete_variable name 'BAT_Morning_Start', confirm true."
+}
+```
+
+**Expected**: `hub_get_variable` shows `dateTimeKind: "time"` (value `9999-99-99T07:30:00.000<offset>`), then `hub_set_variable` with `value: "06:45"` (or the stored form). The stored value becomes `9999-99-99T06:45:00.000<offset>` and the variable stays time-only. **Fail** if the variable becomes a full date-and-time, or if a value was saved as a rule-engine variable of the same name.
+
+### T86b — A value that does not fit a hub variable's type is refused
+
+```json
+{
+  "setup_prompt": "hub_create_variable name 'BAT_Guest_Count', type 'Number', value 3, confirm true.",
+  "test_prompt": "Set BAT_Guest_Count to 'a few'.",
+  "teardown_prompt": "hub_delete_variable name 'BAT_Guest_Count', confirm true."
+}
+```
+
+**Expected**: Either the AI reads the variable's type with `hub_get_variable` and declines before writing, or it calls `hub_set_variable`, which returns `isError: true` naming the Number type and the accepted whole-number range. Either way the AI asks for a number. `hub_get_variable` still shows 3, and `hub_list_variables` has no rule-engine variable named `BAT_Guest_Count`.
+
+### T86c — When did a hub variable last change?
+
+```json
+{
+  "setup_prompt": "hub_create_variable name 'BAT_Alarm_Count', type 'Number', value 1, confirm true; then hub_set_variable it to 2, then to 5.",
+  "test_prompt": "When did BAT_Alarm_Count last change, and what were its recent values?",
+  "teardown_prompt": "hub_delete_variable name 'BAT_Alarm_Count', confirm true."
+}
+```
+
+**Expected**: `hub_get_logs` with `mode: "locationEvents"` and a pattern matching only that variable (ideally anchored, `^variable:BAT_Alarm_Count$`). The answer lists the changes to 2 and 5 with their times. **Partial** if the pattern also returns other variables' rows and the AI filters them itself.
+
 ---
 
 ## Section 6: Ambiguity and Misdirection Tests
@@ -3225,7 +3261,7 @@ This scenario requires no room creation or device command.
 }
 ```
 
-**Expected**: Gateway parameter validation returns an `isError: true` result with message `"Missing required parameter(s): confirm"` and a `parameters` description listing the schema (name, confirm, force). No JSON-RPC error code is set — the validation happens at the gateway layer before tool dispatch. The variable is preserved. AI relays the gate requirement and offers to retry with `confirm=true`.
+**Expected**: Gateway parameter validation returns an `isError: true` result with message `"Missing required parameter for hub_delete_variable: confirm."` and a `parameters` description listing the schema (name, confirm, force). No JSON-RPC error code is set — the validation happens at the gateway layer before tool dispatch. The variable is preserved. AI relays the gate requirement and offers to retry with `confirm=true`.
 
 ### T660 — hub_update_mcp_settings selectedDevices re-scopes the MCP server's device access (add then remove, net no-op)
 
