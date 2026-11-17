@@ -1130,6 +1130,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('101')
         ex.message.toLowerCase().contains('100')
+        ex.message.contains("split it across patterns (patternMode 'any' matches either)")
     }
 
     def "pattern element in patterns list longer than 100 chars throws naming the index"() {
@@ -1144,6 +1145,15 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('patterns[1]')
         ex.message.contains('101')
+    }
+
+    def "the schema declares the 100 char cap on pattern and on each patterns entry"() {
+        when:
+        def props = script.getAllToolDefinitions().find { it.name == 'hub_get_logs' }.inputSchema.properties
+
+        then:
+        props.pattern.maxLength == 100
+        props.patterns.items.maxLength == 100
     }
 
     // ==================== I7: hubInternalGet failure becomes IllegalStateException ====================

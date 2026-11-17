@@ -157,14 +157,14 @@ private Map _listDevicesOptions(Map args) {
     if (scope == "all") {
         List identity = ["id", "label", "name", "driver", "room", "roomId", "protocol", "disabled", "parentDeviceId", "source", "linked", "capabilities"]
         if (!(format in ["summary", "ids"])) throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only")
-        if (stateFilter || args.staleHours != null || since != null || args.attributeNames != null || fields?.any { !(it in identity) }) {
+        if (stateFilter || args.staleHours != null || since != null || args.attributeNames || fields?.any { !(it in identity) }) {
             throw new IllegalArgumentException("scope='all' lists identity only (fields: ${identity.join(', ')}); states need scope='authorized'")
         }
     }
-    if (args.attributeNames != null && !(format in ["summary", "context"])) {
+    if (args.attributeNames && !(format in ["summary", "context"])) {
         throw new IllegalArgumentException("attributeNames applies to format 'summary' or 'context' only")
     }
-    if (args.get("fields") != null && !(format in ["summary", "detailed"])) {
+    if (fields && !(format in ["summary", "detailed"])) {
         throw new IllegalArgumentException("fields applies to format 'summary' or 'detailed' only")
     }
 
@@ -2390,7 +2390,7 @@ def _pollUntilAttributeCore(args, Long deadlineMs = null) {
         throw new IllegalArgumentException("provide exactly one of expectedValue or expectedValues, not both")
     }
     if (!hasExpectedValue && !hasExpectedValues) {
-        throw new IllegalArgumentException("At least one of expectedValue or expectedValues must be provided")
+        throw new IllegalArgumentException("Poll mode needs expectedValue or expectedValues; for a one-shot read pass only deviceId and attribute")
     }
     if (hasExpectedValue && !(args.expectedValue instanceof String)) {
         throw new IllegalArgumentException("expectedValue must be a string")
@@ -4754,8 +4754,8 @@ def _getAllToolDefinitions_partDevices() {
                     staleHours: [type: "number", description: "Inactive this many hours"],
                     changedSince: [type: ["string", "integer"], description: "Active since: epoch ms or ISO-8601 with offset"],
                     stateFilter: [type: "object", description: "e.g. {\"switch\":\"on\"}"],
-                    attributeNames: [type: "array", items: [type: "string"], description: "Attributes to show in currentStates and context lines"],
-                    fields: [type: "array", items: [type: "string"], description: "Record fields (names in the guide)"],
+                    attributeNames: [type: "array", items: [type: "string"], description: "Attributes shown; summary/context only"],
+                    fields: [type: "array", items: [type: "string"], description: "Record fields (names in guide); summary/detailed only"],
                     limit: [type: "integer", description: "Page size; omit for all"],
                     cursor: [type: "string", description: "\"\" first, then nextCursor"]
                 ]
@@ -4791,14 +4791,14 @@ One-shot read by default (deviceId + attribute). Provide expectedValue or expect
                 properties: [
                     deviceId: [type: ["string", "integer"], description: "Device ID from hub_list_devices."],
                     deviceIds: [type: "array", items: [type: ["string", "integer"]], description: "Array of device IDs for a multi-device poll (mutually exclusive with deviceId; max 20)."],
-                    mode: [type: "string", enum: ["any", "all"], description: "Multi-device aggregate.", default: "all"],
+                    mode: [type: "string", enum: ["any", "all"], description: "Multi-device aggregate. Default all."],
                     attribute: [type: "string", description: "Attribute name."],
                     expectedValue: [type: "string", description: "If set, block-poll until currentValue matches per comparator (enables poll mode). Single value, e.g. \"72\".[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"],
                     expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue matches per comparator (enables poll mode). For between, two numeric bounds [low, high].[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"],
-                    comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq (value in the expected set).", default: "eq"],
-                    stableForMs: [type: "integer", description: "Debounce: the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match).", default: 0, minimum: 0],
-                    timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
-                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] Target cadence: each tick's native read latency is subtracted from the sleep, down to a floor of half the interval, so slow reads space ticks by the reads plus that floor; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it. (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
+                    comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Poll mode: match operator. Default eq (value in the expected set)."],
+                    stableForMs: [type: "integer", description: "Poll mode: debounce; the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match).", minimum: 0],
+                    timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", minimum: 100, maximum: 60000],
+                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] Target cadence: each tick's native read latency is subtracted from the sleep, down to a floor of half the interval, so slow reads space ticks by the reads plus that floor; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it. (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", minimum: 50, maximum: 5000]
                 ],
                 required: ["attribute"]
             ]

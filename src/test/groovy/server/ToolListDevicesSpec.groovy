@@ -696,14 +696,41 @@ class ToolListDevicesSpec extends ToolSpecBase {
         'a string fields'                  | [fields: 'id']                             || 'fields must be an array'
         'a negative limit'                 | [limit: -1]                                || 'limit must be a non-negative integer'
         'a fractional limit'               | [limit: 2.5]                               || 'limit must be a non-negative integer'
-        'attributeNames on detailed'       | [format: 'detailed', attributeNames: []]   || 'attributeNames applies'
+        'attributeNames on detailed'       | [format: 'detailed', attributeNames: ['switch']] || 'attributeNames applies'
         'fields on ids'                    | [format: 'ids', fields: ['id']]            || 'fields applies'
         'scope all with context'           | [scope: 'all', format: 'context']          || "scope='all' supports"
         'scope all with stateFilter'       | [scope: 'all', stateFilter: [switch: 'on']]|| "scope='all' lists identity only"
         'scope all with staleHours'        | [scope: 'all', staleHours: 1]              || "scope='all' lists identity only"
         'scope all with changedSince'      | [scope: 'all', changedSince: 0]            || "scope='all' lists identity only"
-        'scope all with attributeNames'    | [scope: 'all', attributeNames: []]         || "scope='all' lists identity only"
+        'scope all with attributeNames'    | [scope: 'all', attributeNames: ['switch']] || "scope='all' lists identity only"
         'scope all with currentStates'     | [scope: 'all', fields: ['currentStates']]  || "scope='all' lists identity only"
+    }
+
+    @Unroll
+    def "empty attributeNames and fields read as omitted on the detailed and ids formats"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        def result = script.toolListDevices([format: format, attributeNames: [], fields: []])
+
+        then:
+        notThrown(IllegalArgumentException)
+        result.containsKey(key)
+
+        where:
+        format     | key
+        'detailed' | 'devices'
+        'ids'      | 'deviceIds'
+    }
+
+    def "the attributeNames and fields descriptions state the formats they apply to"() {
+        when:
+        def props = script.getAllToolDefinitions().find { it.name == 'hub_list_devices' }.inputSchema.properties
+
+        then:
+        props.attributeNames.description.contains('summary/context only')
+        props.fields.description.contains('summary/detailed only')
     }
 
     def "server-injected keys are not caller arguments, and a non-numeric clock is ignored"() {

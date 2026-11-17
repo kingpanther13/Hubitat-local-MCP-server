@@ -290,7 +290,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.toLowerCase().contains('expectedvalue')
+        ex.message.contains('Poll mode needs expectedValue or expectedValues; for a one-shot read pass only deviceId and attribute')
     }
 
     // ---------------------------------------------------------------------------
@@ -1500,7 +1500,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.toLowerCase().contains('expectedvalue')
+        mcpDriver.parseInner(response).error.contains('Poll mode needs expectedValue or expectedValues; for a one-shot read pass only deviceId and attribute')
 
         where:
         useGateways << [true, false]

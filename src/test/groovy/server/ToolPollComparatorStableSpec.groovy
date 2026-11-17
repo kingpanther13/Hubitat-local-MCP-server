@@ -1514,6 +1514,19 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         !def0.inputSchema.required.contains('deviceId')
     }
 
+    // A client that echoes a declared default would turn a one-shot read into a poll with no
+    // expected value, so the poll-routing params state their defaults in description text only.
+    def "hub_get_device_attribute poll params declare no schema default"() {
+        when:
+        def props = script.getAllToolDefinitions().find { it.name == 'hub_get_device_attribute' }.inputSchema.properties
+
+        then:
+        ['mode', 'comparator', 'stableForMs', 'timeoutMs', 'pollIntervalMs'].every { !props[it].containsKey('default') }
+        props.mode.description.contains('Default all.')
+        props.comparator.description.startsWith('Poll mode:')
+        props.stableForMs.description.startsWith('Poll mode:')
+    }
+
     def "requiredParamsByTool does not list deviceId for hub_get_device_attribute (deviceIds-only is not pre-rejected)"() {
         when: 'the dispatch-time required-param enforcement map'
         def required = script.requiredParamsByTool()['hub_get_device_attribute']
