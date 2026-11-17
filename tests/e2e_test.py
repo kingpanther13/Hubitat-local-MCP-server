@@ -6031,7 +6031,7 @@ class TestRunner:
                 f"the pushed event must name the button itself as producedBy: {push}"
             assert "<" not in json.dumps([command, push]), f"raw hub HTML leaked: {command} {push}"
         finally:
-            self._delete_native(app_id)
+            self._delete_native(app_id, inline=True)  # an armed leftover would also command switch_b on the next push
 
 
     @test("native_apps")
@@ -7413,7 +7413,7 @@ def updated() {}
             assert missing_file not in self._rm_page(app_id), "a refused file action left a row naming the file"
         finally:
             if app_id:
-                self._delete_native(app_id)
+                self._delete_native(app_id, inline=True)  # its triggers stay armed and its actions command shared fixtures
             self._delete_native(referenced)
 
     @test("native_apps")
@@ -7878,7 +7878,8 @@ def updated() {}
         # Edit a trigger in place, refuse an unknown id, delete and re-add in one batch, stop a batch
         # at its first invalid trigger, and bind a Conditional Trigger to a condition.
         switch = self._ensure_perm_fixture("switch_a")
-        app_id, created = self._rm_rule("TrigMut", [self._rm_switch_trigger(switch), self._rm_switch_action(switch)])
+        # A log action: under deferred deletes the rule outlives the test, still triggered by the shared switch.
+        app_id, created = self._rm_rule("TrigMut", [self._rm_switch_trigger(switch), native_log("trigger mutations")])
         try:
             original = set(created["triggers"])
             added = self._rm_update(app_id, [self._rm_switch_trigger(switch)])
@@ -9514,12 +9515,13 @@ def updated() {}
         assert h.get("ok") is not False, f"hub_get_rule_health reports the rule broken: {h}"
 
 
-    def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine") -> None:
+    def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine", *, inline: bool = False) -> None:
         # Fixture-teardown delete. When deferral is on, skip it (rule stays tracked) so it's reaped by
         # the teardown's watchdog purge, not inline on the test critical path. Tests whose
         # delete IS the assertion call hub_delete_native_app directly (not this helper), so they keep
-        # deleting inline regardless.
-        if self.defer_native_deletes:
+        # deleting inline regardless. inline=True: a rule that commands a shared fixture would stay
+        # armed until the purge and fire during later tests.
+        if self.defer_native_deletes and not inline:
             return
         try:
             self.client.call_tool(gateway, {"tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True}})
