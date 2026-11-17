@@ -10363,6 +10363,7 @@ private Map _listDevicesOptions(Map args) {
 def toolListDevices(Map args) {
     Map opts = _listDevicesOptions(args ?: [:])
     Long reqT0 = args?.__reqT0 instanceof Number ? args.__reqT0 as Long : null
+    _refuseUnsettledWait(opts.waitFor, reqT0)
     String scope = opts.scope
     String format = opts.format
     List children = getChildDevices() ?: []
@@ -11515,6 +11516,7 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
         throw new IllegalArgumentException("waitFor applies to summary mode only, without cursor.")
     }
     Map waitSpec = waitFor != null ? _waitForSpec(waitFor, false, 60000, 200) : null
+    _refuseUnsettledWait(waitSpec, reqT0)
     if (sections != null && (selectedMode != 'details' || !(sections instanceof List) || sections.isEmpty() ||
         sections.any { !(it instanceof String) || !_deviceDetailSections().contains(it) })) {
         throw new IllegalArgumentException("sections is a non-empty array for mode=details; use ${_deviceDetailSections().join(', ')}.")
@@ -11581,8 +11583,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
         throw new IllegalArgumentException("Device ${deviceLabel} does not support command: ${command}. Available: ${supportedCommands}")
     }
     Map waitSpec = (waitFor != null) ? _waitForSpec(waitFor, false, 30000, 250) : null
-    String stableRefusal = (waitSpec != null) ? _pollStableRefusal(waitSpec, reqT0) : null
-    if (stableRefusal) throw new IllegalArgumentException("waitFor.${stableRefusal}")
+    _refuseUnsettledWait(waitSpec, reqT0)
     if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
         def declaration = fullJson.commands?.find { it?.name == command }
@@ -11981,6 +11982,10 @@ private void _refuseCredentialPoll(attribute) {
     if (attribute != null && _redactsCredentials() && _deviceConfigurationSecretKey(attribute)) {
         throw new IllegalArgumentException("Cannot wait for a value of ${attribute}: credential-named attributes are hidden while 'Hide passwords and credentials' is on.")
     }
+}
+private void _refuseUnsettledWait(Map spec, reqT0) {
+    String refusal = spec != null ? _pollStableRefusal(spec, reqT0) : null
+    if (refusal) throw new IllegalArgumentException("waitFor.${refusal}")
 }
 private String _pollStableRefusal(Map pollArgs, t0) {
     long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
@@ -28601,7 +28606,9 @@ def handleToolsCall(msg) {
             if (readLeaf) {
                 Map readArgs = _mrtrCopyMap(args as Map)
                 readArgs.__reqT0 = reqT0
-                if (_mrtrSnapshotReadTools().contains(leafName)) readSnapshotId = java.util.UUID.randomUUID().toString()
+                if (_deviceSnapshotRead(leafName, _mrtrLeafArguments(toolName?.toString(), leafName, args as Map))) {
+                    readSnapshotId = java.util.UUID.randomUUID().toString()
+                }
                 def readResult = _executeWithDeviceReadContext(toolName, readArgs,
                     readSnapshotId ? [id: readSnapshotId, fresh: true] : null)
                 if (!(readResult instanceof Map && readResult.status == "in_progress")) {
@@ -28970,6 +28977,9 @@ def _mrtrReadTools() {
             "hub_get_device_health", "hub_list_libraries", "hub_list_rules"] as Set
 }
 private Set _mrtrSnapshotReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_rules"] as Set }
+private boolean _deviceSnapshotRead(leaf, leafArgs) {
+    return _mrtrSnapshotReadTools().contains(leaf?.toString()) && !(leafArgs instanceof Map && leafArgs.waitFor != null)
+}
 private def _executeWithDeviceReadContext(tool, Map args, Map context, boolean bpsChecked = false) {
     Map previous = deviceReadContext
     if (context != null) context.outerTool = tool?.toString()
@@ -31667,7 +31677,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         }
     }
     _rejectUnknownArgs(toolName, args)
-    if (deviceReadContext != null && _mrtrSnapshotReadTools().contains(toolName?.toString())) {
+    if (deviceReadContext != null && _deviceSnapshotRead(toolName, args)) {
         return _deviceReadSnapshot(toolName.toString(), args as Map, deviceReadContext)
     }
     switch (toolName) {
