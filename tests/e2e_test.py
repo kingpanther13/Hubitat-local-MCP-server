@@ -15590,6 +15590,99 @@ def updated() {}
             if var_name in self.created_variable_names:
                 self.created_variable_names.remove(var_name)
 
+    def _ensure_configuration_child_fixture(self) -> str:
+        """Device id of the permanent child-sdk configuration fixture, creating and fully provisioning
+        it as a child of the MCP app when the hub has none. Idempotent: an existing fixture, or one
+        left under a renamed "<label>_..." identity that the pre-run restore renames back, is
+        returned unchanged. A failed lookup raises instead of reading as absent, and the
+        configuration drivers stay a provisioning step: a missing driver raises with guidance."""
+        manifest = json.loads((Path(__file__).resolve().parent / "fixtures" /
+                               "device-configuration-manifest.json").read_text(encoding="utf-8"))
+        profile = next(p for p in manifest["profiles"] if p["path"] == "child-sdk")
+        label, canonical, common = profile["label"], profile["canonical"], manifest["canonical"]
+
+        def lookup() -> list[dict]:
+            found = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": label})
+            devices = found.get("devices") if isinstance(found, dict) else None
+            assert isinstance(devices, list), \
+                f"'{label}' lookup returned no device list -- refusing to create a duplicate: {found}"
+            rows = [d for d in devices if d.get("label") == label or str(d.get("label") or "").startswith(f"{label}_")]
+            assert len(rows) <= 1, f"more than one '{label}' fixture on the hub; remove the extras by hand: {rows}"
+            return rows
+
+        existing = lookup()
+        if existing:
+            return str(existing[0]["id"])
+
+        driver = manifest["driver"]
+        drivers = [d for d in self._driver_catalog() if d.get("name") == driver and d.get("namespace") == "mcptest"]
+        assert len(drivers) == 1, (
+            f"Install exactly one '{driver}' driver (namespace mcptest) per tests/fixtures/"
+            f"device-configuration-provisioning.md; the suite creates '{label}' but never installs drivers: {drivers}")
+        try:
+            created = self.client.call_tool("hub_manage_virtual_device", {
+                "action": "create", "customDriver": {"namespace": "mcptest", "name": driver},
+                "deviceLabel": label, "deviceNetworkId": canonical["deviceNetworkId"], "confirm": True})
+            device_id = str(((created or {}).get("device") or {}).get("id") or "")
+        except (McpError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            print(f"    create '{label}' response lost to relay 504 -- verifying by label lookup")
+            time.sleep(3.0)
+            device_id = ""
+        if not device_id:
+            # A lost response may still have created it; the lookup decides, never a second create.
+            rows = lookup()
+            assert rows, f"'{label}' was not created and no device carries its label"
+            device_id = str(rows[0]["id"])
+
+        cfg = self.client.call_tool("hub_get_device", {"deviceId": device_id, "mode": "configuration"})
+        fields = {r.get("name"): r for r in cfg.get("editableFields", []) if isinstance(r, dict)}
+        metadata = {k: common["fields"][k] for k in ("maxEvents", "maxStates", "spammyThreshold")}
+        metadata["dataValues"] = dict(common["dataValues"])
+        metadata.update({k: canonical[k] for k in ("name", "deviceNetworkId") if (fields.get(k) or {}).get("value") != canonical[k]})
+        if (fields.get("homeKitEnabled") or {}).get("value") in (True, "true"):
+            metadata["homeKitEnabled"] = False
+        # A driver's preferences and its fields go in separate patches, as the restore does.
+        for patch in ({**metadata, "confirm": True},
+                      {"preferences": {n: dict(s) for n, s in common["preferences"].items()}, "confirm": True}):
+            result = self._write_once("hub_manage_devices", "hub_update_device",
+                                      device_update_args(device_id, patch), f"provision '{label}'")
+            assert result.get("success") is True and not result.get("errors"), \
+                f"provisioning patch {sorted(patch)} on '{label}' ({device_id}) was rejected: {result}"
+        for command in ("clearLargeReadProbe", "clearLanProbe"):
+            result = self._write_once(None, "hub_call_device_command", {
+                "deviceId": device_id, "command": command, "parameters": [], "includeState": False}, f"{label} {command}")
+            assert result.get("success") is True, f"{command} on '{label}' ({device_id}) failed: {result}"
+
+        def same(observed, wanted):
+            if isinstance(wanted, list) and isinstance(observed, str) and observed.startswith("["):
+                observed = json.loads(observed)
+            if observed in (None, "", [], False) and wanted in (None, "", [], False):
+                return True
+            if isinstance(wanted, list) or isinstance(observed, list):
+                return [str(x) for x in (observed or [])] == [str(x) for x in (wanted or [])]
+            return str(observed).lower() == str(wanted).lower()
+
+        cfg = self.client.call_tool("hub_get_device", {"deviceId": device_id, "mode": "configuration"})
+        fields = {r.get("name"): r for r in cfg.get("editableFields", []) if isinstance(r, dict)}
+        prefs = {r.get("name"): r for r in cfg.get("preferences", []) if isinstance(r, dict)}
+        problems = [name for name, spec in common["preferences"].items()
+                    if (prefs.get(name) or {}).get("valuePresent") is not True or not same(prefs[name].get("value"), spec["value"])]
+        wanted = {**common["fields"], **{k: v for k, v in canonical.items() if v is not None}}
+        problems += [k for k, v in wanted.items() if k in fields and not same(fields[k].get("value"), v)]
+        problems += [k for k in ("name", "deviceNetworkId", "deviceTypeId", "maxEvents", "maxStates", "spammyThreshold")
+                     if (fields.get(k) or {}).get("writable") is not True]
+        if str((fields.get("deviceTypeId") or {}).get("value")) != str(drivers[0].get("id")):
+            problems.append("deviceTypeId")
+        data = (fields.get("dataValues") or {}).get("value")
+        if not isinstance(data, dict) or any(data.get(k) != v for k, v in common["dataValues"].items()):
+            problems.append("dataValues")
+        assert not problems, (f"'{label}' ({device_id}) was created but reads back off its provisioned baseline "
+                              f"for {sorted(set(problems))}: {cfg}")
+        print(f"    [PERM FIXTURE] created and provisioned '{label}' (id {device_id}) as a child of the MCP app")
+        return device_id
+
     def _restore_permanent_configuration_fixtures(self, stage: str) -> None:
         """Restore the permanent configuration fixtures from any baseline recipe a previous run left
         behind, then make sure every manifest profile sits at its canonical label.
@@ -18289,6 +18382,12 @@ def updated() {}
             print("No tests matched the filter criteria.")
             return True
 
+        # A hub with the configuration driver but no child fixture grows it here; a missing driver
+        # leaves the configuration tests to fail with their provisioning guidance.
+        try:
+            self._ensure_configuration_child_fixture()
+        except Exception as exc:
+            print(f"  [ERROR] pre-run: configuration child fixture not ensured: {exc}")
         # A previous run killed mid-matrix leaves the permanent configuration fixtures off
         # baseline; repair them before any test looks them up.
         self._restore_permanent_configuration_fixtures("pre-run")
