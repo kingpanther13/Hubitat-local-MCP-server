@@ -136,7 +136,7 @@ private Map _listDevicesOptions(Map args) {
         // Matching a hidden value would confirm a guess at it, one call per guess.
         List hidden = _redactsCredentials() ? stateFilter.keySet().findAll { _deviceConfigurationSecretKey(it) } as List : []
         if (hidden) {
-            throw new IllegalArgumentException("stateFilter cannot match ${hidden.join(', ')}: credential-named attributes are hidden while 'Hide passwords and credentials' is on")
+            throw new IllegalArgumentException("stateFilter cannot match ${hidden.join(', ')}: credential-named attributes are hidden while 'Hide passwords and credentials' is on.")
         }
     }
     for (argName in ["attributeNames", "fields"]) {
@@ -2171,7 +2171,7 @@ def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow
 // A wait for a hidden value would confirm a guess at it, one call per guess.
 private void _refuseCredentialPoll(attribute) {
     if (attribute != null && _redactsCredentials() && _deviceConfigurationSecretKey(attribute)) {
-        throw new IllegalArgumentException("Cannot wait for a value of ${attribute}: credential-named attributes are hidden while 'Hide passwords and credentials' is on")
+        throw new IllegalArgumentException("Cannot wait for a value of ${attribute}: credential-named attributes are hidden while 'Hide passwords and credentials' is on.")
     }
 }
 
