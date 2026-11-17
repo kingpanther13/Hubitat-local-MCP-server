@@ -116,7 +116,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
         settingsMap.enableMandatoryBPS = true
         int reads = 0
         String label = 'Before'
-        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor ->
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor, waitFor, reqT0 ->
             reads++; clock.addAndGet(12000L)
             [id: '88', label: label, nextCursor: 'unchanged-cursor', preferences: [token: 'private-pref']]
         }
@@ -213,7 +213,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
     def "device read cannot replay a cached profile after scope is revoked"() {
         given:
         settingsMap.selectedDevices = [new TestDevice(id: 88, label: 'Private')]
-        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor ->
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor, waitFor, reqT0 ->
             [id: '88', label: 'private-device-profile']
         }
         Map args = [deviceId: '88']
@@ -234,7 +234,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
     def "a quickly completed device read needs one HTTP call but the next call is fresh"() {
         given:
         int reads = 0
-        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor ->
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor, waitFor, reqT0 ->
             [id: '88', label: "Read ${++reads}".toString()]
         }
         RUN_IN_MILLIS_OVERRIDE.set({ List scheduled ->
@@ -258,7 +258,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
     def "device read scheduler failure is an error with no inline fallback"() {
         given:
         int reads = 0
-        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor ->
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor, waitFor, reqT0 ->
             reads++; [id: '88']
         }
         RUN_IN_MILLIS_OVERRIDE.set({ List scheduled -> throw new IllegalStateException('scheduler unavailable') })
@@ -276,7 +276,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
     def "a lost device snapshot fails its continuation without starting another fetch"() {
         given:
         int reads = 0
-        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor -> reads++; [id: '88'] }
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor, waitFor, reqT0 -> reads++; [id: '88'] }
         String token = call('hub_get_device', [deviceId: '88']).result.requestState
         assert token != null
         (scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map).clear()
@@ -364,5 +364,110 @@ class DeviceMrtrSpec extends ToolSpecBase {
         then: 'the worker gets no request clock, so continuation, not a cut, carries it past the budget'
         completed.result.resultType == 'complete'
         clocks == [null]
+    }
+
+    // A waitFor runs inline on the request clock, never in the background read worker: on a budgeted
+    // transport it must end by the deadline and say so, for modern and legacy clients alike.
+    private Map waitCall(String era, boolean gateway, String leaf, Map leafArgs) {
+        settingsMap.useGateways = gateway
+        String name = gateway ? 'hub_read_devices' : leaf
+        Map args = gateway ? [tool: leaf, args: leafArgs] : leafArgs
+        if (era == 'modern') return call(name, args)
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2025-11-25'])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: ++mcpDriver.lastSentId, method: 'tools/call',
+            params: [name: name, arguments: args]])
+        script.handleMcpRequest()
+        mcpDriver.parseResponseJson() as Map
+    }
+
+    private TestDevice waitFixture(Closure switchValue) {
+        def device = Spy(TestDevice)
+        device.id = 88
+        device.label = 'Budgeted Switch'
+        device.getCurrentStates() >> { [[name: 'switch', value: switchValue()]] }
+        childDevicesList << device
+        NativeInventoryFixture.register(hubGet, '88') { device }
+        NativeInventoryFixture.registerDevicesPage(hubGet) { -> childDevicesList }
+        device
+    }
+
+    def "a #era #route #leaf waitFor ends at the relay budget and says so"() {
+        given:
+        waitFixture { 'off' }
+        long started = clock.get()
+
+        when:
+        def response = waitCall(era, route == 'gateway', leaf, leafArgs + [waitFor: [attribute: 'switch', expectedValue: 'on', timeoutMs: 15000]])
+        def waited = mcpDriver.parseInner(response).waitFor
+
+        then: 'answered in this request, inline: no background worker, no continuation'
+        !response.result.containsKey('requestState')
+        !response.result.isError
+        runInMillisCalls.isEmpty()
+
+        and: 'the wait stopped by the 6000 ms deadline and reports the cut'
+        waited.converged == false
+        waited.timedOut == true
+        waited.budgetLimited == true
+        waited.requestedTimeoutMs == 15000
+        waited.timeoutMs <= 6000
+        waited.budgetNote
+        clock.get() - started <= 6000L
+
+        where:
+        [era, route, leaf, leafArgs] << [['modern', 'legacy'], ['gateway', 'flat'],
+            [['hub_get_device', [deviceId: '88']], ['hub_list_devices', [deviceIds: ['88']]]]].combinations().collect { it[0..1] + it[2] }
+    }
+
+    def "a #era #leaf waitFor that converges inside the budget reports converged without budget fields"() {
+        given: 'the switch turns on at its third read'
+        int reads = 0
+        waitFixture { ++reads >= 3 ? 'on' : 'off' }
+
+        when:
+        def response = waitCall(era, true, leaf, leafArgs + [waitFor: [attribute: 'switch', expectedValue: 'on', timeoutMs: 15000]])
+        def waited = mcpDriver.parseInner(response).waitFor
+
+        then:
+        !response.result.containsKey('requestState')
+        waited.converged == true
+        (leaf == 'hub_get_device' ? waited.finalValue : waited.devices[0].finalValue) == 'on'
+        !waited.containsKey('budgetLimited')
+        runInMillisCalls.isEmpty()
+
+        where:
+        [era, leaf, leafArgs] << [['modern', 'legacy'],
+            [['hub_get_device', [deviceId: '88']], ['hub_list_devices', [deviceIds: ['88']]]]].combinations().collect { [it[0]] + it[1] }
+    }
+
+    def "a #era waitFor whose stableForMs cannot settle in the budget is refused before any read"() {
+        given:
+        waitFixture { 'on' }
+
+        when:
+        def response = waitCall(era, true, 'hub_get_device', [deviceId: '88',
+            waitFor: [attribute: 'switch', expectedValue: 'on', stableForMs: 7000, timeoutMs: 15000]])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('cannot settle')
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
+        runInMillisCalls.isEmpty()
+
+        where:
+        era << ['modern', 'legacy']
+    }
+
+    def "a modern hub_get_device read without waitFor still goes to the background snapshot"() {
+        given:
+        waitFixture { 'off' }
+
+        when:
+        def first = call('hub_read_devices', [tool: 'hub_get_device', args: [deviceId: '88']])
+
+        then:
+        first.result.resultType == 'input_required'
+        first.result.requestState
+        runInMillisCalls.size() == 1
     }
 }

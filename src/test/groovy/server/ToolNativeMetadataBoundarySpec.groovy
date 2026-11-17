@@ -31,8 +31,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
     private def read(String operation) {
         switch (operation) {
             case 'summary': return script.toolGetDevice('10')
-            case 'attribute': return script.toolGetAttribute('10', 'switch')
-            case 'poll': return script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on', timeoutMs: 100, pollIntervalMs: 100])
+            case 'wait': return script.toolGetDevice('10', 'summary', null, null, null, [attribute: 'switch', expectedValue: 'on', timeoutMs: 100, pollIntervalMs: 100])
             case 'events': return script.toolGetDeviceEvents('10', 10)
             case 'history': return script.toolGetDeviceHistory([deviceId: '10', hoursBack: 1])
             case 'command': return script.toolSendCommand('10', 'on', [])
@@ -55,19 +54,13 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
 
         then:
         result.success == false
-        if (operation == 'poll') {
-            assert result.readError == true
-            assert result.timedOut != true
-            assert result.error.toString().contains('10')
-            assert result.finalValue == null
-        } else {
-            assert result.error
-        }
+        result.error
+        !result.containsKey('waitFor')
         writes.empty
         !hubGet.calls.any { it.path in ['/device/eventsJson/10', '/logs/past/json'] }
 
         where:
-        [operation, identity, bypass] << ['summary', 'attribute', 'poll', 'events', 'history', 'command', 'update'].collectMany { op ->
+        [operation, identity, bypass] << ['summary', 'wait', 'events', 'history', 'command', 'update'].collectMany { op ->
             ['empty', 'missing', 'mismatched'].collectMany { identity -> [false, true].collect { [op, identity, it] } }
         }
     }
@@ -114,7 +107,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         tool                       | args
         'hub_get_device'            | [deviceId: '10']
         'hub_call_device_command'   | [deviceId: '10', command: 'on']
-        'hub_get_device_attribute'  | [deviceId: '10', attribute: 'switch']
+        'hub_get_device'            | [deviceId: '10', waitFor: [attribute: 'switch', expectedValue: 'on']]
         'hub_list_device_events'    | [deviceId: '10']
         'hub_list_device_events'    | [deviceId: '10', hoursBack: 1]
         'hub_update_device'         | [deviceId: '10', fields: [label: 'Changed']]
@@ -169,7 +162,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         read('summary').attributes == []
         read('summary').commands == []
         read('summary').capabilities == []
-        read('attribute').neverReported == true
+        read('wait').waitFor.neverReported == true
 
         when:
         read('command')
@@ -304,34 +297,31 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         mode << ['summary', 'configuration', 'details']
     }
 
-    def 'poll preflight rejects a missing identity without waiting or re-fetching'() {
+    def 'a wait rejects a missing identity without waiting or re-fetching'() {
         given:
         model.device = null
         def pauses = []
         script.metaClass.pauseExecution = { Long millis -> pauses << millis }
 
         when:
-        def result = read('poll')
+        def result = read('wait')
 
         then:
         result.success == false
         result.isError == true
-        result.readError == true
         result.error.toString().contains('10')
-        result.timedOut != true
+        !result.containsKey('waitFor')
         pauses.empty
         hubGet.calls.count { it.path == '/device/fullJson/10' } == 1
     }
 
-    def 'an unreported attribute includes observed names without claiming driver declarations'() {
+    def 'the summary lists reported attributes only, without claiming driver declarations'() {
         when:
-        def result = script.toolGetAttribute('10', 'swich')
+        def result = script.toolGetDevice('10')
 
         then:
-        result.value == null
-        result.neverReported == true
-        result.reportedAttributes == ['switch']
-        result.note.toString().contains('never reported')
+        result.attributes*.name == ['switch']
+        !result.attributes.any { it.name == 'swich' }
     }
 
 }

@@ -471,7 +471,9 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                         "availableFields": {"preferences": list(declared)},
                         "editableFields": [{"name": "label", "valuePresent": True, "value": current_label}],
                     }
-                return {"id": "10", "name": "Unlisted", "label": "Original",
+                attributes = [{"name": "nativeConfiguration", "value": json.dumps(native_observations[-1])}] \
+                    if native_observations else []
+                return {"id": "10", "name": "Unlisted", "label": "Original", "attributes": attributes,
                         "commands": [{"name": "captureConfiguration"}]}
             if name == "hub_list_device_events":
                 return {"events": [], "count": 0}
@@ -481,9 +483,6 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                 assert arguments["command"] == "captureConfiguration"
                 native_observations.append({"nonce": arguments["parameters"][0]})
                 return {"success": True}
-            if name == "hub_get_device_attribute":
-                assert arguments["attribute"] == "nativeConfiguration"
-                return {"value": json.dumps(native_observations[-1])}
             if name == "hub_update_device":
                 if "label" in arguments.get("fields", {}):
                     current_label = arguments["fields"]["label"]
@@ -533,7 +532,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     assert len(native_observations) == 1
     assert log_bypasses == [False, True]
     assert dashboard_calls == _BOUNDARY_DASHBOARD_CALLS
-    assert denied_tools == ["hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
+    assert denied_tools == ["hub_get_device", "hub_get_device", "hub_list_device_events",
                             "hub_update_device", "hub_call_device_command",
                             "hub_list_device_dependents"] + (["hub_get_device"] if rejection == "unknown" else [])
     assert bypass_changes == [True, False, True, False, True, False]
@@ -694,7 +693,7 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
     assert current_label == native_label
     assert log_bypasses == [False, True]
     assert dashboard_calls == _BOUNDARY_DASHBOARD_CALLS
-    assert denied_tools == ["hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
+    assert denied_tools == ["hub_get_device", "hub_get_device", "hub_list_device_events",
                             "hub_update_device", "hub_call_device_command",
                             "hub_list_device_dependents"]
     assert bypass_changes == [True, False, True, False, True, False]
@@ -3514,28 +3513,28 @@ def test_poll_wall_clock_scenarios_use_observed_state_without_device_commands(mo
     def call_tool(name, arguments):
         if name == "hub_get_info":
             return {"mcpClient": {"client": {"source": "local"}}}
-        assert name == "hub_get_device_attribute", "poll scenarios must not depend on command delivery"
+        assert name == "hub_get_device", "poll scenarios must not depend on command delivery"
+        if arguments["deviceId"] == 1.5:
+            raise et.McpToolError(name, "deviceId must be a non-empty string or integral number")
         calls.append(arguments.copy())
-        if "expectedValue" not in arguments:
-            return {"value": initial}
+        if "waitFor" not in arguments:
+            return {"id": arguments["deviceId"], "attributes": [{"name": "switch", "value": initial}]}
         expected = initial if matches else ("off" if initial == "on" else "on")
-        assert arguments["expectedValue"] == expected
+        assert arguments["waitFor"]["expectedValue"] == expected
         if not matches:
             clock[0] += 2.0
-            # A timed-out poll is success:false, so the server sets isError on its envelope.
-            raise et.McpToolError(name, json.dumps({"success": False, "timedOut": True, "polledCount": 11,
-                                                    "finalValue": initial}))
-        return {"success": True, "timedOut": False, "polledCount": 1, "finalValue": initial}
+            # A wait that does not converge is a successful read, not an isError result.
+            return {"id": arguments["deviceId"], "waitFor": {"converged": False, "timedOut": True,
+                                                             "polledCount": 11, "finalValue": initial}}
+        return {"id": arguments["deviceId"], "waitFor": {"converged": True, "polledCount": 1, "finalValue": initial}}
 
     class Client:
-        call_tool_failure = et.HubitatMcpClient.call_tool_failure
-
         def call_tool(self, name, arguments, *, flat=False):
             return call_tool(name, arguments)
 
     runner = object.__new__(et.TestRunner)
     runner.client = Client()
-    runner.get_test_switch_id = lambda: "owned-switch"
+    runner.get_test_switch_id = lambda: "42"
     if matches:
         runner.test_poll_immediate_match()
     else:
@@ -3561,21 +3560,21 @@ def test_lan_fixture_identity_waits_for_its_nonce_and_never_accepts_stale_observ
             if logs_fail:
                 raise et.McpToolError("hub_get_logs", "diagnostic unavailable")
             return {"entries": [{"message": "fixture command rejected"}]}
-        assert name == "hub_get_device_attribute", "identity wait must not repeat the observer command"
-        runner.client._last_op = ("hub_get_device_attribute", 0.1, True)
-        assert arguments == {"deviceId": "10", "attribute": "nativeDeviceInfo"}
+        assert name == "hub_get_device", "identity wait must not repeat the observer command"
+        runner.client._last_op = ("hub_get_device", 0.1, True)
+        assert arguments == {"deviceId": "10"}
         reads.append(arguments.copy())
         native = {"nonce": "old", "deviceId": "other-fixture", "fixtureVersion": 2}
         if not stays_stale and len(reads) > 1:
             native.update(nonce="123", deviceId="10")
-        return {"value": json.dumps(native)}
+        return {"id": "10", "attributes": [{"name": "nativeDeviceInfo", "value": json.dumps(native)}]}
 
     runner = object.__new__(et.TestRunner)
     runner.client = SimpleNamespace(call_tool=call_tool)
     if stays_stale:
         with pytest.raises(AssertionError, match="observer did not complete for device 10, nonce 123") as failure:
             runner._wait_configuration_fixture_identity("10", "123")
-        assert failure.value._mcp_failed_op == ("hub_get_device_attribute", 0.1, True)
+        assert failure.value._mcp_failed_op == ("hub_get_device", 0.1, True)
         assert clock[0] == 10.0
         assert len(log_reads) == 1
         output = capsys.readouterr().out

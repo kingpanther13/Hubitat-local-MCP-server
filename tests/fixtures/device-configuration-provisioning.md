@@ -1,12 +1,15 @@
 # Persistent device configuration fixtures
 
-The configuration matrix and its separate LAN dispatch scenario only discover and
-exercise existing fixtures. They never install a driver, create a device, modify
-the MCP allowlist, or delete infrastructure. Missing, duplicate, wrongly selected,
-stale, or unrestored fixtures fail with provisioning guidance.
+The suite's pre-run pass creates the `Child` profile when the hub has the
+drivers but no child (see below). Otherwise the configuration matrix and its
+separate LAN dispatch scenario only discover and exercise existing fixtures. They
+never install a driver, create a standalone device, modify the MCP allowlist, or
+delete infrastructure. Missing, duplicate, wrongly selected, stale, or unrestored
+fixtures fail with provisioning guidance.
 
-Provision once through a direct connection to the test hub after confirming no
-E2E run is active. Routine E2E does not provision or remove these resources.
+Provision the drivers and the two standalone devices once through a direct
+connection to the test hub after confirming no E2E run is active. Routine E2E
+does not provision or remove these resources.
 Review the native prerequisites before adding integration or radio infrastructure.
 
 ## Standing core profiles
@@ -31,6 +34,15 @@ Provision the labels from `device-configuration-manifest.json` exactly:
 | `StandaloneSDK` | Standalone, native `parentAppId=null` | Explicitly selected in the MCP app | Ordinary selected DeviceWrapper dispatch |
 | `StandaloneBypass` | Standalone, native `parentAppId=null` | Unselected; existing E2E bypass toggle permits access | Native ID-endpoint dispatch |
 
+The suite creates the child: when no device carries its label (or a renamed
+`<label>_...` form), `TestRunner._ensure_configuration_child_fixture()` creates it
+with `hub_manage_virtual_device` on the primary driver and the manifest's
+canonical name and DNI, saves the history limits, `configurationProbe=original`
+and the five preference values below, turns HomeKit exposure off if it is on,
+runs `clearLargeReadProbe` and `clearLanProbe`, and verifies the result. It never
+installs a driver: without one the run fails with this guidance. An existing child
+is returned unchanged.
+
 The native `/device/createVirtual` endpoint accepts a user-driver type and makes
 a standalone instance. That endpoint name, an MCP `virtual` projection, and a
 label do not establish equivalence to a paired physical device. Preserve native
@@ -40,8 +52,8 @@ Require editable native name, DNI, and driver controls on all three profiles.
 The matrix changes and restores DNI and driver by stable device ID, including
 the child; an unavailable control fails provisioning instead of skipping a path.
 
-Set the primary driver on all three devices and initialize these saved values
-once, using direct native preference writes with complete preserved pane
+Set the primary driver on the two standalone devices and initialize these saved
+values once (the suite does this for the child), using direct native preference writes with complete preserved pane
 controls. Verify both settings and inputValues through each observer before
 running E2E. Do not rely only on declaration defaults or `installed()` firing.
 

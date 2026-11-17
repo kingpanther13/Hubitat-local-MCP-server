@@ -263,3 +263,108 @@ def test_configuration_dashboard_refuses_unreadable_or_ambiguous_list(listed, me
     runner = et.TestRunner(Client())
     with pytest.raises(AssertionError, match=message):
         runner._configuration_dashboard_ids([36461])
+
+
+class _ChildFixtureHub:
+    """A fake hub for _ensure_configuration_child_fixture: the label lookup, the user-driver
+    catalog, the child create, the device configuration and the writes, each recorded."""
+
+    LABEL = "BAT_E2E_KEEP_Configuration_Child"
+
+    def __init__(self, rows=None, drivers=None, homekit=False, lookup_fails=False):
+        self.rows = list(rows or [])
+        self.drivers = [{"id": 500, "name": "E2E_PERM_Configuration", "namespace": "mcptest"}] if drivers is None else drivers
+        self.lookup_fails = lookup_fails
+        self.calls = []
+        self.prefs = {}
+        self.fields = {"name": "E2E_PERM_Configuration", "deviceNetworkId": "mcp-virtual-E2E-PERM-Configuration-Child",
+                       "deviceTypeId": 500, "maxEvents": 10, "maxStates": 10, "spammyThreshold": 0, "notes": None,
+                       "tags": "", "defaultIcon": None, "room": None, "enabled": True, "meshEnabled": False,
+                       "homeKitEnabled": homekit, "dashboardIds": [], "dataValues": {"mcpDriverNamespace": "mcptest"}}
+
+    def call_tool(self, name, args=None):
+        args = args or {}
+        if "tool" in args:
+            name, args = args["tool"], args.get("args", {})
+        self.calls.append((name, args))
+        if name == "hub_list_devices":
+            if self.lookup_fails:
+                raise et.McpToolError(name, '{"success": false, "error": "page unreadable"}')
+            return {"devices": self.rows}
+        if name == "hub_list_drivers":
+            return {"drivers": self.drivers, "source": "hub_api"}
+        if name == "hub_manage_virtual_device":
+            self.rows.append({"id": "77", "label": args["deviceLabel"]})
+            return {"success": True, "device": {"id": "77"}}
+        if name == "hub_get_device":
+            return {"preferences": [{"name": k, "value": v, "valuePresent": True} for k, v in self.prefs.items()],
+                    "editableFields": [{"name": k, "value": v, "writable": True} for k, v in self.fields.items()]}
+        if name == "hub_update_device":
+            self.prefs.update({k: s["value"] for k, s in (args.get("preferences") or {}).items()})
+            for key, value in (args.get("fields") or {}).items():
+                self.fields[key] = {**self.fields["dataValues"], **value} if key == "dataValues" else value
+            return {"success": True}
+        assert name == "hub_call_device_command", name
+        return {"success": True}
+
+
+def test_configuration_child_fixture_is_created_and_provisioned_when_missing():
+    hub = _ChildFixtureHub(homekit=True)
+    runner = et.TestRunner(SimpleNamespace(call_tool=hub.call_tool, app_id="38"))
+
+    assert runner._ensure_configuration_child_fixture() == "77"
+
+    names = [name for name, _ in hub.calls]
+    assert names == ["hub_list_devices", "hub_list_drivers", "hub_manage_virtual_device", "hub_get_device",
+                     "hub_update_device", "hub_update_device", "hub_call_device_command",
+                     "hub_call_device_command", "hub_get_device"]
+    assert hub.calls[0][1] == {"scope": "all", "labelFilter": hub.LABEL}
+    assert hub.calls[2][1] == {"action": "create", "customDriver": {"namespace": "mcptest", "name": "E2E_PERM_Configuration"},
+                               "deviceLabel": hub.LABEL, "deviceNetworkId": "mcp-virtual-E2E-PERM-Configuration-Child",
+                               "confirm": True}
+    assert hub.calls[4][1] == {"deviceId": "77", "confirm": True, "fields": {
+        "maxEvents": 40, "maxStates": 30, "spammyThreshold": 300,
+        "dataValues": {"configurationProbe": "original"}, "homeKitEnabled": False}}
+    assert hub.calls[5][1]["preferences"] == {
+        "probeBool": {"type": "bool", "value": False}, "probeNumber": {"type": "number", "value": 3},
+        "probeText": {"type": "text", "value": "original saved text"}, "probeEnum": {"type": "enum", "value": "eco"},
+        "probeMultiple": {"type": "enum", "value": ["red"], "multiple": True}}
+    assert [args["command"] for name, args in hub.calls if name == "hub_call_device_command"] == ["clearLargeReadProbe", "clearLanProbe"]
+
+
+@pytest.mark.parametrize("label", [_ChildFixtureHub.LABEL, _ChildFixtureHub.LABEL + "_Changed"])
+def test_an_existing_configuration_child_is_returned_unchanged(label):
+    hub = _ChildFixtureHub(rows=[{"id": "12", "label": label}, {"id": "13", "label": "BAT_E2E_KEEP_Configuration_ChildOther"}])
+    runner = et.TestRunner(SimpleNamespace(call_tool=hub.call_tool, app_id="38"))
+
+    assert runner._ensure_configuration_child_fixture() == "12"
+    assert [name for name, _ in hub.calls] == ["hub_list_devices"]
+
+
+@pytest.mark.parametrize("hub,message", [
+    (_ChildFixtureHub(drivers=[]), "Install exactly one 'E2E_PERM_Configuration' driver"),
+    (_ChildFixtureHub(lookup_fails=True), "page unreadable"),
+    (_ChildFixtureHub(rows=[{"id": "1", "label": _ChildFixtureHub.LABEL}, {"id": "2", "label": _ChildFixtureHub.LABEL}]),
+     "more than one"),
+])
+def test_configuration_child_fixture_never_creates_on_a_missing_driver_failed_lookup_or_duplicate(hub, message):
+    runner = et.TestRunner(SimpleNamespace(call_tool=hub.call_tool, app_id="38"))
+
+    with pytest.raises((AssertionError, et.McpToolError), match=message):
+        runner._ensure_configuration_child_fixture()
+    assert "hub_manage_virtual_device" not in [name for name, _ in hub.calls]
+
+
+def test_configuration_child_fixture_reports_a_baseline_that_did_not_land():
+    hub = _ChildFixtureHub()
+    original = hub.call_tool
+
+    def call_tool(name, args=None):
+        result = original(name, args)
+        if (args or {}).get("tool") == "hub_update_device" and "preferences" in args["args"]:
+            hub.prefs["probeNumber"] = 7
+        return result
+
+    runner = et.TestRunner(SimpleNamespace(call_tool=call_tool, app_id="38"))
+    with pytest.raises(AssertionError, match="probeNumber"):
+        runner._ensure_configuration_child_fixture()

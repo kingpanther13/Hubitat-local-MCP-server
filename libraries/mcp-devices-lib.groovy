@@ -45,12 +45,6 @@ private void _flattenDevicesPage(List nodes, String parentId, List out, Set only
             for (t in (data.tags instanceof List ? data.tags : (data.tags ? data.tags.toString().tokenize(",") : []))) {
                 if (t?.toString()?.trim()) tags << t.toString().trim()
             }
-            // A page entry without one of these carries no answer for it, which is not "No room", enabled or no states.
-            List missing = []
-            if (!(data.disabled instanceof Boolean)) missing << "disabled"
-            if (!data.containsKey("roomName")) missing << "room"
-            if (!data.containsKey("lastActivity")) missing << "lastActivity"
-            if (!(data.currentStates instanceof List)) missing << "currentStates"
             out << [id: id, label: label, name: data.secondaryName ? data.secondaryName.toString() : label,
                 driver: data.type, deviceTypeId: data.deviceTypeId, source: data.source,
                 deviceNetworkId: data.dni, zigbeeId: data.zigbeeId,
@@ -58,27 +52,34 @@ private void _flattenDevicesPage(List nodes, String parentId, List out, Set only
                     data.isNetwork == true ? "network" : data.isBluetooth == true ? "bluetooth" : data.isVirtual == true ? "virtual" : null,
                 linked: data.isLinked == true, disabled: data.disabled == true, lastActivity: data.lastActivity,
                 roomId: data.roomId, roomName: data.roomName ? data.roomName.toString() : null, parentDeviceId: parentId,
-                tags: tags, notes: data.notes ? data.notes.toString() : null, currentStates: states, missingFields: missing]
+                tags: tags, notes: data.notes ? data.notes.toString() : null, currentStates: states,
+                orphan: data.isOrphan == true, user: data.user == true, defaultCurrentState: data.defaultCurrentState ?: null,
+                meshEnabled: data.hubMesh == true, homekit: data.homekit == true, showOnHome: data.showOnHome == true,
+                dashboardTypes: data.dashboardTypes instanceof List ? data.dashboardTypes : [], defaultIcon: data.defaultIcon ?: null,
+                remoteDeviceUrl: data.remoteDeviceUrl ?: null]
         }
         if (node.children instanceof List) _flattenDevicesPage(node.children, id, out, onlyIds)
     }
 }
 
 // The capability feed for these page records; an empty feed beside devices is a bad read (null).
-private Map _capabilityFeedFor(List population) {
-    Map caps = _readCapabilityFeed()
+private Map _capabilityFeedFor(List population, Map buttonCounts = null) {
+    Map caps = _readCapabilityFeed(buttonCounts)
     return caps != null && caps.isEmpty() && population ? null : caps
 }
 
 // Capability names for every hub device by id string; null when the feed cannot be read.
-private Map _readCapabilityFeed() {
+// buttonCounts, when given, collects each button device's count.
+private Map _readCapabilityFeed(Map buttonCounts = null) {
     try {
         def txt = hubInternalGet("/hub2/vrb/devices")
         def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
         if (!(parsed instanceof List)) return null
         Map caps = [:]
         for (entry in parsed) {
-            if (entry instanceof Map && entry.id != null) caps.put(entry.id.toString(), _capabilityNames(entry.capabilities))
+            if (!(entry instanceof Map) || entry.id == null) continue
+            caps.put(entry.id.toString(), _capabilityNames(entry.capabilities))
+            if (buttonCounts != null && entry.buttonCount instanceof Number) buttonCounts.put(entry.id.toString(), ((Number) entry.buttonCount).intValue())
         }
         return caps
     } catch (Exception e) {
@@ -103,7 +104,9 @@ private Set _mcpAuthorizedIds(List children) {
 
 private List _listDeviceFieldNames() {
     ["id", "label", "name", "driver", "room", "roomId", "disabled", "deviceNetworkId", "lastActivity", "protocol",
-     "parentDeviceId", "mcpManaged", "linked", "tags", "notes", "source", "currentStates", "capabilities", "attributes", "commands"]
+     "parentDeviceId", "mcpManaged", "linked", "tags", "notes", "source", "currentStates", "capabilities", "attributes", "commands",
+     "orphan", "user", "defaultCurrentState", "meshEnabled", "homekit", "showOnHome", "dashboardTypes", "defaultIcon",
+     "remoteDeviceUrl", "buttonCount"]
 }
 
 // Every argument check, before any hub read. Returns the normalized options.
@@ -136,7 +139,7 @@ private Map _listDevicesOptions(Map args) {
         // Matching a hidden value would confirm a guess at it, one call per guess.
         List hidden = _redactsCredentials() ? stateFilter.keySet().findAll { _deviceConfigurationSecretKey(it) } as List : []
         if (hidden) {
-            throw new IllegalArgumentException("stateFilter cannot match ${hidden.join(', ')}: credential-named attributes are hidden while 'Hide passwords and credentials' is on")
+            throw new IllegalArgumentException("stateFilter cannot match ${hidden.join(', ')}: credential-named attributes are hidden while 'Hide passwords and credentials' is on.")
         }
     }
     for (argName in ["attributeNames", "fields"]) {
@@ -150,21 +153,39 @@ private Map _listDevicesOptions(Map args) {
         throw new IllegalArgumentException("limit must be a non-negative integer")
     }
     if (args.cursor != null) _parseListCursor(args.cursor, Integer.MAX_VALUE, "hub_list_devices")
+    List deviceIds = null
+    if (args.deviceIds != null) {
+        if (!(args.deviceIds instanceof List) || args.deviceIds.isEmpty()) throw new IllegalArgumentException("deviceIds must be a non-empty array of device ids")
+        deviceIds = []
+        args.deviceIds.eachWithIndex { v, i ->
+            def id = _canonicalDeviceIdArg(v)
+            if (id == null) throw new IllegalArgumentException("deviceIds[${i}] must be a non-empty string or integral number (got: ${_describeValueForError(v)})")
+            deviceIds << id
+        }
+        List dupes = deviceIds.countBy { it }.findAll { k, c -> c > 1 }.keySet().sort()
+        if (dupes) throw new IllegalArgumentException("deviceIds contains duplicate entries: ${dupes} -- each device may appear once")
+    }
+    if (args.waitFor != null) {
+        if (deviceIds == null || deviceIds.size() > 20) throw new IllegalArgumentException("waitFor requires deviceIds with 1 to 20 devices")
+        if (args.cursor) throw new IllegalArgumentException("waitFor cannot be combined with cursor")
+        if (args.scope == "all") throw new IllegalArgumentException("waitFor reads states, which scope='all' does not list; use scope 'authorized' or 'owned'")
+    }
 
     String scope = args.scope ?: "authorized"
     String format = args.format ?: "summary"
     List fields = args.get("fields") ?: null
     if (scope == "all") {
-        List identity = ["id", "label", "name", "driver", "room", "roomId", "protocol", "disabled", "parentDeviceId", "source", "linked", "capabilities"]
+        List identity = ["id", "label", "name", "driver", "room", "roomId", "protocol", "disabled", "parentDeviceId", "source", "linked", "capabilities",
+                         "orphan", "user", "remoteDeviceUrl"]
         if (!(format in ["summary", "ids"])) throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only")
-        if (stateFilter || args.staleHours != null || since != null || args.attributeNames != null || fields?.any { !(it in identity) }) {
+        if (stateFilter || args.staleHours != null || since != null || args.attributeNames || fields?.any { !(it in identity) }) {
             throw new IllegalArgumentException("scope='all' lists identity only (fields: ${identity.join(', ')}); states need scope='authorized'")
         }
     }
-    if (args.attributeNames != null && !(format in ["summary", "context"])) {
+    if (args.attributeNames && !(format in ["summary", "context"])) {
         throw new IllegalArgumentException("attributeNames applies to format 'summary' or 'context' only")
     }
-    if (args.get("fields") != null && !(format in ["summary", "detailed"])) {
+    if (fields && !(format in ["summary", "detailed"])) {
         throw new IllegalArgumentException("fields applies to format 'summary' or 'detailed' only")
     }
 
@@ -181,22 +202,24 @@ private Map _listDevicesOptions(Map args) {
         roomFilter: args.roomFilter ?: null, disabled: args.disabled, staleHours: args.staleHours,
         stateFilter: stateFilter ?: null, sinceDate: sinceDate,
         attributeNames: args.attributeNames ?: null, limit: args.limit != null ? (Math.min(args.limit as long, (long) Integer.MAX_VALUE) as int) : 0,
-        cursor: args.cursor?.toString(), redact: _redactsCredentials()]
+        cursor: args.cursor?.toString(), redact: _redactsCredentials(), deviceIds: deviceIds,
+        waitFor: args.waitFor != null ? _waitForSpec(args.waitFor, true, 60000, 200) : null]
     // Epoch-ms input echoes as canonical ISO, so the echo is always a timestamp string.
     if (sinceDate != null) {
         opts.changedSince = (since instanceof Number || since.toString().trim().isLong()) ?
             sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ") : since.toString().trim()
     }
     opts.filtered = [opts.labelFilter, opts.capabilityFilter, opts.roomFilter, opts.disabled, opts.staleHours,
-                     opts.stateFilter, sinceDate].any { it != null }
+                     opts.stateFilter, sinceDate, deviceIds].any { it != null }
     opts.wantFull = fieldSet.contains("attributes") || fieldSet.contains("commands")
-    opts.wantCaps = opts.capabilityFilter != null || format == "context" || fieldSet.contains("capabilities")
+    opts.wantCaps = opts.capabilityFilter != null || format == "context" || fieldSet.contains("capabilities") || fieldSet.contains("buttonCount")
     return opts
 }
 
 def toolListDevices(Map args) {
     Map opts = _listDevicesOptions(args ?: [:])
     Long reqT0 = args?.__reqT0 instanceof Number ? args.__reqT0 as Long : null
+    _refuseUnsettledWait(opts.waitFor, reqT0)
     String scope = opts.scope
     String format = opts.format
     List children = getChildDevices() ?: []
@@ -205,11 +228,14 @@ def toolListDevices(Map args) {
     Set scopeIds = scope == "owned" ? childIds : (scope == "authorized" ? authorized : null)
     boolean paged = opts.cursor != null || opts.limit > 0 || format == "context"
     int pageSize = opts.limit > 0 ? opts.limit : 50
+    List deviceIds = opts.deviceIds
     if (scopeIds != null && scopeIds.isEmpty()) {
+        if (opts.waitFor) throw new IllegalArgumentException("deviceIds not in scope '${scope}': ${deviceIds}. Nothing was waited for.")
         Map empty = _emptyDeviceList(format, scope == "owned" ?
             "No MCP-managed virtual devices found. Use hub_manage_virtual_device(action=\"create\") to create one." :
             "No devices selected for MCP access and no MCP-managed virtual devices")
         if (paged) empty.putAll([offset: 0, limit: pageSize, hasMore: false])
+        if (deviceIds) empty.deviceIdsNotFound = deviceIds
         return empty
     }
     List population
@@ -220,7 +246,21 @@ def toolListDevices(Map args) {
                 note: "Retry; if it persists check the hub's Devices page."]
     }
     if (scopeIds != null) population = population.findAll { scopeIds.contains(it.id) }
-    Map caps = opts.wantCaps ? _capabilityFeedFor(population) : null
+    Set idSet = deviceIds as Set
+    List notFound = deviceIds ? deviceIds - population.collect { it.id } : []
+    if (notFound && opts.waitFor) {
+        throw new IllegalArgumentException("deviceIds not in scope '${scope}': ${notFound}. Nothing was waited for; check the ids with hub_list_devices.")
+    }
+    Map wait = null
+    if (opts.waitFor) {
+        // The scope read above is the first check; the listing then uses the wait's last read.
+        Map first = [:]
+        for (rec in population) if (idSet.contains(rec.id)) first.put(rec.id, rec)
+        wait = _waitForRun(opts.waitFor, deviceIds, true, first, reqT0)
+        population = population.collect { wait.last.get(it.id) ?: it }
+    }
+    Map buttons = opts.fieldSet.contains("buttonCount") ? [:] : null
+    Map caps = opts.wantCaps ? _capabilityFeedFor(population, buttons) : null
 
     String lf = opts.labelFilter?.toLowerCase()
     String cf = opts.capabilityFilter
@@ -230,33 +270,24 @@ def toolListDevices(Map args) {
     Long sinceMs = opts.sinceDate?.time
     long nowMs = now()
     List matched = []
-    // Devices with no usable value for a filtered field: excluded and named, never guessed. The
-    // label filter runs first so a device it excludes is not reported.
+    // Devices a filter cannot judge (not in the capability feed, unparseable activity): excluded
+    // and named, never guessed. The label filter runs first so a device it excludes is not reported.
     List unanswered = []
     for (candidate in population) {
-        List missing = candidate.missingFields
+        if (idSet != null && !idSet.contains(candidate.id)) continue
         if (lf != null && !candidate.label.toLowerCase().contains(lf)) continue
         if (cf != null && caps != null) {
             if (!caps.containsKey(candidate.id)) { unanswered << candidate.id; continue }
             if (!caps.get(candidate.id).any { it.equalsIgnoreCase(cf) }) continue
         } else if (cf != null) continue
-        if (opts.disabled != null) {
-            if ("disabled" in missing) { unanswered << candidate.id; continue }
-            if (candidate.disabled != opts.disabled) continue
-        }
-        if (rf != null) {
-            if ("room" in missing) { unanswered << candidate.id; continue }
-            if (!rf.equalsIgnoreCase(candidate.roomName ?: "")) continue
-        }
-        if (stateFilter != null) {
-            if ("currentStates" in missing) { unanswered << candidate.id; continue }
-            if (stateFilter.any { k, v -> candidate.currentStates.get(k) != v }) continue
-        }
+        if (opts.disabled != null && candidate.disabled != opts.disabled) continue
+        if (rf != null && !rf.equalsIgnoreCase(candidate.roomName ?: "")) continue
+        if (stateFilter != null && stateFilter.any { k, v -> candidate.currentStates.get(k) != v }) continue
         if (staleMs != null || sinceMs != null) {
             // A device that never reported counts as stale and as not changed; an activity value
             // that does not parse is unknown, so neither filter keeps it.
             Date la = candidate.lastActivity ? _parseSinceArg(candidate.lastActivity) : null
-            if ("lastActivity" in missing || (candidate.lastActivity != null && la == null)) { unanswered << candidate.id; continue }
+            if (candidate.lastActivity != null && la == null) { unanswered << candidate.id; continue }
             if (staleMs != null && la != null && nowMs - la.time < staleMs) continue
             if (sinceMs != null && (la == null || la.time < sinceMs)) continue
         }
@@ -266,6 +297,8 @@ def toolListDevices(Map args) {
     int total = matched.size()
     Map common = [:]
     if (opts.filtered) common.unfilteredTotal = population.size()
+    if (notFound) common.deviceIdsNotFound = notFound
+    if (wait) common.waitFor = _waitForBlock(opts.waitFor, wait, true)
     if (unanswered) {
         common.metadataUnavailableIds = unanswered
         common.partial = true
@@ -279,7 +312,7 @@ def toolListDevices(Map args) {
     if (rf != null && total == 0) common.roomFilterMatchedKnownRoom = population.any { rf.equalsIgnoreCase(it.roomName ?: "") }
     if (opts.wantCaps && caps == null) {
         common.capabilitiesUnavailable = true
-        common.note = "The hub's capability feed (/hub2/vrb/devices) could not be read or listed no device, so capabilities are omitted and capabilityFilter matches nothing. Retry."
+        common.note = "The hub's capability feed (/hub2/vrb/devices) could not be read or listed no device, so capabilities and buttonCount are omitted and capabilityFilter matches nothing. Retry."
     }
 
     // A live filter can shrink the result between pages; a cursor past the end is an empty last page.
@@ -320,7 +353,7 @@ def toolListDevices(Map args) {
                 }
                 fj = _fetchDeviceFullJson(rec.id)
             }
-            Map row = _listDeviceRecord(rec, opts, attrNames, caps, childIds, fj)
+            Map row = _listDeviceRecord(rec, opts, attrNames, caps, buttons, childIds, fj)
             if (scope == "all") row.mcpAuthorized = authorized == null || authorized.contains(rec.id)
             devices << row
         }
@@ -346,7 +379,7 @@ def toolListDevices(Map args) {
     return result
 }
 
-private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set childIds, Map fj) {
+private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Map buttons, Set childIds, Map fj) {
     Set f = opts.fieldSet
     Map row = [id: rec.id]
     if (f.contains("label")) row.label = rec.label
@@ -364,6 +397,9 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
     if (f.contains("tags") && rec.tags) row.tags = rec.tags
     if (f.contains("notes")) row.notes = rec.notes
     if (f.contains("source")) row.source = rec.source
+    for (key in ["orphan", "user", "defaultCurrentState", "meshEnabled", "homekit", "showOnHome", "dashboardTypes", "defaultIcon", "remoteDeviceUrl"]) {
+        if (f.contains(key)) row.put(key, rec.get(key))
+    }
     if (f.contains("currentStates")) {
         Map states = [:]
         for (an in attrNames) {
@@ -372,12 +408,10 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
         }
         row.currentStates = states
     }
-    boolean capsMissing = f.contains("capabilities") && caps != null && !caps.containsKey(rec.id)
+    boolean capsMissing = (f.contains("capabilities") || f.contains("buttonCount")) && caps != null && !caps.containsKey(rec.id)
     if (f.contains("capabilities") && caps != null && !capsMissing) row.capabilities = caps.get(rec.id)
-    // Marked only for a missing field the record shows; a filter on one excludes the device before this.
-    Map shownBy = [disabled: f.contains("disabled"), room: f.contains("room") || f.contains("roomId"),
-                   lastActivity: f.contains("lastActivity"), currentStates: f.contains("currentStates")]
-    if (capsMissing || rec.missingFields.any { shownBy.get(it) }) row.metadataUnavailable = true
+    if (f.contains("buttonCount") && buttons?.get(rec.id) != null) row.buttonCount = buttons.get(rec.id)
+    if (capsMissing) row.metadataUnavailable = true
     if (!opts.wantFull) return row
     Map detail = null
     try {
@@ -474,7 +508,7 @@ private String _contextDeviceLine(Map rec, Map caps, List attrNames, boolean red
         def v = rec.currentStates.get(an)
         if (v != null) parts << "${an}=${_listStateValue(an, v, redact)}".toString()
     }
-    String room = "room" in rec.missingFields ? "room unknown" : (rec.roomName ?: "No room")
+    String room = rec.roomName ?: "No room"
     String line = "- ${rec.label} (${rec.id}, ${room})"
     List c = caps?.get(rec.id)
     if (c) line += " - ${c.join(', ')}"
@@ -570,7 +604,7 @@ def _buildContextJson() {
     def contextAttrs = _contextAttributeNames()
     def roomIndex = [:]
     for (d in allDevices) {
-        String r = "room" in d.missingFields ? "Room unknown" : (d.roomName ?: "No room")
+        String r = d.roomName ?: "No room"
         if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
         roomIndex.get(r) << d.id
     }
@@ -600,7 +634,7 @@ def _buildContextJson() {
         }
         Map rec = [id: d.id, label: d.label, room: d.roomName, capabilities: caps?.get(d.id) ?: [], attributes: attrs]
         if (caps == null) rec.capabilitiesUnavailable = true
-        if (d.missingFields.any { it in ["room", "currentStates"] } || (caps != null && !caps.containsKey(d.id))) rec.metadataUnavailable = true
+        if (caps != null && !caps.containsKey(d.id)) rec.metadataUnavailable = true
         used += _escapedLen(groovy.json.JsonOutput.toJson(rec))
         if (used > budget) {
             truncated = true
@@ -1171,11 +1205,6 @@ private _readBypassAttrValueFrom(Map fullJson, attribute) {
     return _nativeDeviceStateValue(entry)
 }
 
-// Re-fetch fullJson so each poll observes fresh native state.
-private _readBypassAttrValue(deviceId, attribute) {
-    return _readBypassAttrValueFrom(_fetchDeviceFullJson(deviceId), attribute)
-}
-
 // A credential-named attribute's value as a read returns it: masked while credentials are hidden,
 // when a wait on one is refused instead.
 private _devicePublicAttributeValue(name, value) {
@@ -1501,11 +1530,21 @@ private Map _deviceReadPage(Map result, String selection) {
     return _deviceReadFragment(snapshot, token, 0)
 }
 
-def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cursor = null) {
+def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cursor = null, waitFor = null, reqT0 = null) {
+    def canonicalId = _canonicalDeviceIdArg(deviceId)
+    if (canonicalId == null) {
+        throw new IllegalArgumentException("deviceId must be a non-empty string or integral number (got: ${_describeValueForError(deviceId)})")
+    }
+    deviceId = canonicalId
     String selectedMode = mode == null ? 'summary' : mode.toString()
     if (!(selectedMode in ['summary', 'configuration', 'details'])) {
         throw new IllegalArgumentException("mode must be summary, configuration, or details.")
     }
+    if (waitFor != null && (selectedMode != 'summary' || cursor != null)) {
+        throw new IllegalArgumentException("waitFor applies to summary mode only, without cursor.")
+    }
+    Map waitSpec = waitFor != null ? _waitForSpec(waitFor, false, 60000, 200) : null
+    _refuseUnsettledWait(waitSpec, reqT0)
     if (sections != null && (selectedMode != 'details' || !(sections instanceof List) || sections.isEmpty() ||
         sections.any { !(it instanceof String) || !_deviceDetailSections().contains(it) })) {
         throw new IllegalArgumentException("sections is a non-empty array for mode=details; use ${_deviceDetailSections().join(', ')}.")
@@ -1525,11 +1564,16 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
                 note: 'Check the native Devices page and retry.']
     }
     if (selectedMode == 'summary') {
+        // The summary comes from the wait's last read, so it agrees with waitFor.finalValue.
+        Map wait = waitSpec ? _waitForRun(waitSpec, [deviceId.toString()], false, full, reqT0) : null
+        Map result
         try {
-            return _getDeviceFromFullJson(deviceId, full)
+            result = _getDeviceFromFullJson(deviceId, wait?.last ?: full)
         } catch (IllegalStateException e) {
-            return [success: false, isError: true, error: e.message, note: 'Check the native Devices page and retry.']
+            result = [success: false, isError: true, error: e.message, note: 'Check the native Devices page and retry.']
         }
+        if (wait) result.waitFor = _waitForBlock(waitSpec, wait, false)
+        return result
     }
     def identity = [name: full?.device?.name, label: _bypassDeviceLabel(full, deviceId)]
     return _deviceReadPage(_deviceExpandedResult(deviceId, identity, full, selectedMode, sections, fields), selection)
@@ -1537,9 +1581,8 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
 }
 
 def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = null, reqT0 = null, includeState = true) {
-    // Batch form: one call carrying several {deviceId, command, parameters?} entries. A parameter
-    // rather than a second tool, and mutually exclusive with the single-device arguments, which is
-    // the same shape hub_get_device_attribute already uses for deviceId vs deviceIds.
+    // Batch form: one call carrying several {deviceId, command, parameters?} entries, mutually
+    // exclusive with the single-device arguments.
     if (commands != null) {
         def conflicting = []
         if (deviceId != null) conflicting << "deviceId"
@@ -1551,7 +1594,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
             throw new IllegalArgumentException("commands is mutually exclusive with ${conflicting.join(' and ')} -- pass EITHER a single deviceId+command OR a commands array, not both (per-entry parameters go inside each commands entry)")
         }
         if (waitFor != null) {
-            throw new IllegalArgumentException("waitFor is not supported with commands: it blocks a hub thread per device. Send the batch, then confirm the whole set in one call with hub_get_device_attribute using deviceIds + mode")
+            throw new IllegalArgumentException("waitFor is not supported with commands: it blocks a hub thread per device. Send the batch, then confirm the whole set in one call with hub_list_devices using deviceIds + waitFor")
         }
         return _sendCommandBatch(commands, reqT0)
     }
@@ -1586,10 +1629,9 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     // only, so a declared-but-unreported attribute cannot be told from a typo and rejecting it
     // would block a legitimate command. A mistyped name therefore fires the command and then
     // times out with neverReported -- do not restore a pre-fire attribute-existence check here.
-    def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) : null
+    Map waitSpec = (waitFor != null) ? _waitForSpec(waitFor, false, 30000, 250) : null
     // A waitFor that cannot settle in the request time left is refused before the command fires.
-    String stableRefusal = (pollArgs != null) ? _pollStableRefusal(pollArgs, reqT0) : null
-    if (stableRefusal) throw new IllegalArgumentException("waitFor.${stableRefusal}")
+    _refuseUnsettledWait(waitSpec, reqT0)
     if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
         def declaration = fullJson.commands?.find { it?.name == command }
@@ -1605,58 +1647,22 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
         parameters: parameters
     ]
 
-    if (pollArgs != null) {
-        // Poll before taking the post-dispatch snapshot; immediate native reads may
-        // show either the prior or resulting value. Record convergence separately
-        // because polling can time out or fail.
-        def waitForBlock = [
-            attribute: pollArgs.attribute,
-            expected : (pollArgs.containsKey("expectedValues") ? pollArgs.expectedValues : pollArgs.expectedValue)
-        ]
+    if (waitSpec != null) {
+        // Poll before taking the post-dispatch snapshot; immediate native reads may show either the
+        // prior or resulting value.
         try {
-            // The request clock ends the confirmation poll by the request deadline.
-            def poll = toolPollUntilAttribute(reqT0 instanceof Number ? pollArgs + [__reqT0: reqT0] : pollArgs)
-            waitForBlock.converged  = poll.success == true
-            waitForBlock.finalValue = poll.finalValue
-            // poll.polledCount is intentionally NOT surfaced into the waitFor block: elapsedMs
-            // is the caller-relevant diagnostic (how long the command-confirm blocked); the
-            // raw poll count is an engine-internal detail.
-            waitForBlock.elapsedMs  = poll.elapsedMs
-            // Surface the engine's diagnostic flags when present so the caller can tell a
-            // plain timeout apart from a hub-reload interrupt or a never-reported attribute.
-            if (poll.timedOut == true)      waitForBlock.timedOut = true
-            if (poll.interrupted == true)   waitForBlock.interrupted = true
-            if (poll.readError == true)     waitForBlock.readError = true
-            if (poll.neverReported == true) waitForBlock.neverReported = true
-            if (poll.nonNumericAttribute == true) waitForBlock.nonNumericAttribute = true
-            // nonNumericAttribute carries an actionable note (names the comparator/attribute,
-            // suggests eq/ne) -- propagate it so a waitFor caller gets the same guidance.
-            if (poll.note != null) waitForBlock.note = poll.note
-            // transitioning is present on the timeout path as true OR false (both meaningful),
-            // so copy it whenever the engine emitted the key -- not only when true.
-            if (poll.containsKey("transitioning")) waitForBlock.transitioning = poll.transitioning
-            if (poll.budgetLimited == true) {
-                waitForBlock.budgetLimited = true
-                waitForBlock.budgetNote = poll.budgetNote
-            }
+            result.waitFor = _waitForBlock(waitSpec, _waitForRun(waitSpec, [deviceId.toString()], false, null, reqT0), false)
         } catch (Throwable e) {
-            // The command already fired; a poll-loop failure (e.g. a malformed numeric
-            // attribute) must not lose the response. Catch Throwable -- not just Exception --
-            // for the same reason the snapshot does: a non-Exception Throwable after the
-            // device actuated must report non-convergence, not escape as a hard error that
-            // drops the state/waitFor blocks. Include the class so an NPE doesn't render as
-            // "(no message)" with no other clue. Snapshot is still taken below.
+            // The command already fired, so a failed wait (Throwable included) reports
+            // non-convergence instead of losing the response; the snapshot is still taken below.
             def cls = e.class.simpleName
             // Log at error: a warn is below Hubitat's default log level and returns before
             // writing, so this degraded-path failure would land in neither buffer nor hub log.
             mcpLog("error", "send-command", "waitFor poll failed for ${deviceLabel}: ${cls}: ${e.message ?: '(no message)'}")
-            waitForBlock.converged  = false
-            waitForBlock.finalValue = null
-            waitForBlock.error      = "waitFor poll failed: ${cls}: ${e.message ?: '(no message)'}".toString()
-            // The command fired but the confirmation poll degraded -- flag the partial result.
+            result.waitFor = [attribute: waitSpec.attribute, expected: waitSpec.expected, converged: false, finalValue: null,
+                              error: "waitFor poll failed: ${cls}: ${e.message ?: '(no message)'}".toString()]
             result.partial = true
         }
-        result.waitFor = waitForBlock
     }
 
     // Batch entries skip the read-back entirely: their response drops state anyway, and the
@@ -1704,8 +1710,8 @@ private _sendCommandBatch(commands, reqT0 = null) {
     if (!(commands instanceof List) || commands.isEmpty()) {
         throw new IllegalArgumentException("commands must be a non-empty array of {deviceId, command, parameters?} objects")
     }
-    // Same ceiling as hub_get_device_attribute's multi-device poll (MAX_POLL_DEVICES); this bound
-    // keeps one request's serial dispatch inside the relay window.
+    // Same ceiling as hub_list_devices' waitFor; this bound keeps one request's serial dispatch
+    // inside the relay window.
     def MAX_BATCH_COMMANDS = 20
     if (commands.size() > MAX_BATCH_COMMANDS) {
         throw new IllegalArgumentException("commands may contain at most ${MAX_BATCH_COMMANDS} entries (got ${commands.size()})")
@@ -1771,7 +1777,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
             // throw, so the aggregate below derives from results[] rather than counting throws.
             // That returned map carries no command, hence the backfill (a real command from the
             // delegate wins). The per-device state snapshot is dropped: a batch confirms through
-            // hub_get_device_attribute's deviceIds form, not through N inline snapshots.
+            // hub_list_devices' deviceIds + waitFor, not through N inline snapshots.
             def entry = [deviceId: deviceId, command: e.command] + one
             entry.remove("state")
             entry.remove("stateError")
@@ -1806,7 +1812,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
         result.failedDeviceIds = results.findAll { it.success == false }.collect { it.deviceId }
         if (failed < results.size()) result.partial = true
         result.error = "${failed} of ${results.size()} device command(s) failed; ${sent} were sent. See results[] for the per-device cause.".toString()
-        result.note = "The entries that succeeded ALREADY actuated -- do NOT re-send the whole batch. Before re-sending a failed entry, read its error/note: an outcome the hub did not CONFIRM may still have actuated, so verify with hub_get_device_attribute first. See hub_get_tool_guide(section='device_authorization') for what makes an entry fail."
+        result.note = "The entries that succeeded ALREADY actuated -- do NOT re-send the whole batch. Before re-sending a failed entry, read its error/note: an outcome the hub did not CONFIRM may still have actuated, so verify with hub_get_device first. See hub_get_tool_guide(section='device_authorization') for what makes an entry fail."
     }
     if (remaining) {
         result.success = false
@@ -1819,128 +1825,87 @@ private _sendCommandBatch(commands, reqT0 = null) {
     return result
 }
 
-// Validate a waitFor spec and translate it into a toolPollUntilAttribute args map, reusing
-// that tool's block-poll engine for the runtime poll behavior. This validator fully covers
-// shape, type, numeric-range, and attribute-existence so a bad spec is rejected BEFORE the
-// command fires (the poll engine repeats these checks as defense-in-depth, but its run is
-// post-fire, so completing them here is what buys the no-side-effect-on-bad-spec guarantee).
-private Map _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) {
+// The one waitFor check, run before any read or command: hub_call_device_command caps timeoutMs at
+// 30000 and defaults the interval to 250 (a waitFor follows a write); the read tools allow 60000
+// and 200. Only hub_list_devices (multi) takes mode. Returns the normalized spec the engine runs.
+private Map _waitForSpec(waitFor, boolean multi, int maxTimeoutMs, int defaultIntervalMs) {
     if (!(waitFor instanceof Map)) {
-        throw new IllegalArgumentException("waitFor must be an object with at least attribute and expectedValue/expectedValues")
+        throw new IllegalArgumentException("waitFor must be an object with attribute and expectedValue or expectedValues")
     }
-    def validKeys = ["attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs", "comparator", "stableForMs"] as Set
-    def unknownKeys = (waitFor.keySet() - validKeys).sort()
+    List validKeys = ["attribute", "comparator", "expectedValue", "expectedValues", "pollIntervalMs", "stableForMs", "timeoutMs"] + (multi ? ["mode"] : [])
+    List unknownKeys = (waitFor.keySet().collect { it.toString() } - validKeys).sort()
     if (unknownKeys) {
-        def label = unknownKeys.size() == 1 ? 'an unknown key' : 'unknown keys'
-        throw new IllegalArgumentException("waitFor has ${label}: ${unknownKeys.join(', ')}. Valid keys: ${validKeys.sort().join(', ')}")
+        throw new IllegalArgumentException("waitFor has ${unknownKeys.size() == 1 ? 'an unknown key' : 'unknown keys'}: ${unknownKeys.join(', ')}. Valid keys: ${validKeys.join(', ')}")
     }
     if (!(waitFor.attribute instanceof String) || !waitFor.attribute.trim()) {
         throw new IllegalArgumentException("waitFor.attribute is required and must be a non-empty string")
     }
     _refuseCredentialPoll(waitFor.attribute)
-    def hasExpectedValue  = waitFor.containsKey("expectedValue")
-    def hasExpectedValues = waitFor.containsKey("expectedValues")
-    if (hasExpectedValue && hasExpectedValues) {
+    boolean hasValue = waitFor.containsKey("expectedValue")
+    boolean hasValues = waitFor.containsKey("expectedValues")
+    if (hasValue && hasValues) {
         throw new IllegalArgumentException("waitFor: provide exactly one of expectedValue or expectedValues, not both")
     }
-    if (!hasExpectedValue && !hasExpectedValues) {
+    if (!hasValue && !hasValues) {
         throw new IllegalArgumentException("waitFor: exactly one of expectedValue or expectedValues is required")
     }
-    // Validate every pre-checkable field HERE so a bad spec never fires the command.
-    // The pollIntervalMs bound MIRRORS toolPollUntilAttribute's [50,5000]. timeoutMs is
-    // STRICTER on this command-flow path: a waitFor poll pins a hub thread for the full
-    // timeout, so the pre-fire cap is 30000ms (vs the engine's standalone [100,60000]).
-    if (hasExpectedValue) {
-        // .trim() for parity with attribute -- reject a whitespace-only value, not just "".
-        if (!(waitFor.expectedValue instanceof String) || !waitFor.expectedValue.trim()) {
-            throw new IllegalArgumentException("waitFor.expectedValue must be a non-empty string (got: ${_describeValueForError(waitFor.expectedValue)})")
-        }
+    if (hasValue && (!(waitFor.expectedValue instanceof String) || !waitFor.expectedValue.trim())) {
+        throw new IllegalArgumentException("waitFor.expectedValue must be a non-empty string (got: ${_describeValueForError(waitFor.expectedValue)})")
     }
-    if (hasExpectedValues) {
+    if (hasValues) {
         if (!(waitFor.expectedValues instanceof List) || waitFor.expectedValues.isEmpty()) {
             throw new IllegalArgumentException("waitFor.expectedValues must be a non-empty list of strings")
         }
         waitFor.expectedValues.eachWithIndex { v, i ->
-            if (!(v instanceof String)) {
-                throw new IllegalArgumentException("waitFor.expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
-            }
+            if (!(v instanceof String)) throw new IllegalArgumentException("waitFor.expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
         }
     }
-    // Accept any Number (not just Integer) so a Long/BigDecimal that the engine would
-    // accept is not wrongly rejected pre-fire -- toolPollUntilAttribute validates these
-    // same fields with `instanceof Number`. The comparison is direct (no `as Integer`
-    // cast), so an in-range fractional passes the bounds check exactly as the engine does.
-    if (waitFor.containsKey("timeoutMs")) {
-        if (!(waitFor.timeoutMs instanceof Number) || waitFor.timeoutMs < 100 || waitFor.timeoutMs > 30000) {
-            throw new IllegalArgumentException("waitFor.timeoutMs must be a number between 100 and 30000 (got: ${waitFor.timeoutMs})")
+    Map bounds = [timeoutMs: [100, maxTimeoutMs, 5000], pollIntervalMs: [50, 5000, defaultIntervalMs], stableForMs: [0, null, 0]]
+    Map ms = [:]
+    bounds.each { key, b ->
+        def v = waitFor.containsKey(key) ? waitFor.get(key) : b[2]
+        if (!(v instanceof Number) || v < b[0] || (b[1] != null && v > b[1])) {
+            String range = b[1] != null ? "between ${b[0]} and ${b[1]}" : ">= 0"
+            throw new IllegalArgumentException("waitFor.${key} must be a number ${range} (got: ${_describeValueForError(v)})")
         }
+        ms.put(key, v as Integer)
     }
-    if (waitFor.containsKey("pollIntervalMs")) {
-        if (!(waitFor.pollIntervalMs instanceof Number) || waitFor.pollIntervalMs < 50 || waitFor.pollIntervalMs > 5000) {
-            throw new IllegalArgumentException("waitFor.pollIntervalMs must be a number between 50 and 5000 (got: ${waitFor.pollIntervalMs})")
-        }
-    }
-    // Comparator + stableForMs pre-fire validation: mirror the engine's comparator constraints
-    // HERE so a bad spec never fires the command (the engine repeats these post-fire as
-    // defense-in-depth). The effective timeout for the stableForMs upper bound is the same
-    // default applied below.
-    def effectiveTimeoutMs = waitFor.containsKey("timeoutMs") ? (waitFor.timeoutMs as Integer) : 5000
-    def validComparators = ["eq", "ne", "gt", "gte", "lt", "lte", "between"]
-    if (waitFor.containsKey("comparator") && waitFor.comparator == null) {
-        throw new IllegalArgumentException("waitFor.comparator must not be null (omit the arg to use the default \"eq\")")
+    if (ms.stableForMs >= ms.timeoutMs) {
+        throw new IllegalArgumentException("waitFor.stableForMs (${ms.stableForMs}) must be less than timeoutMs (${ms.timeoutMs}) -- the condition could never hold long enough to converge")
     }
     def comparator = waitFor.containsKey("comparator") ? waitFor.comparator : "eq"
-    if (!(comparator instanceof String) || !validComparators.contains(comparator)) {
-        throw new IllegalArgumentException("waitFor.comparator must be one of ${validComparators} (got: ${_describeValueForError(waitFor.comparator)})")
+    if (!(comparator in ["eq", "ne", "gt", "gte", "lt", "lte", "between"])) {
+        throw new IllegalArgumentException("waitFor.comparator must be one of eq, ne, gt, gte, lt, lte, between (got: ${_describeValueForError(comparator)})")
     }
-    if (["gt", "gte", "lt", "lte"].contains(comparator)) {
-        if (hasExpectedValues) {
-            throw new IllegalArgumentException("waitFor.comparator '${comparator}' takes a single numeric threshold via expectedValue, not expectedValues")
-        }
-        if (_parseBigDecimalOrNull(waitFor.expectedValue) == null) {
+    Map spec = [attribute: waitFor.attribute, comparator: comparator, expected: hasValues ? waitFor.expectedValues : waitFor.expectedValue,
+                matchSet: (hasValues ? waitFor.expectedValues : [waitFor.expectedValue]) as Set,
+                timeoutMs: ms.timeoutMs, pollIntervalMs: Math.min(ms.pollIntervalMs, ms.timeoutMs), stableForMs: ms.stableForMs]
+    if (comparator in ["gt", "gte", "lt", "lte"]) {
+        if (hasValues) throw new IllegalArgumentException("waitFor.comparator '${comparator}' takes a single numeric threshold via expectedValue, not expectedValues")
+        spec.numericThreshold = _parseBigDecimalOrNull(waitFor.expectedValue)
+        if (spec.numericThreshold == null) {
             throw new IllegalArgumentException("waitFor.comparator '${comparator}' requires expectedValue to be a numeric-parseable string (got: ${_describeValueForError(waitFor.expectedValue)})")
         }
     } else if (comparator == "between") {
-        if (hasExpectedValue) {
-            throw new IllegalArgumentException("waitFor.comparator 'between' takes two numeric bounds via expectedValues, not expectedValue")
-        }
+        if (hasValue) throw new IllegalArgumentException("waitFor.comparator 'between' takes two numeric bounds via expectedValues, not expectedValue")
         if (waitFor.expectedValues.size() != 2) {
             throw new IllegalArgumentException("waitFor.comparator 'between' requires expectedValues to have exactly 2 numeric bounds [low, high] (got ${waitFor.expectedValues.size()})")
         }
-        def lo = _parseBigDecimalOrNull(waitFor.expectedValues[0])
-        def hi = _parseBigDecimalOrNull(waitFor.expectedValues[1])
-        if (lo == null || hi == null) {
+        spec.betweenLow = _parseBigDecimalOrNull(waitFor.expectedValues[0])
+        spec.betweenHigh = _parseBigDecimalOrNull(waitFor.expectedValues[1])
+        if (spec.betweenLow == null || spec.betweenHigh == null) {
             throw new IllegalArgumentException("waitFor.comparator 'between' requires both expectedValues bounds to be numeric-parseable strings (got: ${waitFor.expectedValues})")
         }
-        if (lo > hi) {
+        if (spec.betweenLow > spec.betweenHigh) {
             throw new IllegalArgumentException("waitFor.comparator 'between' requires low <= high (got low=${waitFor.expectedValues[0]}, high=${waitFor.expectedValues[1]})")
         }
     }
-    if (waitFor.containsKey("stableForMs") && waitFor.stableForMs == null) {
-        throw new IllegalArgumentException("waitFor.stableForMs must not be null (omit the arg to use default 0)")
+    if (multi) {
+        def mode = waitFor.containsKey("mode") ? waitFor.mode : "all"
+        if (!(mode in ["any", "all"])) throw new IllegalArgumentException("waitFor.mode must be any or all (got: ${_describeValueForError(mode)})")
+        spec.mode = mode
     }
-    if (waitFor.containsKey("stableForMs")) {
-        if (!(waitFor.stableForMs instanceof Number)) {
-            throw new IllegalArgumentException("waitFor.stableForMs must be an integer (got: ${_describeValueForError(waitFor.stableForMs)})")
-        }
-        if (waitFor.stableForMs < 0) {
-            throw new IllegalArgumentException("waitFor.stableForMs must be >= 0 (got: ${waitFor.stableForMs})")
-        }
-        if ((waitFor.stableForMs as Integer) >= effectiveTimeoutMs) {
-            throw new IllegalArgumentException("waitFor.stableForMs (${waitFor.stableForMs}) must be less than timeoutMs (${effectiveTimeoutMs}) -- the condition could never hold long enough to converge")
-        }
-    }
-    def pollArgs = [deviceId: deviceId.toString(), attribute: waitFor.attribute]
-    if (hasExpectedValue)  pollArgs.expectedValue  = waitFor.expectedValue
-    if (hasExpectedValues) pollArgs.expectedValues = waitFor.expectedValues
-    if (waitFor.containsKey("comparator"))  pollArgs.comparator  = waitFor.comparator
-    if (waitFor.containsKey("stableForMs")) pollArgs.stableForMs = waitFor.stableForMs
-    // Default the timeout/interval here so an omitted value uses the command-flow default
-    // (5000ms) and pollIntervalMs 250ms -- the 250ms default is the post-command-flow
-    // default by intent (the engine's standalone default is 200ms); explicit values pass through.
-    pollArgs.timeoutMs      = waitFor.containsKey("timeoutMs")      ? waitFor.timeoutMs      : 5000
-    pollArgs.pollIntervalMs = waitFor.containsKey("pollIntervalMs") ? waitFor.pollIntervalMs : 250
-    return pollArgs
+    return spec
 }
 
 // Parse a value as BigDecimal for numeric comparator math, or null if it is not numeric.
@@ -1958,10 +1923,9 @@ private BigDecimal _parseBigDecimalOrNull(v) {
 }
 
 // Compact native current-state snapshot for a command response: values and timestamps only.
-// NOTE: this is an IMMEDIATE read taken in the same request that fired the command -- the
-// hub commits a command's effect AFTER that request returns, so without waitFor the value
-// here is the PRE-effect state even for virtual/local devices. The timestamp is the freshness
-// signal; waitFor (block-poll) is what makes this snapshot reflect the converged state.
+// NOTE: this is an IMMEDIATE read taken in the same request that fired the command, so without
+// waitFor it may show the prior or the resulting value. The timestamp is the freshness signal;
+// waitFor (block-poll) is what makes this snapshot reflect the converged state.
 
 // Fire an access-permitted device command via the hub's id-keyed native endpoint.
 // POST /device/runmethod with
@@ -2173,29 +2137,7 @@ def toolGetDeviceEvents(deviceId, limit) {
     return [device: label, events: events, count: events.size()]
 }
 
-def toolGetAttribute(deviceId, attribute) {
-    deviceId = _canonicalDeviceIdArg(deviceId)
-    if (deviceId == null) throw new IllegalArgumentException('deviceId must be a non-empty string or integral number')
-    if (!(attribute instanceof String) || !attribute) throw new IllegalArgumentException('attribute is required and must be a non-empty string')
-    _requireDeviceToolAccess(deviceId)
-    def full = _fetchDeviceFullJson(deviceId)
-    if (!(full?.device?.currentStates instanceof Map)) {
-        return [success: false, isError: true, deviceId: deviceId, attribute: attribute,
-                error: 'Native device current states could not be read.', note: 'Check the native Devices page and retry.']
-    }
-    def result = [device: _bypassDeviceLabel(full, deviceId), attribute: attribute,
-                  value: _devicePublicAttributeValue(attribute, _readBypassAttrValueFrom(full, attribute))]
-    if (!full.device.currentStates.containsKey(attribute)) {
-        result.neverReported = true
-        result.reportedAttributes = _fullJsonAttributeNames(full)
-        result.note = 'Reported names can help identify a typo; an omitted name may also be a driver attribute that has never reported.'
-    }
-    return result
-
-}
-
-// Single source of truth for the per-value match logic, shared by the single- and multi-device
-// poll paths so they can never diverge. Returns [matched, numeric]: matched is the boolean
+// The per-value match logic of every waitFor. Returns [matched, numeric]: matched is the boolean
 // condition result (eq = value in matchSet; ne = a non-null value NOT in matchSet; gt/gte/lt/lte/
 // between = numeric, a null/non-numeric value never matches); numeric is true only when THIS value
 // parsed as a number under a numeric comparator (false for eq/ne), letting the caller latch the
@@ -2222,43 +2164,17 @@ def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow
     return [matched, true]
 }
 
-// A poll on a budgeted transport (the cloud relay; LAN only when a LAN budget is set) ends by the
-// request's deadline, device reads included, so the relay never drops the answer; the result then
-// says so. The request clock rides in as __reqT0 and never reaches the engine's arg check.
-def toolPollUntilAttribute(args) {
-    if (args instanceof Map) _refuseCredentialPoll(args.attribute)
-    if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _pollUntilAttributeCore(args)
-    Map pollArgs = [:] + (args as Map)
-    def t0 = pollArgs.remove("__reqT0")
-    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
-    def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
-    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || asked < 100 || asked > 60000) return _pollUntilAttributeCore(pollArgs)
-    long deadline = (t0 as long) + budget
-    long left = deadline - now()
-    String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
-    String refusal = _pollStableRefusal(pollArgs, t0)
-    if (refusal) throw new IllegalArgumentException(refusal)
-    if (left < 100L) {
-        return [success: false, timedOut: true, budgetLimited: true, requestedTimeoutMs: asked, timeoutMs: 0,
-                budgetNote: "Not polled: the request had ${Math.max(0L, left)} ms left (${why}). Poll again in a new call.".toString()]
-    }
-    if (left < (asked as long)) pollArgs.timeoutMs = left as Integer
-    def result = _pollUntilAttributeCore(pollArgs, deadline)
-    // A poll that converged is reported as it is; only one that stopped short says so.
-    if (result instanceof Map && (result.remove("budgetStopped") == true || left < (asked as long)) && result.success != true) {
-        result.requestedTimeoutMs = asked
-        result.timeoutMs = Math.min(left, asked as long)
-        result.budgetLimited = true
-        result.budgetNote = "The poll stopped after ${result.elapsedMs ?: 0} ms instead of waiting ${asked} ms: ${why}. Poll again to keep waiting.".toString()
-    }
-    return result
-}
-
 // A wait for a hidden value would confirm a guess at it, one call per guess.
 private void _refuseCredentialPoll(attribute) {
     if (attribute != null && _redactsCredentials() && _deviceConfigurationSecretKey(attribute)) {
-        throw new IllegalArgumentException("Cannot wait for a value of ${attribute}: credential-named attributes are hidden while 'Hide passwords and credentials' is on")
+        throw new IllegalArgumentException("Cannot wait for a value of ${attribute}: credential-named attributes are hidden while 'Hide passwords and credentials' is on.")
     }
+}
+
+// Refuses, before any read or command, a waitFor whose stableForMs cannot settle in the request time left.
+private void _refuseUnsettledWait(Map spec, reqT0) {
+    String refusal = spec != null ? _pollStableRefusal(spec, reqT0) : null
+    if (refusal) throw new IllegalArgumentException("waitFor.${refusal}")
 }
 
 // The refusal a budgeted poll gives a stableForMs that cannot settle in the request time left, else null.
@@ -2273,442 +2189,190 @@ private String _pollStableRefusal(Map pollArgs, t0) {
     return "stableForMs ${stable} cannot settle in the ${Math.max(0L, left)} ms this request has left (${why}); use a shorter stableForMs.".toString()
 }
 
-def _pollUntilAttributeCore(args, Long deadlineMs = null) {
-    // 0. Reject unknown args early to surface caller mistakes (e.g., timeoutSeconds vs timeoutMs).
-    def validArgKeys = ["deviceId", "deviceIds", "mode", "attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs", "comparator", "stableForMs"] as Set
-    if (args instanceof Map) {
-        def unknownKeys = (args.keySet() - validArgKeys).sort()
-        if (unknownKeys) {
-            throw new IllegalArgumentException("Unknown arg(s): ${unknownKeys}. Valid args: ${validArgKeys.sort()}. Common gotcha: timeout is 'timeoutMs' in milliseconds, not 'timeoutSeconds'.")
-        }
+// Runs a validated waitFor. On a budgeted transport (the cloud relay; LAN only when a LAN budget is
+// set) the wait ends by the request's deadline, reads included, so the relay never drops the answer.
+private Map _waitForRun(Map spec, List ids, boolean page, first, reqT0) {
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    if (!(reqT0 instanceof Number) || budget <= 0L) return _waitForCore(spec, ids, page, first, null)
+    String refusal = _pollStableRefusal(spec, reqT0)
+    if (refusal) throw new IllegalArgumentException("waitFor.${refusal}")
+    long deadline = (reqT0 as long) + budget
+    long left = deadline - now()
+    int asked = spec.timeoutMs
+    String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
+    if (left < 100L) {
+        return [converged: false, timedOut: true, elapsedMs: 0, polledCount: 0, convergedCount: 0, last: first,
+                devices: ids.collect { [deviceId: it, finalValue: null, matched: false] },
+                budgetLimited: true, requestedTimeoutMs: asked, timeoutMs: 0,
+                budgetNote: "Not polled: the request had ${Math.max(0L, left)} ms left (${why}). Wait again in a new call.".toString()]
     }
+    Map run = left < asked ? spec + [timeoutMs: left as Integer, pollIntervalMs: Math.min(spec.pollIntervalMs as long, left) as Integer] : spec
+    Map result = _waitForCore(run, ids, page, first, deadline)
+    // A wait that converged is reported as it is; only one that stopped short says so.
+    if ((result.remove("budgetStopped") == true || left < asked) && !result.converged) {
+        result.requestedTimeoutMs = asked
+        result.timeoutMs = Math.min(left, asked as long)
+        result.budgetLimited = true
+        result.budgetNote = "The wait stopped after ${result.elapsedMs} ms instead of ${asked} ms: ${why}. Wait again to keep waiting.".toString()
+    }
+    return result
+}
 
-    // 1. Resolve the target device(s). Exactly one of deviceId (single) or deviceIds (multi)
-    //    must be present. A present-but-null key is a distinct caller mistake from an omitted
-    //    one, so it is rejected with the same null-guard style the rest of this engine uses.
-    def hasDeviceId  = args.containsKey("deviceId")  && args.deviceId  != null
-    def hasDeviceIds = args.containsKey("deviceIds") && args.deviceIds != null
-    if (args.containsKey("deviceId") && args.deviceId == null) {
-        throw new IllegalArgumentException("deviceId must not be null (omit the arg or pass a non-empty string)")
-    }
-    if (args.containsKey("deviceIds") && args.deviceIds == null) {
-        throw new IllegalArgumentException("deviceIds must not be null (omit the arg or pass a non-empty list of device IDs)")
-    }
-    if (hasDeviceId && hasDeviceIds) {
-        throw new IllegalArgumentException("provide exactly one of deviceId or deviceIds, not both")
-    }
-    if (!hasDeviceId && !hasDeviceIds) {
-        throw new IllegalArgumentException("deviceId (single device) or deviceIds (a list of device IDs) is required -- provide exactly one")
-    }
-    def multiDevice = hasDeviceIds
-
-    // Per-device count cap: every tick costs one native /device/fullJson round trip PER DEVICE
-    // (tens of ms each, sequential, from one app thread), so per-tick work scales with the
-    // device count -- bound it to keep a blocking poll cheap. The tick sleep subtracts the
-    // reads' latency down to a floor of half the interval (_pollSleepMs): fast reads keep the
-    // requested cadence, slow reads space ticks by the reads plus that floor. The floor is not
-    // a guarantee on the final tick: the end-of-window clamp still wins there (see _pollSleepMs).
-    def MAX_POLL_DEVICES = 20
-    def deviceIdList
-    if (multiDevice) {
-        if (!(args.deviceIds instanceof List) || args.deviceIds.isEmpty()) {
-            throw new IllegalArgumentException("deviceIds must be a non-empty list of device-ID strings")
-        }
-        // A hub device id is numeric, so a caller that sends it as a JSON number is not wrong --
-        // coerce to the string form the rest of the engine compares on. Coercing here also makes
-        // the duplicate check see 5 and "5" as the same device.
-        def coercedIds = []
-        args.deviceIds.eachWithIndex { v, i ->
-            def id = _canonicalDeviceIdArg(v)
-            if (!(id instanceof String) || !id) {
-                throw new IllegalArgumentException("deviceIds[${i}] must be a non-empty string or integral number, got: ${_describeValueForError(v)}")
-            }
-            coercedIds << id
-        }
-        if (coercedIds.size() > MAX_POLL_DEVICES) {
-            throw new IllegalArgumentException("deviceIds has ${coercedIds.size()} device IDs -- the cap is ${MAX_POLL_DEVICES} per poll")
-        }
-        // Reject duplicates: a repeated id would double-count convergedCount and emit duplicate
-        // devices[] rows. Each device may appear at most once.
-        def dupes = coercedIds.countBy { it }.findAll { k, c -> c > 1 }.keySet().sort()
-        if (dupes) {
-            throw new IllegalArgumentException("deviceIds contains duplicate entries: ${dupes} -- each device may appear once")
-        }
-        deviceIdList = coercedIds
-    } else {
-        // Same Number coercion as the deviceIds branch: a numeric id is not wrong, just unstrung.
-        def singleId = _canonicalDeviceIdArg(args.deviceId)
-        if (!(singleId instanceof String) || !singleId) {
-            throw new IllegalArgumentException("deviceId is required and must be a non-empty string or integral number (got: ${_describeValueForError(args.deviceId)})")
-        }
-        deviceIdList = [singleId]
-    }
-
-    // 2. Validate attribute (the same condition applies to every device).
-    if (args.containsKey("attribute") && args.attribute == null) {
-        throw new IllegalArgumentException("attribute must not be null (omit the arg or pass a non-empty string)")
-    }
-    if (!(args.attribute instanceof String) || !args.attribute) {
-        throw new IllegalArgumentException("attribute is required and must be a non-empty string")
-    }
-
-    deviceIdList.each { did -> _requireDeviceToolAccess(did) }
-
-    // 2b. Validate mode (any/all over deviceIds). Only meaningful with deviceIds; default "all"
-    //     (converge when EVERY device matches). "any" converges on the first device to match.
-    //     Validate the VALUE before the single-deviceId reject so an invalid value surfaces as
-    //     "must be one of [any, all]" rather than being masked by the deviceIds-only message.
-    def validModes = ["any", "all"]
-    if (args.containsKey("mode") && args.mode == null) {
-        throw new IllegalArgumentException("mode must not be null (omit the arg to use the default \"all\")")
-    }
-    if (args.mode != null && !(args.mode instanceof String && validModes.contains(args.mode))) {
-        throw new IllegalArgumentException("mode must be one of ${validModes} (got: ${_describeValueForError(args.mode)})")
-    }
-    if (args.mode != null && !multiDevice) {
-        throw new IllegalArgumentException("mode applies only to deviceIds (multi-device polling); omit it for a single deviceId")
-    }
-    def mode = (args.mode != null) ? args.mode : "all"
-
-    // 3. Validate expectedValue / expectedValues (at least one required)
-    if (args.containsKey("expectedValue") && args.expectedValue == null) {
-        throw new IllegalArgumentException("expectedValue must not be null (omit the arg or pass a non-empty string)")
-    }
-    if (args.containsKey("expectedValues") && args.expectedValues == null) {
-        throw new IllegalArgumentException("expectedValues must not be null (omit the arg or pass a non-empty list)")
-    }
-    def hasExpectedValue  = (args.expectedValue  != null)
-    def hasExpectedValues = (args.expectedValues != null)
-    // Exactly-one, the same rule _buildWaitForPollArgs enforces on the waitFor pre-fire path: a
-    // numeric comparator takes only expectedValue, between takes only expectedValues, eq/ne take
-    // one or the other -- never both. The two checks share intent, not identical messages: the
-    // waitFor path prefixes "waitFor." and keys on containsKey (presence of the key), while this
-    // engine path keys on != null (a key present-but-null is rejected earlier above as "must not
-    // be null"), so {expectedValue:'x', expectedValues:null} reaches the both-set check on the
-    // waitFor path but the null-reject here. Aligned for valid specs; the edge messages differ.
-    if (hasExpectedValue && hasExpectedValues) {
-        throw new IllegalArgumentException("provide exactly one of expectedValue or expectedValues, not both")
-    }
-    if (!hasExpectedValue && !hasExpectedValues) {
-        throw new IllegalArgumentException("At least one of expectedValue or expectedValues must be provided")
-    }
-    if (hasExpectedValue && !(args.expectedValue instanceof String)) {
-        throw new IllegalArgumentException("expectedValue must be a string")
-    }
-    if (hasExpectedValue && args.expectedValue == "") {
-        throw new IllegalArgumentException("expectedValue must not be empty (omit the arg or pass a non-empty value)")
-    }
-    if (hasExpectedValues) {
-        if (!(args.expectedValues instanceof List)) {
-            throw new IllegalArgumentException("expectedValues must be a list of strings")
-        }
-        if (args.expectedValues.isEmpty()) {
-            throw new IllegalArgumentException("expectedValues must not be empty (omit the arg or pass at least one value)")
-        }
-        args.expectedValues.eachWithIndex { v, i ->
-            if (!(v instanceof String)) {
-                throw new IllegalArgumentException("expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
-            }
-        }
-    }
-
-    // 4. Validate timeoutMs.
-    // Range [100,60000] for this standalone engine path. _buildWaitForPollArgs uses a STRICTER
-    // [100,30000] on the command-flow waitFor path -- this divergence is INTENTIONAL, not a
-    // drift: a waitFor poll pins a hub thread for the full timeout, so its pre-fire cap is lower.
-    if (args.containsKey("timeoutMs") && args.timeoutMs == null) {
-        throw new IllegalArgumentException("timeoutMs must not be null (omit the arg to use default 5000ms)")
-    }
-    def timeoutMs = (args.timeoutMs != null) ? args.timeoutMs : 5000
-    if (!(timeoutMs instanceof Number)) {
-        throw new IllegalArgumentException("timeoutMs must be an integer (got: ${timeoutMs})")
-    }
-    timeoutMs = timeoutMs as Integer
-    if (timeoutMs < 100 || timeoutMs > 60000) {
-        throw new IllegalArgumentException("timeoutMs must be between 100 and 60000 (got: ${timeoutMs})")
-    }
-
-    // 5. Validate pollIntervalMs, clamp to timeoutMs if larger.
-    // Range [50,5000]: _buildWaitForPollArgs uses the SAME bounds on its pre-fire path
-    // (unlike timeoutMs, the pollIntervalMs range is intentionally identical) -- keep aligned.
-    if (args.containsKey("pollIntervalMs") && args.pollIntervalMs == null) {
-        throw new IllegalArgumentException("pollIntervalMs must not be null (omit the arg to use default 200ms)")
-    }
-    def pollIntervalMs = (args.pollIntervalMs != null) ? args.pollIntervalMs : 200
-    if (!(pollIntervalMs instanceof Number)) {
-        throw new IllegalArgumentException("pollIntervalMs must be an integer (got: ${pollIntervalMs})")
-    }
-    pollIntervalMs = pollIntervalMs as Integer
-    if (pollIntervalMs < 50 || pollIntervalMs > 5000) {
-        throw new IllegalArgumentException("pollIntervalMs must be between 50 and 5000 (got: ${pollIntervalMs})")
-    }
-    // Clamp poll interval so at least one poll is possible within the timeout
-    if (pollIntervalMs > timeoutMs) {
-        pollIntervalMs = timeoutMs
-    }
-
-    // 5b. Validate comparator (default "eq") and its expectedValue/expectedValues shape.
-    //   - eq/ne: string-set semantics (existing expectedValue/expectedValues validation above).
-    //   - gt/gte/lt/lte: numeric, single threshold from expectedValue; expectedValues is rejected.
-    //   - between: numeric inclusive, two bounds from expectedValues (exactly 2); expectedValue rejected.
-    if (args.containsKey("comparator") && args.comparator == null) {
-        throw new IllegalArgumentException("comparator must not be null (omit the arg to use the default \"eq\")")
-    }
-    def validComparators = ["eq", "ne", "gt", "gte", "lt", "lte", "between"]
-    def comparator = (args.comparator != null) ? args.comparator : "eq"
-    if (!(comparator instanceof String) || !validComparators.contains(comparator)) {
-        throw new IllegalArgumentException("comparator must be one of ${validComparators} (got: ${_describeValueForError(args.comparator)})")
-    }
-    def numericComparators = ["gt", "gte", "lt", "lte"] as Set
-    def numericThreshold = null
-    def betweenLow = null
-    def betweenHigh = null
-    if (numericComparators.contains(comparator)) {
-        if (hasExpectedValues) {
-            throw new IllegalArgumentException("comparator '${comparator}' takes a single numeric threshold via expectedValue, not expectedValues")
-        }
-        numericThreshold = _parseBigDecimalOrNull(args.expectedValue)
-        if (numericThreshold == null) {
-            throw new IllegalArgumentException("comparator '${comparator}' requires expectedValue to be a numeric-parseable string (got: ${_describeValueForError(args.expectedValue)})")
-        }
-    } else if (comparator == "between") {
-        if (hasExpectedValue) {
-            throw new IllegalArgumentException("comparator 'between' takes two numeric bounds via expectedValues, not expectedValue")
-        }
-        if (args.expectedValues.size() != 2) {
-            throw new IllegalArgumentException("comparator 'between' requires expectedValues to have exactly 2 numeric bounds [low, high] (got ${args.expectedValues.size()})")
-        }
-        betweenLow  = _parseBigDecimalOrNull(args.expectedValues[0])
-        betweenHigh = _parseBigDecimalOrNull(args.expectedValues[1])
-        if (betweenLow == null || betweenHigh == null) {
-            throw new IllegalArgumentException("comparator 'between' requires both expectedValues bounds to be numeric-parseable strings (got: ${args.expectedValues})")
-        }
-        if (betweenLow > betweenHigh) {
-            throw new IllegalArgumentException("comparator 'between' requires low <= high (got low=${args.expectedValues[0]}, high=${args.expectedValues[1]})")
-        }
-    }
-
-    // 5c. Validate stableForMs (debounce, default 0): the matched condition must hold
-    //   continuously for this many ms before converging. Bounded [0, timeoutMs): a value
-    //   >= timeoutMs could never converge, so it is rejected pre-poll rather than silently
-    //   guaranteeing a timeout.
-    if (args.containsKey("stableForMs") && args.stableForMs == null) {
-        throw new IllegalArgumentException("stableForMs must not be null (omit the arg to use default 0)")
-    }
-    def stableForMs = (args.stableForMs != null) ? args.stableForMs : 0
-    if (!(stableForMs instanceof Number)) {
-        throw new IllegalArgumentException("stableForMs must be an integer (got: ${_describeValueForError(args.stableForMs)})")
-    }
-    stableForMs = stableForMs as Integer
-    if (stableForMs < 0) {
-        throw new IllegalArgumentException("stableForMs must be >= 0 (got: ${stableForMs})")
-    }
-    if (stableForMs >= timeoutMs) {
-        throw new IllegalArgumentException("stableForMs (${stableForMs}) must be less than timeoutMs (${timeoutMs}) -- the condition could never hold long enough to converge")
-    }
-
-    // Every argument is validated above, so a malformed call is rejected before it spends a
-    // native fetch per device. The first native response supplies identity and the first poll
-    // sample; attribute absence cannot reject a declaration that has not emitted a current state.
-    def devices = []
-    def deviceLabels = []
-    for (did in deviceIdList) {
-        def full = _fetchDeviceFullJson(did)
-        if (!(full?.device instanceof Map)) {
-            return [success: false, isError: true, readError: true, deviceId: did,
-                    error: "Native device identity is unavailable for device ${did}; polling was not started.",
-                    note: 'Verify the device ID and native connectivity before starting a new poll.']
-        }
-        devices << [initial: full]
-        deviceLabels << _bypassDeviceLabel(full, did)
-    }
-    // Single-path label kept for the existing single-device return shape and the read-fault log.
-    def deviceLabel = deviceLabels[0]
-    // A request deadline covers the identity reads above: the window is what is left of it.
+// One device reads /device/fullJson per check; page=true reads the Devices page once per check for
+// every id. `first` is a read the caller already holds (fullJson, or page records by id) and serves
+// as the first check. `last` in the result is the newest successful read in the same form.
+def _waitForCore(Map spec, List ids, boolean page, first, Long deadlineMs) {
+    int n = ids.size()
+    int timeoutMs = spec.timeoutMs
     boolean budgetCut = false
     if (deadlineMs != null && deadlineMs - now() < timeoutMs) {
         timeoutMs = Math.max(0L, deadlineMs - now()) as Integer
         budgetCut = true
     }
-
-    // 6. Build the expected-value set for match checking (eq/ne comparators only). Exactly one
-    //    of the two is present (enforced above), so this populates from whichever was supplied;
-    //    a multi-element expectedValues set is OR (match any member).
-    def matchSet = [] as Set
-    if (hasExpectedValue)  matchSet << args.expectedValue
-    if (hasExpectedValues) matchSet.addAll(args.expectedValues)
-
-    // 6b. Multi-device poll: await the mode predicate (any/all) across every device, the SAME
-    //     condition applied to each. The aggregate predicate drives the debounce window and the
-    //     converge/timeout return -- the same control flow as the single path, just predicate-
-    //     over-devices instead of one value. Returns early; the single-device loop below is the
-    //     unchanged deviceId path.
-    if (multiDevice) {
-        return _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator,
-                                matchSet, numericThreshold, betweenLow, betweenHigh,
-                                timeoutMs, pollIntervalMs, stableForMs, deadlineMs, budgetCut)
-    }
-
-    // 7. Poll loop.
-    //    Two termination guards:
-    //      (a) wall-clock: elapsedMs >= timeoutMs  (primary, production path)
-    //      (b) poll count: polledCount >= maxPolls  (safety net; also the test path
-    //          since now() is fixed in the test harness making elapsedMs always 0)
-    //    Both guards produce the same timedOut=true result. maxPolls is the number
-    //    of polls that would fit in timeoutMs at the configured pollIntervalMs, plus
-    //    one to account for the initial read before the first sleep.
-    def maxPolls    = ((timeoutMs / pollIntervalMs) as Integer) + 1
-    def startMs     = now()
-    def polledCount = 0
-    def finalValue  = null
-    // Track whether the attribute ever reported a non-null value during the poll window.
-    // Null throughout the window means the driver has never reported the attribute,
-    // which is a different condition from "reported a wrong value the whole time."
-    def everNonNull = false
-    // Track whether the attribute's non-null value CHANGED across polls. On a timeout, this
-    // distinguishes "value was still moving between reads (likely still settling)" from "value
-    // was stable at a non-target (a real mismatch)". Best-effort: only reliable when the timeout
-    // spans at least one of the device's reporting jumps -- at a short timeout a stable-but-wrong
-    // intermediate reads transitioning:false even though the device is physically still settling.
-    def sawChange      = false
-    def lastNonNull    = null
-    // Track whether any poll under a NUMERIC comparator parsed the attribute to a number.
-    // If the attribute reported a value the whole window but it never parsed numeric, the
-    // comparator can NEVER match it (e.g. gt 5 on switch="on") -- a distinct timeout cause
-    // from "reported numbers but never crossed the threshold." Surfaced as nonNumericAttribute
-    // on the timeout return. Only meaningful for the numeric comparators.
-    def sawNumeric     = false
-    // Latches true if any poll's per-device read threw (e.g. the device was removed mid-poll, so
-    // currentStates faults). A read fault degrades that tick to an unread (null) value rather than
-    // aborting the whole poll, and surfaces as readError on the return so the caller knows the
-    // value is unreliable -- it is not silently indistinguishable from a never-reported attribute.
-    def sawReadError   = false
-    // Debounce tracking: the poll-clock time the match condition first became true in the
-    // current contiguous run. Reset to null on any poll where the condition is false, so a
-    // value that flaps out of range restarts the stability window. null while the condition is
-    // not currently held; once held it is set even when stableForMs==0 (it is set, then the
-    // >= stableForMs check is immediately satisfied on that same poll, so the engine converges).
-    def conditionTrueSince = null
-
+    String attribute = spec.attribute
+    String comparator = spec.comparator
+    int maxPolls = ((timeoutMs / (spec.pollIntervalMs as Integer)) as Integer) + 1
+    long startMs = now()
+    int polledCount = 0
+    int elapsedMs = 0
+    List values = (0..<n).collect { null }
+    List matched = (0..<n).collect { false }
+    // Per device: ever non-null (else neverReported), parsed numeric under a numeric comparator
+    // (else nonNumericAttribute), value moved between checks (transitioning), a read failed.
+    List everNonNull = (0..<n).collect { false }
+    List sawNumeric = (0..<n).collect { false }
+    List sawChange = (0..<n).collect { false }
+    List lastNonNull = (0..<n).collect { null }
+    List readError = (0..<n).collect { false }
+    def last = page ? [:] : first
+    def pending = first
+    // The whole any/all condition must hold continuously for stableForMs; a miss restarts the window.
+    Long conditionTrueSince = null
+    boolean pastDeadline = false
+    String outcome
     while (true) {
-        // Each tick reads fresh native state; the preflight response supplies the first sample.
-        // The tick's start anchors the sleep below so the native read's latency is subtracted
-        // from the interval instead of added to it.
         long tickStartMs = now()
-        try {
-            finalValue = _readPollValue(devices[0], deviceIdList[0], args.attribute)
-        } catch (Exception e) {
-            // A per-device read fault (e.g. the device was removed after up-front resolution)
-            // must degrade this tick to an unread value, not abort the poll. Treat as null so
-            // this poll does not match; latch readError for the return.
-            finalValue = null
-            if (!sawReadError) mcpLog("warn", "device", "poll_until_attribute read failed for '${deviceLabel}' on poll ${polledCount + 1}: ${e.message ?: e.toString()}")
-            sawReadError = true
+        if (page) {
+            Map records = pending
+            pending = null
+            if (records == null) {
+                records = [:]
+                try {
+                    for (rec in _readDevicesPage(ids as Set)) records.put(rec.id, rec)
+                } catch (IllegalStateException e) {
+                    if (!readError.any()) mcpLog("warn", "device", "waitFor Devices page read failed on check ${polledCount + 1}: ${e.message}")
+                }
+            }
+            last.putAll(records)
+            for (int i = 0; i < n; i++) {
+                Map rec = records.get(ids[i])
+                if (rec == null) readError[i] = true
+                values[i] = rec?.currentStates?.get(attribute)
+            }
+        } else {
+            Map fj = pending ?: _fetchDeviceFullJson(ids[0])
+            pending = null
+            if (fj?.device?.currentStates instanceof Map) {
+                last = fj
+                values[0] = _readBypassAttrValueFrom(fj, attribute)
+            } else {
+                values[0] = null
+                readError[0] = true
+            }
         }
         polledCount++
-        if (finalValue != null) {
-            everNonNull = true
-            // Compare string representations to detect movement across native numeric/string values.
-            def cur = finalValue.toString()
-            if (lastNonNull != null && cur != lastNonNull) sawChange = true
-            lastNonNull = cur
-        }
-        def elapsedMs = (now() - startMs) as Integer
-
-        // Evaluate the match condition for this poll under the active comparator (shared with
-        // the multi-device path so the two can never diverge). _evalAttrCondition returns
-        // [matched, numeric]: numeric latches sawNumeric for the nonNumericAttribute timeout
-        // signal under a numeric comparator. See _evalAttrCondition for the per-comparator rules.
-        def evalResult = _evalAttrCondition(finalValue, comparator, matchSet, numericThreshold, betweenLow, betweenHigh)
-        def condition = evalResult[0]
-        if (evalResult[1]) sawNumeric = true   // evalResult[1] = parsed-numeric flag
-
-        // Debounce: converge only once the condition has held continuously for stableForMs.
-        // With stableForMs==0 this returns on the first poll the condition holds (today's
-        // behavior). conditionTrueSince anchors the start of the current contiguous run; any
-        // poll where the condition is false clears it so a flapping value restarts the window.
-        if (condition) {
-            if (conditionTrueSince == null) conditionTrueSince = now()
-            if ((now() - conditionTrueSince) >= stableForMs) {
-                def okResponse = [
-                    success     : true,
-                    finalValue  : finalValue,
-                    elapsedMs   : elapsedMs,
-                    polledCount : polledCount,
-                    timedOut    : false
-                ]
-                // A read fault earlier in the window did not prevent convergence, but the value
-                // was unreliable at least once -- surface it so the caller knows.
-                if (sawReadError) okResponse.readError = true
-                return okResponse
+        for (int i = 0; i < n; i++) {
+            def v = values[i]
+            if (v != null) {
+                everNonNull[i] = true
+                String cur = v.toString()
+                if (lastNonNull[i] != null && cur != lastNonNull[i]) sawChange[i] = true
+                lastNonNull[i] = cur
             }
+            def eval = _evalAttrCondition(v, comparator, spec.matchSet, spec.numericThreshold, spec.betweenLow, spec.betweenHigh)
+            matched[i] = eval[0]
+            if (eval[1]) sawNumeric[i] = true
+        }
+        elapsedMs = (now() - startMs) as Integer
+        int count = matched.count { it }
+        if (spec.mode == "any" ? count > 0 : count == n) {
+            if (conditionTrueSince == null) conditionTrueSince = now()
+            if (now() - conditionTrueSince >= (spec.stableForMs as long)) { outcome = "converged"; break }
         } else {
             conditionTrueSince = null
         }
-
-        boolean pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
-        if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) {
-            def response = [
-                success     : false,
-                finalValue  : finalValue,
-                elapsedMs   : elapsedMs,
-                polledCount : polledCount,
-                timedOut    : true,
-                // TIMEOUT-only honest signal: true if the value was still moving across polls
-                // (>=2 distinct non-null values seen), so the caller can tell a slow-reporting
-                // device that is likely still settling from a stable real mismatch. Best-effort
-                // (see sawChange declaration). Deliberately omitted from the success path.
-                transitioning : sawChange
-            ]
-            // A per-device read threw at least once during the window (e.g. the device was
-            // removed mid-poll). The value is unreliable; surface it distinctly from a
-            // never-reported attribute.
-            if (sawReadError) response.readError = true
-            // Attribute exists in supportedAttributes but never reported a value during
-            // the entire poll window -- driver has not yet emitted a reading.
-            if (!everNonNull) response.neverReported = true
-            if (budgetCut || pastDeadline) response.budgetStopped = true
-            // Numeric comparator on an attribute that DID report but never parsed numeric:
-            // the comparator can never match it (e.g. gt 5 on switch="on"). Distinct from
-            // neverReported (a numeric comparator on a never-reported attribute is neverReported,
-            // not this) -- the everNonNull && !sawNumeric pair separates the two causes.
-            if (comparator != "eq" && comparator != "ne" && everNonNull && !sawNumeric) {
-                response.nonNumericAttribute = true
-                response.note = "comparator '${comparator}' can never match attribute '${args.attribute}' -- it reported a non-numeric value the whole window (use eq/ne for a string attribute)".toString()
-                // "can never match" supersedes "still settling": a flapping non-numeric value
-                // would set transitioning=true (sawChange), which reads as "retry/wait" and
-                // contradicts nonNumericAttribute. Force it false so the signals agree.
-                response.transitioning = false
-            }
-            return response
-        }
-
-        // Sleep for the rest of the poll interval (or the remaining time, whichever is less)
-        def sleepMs = _pollSleepMs(pollIntervalMs, timeoutMs - elapsedMs, now() - tickStartMs)
+        long tickMs = now() - tickStartMs
+        int sleepMs = _pollSleepMs(spec.pollIntervalMs, timeoutMs - elapsedMs, tickMs)
+        // The next check is this sleep plus a read like the last one; it must end by the deadline.
+        pastDeadline = deadlineMs != null && now() + sleepMs + tickMs >= deadlineMs
+        if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) { outcome = "timedOut"; break }
         try {
             if (sleepMs > 0) pauseExecution(sleepMs)
         } catch (InterruptedException e) {
-            // pauseExecution wraps Thread.sleep() and throws InterruptedException
-            // when the hub is restarting or the app is being reloaded.
+            // pauseExecution throws when the hub restarts or the app reloads.
             elapsedMs = (now() - startMs) as Integer
-            mcpLog("warn", "device", "poll_until_attribute interrupted after ${polledCount} poll(s) (elapsed=${elapsedMs}ms): ${e.message}")
-            def intResponse = [
-                success     : false,
-                interrupted : true,
-                finalValue  : finalValue,
-                elapsedMs   : elapsedMs,
-                polledCount : polledCount
-            ]
-            if (sawReadError) intResponse.readError = true
-            return intResponse
+            mcpLog("warn", "device", "waitFor interrupted after ${polledCount} check(s) (${elapsedMs} ms): ${e.message}")
+            outcome = "interrupted"
+            break
         }
     }
+    boolean timedOut = outcome == "timedOut"
+    boolean numericComparator = !(comparator in ["eq", "ne"])
+    int nonNumeric = 0
+    boolean transitioning = false
+    List rows = (0..<n).collect { i ->
+        Map row = [deviceId: ids[i], finalValue: values[i], matched: matched[i]]
+        if (readError[i]) row.readError = true
+        if (timedOut) {
+            if (!everNonNull[i]) row.neverReported = true
+            // A numeric comparator on a value that never parsed can never match: not "still settling".
+            if (numericComparator && everNonNull[i] && !sawNumeric[i]) {
+                row.nonNumericAttribute = true
+                nonNumeric++
+            } else if (sawChange[i]) {
+                transitioning = true
+            }
+        }
+        row
+    }
+    Map result = [converged: outcome == "converged", elapsedMs: elapsedMs, polledCount: polledCount,
+                  convergedCount: matched.count { it }, devices: rows, last: last]
+    if (timedOut) {
+        result.timedOut = true
+        result.transitioning = transitioning
+        if (budgetCut || pastDeadline) result.budgetStopped = true
+    }
+    if (outcome == "interrupted") result.interrupted = true
+    if (readError.any()) result.readError = true
+    if (nonNumeric > 0) {
+        result.note = "comparator '${comparator}' can never match attribute '${attribute}' on ${nonNumeric} device(s) that reported a non-numeric value the whole window (use eq/ne for a string attribute)".toString()
+    }
+    return result
+}
+
+// The waitFor block a tool returns. One device reports its value at the top level; several report
+// devices[] and convergedCount.
+private Map _waitForBlock(Map spec, Map r, boolean multi) {
+    Map block = [attribute: spec.attribute, expected: spec.expected]
+    if (multi) block.mode = spec.mode
+    block.converged = r.converged == true
+    Map row = r.devices ? r.devices[0] : [:]
+    if (multi) block.convergedCount = r.convergedCount
+    else block.finalValue = row.finalValue
+    block.elapsedMs = r.elapsedMs
+    block.polledCount = r.polledCount
+    if (multi) block.devices = r.devices
+    for (k in ["timedOut", "transitioning", "interrupted", "readError", "neverReported", "nonNumericAttribute",
+               "note", "budgetLimited", "budgetNote", "requestedTimeoutMs", "timeoutMs"]) {
+        def v = multi || r.containsKey(k) ? r.get(k) : row.get(k)
+        if (v != null && v != false || (k == "transitioning" && r.containsKey(k))) block.put(k, v)
+    }
+    return block
 }
 
 // The sleep that keeps ticks on the requested cadence: the interval minus the time the tick's
-// native read(s) already took, never past the poll's remaining window. Every tick costs one
-// /device/fullJson round trip per device, so without this subtraction a 200 ms poll of a
-// 100 ms device samples every 300 ms and polledCount silently drops for the same wall window.
+// native read already took, never past the poll's remaining window. Without this subtraction a
+// 200 ms poll of a 100 ms read samples every 300 ms and polledCount silently drops.
 // FLOOR: reads slower than the interval must not turn the poll into back-to-back native reads
 // (a slow hub would then be sampled HARDER than a fast one), so the sleep never drops below half
 // the requested interval -- ticks are then spaced by the reads plus that half-interval.
@@ -2721,191 +2385,6 @@ private Integer _pollSleepMs(pollIntervalMs, remainingMs, tickElapsedMs) {
     long interval = Math.max(requested - (tickElapsedMs as Long), floor)
     long remaining = remainingMs > 0 ? (remainingMs as Long) : interval
     return Math.min(interval, remaining) as Integer
-}
-
-// Consume the first native response once, then fetch a fresh current-state sample per tick.
-private _readPollValue(dev, deviceId, attribute) {
-    def full = dev instanceof Map && dev.containsKey('initial') ? dev.remove('initial') : _fetchDeviceFullJson(deviceId)
-    if (!(full?.device instanceof Map) || !(full.device.currentStates instanceof Map)) {
-        throw new RuntimeException("Native current states unavailable for device ${deviceId}")
-    }
-    return _readBypassAttrValueFrom(full, attribute)
-}
-
-// Multi-device poll: await the mode predicate (any/all) across devices, the SAME condition
-// applied to each. Mirrors the single-device loop's control flow -- aggregate predicate drives
-// the stableForMs debounce window and the converge/timeout return -- but reports a compact
-// per-device result array (never full device objects). everNonNull / sawNumeric / sawChange are
-// tracked PER DEVICE so the timeout result can name which devices never reported / are non-numeric
-// / are still transitioning. Called only from toolPollUntilAttribute after validation; all args
-// are pre-validated there.
-def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator,
-                     matchSet, numericThreshold, betweenLow, betweenHigh,
-                     timeoutMs, pollIntervalMs, stableForMs, Long deadlineMs = null, boolean budgetCut = false) {
-    // Defense-in-depth for this private helper: the caller already validates these, so this is
-    // a no-op for valid input -- it just guards against a 0/null reaching the maxPolls divide.
-    // Defaults match the single-device path.
-    timeoutMs      = (timeoutMs != null && (timeoutMs > 0 || deadlineMs != null)) ? timeoutMs : 5000
-    pollIntervalMs = (pollIntervalMs && pollIntervalMs > 0) ? pollIntervalMs : 200
-    stableForMs    = (stableForMs && stableForMs > 0) ? stableForMs : 0
-    def n           = devices.size()
-    def maxPolls    = ((timeoutMs / pollIntervalMs) as Integer) + 1
-    def startMs     = now()
-    def polledCount = 0
-    // Per-device honesty tracking, index-aligned with devices/deviceIdList/deviceLabels.
-    def everNonNull = (0..<n).collect { false }
-    def sawNumeric  = (0..<n).collect { false }
-    def sawChange   = (0..<n).collect { false }
-    def lastNonNull = (0..<n).collect { null }
-    def finalValue  = (0..<n).collect { null }
-    def matched     = (0..<n).collect { false }
-    // Latches per device if its read threw on any poll (e.g. removed mid-poll). A read fault on
-    // one device degrades only THAT device's tick to an unread value -- the poll continues and
-    // every other device's converged/honest state is still returned, never discarded by a throw.
-    def sawReadError = (0..<n).collect { false }
-    // Aggregate-debounce anchor: the whole any/all predicate must hold continuously for stableForMs.
-    def conditionTrueSince = null
-
-    while (true) {
-        // Read each device through the same fresh native sampling path as the single-device poll.
-        // N sequential native reads per tick: the tick start anchors the sleep below.
-        long tickStartMs = now()
-        for (int i = 0; i < n; i++) {
-            def v
-            try {
-                v = _readPollValue(devices[i], deviceIdList[i], args.attribute)
-            } catch (Exception e) {
-                // Degrade only this device's tick to an unread (null) value; the loop continues
-                // so the other devices' honest state is preserved. Latch readError for this device.
-                v = null
-                if (!sawReadError[i]) mcpLog("warn", "device", "poll_until_attribute (multi-device) read failed for '${deviceLabels[i]}' on poll ${polledCount + 1}: ${e.message ?: e.toString()}")
-                sawReadError[i] = true
-            }
-            finalValue[i] = v
-            if (v != null) {
-                everNonNull[i] = true
-                def cur = v.toString()
-                if (lastNonNull[i] != null && cur != lastNonNull[i]) sawChange[i] = true
-                lastNonNull[i] = cur
-            }
-            def evalResult = _evalAttrCondition(v, comparator, matchSet, numericThreshold, betweenLow, betweenHigh)
-            if (evalResult[1]) sawNumeric[i] = true   // evalResult[1] = parsed-numeric flag
-            matched[i] = evalResult[0]
-        }
-        polledCount++
-        def elapsedMs = (now() - startMs) as Integer
-
-        // mode predicate: any = at least one device matched; all = every device matched.
-        def convergedCount = matched.count { it }
-        def aggregate = (mode == "any") ? (convergedCount > 0) : (convergedCount == n)
-
-        // Debounce the AGGREGATE predicate: the whole any/all condition must hold continuously
-        // for stableForMs before converging. A poll where it is false clears the anchor, so a
-        // value that flaps out of the condition on any device restarts the window.
-        if (aggregate) {
-            if (conditionTrueSince == null) conditionTrueSince = now()
-            if ((now() - conditionTrueSince) >= stableForMs) {
-                return [
-                    success        : true,
-                    mode           : mode,
-                    devices        : (0..<n).collect { i ->
-                        def entry = [
-                            deviceId  : deviceIdList[i],
-                            device    : deviceLabels[i],
-                            finalValue: finalValue[i],
-                            matched   : matched[i]
-                        ]
-                        // A read fault on this device did not block aggregate convergence, but
-                        // its value was unreliable at least once -- surface it.
-                        if (sawReadError[i]) entry.readError = true
-                        entry
-                    },
-                    convergedCount : convergedCount,
-                    elapsedMs      : elapsedMs,
-                    polledCount    : polledCount,
-                    timedOut       : false
-                ]
-            }
-        } else {
-            conditionTrueSince = null
-        }
-
-        boolean pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
-        if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) {
-            def numericComparator = (comparator != "eq" && comparator != "ne")
-            def nonNumericCount = 0
-            def anyTransitioning = false
-            def deviceResults = (0..<n).collect { i ->
-                def entry = [
-                    deviceId  : deviceIdList[i],
-                    device    : deviceLabels[i],
-                    finalValue: finalValue[i],
-                    matched   : matched[i]
-                ]
-                // TIMEOUT-only per-device honesty signals, only where true.
-                if (sawReadError[i]) entry.readError = true
-                if (!everNonNull[i]) entry.neverReported = true
-                // Numeric comparator on an attribute that reported but never parsed numeric:
-                // it can never match (distinct from neverReported -- the everNonNull && !sawNumeric
-                // pair separates the two), so it supersedes a transitioning signal for that device.
-                def deviceNonNumeric = numericComparator && everNonNull[i] && !sawNumeric[i]
-                if (deviceNonNumeric) {
-                    entry.nonNumericAttribute = true
-                    nonNumericCount++
-                } else if (sawChange[i]) {
-                    anyTransitioning = true
-                }
-                entry
-            }
-            def response = [
-                success        : false,
-                mode           : mode,
-                devices        : deviceResults,
-                convergedCount : convergedCount,
-                elapsedMs      : elapsedMs,
-                polledCount    : polledCount,
-                timedOut       : true,
-                // Aggregate still-settling signal: at least one device was still moving (and is
-                // not a can-never-match non-numeric). false when no device changed OR every change
-                // was a non-numeric flap (which reads as can-never-match, not retry/wait).
-                transitioning  : anyTransitioning
-            ]
-            // Aggregate guidance present only when >=1 device is can-never-match non-numeric.
-            // Count-aware (the signal fires for >=1 device), no redundant .toString() (the
-            // single-device note doesn't have one -- the GString coerces on map insertion).
-            if (nonNumericCount > 0) {
-                response.note = "comparator '${comparator}' can never match attribute '${args.attribute}' on ${nonNumericCount} device(s) that reported a non-numeric value the whole window (use eq/ne for a string attribute)"
-            }
-            if (budgetCut || pastDeadline) response.budgetStopped = true
-            return response
-        }
-
-        def sleepMs = _pollSleepMs(pollIntervalMs, timeoutMs - elapsedMs, now() - tickStartMs)
-        try {
-            if (sleepMs > 0) pauseExecution(sleepMs)
-        } catch (InterruptedException e) {
-            elapsedMs = (now() - startMs) as Integer
-            mcpLog("warn", "device", "poll_until_attribute (multi-device, ${n}) interrupted after ${polledCount} poll(s) (elapsed=${elapsedMs}ms): ${e.message}")
-            return [
-                success        : false,
-                interrupted    : true,
-                mode           : mode,
-                devices        : (0..<n).collect { i ->
-                    def entry = [
-                        deviceId  : deviceIdList[i],
-                        device    : deviceLabels[i],
-                        finalValue: finalValue[i],
-                        matched   : matched[i]
-                    ]
-                    if (sawReadError[i]) entry.readError = true
-                    entry
-                },
-                convergedCount : matched.count { it },
-                elapsedMs      : elapsedMs,
-                polledCount    : polledCount
-            ]
-        }
-    }
 }
 
 // Resolve the history window start. `since` (absolute bookmark -- ISO-8601 in the
@@ -4734,6 +4213,21 @@ private boolean _deviceSwapCleanup(Integer appId) {
     }
 }
 
+// The waitFor sub-schema of hub_get_device and hub_list_devices (multi adds mode); defaults are in
+// the descriptions, which _waitForSpec applies.
+private Map _waitForSchema(boolean multi) {
+    Map props = [attribute: [type: "string"],
+        expectedValue: [type: "string", description: "Value or numeric threshold"],
+        expectedValues: [type: "array", items: [type: "string"], description: "Value set, or between [low, high]"],
+        comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Default eq"],
+        stableForMs: [type: "integer", minimum: 0, description: "Default 0"],
+        timeoutMs: [type: "integer", minimum: 100, maximum: 60000, description: "Default 5000"],
+        pollIntervalMs: [type: "integer", minimum: 50, maximum: 5000, description: "Default 200"]]
+    if (multi) props.mode = [type: "string", enum: ["any", "all"], description: "Default all"]
+    return [type: "object", description: multi ? "Wait until deviceIds (max 20) match" : "Wait until it matches; summary mode",
+            properties: props, required: ["attribute"]]
+}
+
 def _getAllToolDefinitions_partDevices() {
     // The list builds in a closure so its strings live in the closure's own class: the app class is
     // near the JVM 65,535 constant-pool limit.
@@ -4741,7 +4235,7 @@ def _getAllToolDefinitions_partDevices() {
         // Device Tools
         [
             name: "hub_list_devices",
-            description: """List devices with current states from the hub's Devices page, filtered and paged on the hub. format='context' = plain-text house snapshot, the best first call for "what's going on". unfilteredTotal = devices in scope before filters. Control only devices the user named exactly. Guide: hub_get_tool_guide(section='performance_devices').""",
+            description: """List devices with current states from the hub's Devices page, filtered and paged on the hub. format='context' = plain-text house snapshot, the best first call for "what's going on". unfilteredTotal = devices in scope before filters. deviceIds + waitFor blocks until an attribute matches, e.g. to confirm a command batch. Control only devices the user named exactly. Guide: hub_get_tool_guide(section='performance_devices').""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4754,16 +4248,18 @@ def _getAllToolDefinitions_partDevices() {
                     staleHours: [type: "number", description: "Inactive this many hours"],
                     changedSince: [type: ["string", "integer"], description: "Active since: epoch ms or ISO-8601 with offset"],
                     stateFilter: [type: "object", description: "e.g. {\"switch\":\"on\"}"],
-                    attributeNames: [type: "array", items: [type: "string"], description: "Attributes to show in currentStates and context lines"],
-                    fields: [type: "array", items: [type: "string"], description: "Record fields (names in the guide)"],
+                    attributeNames: [type: "array", items: [type: "string"], description: "Attributes shown; summary/context only"],
+                    fields: [type: "array", items: [type: "string"], description: "Record fields (names in guide); summary/detailed only"],
                     limit: [type: "integer", description: "Page size; omit for all"],
-                    cursor: [type: "string", description: "\"\" first, then nextCursor"]
+                    cursor: [type: "string", description: "\"\" first, then nextCursor"],
+                    deviceIds: [type: "array", items: [type: ["string", "integer"]], description: "Only these devices"],
+                    waitFor: _waitForSchema(true)
                 ]
             ]
         ],
         [
             name: "hub_get_device",
-            description: """Inspect one device. Default summary gives capabilities, current attributes and commands. Use mode='configuration' before updates[[FLAT_TRIM]] to discover editable fields, saved preferences, types/defaults/options and driver information; mode='details' exposes configuration and other device information by section[[/FLAT_TRIM]].[[FLAT_TRIM]] Read status distinguishes unavailable information from unset values.[[/FLAT_TRIM]]""",
+            description: """Inspect one device. Default summary gives capabilities, current attributes and commands; waitFor blocks until an attribute matches. Use mode='configuration' before updates[[FLAT_TRIM]] to discover editable fields, saved preferences, types/defaults/options and driver information; mode='details' exposes configuration and other device information by section[[/FLAT_TRIM]].[[FLAT_TRIM]] Read status distinguishes unavailable information from unset values.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4773,41 +4269,17 @@ def _getAllToolDefinitions_partDevices() {
                     sections: [type: "array", items: [type: "string", enum: _deviceDetailSections()],
                                description: "details mode only: non-empty section selection. Omit for all sections.[[FLAT_TRIM]] Large histories remain reachable through read-tool references.[[/FLAT_TRIM]]"],
                     fields: [type: "array", items: [type: "string"], description: "configuration/details only: omit for all values, [] for availableFields name discovery, or select exact field/preference names.[[FLAT_TRIM]] For commands/jobs use row indices from availableFields; attributes also accepts individual attribute names.[[/FLAT_TRIM]]"],
-                    cursor: [type: "string", description: "Oversized reads return contentFormat=json-fragment and nextCursor. Repeat with unchanged arguments within five minutes, concatenate content, then parse JSON.[[FLAT_TRIM]] Expired/evicted snapshots require restarting. Prefer fields/sections for smaller reads.[[/FLAT_TRIM]]"]
+                    cursor: [type: "string", description: "Oversized reads return contentFormat=json-fragment and nextCursor. Repeat with unchanged arguments within five minutes, concatenate content, then parse JSON.[[FLAT_TRIM]] Expired/evicted snapshots require restarting. Prefer fields/sections for smaller reads.[[/FLAT_TRIM]]"],
+                    waitFor: _waitForSchema(false)
                 ],
                 required: ["deviceId"]
             ]
         ],
         [
-            name: "hub_get_device_attribute",
-            description: """Get a device attribute's current value, or block-poll until it reaches an expected value.
-
-[[FLAT_TRIM]]
-One-shot read by default (deviceId + attribute). Provide expectedValue or expectedValues (exactly one) to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: ["string", "integer"], description: "Device ID from hub_list_devices."],
-                    deviceIds: [type: "array", items: [type: ["string", "integer"]], description: "Array of device IDs for a multi-device poll (mutually exclusive with deviceId; max 20)."],
-                    mode: [type: "string", enum: ["any", "all"], description: "Multi-device aggregate.", default: "all"],
-                    attribute: [type: "string", description: "Attribute name."],
-                    expectedValue: [type: "string", description: "If set, block-poll until currentValue matches per comparator (enables poll mode). Single value, e.g. \"72\".[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"],
-                    expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue matches per comparator (enables poll mode). For between, two numeric bounds [low, high].[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"],
-                    comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq (value in the expected set).", default: "eq"],
-                    stableForMs: [type: "integer", description: "Debounce: the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match).", default: 0, minimum: 0],
-                    timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
-                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] Target cadence: each tick's native read latency is subtracted from the sleep, down to a floor of half the interval, so slow reads space ticks by the reads plus that floor; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it. (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
-                ],
-                required: ["attribute"]
-            ]
-        ],
-        [
             name: "hub_call_device_command",
-            description: """Send a command (e.g. on, off, setLevel) to one device, or to SEVERAL at once via `commands`. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead.
+            description: """Send a command (e.g. on, off, setLevel) to one device, or to SEVERAL at once via `commands`. Use to actuate or control a device; for read-only checks use hub_get_device instead.
 
-For more than one device pass `commands` (max 20) rather than calling this repeatedly: one round trip instead of N.[[FLAT_TRIM]] Entries are independent -- one failing entry does not stop the others; check results[] for per-entry success. Confirm a batch with hub_get_device_attribute's deviceIds form. The round trip, not the hub actuating the device, is most of the wall-clock time, so this is the biggest win available on a multi-device intent; mixed devices and mixed commands go in one batch. For a set commanded repeatedly a group or scene is better still - one device to command, with the hub fanning out; `commands` is for the ad-hoc set nobody defined in advance.[[/FLAT_TRIM]]
+For more than one device pass `commands` (max 20) rather than calling this repeatedly: one round trip instead of N.[[FLAT_TRIM]] Entries are independent -- one failing entry does not stop the others; check results[] for per-entry success. Confirm a batch with hub_list_devices' deviceIds + waitFor. The round trip, not the hub actuating the device, is most of the wall-clock time, so this is the biggest win available on a multi-device intent; mixed devices and mixed commands go in one batch. For a set commanded repeatedly a group or scene is better still - one device to command, with the hub fanning out; `commands` is for the ad-hoc set nobody defined in advance.[[/FLAT_TRIM]]
 
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
@@ -4840,7 +4312,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". NOT checked before the command fires (native metadata lists reported attributes only): a name the device never reports times out with neverReported after the command has already executed."],
                         expectedValue: [type: "string", description: "Awaited value: eq/ne in-set, or gt/gte/lt/lte numeric threshold."],
                         expectedValues: [type: "array", items: [type: "string"], description: "Awaited set: eq/ne value list (OR), or between's two bounds [low, high]."],
-                        comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator, as on hub_get_device_attribute. Default eq.", default: "eq"],
+                        comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq.", default: "eq"],
                         stableForMs: [type: "integer", description: "Debounce ms; match must hold this long before converging. Default 0, < timeoutMs.", default: 0, minimum: 0],
                         timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 30000. BLOCKS a hub thread for the full timeout, so keep it tight.", default: 5000, minimum: 100, maximum: 30000],
                         pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] Target cadence: read latency is subtracted from the sleep down to a floor of half the interval; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it.[[/FLAT_TRIM]]", default: 250, minimum: 50, maximum: 5000]
@@ -4971,7 +4443,7 @@ def _readOnlyToolNames_partDevices() {
     // the tool). A tool absent from every part list is write+destructive by default.
     return [
         // Device introspection
-        "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
+        "hub_list_devices", "hub_get_device", "hub_list_device_events",
         // Compatible-devices catalog (static reference read)
         "hub_get_compatible_devices"
     ]
@@ -4993,7 +4465,6 @@ def _toolDisplayMeta_partDevices() {
         // Devices
         hub_list_devices: [title: "List Devices", summary: "List devices from the hub's Devices page with state filters, projection, a house snapshot and paging."],
         hub_get_device: [title: "Get Device Details", summary: "Inspect a device summary, configuration and preferences, or detailed information by section."],
-        hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
         hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location and hub events when neither is given."],
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
         hub_call_device_swap: [title: "Swap Device", summary: "Exchange two devices' identities so the apps on one run on the other's hardware."],

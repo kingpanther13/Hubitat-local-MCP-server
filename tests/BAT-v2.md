@@ -8,7 +8,7 @@
 
 **Dedicated test-hub prompt:** "Create a disposable test device, inspect its preferences and configuration, and verify boolean, numeric, text and enum changes using an independent native read. Restore each original value and verify restoration, then remove only the device and driver you created. Leave every existing device and automation unchanged."
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 114 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 113 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -152,7 +152,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_get_device` with a valid device ID. Returns attributes, commands, capabilities.
 
-### T04 — hub_get_device_attribute
+### T04 — read one attribute (hub_get_device)
 
 ```json
 {
@@ -162,7 +162,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_get_device_attribute` with device ID and `attribute=switch`.
+**Expected**: Calls `hub_get_device` with the device ID and reads the `switch` entry of its `attributes` list (an attribute that has never reported has no entry).
 
 ### T05 — hub_call_device_command (on/off)
 
@@ -174,7 +174,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` with `command=on`, then `hub_get_device_attribute` to confirm. The command response includes a `state` map keyed by attribute name (each entry its current value + a freshness timestamp; the device's attributes, no per-attribute auth filter). The snapshot is read after the command fires, so a virtual switch, which reports at once, already shows `switch=on`; a real device may still show its prior value, which is why the separate `hub_get_device_attribute` read is what confirms `switch=on`. The per-attribute timestamp is the freshness signal.
+**Expected**: Calls `hub_call_device_command` with `command=on`, then `hub_get_device` (its `switch` attribute, or a `waitFor` on it) to confirm. The command response includes a `state` map keyed by attribute name (each entry its current value + a freshness timestamp; the device's attributes, no per-attribute auth filter). The snapshot is read after the command fires, so a virtual switch, which reports at once, already shows `switch=on`; a real device may still show its prior value, which is why the separate `hub_get_device` read is what confirms `switch=on`. The per-attribute timestamp is the freshness signal.
 
 ### T05b — hub_call_device_command with waitFor (confirmed resulting state)
 
@@ -186,7 +186,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` with `command=on` and a `waitFor={attribute:"switch", expectedValue:"on"}`. The response carries a `waitFor` block with `converged: true` and `finalValue: "on"` (a String, read from the device's live current-state list), and -- because the snapshot is taken AFTER the waitFor poll -- the `state` map's switch entry now reads `on` (the converged/resulting value, not the pre-effect one). On a clean run there is NO `partial` flag and NO `stateError`; a non-convergence would instead surface a diagnostic flag (`timedOut` / `interrupted` / `neverReported` / `error`), and a degraded confirmation step (failed snapshot or a poll-loop `error`) would add `partial: true`. The `waitFor` `timeoutMs` caps at 30000 (vs 60000 on the standalone `hub_get_device_attribute` poll) and `pollIntervalMs` defaults to 250. No separate `hub_get_device_attribute` read is needed to confirm.
+**Expected**: Calls `hub_call_device_command` with `command=on` and a `waitFor={attribute:"switch", expectedValue:"on"}`. The response carries a `waitFor` block with `converged: true` and `finalValue: "on"` (a String, read from the device's live current-state list), and -- because the snapshot is taken AFTER the waitFor poll -- the `state` map's switch entry now reads `on` (the converged/resulting value, not the pre-effect one). On a clean run there is NO `partial` flag and NO `stateError`; a non-convergence would instead surface a diagnostic flag (`timedOut` / `interrupted` / `neverReported` / `error`), and a degraded confirmation step (failed snapshot or a poll-loop `error`) would add `partial: true`. The `waitFor` `timeoutMs` caps at 30000 (vs 60000 on a `hub_get_device` / `hub_list_devices` `waitFor`) and `pollIntervalMs` defaults to 250. No separate `hub_get_device` read is needed to confirm.
 
 ### T05c — hub_call_device_command with `commands` (several devices in one call)
 
@@ -198,7 +198,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` ONCE with `commands=[{deviceId, command:"on"} x3]` — not three separate calls. The response is `success: true, count: 3, sentCount: 3, failedCount: 0` (the counts are always present, `failedCount` included on a clean pass) plus a `results` array in request order, each entry carrying its own `deviceId`, the device label, the command and its normalized `parameters`. Batch entries carry NO `state` snapshot — the batch fires, it does not read back — and `commands` rejects `waitFor`, so the confirmation is a separate `hub_get_device_attribute` using the multi-device `deviceIds` form with `mode:"all"` — two round trips for the whole group. Watch for the AI falling back to three separate command calls: that is the behaviour the parameter exists to replace, and it costs roughly 3x the wall-clock time.
+**Expected**: Calls `hub_call_device_command` ONCE with `commands=[{deviceId, command:"on"} x3]` — not three separate calls. The response is `success: true, count: 3, sentCount: 3, failedCount: 0` (the counts are always present, `failedCount` included on a clean pass) plus a `results` array in request order, each entry carrying its own `deviceId`, the device label, the command and its normalized `parameters`. Batch entries carry NO `state` snapshot — the batch fires, it does not read back — and `commands` rejects `waitFor`, so the confirmation is one `hub_list_devices` call passing the three `deviceIds` and `waitFor` with `mode:"all"` — two round trips for the whole group. Watch for the AI falling back to three separate command calls: that is the behaviour the parameter exists to replace, and it costs roughly 3x the wall-clock time.
 
 ### T05d — `commands` partial failure (one bad entry)
 
@@ -222,7 +222,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` with `command=setLevel, args=[75]`. Verifies with `hub_get_device_attribute`. (A fresh Virtual Dimmer already sits at level 50, so 50% would prove nothing.)
+**Expected**: Calls `hub_call_device_command` with `command=setLevel, args=[75]`. Verifies with `hub_get_device` (its `level` attribute, or a `waitFor` on it). (A fresh Virtual Dimmer already sits at level 50, so 50% would prove nothing.)
 
 ### T07 — hub_list_device_events
 
@@ -236,7 +236,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_list_device_events`. Returns recent on/off events.
 
-### T07b — hub_get_device_attribute poll mode (basic match)
+### T07b — attribute wait on hub_get_device (basic match)
 
 ```json
 {
@@ -246,9 +246,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` (on), then `hub_get_device_attribute` (poll mode) with `attribute=switch, expectedValue="on", timeoutMs=5000`. Returns `success: true, timedOut: false`.
+**Expected**: Calls `hub_call_device_command` (on), then `hub_get_device` with `waitFor={attribute:"switch", expectedValue:"on", timeoutMs:5000}`. The `waitFor` block of that `hub_get_device` call reports `converged: true` with no `timedOut`.
 
-### T07c — hub_get_device_attribute poll mode (timeout path)
+### T07c — attribute wait on hub_get_device (timeout path)
 
 ```json
 {
@@ -258,9 +258,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_get_device_attribute` (poll mode) with `expectedValue="on", timeoutMs=500`. Device was never turned on, so returns `success: false, timedOut: true`.
+**Expected**: Calls `hub_get_device` with `waitFor={attribute:"switch", expectedValue:"on", timeoutMs:500}`. Device was never turned on, so the read succeeds (no `isError`) with `waitFor.converged: false, timedOut: true`, and the AI reports the timeout.
 
-### T07d — hub_get_device_attribute poll mode (expectedValues OR semantics)
+### T07d — attribute wait on hub_get_device (expectedValues OR semantics)
 
 ```json
 {
@@ -270,9 +270,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_get_device_attribute` (poll mode) with `expectedValues=["on","off"], timeoutMs=2000`. Device is in one of those states by default, so returns `success: true, timedOut: false` on the first poll.
+**Expected**: Calls `hub_get_device` with `waitFor={attribute:"switch", expectedValues:["on","off"], timeoutMs:2000}`. Device is in one of those states by default, so `waitFor` reports `converged: true, polledCount: 1`.
 
-### T07e — hub_get_device_attribute poll mode (numeric comparator)
+### T07e — attribute wait on hub_get_device (numeric comparator)
 
 ```json
 {
@@ -282,9 +282,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_get_device_attribute` (poll mode) with `attribute=temperature, comparator="gt", expectedValue="72", timeoutMs=3000`. The sensor reads 73 (> 72), so returns `success: true, timedOut: false` with `finalValue` of 73. (Using `comparator="between"` would instead require `expectedValues=[low, high]`; mixing a numeric comparator with `expectedValues` is rejected with an invalid-params error. A numeric comparator on a NON-numeric attribute, e.g. `gt` on a switch, times out with `nonNumericAttribute: true`.)
+**Expected**: Calls `hub_get_device` with `waitFor={attribute:"temperature", comparator:"gt", expectedValue:"72", timeoutMs:3000}`. The sensor reads 73 (> 72), so `waitFor` reports `converged: true` with `finalValue` of 73. (Using `comparator="between"` would instead require `expectedValues=[low, high]`; mixing a numeric comparator with `expectedValues` is rejected with an invalid-params error. A numeric comparator on a NON-numeric attribute, e.g. `gt` on a switch, times out with `nonNumericAttribute: true`.)
 
-### T07g — hub_get_device_attribute poll mode (between range)
+### T07g — attribute wait on hub_get_device (between range)
 
 ```json
 {
@@ -294,9 +294,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_get_device_attribute` (poll mode) with `attribute=temperature, comparator="between", expectedValues=["68","72"], timeoutMs=3000`. The sensor reads 70 (inside the inclusive range), so returns `success: true, timedOut: false` with `finalValue` of 70. (`between` takes exactly two numeric bounds via `expectedValues` and rejects `expectedValue`.)
+**Expected**: Calls `hub_get_device` with `waitFor={attribute:"temperature", comparator:"between", expectedValues:["68","72"], timeoutMs:3000}`. The sensor reads 70 (inside the inclusive range), so `waitFor` reports `converged: true` with `finalValue` of 70. (`between` takes exactly two numeric bounds via `expectedValues` and rejects `expectedValue`.)
 
-### T07h — hub_get_device_attribute poll mode (ne leaves a set)
+### T07h — attribute wait on hub_get_device (ne leaves a set)
 
 ```json
 {
@@ -306,9 +306,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_get_device_attribute` (poll mode) with `attribute=switch, comparator="ne", expectedValue="off", timeoutMs=3000`. The switch reads `on` (not in the set), so `ne` converges immediately: `success: true, timedOut: false` with `finalValue` of `on`. (A null/never-reported value does NOT satisfy `ne`.)
+**Expected**: Calls `hub_get_device` with `waitFor={attribute:"switch", comparator:"ne", expectedValue:"off", timeoutMs:3000}`. The switch reads `on` (not in the set), so `ne` converges immediately: `waitFor.converged: true` with `finalValue` of `on`. (A null/never-reported value does NOT satisfy `ne`.)
 
-### T07i — hub_get_device_attribute multi-device convergence (deviceIds + mode any/all)
+### T07i — multi-device wait (hub_list_devices deviceIds + waitFor mode any/all)
 
 ```json
 {
@@ -318,7 +318,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_get_device_attribute` (poll mode) with `deviceIds=[idA, idB], attribute=switch, expectedValue="on", mode="all", timeoutMs=5000` -- both on, so it converges with `success: true, convergedCount: 2` and a compact per-device `devices` array (each `{deviceId, device, finalValue, matched}`), not full device objects. After B is turned off, the `mode="any"` call still converges on A: `success: true, convergedCount: 1` (an `all` call here would have timed out). `deviceIds` is mutually exclusive with `deviceId` (max 20 devices); `mode` is rejected with a single `deviceId`; a missing ID in the list is rejected naming which ID.
+**Expected**: Calls `hub_list_devices` with `deviceIds=[idA, idB]` and `waitFor={attribute:"switch", expectedValue:"on", mode:"all", timeoutMs:5000}` -- both on, so the `waitFor` block reports `converged: true, convergedCount: 2` and a per-device `devices` array (each `{deviceId, finalValue, matched}`), beside the normal listing of the two devices. After B is turned off, the `mode:"any"` call still converges on A: `converged: true, convergedCount: 1` (an `all` call here would have ended `converged: false`). `waitFor` needs 1-20 `deviceIds` (refused without them, with `cursor`, or with `scope='all'`); an ID outside the listing is rejected before waiting, naming it; `hub_get_device`'s single-device `waitFor` takes no `mode`.
 
 ### T07f — hub_call_device_command waitFor with debounce (stableForMs)
 
@@ -1432,7 +1432,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected (v0.8.0)**: All core tools: `hub_manage_virtual_device(action="create")`, `hub_list_devices(scope='owned')`, `hub_call_device_command`, `hub_get_device_attribute`, `hub_manage_virtual_device(action="delete")`.
+**Expected (v0.8.0)**: All core tools: `hub_manage_virtual_device(action="create")`, `hub_list_devices(scope='owned')`, `hub_call_device_command`, `hub_get_device`, `hub_manage_virtual_device(action="delete")`.
 
 ### T82 — Room management workflow
 
@@ -1869,7 +1869,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_get_device_attribute` with attribute=switch.
+**Expected**: `hub_get_device`, reading its `switch` attribute.
 **Equivalent to**: T04
 
 #### T203 — Flip a switch and verify
@@ -1882,7 +1882,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_call_device_command` (on), then `hub_get_device_attribute` to verify.
+**Expected**: `hub_call_device_command` (on), then `hub_get_device` (its `switch` attribute, or a `waitFor`) to verify.
 **Equivalent to**: T05
 
 #### T204 — Dim a light
@@ -2593,7 +2593,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_manage_virtual_device(action="create")` → `hub_list_devices(scope='owned')` (or `hub_get_device`) → `hub_call_device_command` → `hub_get_device_attribute` → `hub_manage_virtual_device(action="delete")`.
+**Expected**: `hub_manage_virtual_device(action="create")` → `hub_list_devices(scope='owned')` (or `hub_get_device`) → `hub_call_device_command` → `hub_get_device` → `hub_manage_virtual_device(action="delete")`.
 **Equivalent to**: T81
 
 #### T297 — Room management end-to-end
@@ -2774,19 +2774,19 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 114 |
+| Total distinct tools in codebase | 113 |
 
 With Developer Mode on, `hub_update_package` joins the flat core tools, so a Developer Mode hub lists one more.
 
-**8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (6), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
+**8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (5), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
-**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (5), `hub_manage_destructive_ops` (4), `hub_manage_devices` (11), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (5), `hub_manage_destructive_ops` (4), `hub_manage_devices` (10), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 114 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 113 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -3265,7 +3265,7 @@ This scenario requires no room creation or device command.
 }
 ```
 
-**Expected**: With the toggle OFF the unlisted device is not reachable (`hub_get_device` → an `isError: true` validation result, `Device not found: <id>`). The flip call is `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{bypassDeviceAllowlist:true}, confirm:true})` → `{success:true, updated:{bypassDeviceAllowlist:true}, ...}` with a WARN `[developer-mode]` audit line. With the bypass ON, `hub_get_device(deviceId='<id>')` now resolves the device through the hub's id-keyed `/device/fullJson` fallback (returns its id/label/room/capabilities). The AI notes that the bypass removes the device-selection security boundary and that the same parity applies to `hub_get_device_attribute`, `hub_call_device_command` (incl. `waitFor`), `hub_update_device`, and `hub_list_device_events` — but NOT to `hub_list_devices`, device swap/replace/delete, or device-health. Teardown restores `bypassDeviceAllowlist:false`, after which the device is unreachable again.
+**Expected**: With the toggle OFF the unlisted device is not reachable (`hub_get_device` → an `isError: true` validation result, `Device not found: <id>`). The flip call is `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{bypassDeviceAllowlist:true}, confirm:true})` → `{success:true, updated:{bypassDeviceAllowlist:true}, ...}` with a WARN `[developer-mode]` audit line. With the bypass ON, `hub_get_device(deviceId='<id>')` now resolves the device through the hub's id-keyed `/device/fullJson` fallback (returns its id/label/room/capabilities). The AI notes that the bypass removes the device-selection security boundary and that the same parity applies to a `hub_get_device` `waitFor`, `hub_call_device_command` (incl. `waitFor`), `hub_update_device`, and `hub_list_device_events` — but NOT to `hub_list_devices`, device swap/replace/delete, or device-health. Teardown restores `bypassDeviceAllowlist:false`, after which the device is unreachable again.
 
 ---
 
@@ -3302,7 +3302,7 @@ These tests exercise the universal **Read** and **Write** master toggles and the
 }
 ```
 
-**Expected**: With Write OFF, `hub_call_device_command` and every other state-changing tool are hidden from `tools/list`; write-only gateways (e.g. `hub_manage_destructive_ops`) drop entirely, and mixed gateways like `hub_manage_rooms` remain but are annotated `readOnlyHint: true` with their write sub-tools gone. The AI cannot turn the switch on and reports the Write master requirement. The read-back (`hub_get_device_attribute`) still succeeds — reads are unaffected. A cached write call is rejected with `"Write tools are disabled..."`.
+**Expected**: With Write OFF, `hub_call_device_command` and every other state-changing tool are hidden from `tools/list`; write-only gateways (e.g. `hub_manage_destructive_ops`) drop entirely, and mixed gateways like `hub_manage_rooms` remain but are annotated `readOnlyHint: true` with their write sub-tools gone. The AI cannot turn the switch on and reports the Write master requirement. The read-back (`hub_get_device`) still succeeds — reads are unaffected. A cached write call is rejected with `"Write tools are disabled..."`.
 
 ### T232 — Disable a single tool via Advanced ⇒ it vanishes + distinct error on cached call
 

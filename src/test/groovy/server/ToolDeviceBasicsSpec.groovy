@@ -481,17 +481,23 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             supportedCommands: [[name: 'on'], [name: 'off']], supportedAttributes: [[name: 'switch']])
         childDevicesList << device
         childDevicesList.each { registerNativeCommandDevice(it) }
+        script.metaClass._isCloudRequest = { -> true }
         def captured = [:]
-        script.metaClass.toolPollUntilAttribute = { Map a -> captured.args = a; [success: false, timedOut: true, finalValue: 'off', elapsedMs: 5000, budgetLimited: true, budgetNote: 'stopped'] }
+        script.metaClass._waitForCore = { Map s, List ids, boolean page, first, Long d ->
+            captured.deadline = d
+            [converged: false, timedOut: true, elapsedMs: 5000, budgetStopped: true, devices: [[deviceId: '10', finalValue: 'off', matched: false]]]
+        }
 
         when:
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'never', timeoutMs: 30000], null, 1234567890000L - 500L)
 
-        then:
-        captured.args.__reqT0 == 1234567890000L - 500L
+        then: 'the relay deadline counts from the request clock'
+        captured.deadline == 1234567890000L - 500L + 6000L
         result.waitFor.converged == false
+        result.waitFor.finalValue == 'off'
         result.waitFor.budgetLimited == true
-        result.waitFor.budgetNote == 'stopped'
+        result.waitFor.requestedTimeoutMs == 30000
+        result.waitFor.budgetNote.contains('5000 ms')
     }
 
     def "a command's waitFor whose stableForMs cannot settle in the time left is refused before the command fires"() {
@@ -1871,7 +1877,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'told why, and pointed at the call that does confirm a whole set'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('waitFor is not supported with commands')
-        ex.message.contains('hub_get_device_attribute')
+        ex.message.contains('hub_list_devices using deviceIds + waitFor')
         nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
