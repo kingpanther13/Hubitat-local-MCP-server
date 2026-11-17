@@ -2925,7 +2925,9 @@ def handleToolsCall(msg) {
                 // requestState for the client to continue.
                 Map readArgs = _mrtrCopyMap(args as Map)
                 readArgs.__reqT0 = reqT0
-                if (_mrtrSnapshotReadTools().contains(leafName)) readSnapshotId = java.util.UUID.randomUUID().toString()
+                if (_deviceSnapshotRead(leafName, _mrtrLeafArguments(toolName?.toString(), leafName, args as Map))) {
+                    readSnapshotId = java.util.UUID.randomUUID().toString()
+                }
                 def readResult = _executeWithDeviceReadContext(toolName, readArgs,
                     readSnapshotId ? [id: readSnapshotId, fresh: true] : null)
                 if (!(readResult instanceof Map && readResult.status == "in_progress")) {
@@ -3405,6 +3407,11 @@ def _mrtrReadTools() {
 // Reads served from a background snapshot: the worker runs the whole leaf and the request answers in_progress
 // until it lands.
 private Set _mrtrSnapshotReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_rules"] as Set }
+
+// A waitFor runs inline on the request clock, so a budgeted transport ends it by the deadline.
+private boolean _deviceSnapshotRead(leaf, leafArgs) {
+    return _mrtrSnapshotReadTools().contains(leaf?.toString()) && !(leafArgs instanceof Map && leafArgs.waitFor != null)
+}
 
 private def _executeWithDeviceReadContext(tool, Map args, Map context, boolean bpsChecked = false) {
     Map previous = deviceReadContext
@@ -7002,7 +7009,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         }
     }
     _rejectUnknownArgs(toolName, args)
-    if (deviceReadContext != null && _mrtrSnapshotReadTools().contains(toolName?.toString())) {
+    if (deviceReadContext != null && _deviceSnapshotRead(toolName, args)) {
         return _deviceReadSnapshot(toolName.toString(), args as Map, deviceReadContext)
     }
     switch (toolName) {
