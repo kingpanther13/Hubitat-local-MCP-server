@@ -5687,7 +5687,7 @@ def getGatewayConfig() {
                 hub_list_variables: "List all hub variables (with type, connector and Hub Mesh sharing) and rule-engine variables. Args: type, cursor",
                 hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable plus its connector and Hub Mesh details. Args: name, includeDependents?",
                 hub_set_variable: "Set an existing variable's value, or add to a Number/Decimal hub variable atomically. Falls back to rule_engine namespace when no hub var matches. Args: name, value | increment",
-                hub_create_variable: "Create a new hub variable, or several at once. Single: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true. Bulk: variables=[{name,type,value},...], confirm=true (mutually exclusive with the single form). A String value must be non-empty",
+                hub_create_variable: "Create a new hub variable, or several at once. Single: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true. Bulk: variables=[{name,type,value},...], confirm=true (mutually exclusive with the single form)",
                 hub_delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if apps or rules use it]",
                 hub_create_connector: "Create a virtual-device connector for an existing hub variable. connectorType picks a device type the hub offers for it (Number/Decimal: Dimmer|Variable|Volume|ColorTemp|Humidity|Illuminance; default Variable). Args: name, connectorType?, confirm=true",
                 hub_delete_connector: "Remove the connector device for a hub variable (variable itself unchanged). Args: name, confirm=true, [force=true if apps use it]"
@@ -12809,11 +12809,11 @@ The read-back must show the requested kind. See "DateTime kinds" below for how t
 
 **Why create first (vs hub_set_variable):**
 - Use this before `hub_set_variable` for a name that doesn't exist yet — Hubitat's `setGlobalVar` cannot create, only update.
-- Creation isn't exposed via the public app API, so the tool sends one create request to the hub's own Hub Variables page, reads the variable back, and fails if it did not appear or its stored type or value differs from the request. When the hub refuses the value (for example text for a Number), the error carries the hub's reason and nothing is created.
+- Creation isn't exposed via the public app API, so the tool sends one create request to the hub's own Hub Variables page, reads the variable back, and fails if it did not appear or its stored type, value or DateTime kind differs from the request. When the hub refuses the request, the error carries the hub's reason and nothing is created.
 
 **Constraints:**
 - The hub checks names itself and refuses a bad or duplicate name before writing; its message, which states the naming rules, comes back in `error` (for a bulk item, in that item's `error`).
-- A String variable's initial value must be non-empty (an empty String reports success but never persists).
+- The value goes through the same check as `hub_set_variable` (see "hub_set_variable: value"), so a value that does not fit the type is refused, with the same message, before anything is sent. The hub stores the value text as sent, so the tool sends the canonical text (`TRUE` becomes `true`, `+7` becomes `7`, `1e3` becomes `1000`). An empty String is a valid value.
 
 **Expose to device-only apps:**
 - To also expose the variable to device-only apps, follow up with `hub_create_connector`.

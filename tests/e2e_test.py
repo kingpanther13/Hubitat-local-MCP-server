@@ -12285,22 +12285,31 @@ def updated() {}
         if var_name in self.created_variable_names:
             self.created_variable_names.remove(var_name)
 
-        # The hub refuses a value its type cannot hold; its own reason comes back and nothing is created.
+        # A value that does not fit the type is refused before anything is sent, with hub_set_variable's message.
         bad_value_name = f"{PREFIX}HubVar_BadValue"
         self.created_variable_names.append(bad_value_name)
         try:
-            try:
-                bad_value = self.client.call_tool("hub_manage_variables", {
-                    "tool": "hub_create_variable",
-                    "args": {"name": bad_value_name, "type": "Number", "value": "abc", "confirm": True}})
-            except McpToolError as exc:
-                assert "does not match the variable type" in str(exc) and "Nothing was changed" in str(exc), \
-                    f"a refused create did not carry the hub's reason: {exc}"
-            else:
-                raise AssertionError(f"a Number created from text was not refused with isError: {bad_value}")
+            self._expect_tool_refusal("hub_create_variable", {
+                "name": bad_value_name, "type": "Number", "value": "abc", "confirm": True}, "whole number")
             assert not self._hub_variable_visible_in_bulk(bad_value_name), "a refused create left a variable behind"
         finally:
             self._delete_variable_safe(bad_value_name)
+
+        # The hub stores value text as sent, so the tool sends canonical text: "TRUE" reads back as true.
+        # An empty String is a valid value.
+        for extra_name, extra_type, extra_value, expected in ((f"{PREFIX}HubVar_BoolText", "Boolean", "TRUE", True),
+                                                              (f"{PREFIX}HubVar_EmptyStr", "String", "", "")):
+            self.created_variable_names.append(extra_name)
+            try:
+                made_extra = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_variable",
+                    "args": {"name": extra_name, "type": extra_type, "value": extra_value, "confirm": True}})
+                assert made_extra.get("success") is True, f"{extra_type} create from {extra_value!r} failed: {made_extra}"
+                read_extra = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": extra_name}})
+                assert read_extra.get("value") == expected, f"{extra_type} {extra_value!r} read back wrong: {read_extra}"
+            finally:
+                self._delete_variable_safe(extra_name)
 
         # A value that does not fit an existing hub variable's type is refused before any write: the hub
         # value stays, and no rule-engine variable of that name appears.

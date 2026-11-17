@@ -585,18 +585,10 @@ private Map _createVariablesBulk(variables) {
     ]
 }
 
-// Validate the initial value for a hub variable create. A null value is always
-// rejected; additionally a String variable created with an empty/blank value
-// reports success but never actually persists (getGlobalVar stays null --
-// deterministic), so reject that up front with an actionable error.
+// A null value cannot be stored; an empty String can.
 private void _validateInitialValue(String name, String type, value) {
     if (value == null) {
         throw new IllegalArgumentException("Initial value is required")
-    }
-    if (type == "String" && !value.toString().trim()) {
-        throw new IllegalArgumentException(
-            "String variable '${name}' requires a non-empty initial value. " +
-            "Hubitat reports success for an empty String value but the variable never persists; supply any non-empty initial value.")
     }
 }
 
@@ -652,11 +644,14 @@ private Map _dateTimeInput(String name, value) {
 }
 
 // One create POST, then one read-back that must match the requested type, value and DateTime kind.
+// Values go through hub_set_variable's conversion, so both refuse the same input with the same message
+// before any write, and the hub receives canonical text (it stores the text as given).
 // Throws on validation, a refused POST, or a read-back that disagrees.
 private Map _createOneVariable(String name, String type, value) {
-    Map dt = (type == "DateTime") ? _dateTimeInput(name, value) : null
     def expectedType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][type]
-    def body = [name: name, type: expectedType, value: value.toString()]
+    Map dt = (expectedType == "datetime") ? _dateTimeInput(name, value) : null
+    def typed = (dt != null) ? dt.stored : _hubVariableValueFor(name, expectedType, value)
+    def body = [name: name, type: expectedType, value: (typed instanceof BigDecimal) ? typed.toPlainString() : typed.toString()]
     // The hub's page posts the kind as mode, with the date and/or time; a date-only or time-only value is that part alone.
     if (dt != null) {
         body.mode = dt.kind
@@ -679,26 +674,18 @@ private Map _createOneVariable(String name, String type, value) {
         matches = matches && _dateTimeKind(createdText) == "date" && createdText.take(10) == dt.date
     } else if (dt?.kind == "time") {
         matches = matches && _dateTimeKind(createdText) == "time" && createdText.substring(11, 16) == dt.time
-    } else if (dt == null) {
-        if (type in ["Number", "Decimal"]) {
-            try { matches = matches && new BigDecimal(created.value.toString()).compareTo(new BigDecimal(value.toString())) == 0 }
-            catch (Exception ignored) { matches = false }
-        } else { matches = matches && created.value?.toString() == value.toString() }
+    } else if (dt != null) {
+        // Date and hour:minute: the offset text follows the hub zone.
+        matches = matches && _dateTimeKind(createdText) == "datetime" && createdText.take(16) == dt.stored.take(16)
+    } else if (typed instanceof Number) {
+        try { matches = matches && new BigDecimal(createdText).compareTo(new BigDecimal(typed.toString())) == 0 }
+        catch (Exception ignored) { matches = false }
+    } else {
+        matches = matches && createdText == typed.toString()
     }
     if (!matches) throw new IllegalStateException(
         "hub_create_variable: '${name}' exists, but reads type=${created.type}, value=${created.value}; " +
         "requested type=${expectedType}, value=${value}. Repair it with hub_set_variable, or delete it with hub_delete_variable before creating it again.")
-    // A date-and-time create has landed without its time; setGlobalVar with the full string repairs it.
-    // Date and hour:minute are compared, as the offset text follows the hub zone.
-    if (dt?.kind == "datetime" && createdText?.take(16) != dt.stored.take(16)) {
-        try { setGlobalVar(name, dt.stored) } catch (Exception e) {
-            mcpLog("debug", "hub-vars", "hub_create_variable: setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
-        }
-        created = getGlobalVar(name)
-        if (created?.value?.toString()?.take(16) != dt.stored.take(16)) {
-            throw new IllegalStateException("hub_create_variable: '${name}' was created, but its time could not be set (it reads ${created?.value}). Set it with hub_set_variable(name='${name}', value='${dt.stored}').")
-        }
-    }
 
     mcpLog("info", "hub-vars", "Created hub variable '${name}' type=${type} value=${value}")
     Map result = [
@@ -1047,7 +1034,7 @@ private _hubVariableValueFor(String name, String type, value, current = null) {
                 if (text ==~ /[+-]?\d+/) return new BigDecimal(text).longValueExact()
                 if (value instanceof Number) return new BigDecimal(value.toString()).longValueExact()
             } catch (ArithmeticException ignored) { }
-            throw new IllegalArgumentException("Hub variable '${name}' is a Number (integer): value must be a whole number such as 42, got: ${value}")
+            throw new IllegalArgumentException("Hub variable '${name}' is a Number (integer): value must be a whole number in the Java Long range (-9223372036854775808..9223372036854775807) such as 42, got: ${value}")
         case "bigdecimal":
             try { if (text) return new BigDecimal(text) } catch (NumberFormatException ignored) { }
             throw new IllegalArgumentException("Hub variable '${name}' is a Decimal (bigdecimal): value must be a number such as 1.5, got: ${value}")

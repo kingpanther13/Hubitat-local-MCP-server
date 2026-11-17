@@ -624,7 +624,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         type         | input                 | phrase
         'integer'    | 'abc'                 | 'is a Number (integer): value must be a whole number'
         'integer'    | '1.5'                 | 'whole number'
-        'integer'    | '9223372036854775808' | 'whole number'
+        'integer'    | '9223372036854775808' | 'whole number in the Java Long range (-9223372036854775808..9223372036854775807)'
         'bigdecimal' | 'x'                   | 'is a Decimal (bigdecimal): value must be a number'
         'boolean'    | 'yes'                 | 'is a Boolean: value must be true or false'
         'string'     | null                  | 'is a String: value must be text'
@@ -1204,18 +1204,18 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('Initial value is required')
     }
 
-    def "hub_create_variable rejects an empty-string value for a String variable"() {
-        // A String variable created with an empty value reports success but never
-        // persists (getGlobalVar stays null -- deterministic). Reject up front.
+    def "hub_create_variable accepts an empty String value"() {
         given:
         enableWrite()
+        def stored = stubBulkCreate()
 
         when:
-        script.toolCreateVariable([name: 'emptyStr', type: 'String', value: '', confirm: true])
+        def result = script.toolCreateVariable([name: 'emptyStr', type: 'String', value: '', confirm: true])
 
         then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('non-empty initial value')
+        result.success == true
+        result.value == ''
+        varPosts*.body == [[name: 'emptyStr', type: 'string', value: '']]
     }
 
     def "hub_create_variable refuses to overwrite an existing hub variable"() {
@@ -1378,24 +1378,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         kind   | input        | stored
         'date' | '2026-03-05' | '2026-03-05T08:15:00.000-0500'
         'time' | '08:15'      | '9999-99-99T09:00:00.000-0500'
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_variable DateTime sets the full hub-local value when the commit dropped the time (#input)"() {
-        given:
-        enableWrite()
-        def rec = stubDateTimeCreate(postCommits: '2026-01-01T99:99:99.999-9999')
-
-        when:
-        def result = script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: input, confirm: true])
-
-        then:
-        rec.sets.size() == 1
-        rec.sets[0] ==~ /2026-01-01T12:30:00\.000[+-]\d{4}/
-        result.value == rec.sets[0]
-
-        where:
-        input << ['2026-01-01T12:30', [date: '2026-01-01', time: '12:30']]
+        'date and time' | '2026-03-05T08:15' | '2026-03-05T99:99:99.999-9999'
     }
 
     @spock.lang.Unroll
@@ -1421,21 +1404,22 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_variable DateTime correction uses hub zone #zoneId for #input"() {
+    def "hub_create_variable DateTime sends #expected in hub zone #zoneId for #input"() {
         given:
         enableWrite()
         sharedLocation.timeZone = TimeZone.getTimeZone(zoneId)
         def originalZone = TimeZone.default
         TimeZone.setDefault(TimeZone.getTimeZone('UTC'))
-        def rec = stubDateTimeCreate(postCommits: '2026-01-01T99:99:99.999-9999')
+        def rec = stubDateTimeCreate(postCommits: expected)
 
         when:
         def result = script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: input, confirm: true])
 
         then:
+        varPosts[0].body.value == expected
         result.success == true
-        rec.sets == [expected]
         result.value == expected
+        rec.sets.isEmpty()
 
         cleanup:
         TimeZone.setDefault(originalZone)
@@ -1448,21 +1432,6 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         'America/New_York' | '2026-01-01T12:30:00-0500'             | '2026-01-01T12:30:00.000-0500'
     }
 
-    def "hub_create_variable DateTime reports a created variable whose time could not be set"() {
-        given:
-        enableWrite()
-        stubDateTimeCreate(postCommits: '2026-01-01T99:99:99.999-9999', setterWorks: false)
-
-        when:
-        def result = script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: '2026-01-01T12:30', confirm: true])
-
-        then:
-        result.success == false
-        result.isError == true
-        result.error.contains("'dtVar' was created, but its time could not be set")
-        result.note.contains('may have applied')
-    }
-
     @spock.lang.Unroll
     def "hub_create_variable reports the hub's own reason for a refused create (#label)"() {
         given:
@@ -1473,23 +1442,68 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateVariable([name: 'n1', type: 'Number', value: 'abc', confirm: true])
+        def result = script.toolCreateVariable([name: 'n1', type: 'Number', value: 5, confirm: true])
 
         then:
         result.success == false
         result.isError == true
-        result.error == 'hub_create_variable: Hub Variables create failed: The value does not match the variable type.'
+        result.error == 'hub_create_variable: Hub Variables create failed: The name already exists or the value is invalid.'
         result.note.startsWith(note)
 
         where:
-        label          | status | data                                                              | note
-        'JSON text'    | 400    | '{"message":"The value does not match the variable type."}'       | 'Nothing was changed'
-        'parsed map'   | 400    | [message: 'The value does not match the variable type.']          | 'Nothing was changed'
-        'server error' | 500    | '{"message":"The value does not match the variable type."}'       | 'The hub may have applied'
+        label          | status | data                                                                 | note
+        'JSON text'    | 400    | '{"message":"The name already exists or the value is invalid."}'      | 'Nothing was changed'
+        'parsed map'   | 400    | [message: 'The name already exists or the value is invalid.']         | 'Nothing was changed'
+        'server error' | 500    | '{"message":"The name already exists or the value is invalid."}'      | 'The hub may have applied'
     }
 
-    // getGlobalVar answers from `stored`, which each create POST fills with the requested value in its
-    // stored type, so every item reads back its own name/type/value.
+    @spock.lang.Unroll
+    def "hub_create_variable sends the canonical text of #input for a #type variable"() {
+        given:
+        enableWrite()
+        def stored = stubBulkCreate()
+
+        when:
+        def result = script.toolCreateVariable([name: 'v', type: type, value: input, confirm: true])
+
+        then:
+        varPosts*.body.value == [sent]
+        result.success == true
+
+        where:
+        type      | input   | sent
+        'Boolean' | 'TRUE'  | 'true'
+        'Boolean' | 'False' | 'false'
+        'Number'  | '+7'    | '7'
+        'Number'  | 5.0     | '5'
+        'Decimal' | '1e3'   | '1000'
+        'Decimal' | '1.50'  | '1.50'
+        'String'  | 'x y'   | 'x y'
+    }
+
+    @spock.lang.Unroll
+    def "hub_create_variable refuses #input for a #type variable before any request, as hub_set_variable does"() {
+        given:
+        enableWrite()
+        stubBulkCreate()
+
+        when:
+        script.toolCreateVariable([name: 'v', type: type, value: input, confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(phrase)
+        varPosts.isEmpty()
+
+        where:
+        type      | input                  | phrase
+        'Boolean' | 'yes'                  | 'is a Boolean: value must be true or false'
+        'Number'  | '5.0'                  | 'is a Number (integer): value must be a whole number in the Java Long range'
+        'Number'  | 1.5                    | 'whole number'
+        'Number'  | '9223372036854775808'  | 'whole number'
+        'Decimal' | 'abc'                  | 'is a Decimal (bigdecimal): value must be a number'
+    }
+
     private Map stubBulkCreate(Set neverStored = [] as Set) {
         Map stored = [:]
         script.metaClass.getGlobalVar = { String n -> stored[n] }

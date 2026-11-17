@@ -1465,11 +1465,11 @@ The read-back must show the requested kind. See "DateTime kinds" below for how t
 
 **Why create first (vs hub_set_variable):**
 - Use this before `hub_set_variable` for a name that doesn't exist yet — Hubitat's `setGlobalVar` cannot create, only update.
-- Creation isn't exposed via the public app API, so the tool sends one create request to the hub's own Hub Variables page, reads the variable back, and fails if it did not appear or its stored type or value differs from the request. When the hub refuses the value (for example text for a Number), the error carries the hub's reason and nothing is created.
+- Creation isn't exposed via the public app API, so the tool sends one create request to the hub's own Hub Variables page, reads the variable back, and fails if it did not appear or its stored type, value or DateTime kind differs from the request. When the hub refuses the request, the error carries the hub's reason and nothing is created.
 
 **Constraints:**
 - The hub checks names itself and refuses a bad or duplicate name before writing; its message, which states the naming rules, comes back in `error` (for a bulk item, in that item's `error`).
-- A String variable's initial value must be non-empty (an empty String reports success but never persists).
+- The value goes through the same check as `hub_set_variable` (see "hub_set_variable: value"), so a value that does not fit the type is refused, with the same message, before anything is sent. The hub stores the value text as sent, so the tool sends the canonical text (`TRUE` becomes `true`, `+7` becomes `7`, `1e3` becomes `1000`). An empty String is a valid value.
 
 **Expose to device-only apps:**
 - To also expose the variable to device-only apps, follow up with `hub_create_connector`.
