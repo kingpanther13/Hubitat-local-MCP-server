@@ -1673,6 +1673,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v5.2.0** - feat: five dashboard tools instead of six (copy via hub_create_dashboard). PRs: [#581](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/581)
 - **v5.1.13** - feat: fold hub_get_device_attribute into hub_get_device and hub_list_devices (waitFor, deviceIds). PRs: [#592](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/592)
 - **v5.1.12** - fix: hub_list_drivers(include='all') pages by default so the catalog fits through the cloud. PRs: [#590](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/590)
 - **v5.1.11** - docs: the PR author flips a draft to ready-for-review, not the maintainer; ci: document retrying one ephemeral e2e kind by re-running its two jobs; feat: room tools by id, and set a room's devices via hub_update_room. PRs: [#588](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/588), [#589](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/589), [#582](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/582)
