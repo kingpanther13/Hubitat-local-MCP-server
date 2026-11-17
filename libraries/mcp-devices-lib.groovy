@@ -1926,10 +1926,9 @@ private BigDecimal _parseBigDecimalOrNull(v) {
 }
 
 // Compact native current-state snapshot for a command response: values and timestamps only.
-// NOTE: this is an IMMEDIATE read taken in the same request that fired the command -- the
-// hub commits a command's effect AFTER that request returns, so without waitFor the value
-// here is the PRE-effect state even for virtual/local devices. The timestamp is the freshness
-// signal; waitFor (block-poll) is what makes this snapshot reflect the converged state.
+// NOTE: this is an IMMEDIATE read taken in the same request that fired the command, so without
+// waitFor it may show the prior or the resulting value. The timestamp is the freshness signal;
+// waitFor (block-poll) is what makes this snapshot reflect the converged state.
 
 // Fire an access-permitted device command via the hub's id-keyed native endpoint.
 // POST /device/runmethod with
