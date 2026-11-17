@@ -6604,7 +6604,7 @@ private Map _logsPatterns(Map args) {
     def compile = { String label, p ->
         if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
         if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
-        if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars); split it across patterns (patternMode 'any' matches either)")
+        if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars); split an alternation's alternatives across patterns (patternMode 'any'); otherwise shorten it")
         try {
             return java.util.regex.Pattern.compile(p, java.util.regex.Pattern.CASE_INSENSITIVE)
         } catch (java.util.regex.PatternSyntaxException e) {
@@ -12098,9 +12098,10 @@ def _waitForCore(Map spec, List ids, boolean page, first, Long deadlineMs) {
         } else {
             conditionTrueSince = null
         }
-        pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
+        long tickMs = now() - tickStartMs
+        int sleepMs = _pollSleepMs(spec.pollIntervalMs, timeoutMs - elapsedMs, tickMs)
+        pastDeadline = deadlineMs != null && now() + sleepMs + tickMs >= deadlineMs
         if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) { outcome = "timedOut"; break }
-        int sleepMs = _pollSleepMs(spec.pollIntervalMs, timeoutMs - elapsedMs, now() - tickStartMs)
         try {
             if (sleepMs > 0) pauseExecution(sleepMs)
         } catch (InterruptedException e) {
@@ -34986,7 +34987,7 @@ A malformed `waitFor` spec is rejected before the command fires, so the device i
 **`commands` arg (several devices in one call).** Up to 20 entries of `{deviceId, command, parameters?}`, sent in the order given. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades"): the per-call round trip -- not the hub actuating the device -- is nearly the whole cost. Measured on a live hub over LAN: one command ~1.0s end to end; six sent separately ~4.4s (~0.73s each); the same six Z-Wave switches as one batch ~1.5s; a batch of 1, 2 or 4 flat at ~0.95s. Firing separate calls in parallel does NOT help; the hub serialises them anyway. Devices behind a bridge carry real per-device time that batching cannot remove -- six Bond-bridged shades batched came back at ~2.75s, against ~5.0s sent separately.
 
 - **Mutually exclusive with `deviceId`/`command`**, and cannot be combined with `waitFor` -- that would block a hub thread per device.
-- **Batch entries return no state snapshot.** Confirm with hub_list_devices `deviceIds` + `waitFor`: one call to fire, one to confirm.
+- **Batch entries return no state snapshot.** Confirm with hub_list_devices `deviceIds` + `waitFor`: one call to fire, one to confirm each target state (a waitFor applies one condition to every listed device).
 - **What it does NOT change.** The hub still actuates the devices one at a time, so they do not all move simultaneously. What disappears is the protocol overhead, not the hub's own work.
 - **Entries are independent.** Mixed devices and mixed commands. A bad entry (unknown id, unsupported command) is reported in its own `results[]` slot and the remaining entries are still sent; `success` is true only when every entry was sent. A partly-failed batch carries `failedDeviceIds` plus `partial: true` -- re-send ONLY those ids, because the successful entries have already actuated. Malformed input -- a missing deviceId, a `parameters` value that is neither an array nor a string, more than 20 entries -- is rejected before anything is sent, so a bad request never actuates part of a batch.
 - **A very large batch of slow bridged devices can stop early.** As the request nears the relay time budget the batch returns `stoppedEarly: true` with `remainingCommands` -- the untried tail, verbatim. Re-send exactly that in a new call; the attempted entries already went.
@@ -35510,7 +35511,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - Entries are independent, so mixed devices and mixed commands go in one batch. Max 20. A partly-failed batch reports failedDeviceIds plus partial:true -- re-send only those ids; the rest already actuated.
 - The batch result always carries `count` (entries attempted), `sentCount`, `failedCount` and a per-entry `results[]`. Any failure adds `failedDeviceIds`, `error` and `note`. A result with `success: false` (a failed entry or an early stop) is sent with `isError: true`. An entry's `deviceId` may be a string or an integer.
 
-- Batch entries return NO state snapshot, and waitFor is not accepted with `commands`. To confirm, follow with hub_list_devices using deviceIds + waitFor (multi-device convergence): one batch to fire, one poll to confirm -- two round trips for the whole group.
+- Batch entries return NO state snapshot, and waitFor is not accepted with `commands`. To confirm, follow with hub_list_devices using deviceIds + waitFor (multi-device convergence): one batch to fire, one poll to confirm -- two round trips for a group that shares a target state (one poll per target state otherwise).
 - A very large batch of slow bridged devices can stop early at the relay time budget: the result carries stoppedEarly:true with remainingCommands, the untried tail verbatim, to re-send in a new call; it is `success: false` and flagged `isError: true` even when no entry failed.
 - For a set commanded repeatedly, a group or scene beats both: one device to command and the hub fans out. `commands` is for the ad-hoc set that was never defined in advance.
 
