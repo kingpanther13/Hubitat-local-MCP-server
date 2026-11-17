@@ -13649,6 +13649,13 @@ def updated() {}
         # Both reads behind the listing answered: the variable inventory and the Hub Variables page.
         assert "hubVariablesError" not in result and "detailsError" not in result, \
             f"hub_list_variables reported a failed read: {result.get('hubVariablesError') or result.get('detailsError')}"
+        # hub_list_variable_changes was removed; variable history is hub_get_logs(mode='locationEvents').
+        try:
+            gone = self.client.call_tool("hub_list_variable_changes", {}, flat=True)
+        except McpError as exc:
+            assert "Unknown tool" in str(exc), f"the removed tool failed for another reason: {exc}"
+        else:
+            raise AssertionError(f"the removed hub_list_variable_changes still answered: {gone}")
 
     @test("system_tools")
     def test_get_hub_info(self) -> None:
