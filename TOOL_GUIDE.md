@@ -1124,7 +1124,7 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 - User and community apps are not read (their page runs their own code); use hub_get_app_config.
 - `eventSubscriptionCount` / `scheduledJobCount` are the app's live subscriptions and scheduled jobs (null with a `checkErrors` entry when that read fails). Visual Rule write responses embed this report without them.
 
-`ok:true` means everything was read and nothing is wrong. `ok:false` with `unreadable:false` means `issues` names the problem; `unreadable:true` means nothing could be read, which is not evidence of breakage. `checkErrors` lists reads that failed without being evidence about the rule. A structural issue is expected while a block is built across several calls; finish it with a hub_set_rule(operation='update') terminator change, and compare with hub_set_rule(operation='read') before considering a restore.
+`ok:true` means everything was read and nothing is wrong. `ok:false` with `unreadable:false` means `issues` names a problem or `checkErrors` names a read that failed, leaving part of the rule unchecked; `unreadable:true` means nothing could be read, which is not evidence of breakage. A `checkErrors` entry is not evidence about the rule either: repeat the call to finish the check. A structural issue is expected while a block is built across several calls; finish it with a hub_set_rule(operation='update') terminator change, and compare with hub_set_rule(operation='read') before considering a restore.
 
 ### hub_list_rule_local_variables
 

@@ -306,7 +306,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
     // ---------- read failures ----------
 
-    def "a page that fails to render is a non-gating checkErrors entry when the compiled state reads clean"() {
+    def "a page that fails to render keeps ok false even when the compiled state reads clean"() {
         given:
         seed(100)
         hubGet.register('/installedapp/configure/json/100') { throw new IOException('page timeout') }
@@ -315,9 +315,51 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         def h = script.toolCheckRuleHealth([appId: 100])
 
         then:
-        h.ok == true
+        h.ok == false
         h.unreadable == false
+        h.broken == false
+        h.issues == []
         h.checkErrors.any { it.contains('configPage read failed') && it.contains('page timeout') }
+    }
+
+    def "a failed live status read after a clean report turns ok false and names the read"() {
+        given:
+        seed(100)
+        hubGet.register('/installedapp/statusJson/100') { throw new IOException('status timeout') }
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        h.ok == false
+        h.unreadable == false
+        h.issues == []
+        h.eventSubscriptionCount == null
+        h.checkErrors == ['statusJson: status timeout']
+    }
+
+    def "an older rule type whose settings read fails keeps ok false though its live counts read"() {
+        given:
+        appType('Rule-4.1')
+        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([actionList: ['1', '2']]) }
+        hubGet.register('/installedapp/configure/json/100') { configJson(100, [typeName: 'Rule-4.1']) }
+        def statusReads = 0
+        hubGet.register('/installedapp/statusJson/100') {
+            if (statusReads++ == 0) throw new IOException('settings timeout')
+            statusJson(100)
+        }
+
+        when:
+        def h = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        statusReads == 2
+        h.ok == false
+        h.unreadable == false
+        h.issues == []
+        h.eventSubscriptionCount == 1
+        h.checkErrors.size() == 1
+        h.checkErrors[0].contains('structure check skipped') && h.checkErrors[0].contains('settings timeout')
     }
 
     def "a compiled-state read failure is a checkErrors entry when the page rendered"() {

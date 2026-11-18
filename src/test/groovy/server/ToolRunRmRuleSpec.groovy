@@ -363,14 +363,13 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     def "action=#action renders the rule's page once after the stopRule click so its name decoration is current"() {
         given:
         hubGet.register('/installedapp/statusJson/106') { params -> minimalStatusJson(106, stoppedBefore) }
-        def renders = 0
+        def events = []
         hubGet.register('/installedapp/configure/json/106') { params ->
-            renders++
+            events << 'render'
             JsonOutput.toJson([app: [id: 106, version: 3], configPage: [name: 'mainPage', sections: []]])
         }
-        def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
+            events << "post ${path} ${body?.name}".toString()
             [status: 200, location: null, data: '{"status":"success"}']
         }
 
@@ -379,8 +378,11 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        posts.count { it.path == '/installedapp/btn' && it.body.name == 'stopRule' } == 1
-        renders == 1
+        events.count { it == 'post /installedapp/btn stopRule' } == 1
+        events.count { it == 'render' } == 1
+
+        and: 'the render follows the click, so it shows the decoration the click produced'
+        events.indexOf('post /installedapp/btn stopRule') < events.indexOf('render')
         result.note == null
 
         where:

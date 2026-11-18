@@ -9840,11 +9840,16 @@ def updated() {}
         """Lenient health check for relay-504 soft paths: a dropped response may have committed
         a block OPENER (IF/Repeat), leaving the rule structurally unbalanced -- which the health
         tool itself documents as EXPECTED mid-build. A broken flag, broken markers and page errors
-        still fail; structural imbalance alone does not (the caller's reset/closer handles it)."""
+        still fail; structural imbalance alone does not (the caller's reset/closer handles it).
+        A failed read also fails: broken=false from compiled state alone does not show the page renders."""
         h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
         other = [i for i in h.get("issues") or [] if not str(i).startswith("structural imbalance")]
         assert h.get("broken") is not True and not other, \
             f"rule is genuinely broken after the dropped response (not just mid-build imbalance): {h}"
+        assert h.get("unreadable") is not True, \
+            f"rule health could not read the rule after the dropped response (unreadable:true): {h}"
+        assert not h.get("checkErrors"), \
+            f"rule health could not finish its reads after the dropped response (checkErrors): {h}"
         if h.get("ok") is False:
             print(f"    rule {app_id} renders with structural imbalance after the dropped response "
                   "(expected mid-build state; a reset/closer follows)")
@@ -9875,6 +9880,8 @@ def updated() {}
                 f"rule health (from the write response) reports broken: {cached[1]}"
             return
         h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
+        # A failed read leaves ok false without being evidence of breakage; name it as such.
+        assert not h.get("checkErrors"), f"hub_get_rule_health could not finish its reads: {h}"
         assert h.get("ok") is not False, f"hub_get_rule_health reports the rule broken: {h}"
 
 

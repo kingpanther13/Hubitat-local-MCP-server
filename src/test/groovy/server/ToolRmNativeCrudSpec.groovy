@@ -3508,6 +3508,53 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         'carries non-map locals'   | [[name: 'allLocalVars', value: 'unexpected']] | false
     }
 
+    def "a rule whose type lookup throws is read from its status page, not refused as a non-rule"() {
+        given:
+        enableReadOnly()
+        statusRule('Rule-5.1', [[name: 'allLocalVars', value: [zzN: [type: 'integer', value: 1]]],
+                                [name: 'lv_zzN', value: [name: 'zzN', type: 'integer', value: 7]]])
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup busy') }
+
+        when:
+        def result = script.toolListRuleLocalVariables([appId: 100])
+
+        then:
+        result.localVariables == [[name: 'zzN', type: 'integer', value: 7]]
+        hubGet.calls.count { it.path == '/installedapp/statusJson/100' } == 1
+    }
+
+    def "a rule whose type lookup throws and whose status page fails names the lookup failure"() {
+        given:
+        enableReadOnly()
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup busy') }
+        script.metaClass._nrHandle = { Long id -> throw new AssertionError('a failed lookup never reaches the 5.1 handle') }
+        hubGet.register('/installedapp/statusJson/100') { params -> throw new RuntimeException('channel down') }
+
+        when:
+        script.toolListRuleLocalVariables([appId: 100])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("App 100's type could not be looked up (lookup busy)")
+        ex.message.contains("channel down")
+        !ex.message.contains("is not a Rule Machine rule")
+    }
+
+    def "an app id with no app keeps the not-a-rule refusal"() {
+        given:
+        enableReadOnly()
+        script.metaClass.getAppByAppId = { Long id -> null }
+        script.metaClass._nrHandle = { Long id -> throw new IllegalArgumentException('Rule not found') }
+
+        when:
+        script.toolListRuleLocalVariables([appId: 999])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message == "App 999 is not a Rule Machine rule (4.x, 5.1 or Button Rule) whose local variables can be read (Rule not found). Find rule ids with hub_list_rules."
+        hubGet.calls.isEmpty()
+    }
+
     @Unroll
     def "hub_list_rule_local_variables dispatches and refuses an unknown rule as a validation error (useGateways=#useGateways)"() {
         given:

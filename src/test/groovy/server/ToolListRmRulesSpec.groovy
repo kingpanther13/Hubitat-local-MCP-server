@@ -966,6 +966,40 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "state reads run only for decorated rules on the returned page"() {
+        given: 'decorated rules 10 and 55 land on different pages; 30 is filtered out by label'
+        def label = { int id -> id == 30 ? "Other ${id}".toString() : "Rule ${id.toString().padLeft(3, '0')}".toString() }
+        rmUtils.stubRuleList5 = (1..60).collect { id -> [(id): label(id)] }
+        registerRmAppsList((1..60).collect { id -> ruleNode(id, id in [10, 30, 55] ? "${label(id)} (Paused)".toString() : label(id)) })
+        [10, 30, 55].each { registerRuleState(it, [paused: false]) }
+        def statusReads = { hubGet.calls*.path.findAll { it.startsWith('/installedapp/statusJson/') } }
+
+        when:
+        hubGet.calls.clear()
+        def first = script.toolListRmRules([labelFilter: 'rule', cursor: ''])
+        def firstReads = statusReads()
+        hubGet.calls.clear()
+        def second = script.toolListRmRules([labelFilter: 'rule', cursor: first.nextCursor])
+        def secondReads = statusReads()
+        hubGet.calls.clear()
+        def unpaged = script.toolListRmRules([:])
+        def unpagedReads = statusReads()
+
+        then: 'the filtered-out and off-page decorated rules are never read'
+        first.count == 50
+        first.total == 59
+        firstReads == ['/installedapp/statusJson/10']
+        second.count == 9
+        secondReads == ['/installedapp/statusJson/55']
+        unpagedReads.sort() == ['/installedapp/statusJson/10', '/installedapp/statusJson/30', '/installedapp/statusJson/55']
+
+        and: 'each read settles its row: the state says not paused'
+        first.rules.find { it.id == 10 }.status == 'active'
+        first.rules.find { it.id == 10 }.paused == false
+        second.rules.find { it.id == 55 }.status == 'active'
+        unpaged.rules.every { it.status == 'active' && it.paused == false }
+    }
+
     def "does not false-flag a rule the user literally named ending in (Stopped)"() {
         given: 'both strings carry the literal suffix, so nothing distinguishes it as decoration'
         rmUtils.stubRuleList5 = [[471: 'Movie mode (Stopped)']]

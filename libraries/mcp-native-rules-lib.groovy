@@ -57,7 +57,7 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_get_rule_health",
-            description: """Read one rule's health: Rule Machine, Visual Rules Builder, or another built-in classic app (Basic Rule, Button Controller).[[FLAT_TRIM]] A Rule Machine rule's page is rendered once (Rule Machine updates its broken flag only then) before its compiled state is read: broken, paused, stopped, privateBoolean, disabledActions, structuralIssues and the red-X disabled flag, plus live eventSubscriptionCount and scheduledJobCount. A Visual Rule reports its validationErrors. User and community apps are not read.[[/FLAT_TRIM]] ok=false with unreadable=false means issues names a problem; unreadable=true means nothing could be read, which is not evidence of breakage; checkErrors lists reads that failed. Guide: builtin_app_tools_rules.""",
+            description: """Read one rule's health: Rule Machine, Visual Rules Builder, or another built-in classic app (Basic Rule, Button Controller).[[FLAT_TRIM]] A Rule Machine rule's page is rendered once (Rule Machine updates its broken flag only then) before its compiled state is read: broken, paused, stopped, privateBoolean, disabledActions, structuralIssues and the red-X disabled flag, plus live eventSubscriptionCount and scheduledJobCount. A Visual Rule reports its validationErrors. User and community apps are not read.[[/FLAT_TRIM]] ok=false with unreadable=false means issues names a problem or checkErrors names a failed read; unreadable=true means nothing could be read, which is not evidence of breakage. Guide: builtin_app_tools_rules.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -276,7 +276,11 @@ def toolListRmRules(args) {
     // Enrich each rule with its live enabled/paused/stopped/disabled status from the
     // /hub2/appsList tree (issue #359). When the tree was unreadable the rules are
     // returned unfiltered and carry no node data, so status is "unknown".
-    combined.values().each { entry -> _rmAnnotateRuleStatus(entry, treeReadable, liveApps) }
+    def unsettled = [:]
+    combined.values().each { entry ->
+        def flags = _rmAnnotateRuleStatus(entry, treeReadable, liveApps)
+        if (flags != null) unsettled.put(entry.id?.toString(), flags)
+    }
 
     // combined.values() returns a Collection view in some Groovy versions; materialize
     // as a concrete List via toList() so subList in _paginateList is safe.
@@ -286,6 +290,11 @@ def toolListRmRules(args) {
 
     def cursor = args?.cursor
     def paged = _paginateList(rules, cursor, 50, "hub_list_rules")
+    // State reads run only for the returned page: a hub can carry hundreds of decorated rules.
+    paged.page.each { entry ->
+        def flags = unsettled.get(entry.id?.toString())
+        if (flags != null) _rmSettleRuleStatusFromState(entry, flags)
+    }
     def result = [
         // Labels and names leave as the user typed them: the hub stores "Heat On <67" as "Heat On &lt;67".
         rules: paged.page.collect { r ->
@@ -421,8 +430,8 @@ private void registerRmRule(Map combined, def r, String version) {
 // Annotate an RM rule entry (in place) with disabled/paused booleans, a status summary,
 // and requiredExpressionFalse. WHY decoration-detection (full algorithm in the
 // builtin_app_tools guide): RMUtils exposes no paused or stopped boolean, so both are found
-// by diffing the app's /hub2/appsList name against its RMUtils label (a decorated row then
-// reads its exact flags from app state, below). A stopped rule
+// by diffing the app's /hub2/appsList name against its RMUtils label (a decorated row on the
+// returned page then reads its exact flags from app state). A stopped rule
 // reaches this function through EITHER of two channels and both are read here: the
 // "(Stopped)" suffix can sit on the RMUtils LABEL while the appsList name stays clean, or it
 // can sit in the appsList-name REMAINDER the "(Paused)" diff already computes. The diff is
@@ -436,14 +445,16 @@ private void registerRmRule(Map combined, def r, String version) {
 // {disabled:true, paused:true, status:"disabled"} is truthful. "unknown" (booleans then
 // omitted, never asserted false) covers both a null liveApps (whole tree unreadable) and
 // this one rule's node lacking data.disabled / name / RMUtils label.
-private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps) {
+// Returns the name-derived flags of a decorated row, which _rmSettleRuleStatusFromState
+// later settles from app state, or null when the row needs no state read.
+private Map _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps) {
     def idInt
     try { idInt = (entry.id instanceof Number) ? entry.id.intValue() : entry.id?.toString()?.toInteger() }
     catch (Exception ignored) { idInt = null }
     def node = (treeReadable && idInt != null && liveApps != null) ? liveApps[idInt] : null
     if (node == null) {
         entry.status = "unknown"
-        return
+        return null
     }
     if (node.type instanceof String && node.type) {
         entry.type = node.type
@@ -460,7 +471,7 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
         if (cleanRm == null) missing << "RMUtils label"
         mcpLog("warn", "rm-interop", "_rmAnnotateRuleStatus: rule ${entry.id} has incomplete node data (missing ${missing.join(', ')}); status unknown")
         entry.status = "unknown"
-        return
+        return null
     }
     def disabled = disabledRaw == true
     def paused = false
@@ -482,27 +493,36 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
         entry.label = _rmStripTrailingDecoration(entry.label, "(Stopped)")
         entry.name = _rmStripTrailingDecoration(entry.name, "(Stopped)")
     }
-    // The name carries one decoration at a time ("(Stopped)" hides "(Paused)") and can lag a
-    // stop made without rendering the rule's page, so a decorated row reads its real flags from
-    // app state. Undecorated rows skip the read: a hub can carry hundreds of rules.
-    if (paused || stopped) {
-        try {
-            def status = _rmFetchStatusJson(idInt)
-            // Only a readable state settles the flags; a missing one leaves the name's decoration.
-            if (status?.appState instanceof List) {
-                def statePaused = _readAppStateBoolean(status, "paused", null)
-                if (statePaused != null) paused = statePaused
-                // No stopped entry means the rule was never stopped; a malformed one leaves the decoration.
-                if (!status.appState.any { it?.name == "stopped" }) stopped = false
-                else {
-                    def stateStopped = _readAppStateBoolean(status, "stopped", null)
-                    if (stateStopped != null) stopped = stateStopped
-                }
+    _rmApplyRuleStatus(entry, disabled, paused, stopped)
+    // Undecorated rows need no state read: a hub can carry hundreds of rules.
+    return (paused || stopped) ? [appId: idInt, disabled: disabled, paused: paused, stopped: stopped] : null
+}
+
+// The name carries one decoration at a time ("(Stopped)" hides "(Paused)") and can lag a stop
+// made without rendering the rule's page, so a decorated row reads its real flags from app state.
+// A failed or unreadable state read leaves the name-derived flags in place.
+private void _rmSettleRuleStatusFromState(Map entry, Map flags) {
+    boolean paused = flags.paused
+    boolean stopped = flags.stopped
+    try {
+        def status = _rmFetchStatusJson(flags.appId as Integer)
+        if (status?.appState instanceof List) {
+            def statePaused = _readAppStateBoolean(status, "paused", null)
+            if (statePaused != null) paused = statePaused
+            // No stopped entry means the rule was never stopped; a malformed one leaves the decoration.
+            if (!status.appState.any { it?.name == "stopped" }) stopped = false
+            else {
+                def stateStopped = _readAppStateBoolean(status, "stopped", null)
+                if (stateStopped != null) stopped = stateStopped
             }
-        } catch (Exception e) {
-            mcpLog("warn", "rm-interop", "_rmAnnotateRuleStatus: rule ${entry.id} state read failed (${e.message}); status from its appsList name")
         }
+    } catch (Exception e) {
+        mcpLog("warn", "rm-interop", "_rmSettleRuleStatusFromState: rule ${entry.id} state read failed (${e.message}); status from its appsList name")
     }
+    _rmApplyRuleStatus(entry, flags.disabled as boolean, paused, stopped)
+}
+
+private void _rmApplyRuleStatus(Map entry, boolean disabled, boolean paused, boolean stopped) {
     entry.disabled = disabled
     entry.paused = paused
     entry.status = disabled ? "disabled" : (stopped ? "stopped" : (paused ? "paused" : "active"))
@@ -2747,6 +2767,7 @@ def toolCheckRuleHealth(args) {
         result.eventSubscriptionCount = null
         result.scheduledJobCount = null
         result.checkErrors << "statusJson: ${statusErr.message ?: statusErr.toString()}".toString()
+        result.ok = false
     }
     return result
 }
@@ -2758,9 +2779,16 @@ def toolListRuleLocalVariables(args) {
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
     def appId = normalizeRuleId(args.appId)
     def typeName = null
-    try { typeName = getAppByAppId(appId as Long)?.appType?.name?.toString() } catch (Exception ignored) { }
+    Exception lookupError = null
+    try { typeName = getAppByAppId(appId as Long)?.appType?.name?.toString() } catch (Exception e) { lookupError = e }
     def all
-    if (typeName != null && typeName ==~ /Rule-4\..*/) {
+    if (lookupError != null) {
+        // A failed lookup says nothing about the app; the status page reads every rule type.
+        try { all = _rmReadLocalVarsFromStatus(appId) }
+        catch (Exception statusErr) {
+            throw new IllegalStateException("App ${appId}'s type could not be looked up (${lookupError.message ?: lookupError.toString()}) and its status page could not be read either (${statusErr.message ?: statusErr.toString()}). Try again.")
+        }
+    } else if (typeName != null && typeName ==~ /Rule-4\..*/) {
         def compiled = _ruleCompiledState(appId)
         if (compiled?.ruleFormat != "rm") throw new IllegalStateException("Rule ${appId}'s state could not be read${compiled?.readError ? " (${compiled.readError})" : ''}")
         def stored = compiled.state.allLocalVars
