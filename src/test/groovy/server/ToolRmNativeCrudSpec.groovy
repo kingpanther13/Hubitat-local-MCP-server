@@ -3380,6 +3380,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         thrown(IllegalStateException)
     }
 
+    def "hub_list_rule_local_variables reports a null local-variable read as failed, not as no locals"() {
+        given: "a 5.1 rule with no locals answers an empty map; null means the read failed"
+        enableReadOnly()
+        script.metaClass._nrHandle = { Long id -> new Expando(getAllLocalVars: { -> null }) }
+
+        when:
+        script.toolListRuleLocalVariables([appId: 100])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("Rule 100's local variables could not be read")
+    }
+
+    def "hub_list_rule_local_variables lists a rule with no locals as an empty list"() {
+        given:
+        enableReadOnly()
+        script.metaClass._nrHandle = { Long id -> new Expando(getAllLocalVars: { -> [:] }) }
+
+        when:
+        def result = script.toolListRuleLocalVariables([appId: 100])
+
+        then:
+        result.localVariables == []
+        result.total == 0
+    }
+
     private void rule4State(Map state) {
         script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule-4.1']] }
         script.metaClass._nrHandle = { Long id -> throw new AssertionError('a 4.x rule is read from its compiled state') }

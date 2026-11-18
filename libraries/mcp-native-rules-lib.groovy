@@ -2808,7 +2808,9 @@ def toolListRuleLocalVariables(args) {
             throw new IllegalArgumentException("App ${appId} is not a Rule Machine rule (4.x, 5.1 or Button Rule) whose local variables can be read (${typeName != null && !(typeName ==~ /(?:Button )?Rule-5\..*/) ? "it is a ${typeName} app" : e.message}). Find rule ids with hub_list_rules.")
         }
         all = handle.getAllLocalVars()
-        if (all != null && !(all instanceof Map)) throw new IllegalStateException("Rule ${appId} returned its local variables in an unexpected shape")
+        // A rule with no locals answers an empty map, so a null is a failed read, not an empty list.
+        if (all == null) throw new IllegalStateException("Rule ${appId}'s local variables could not be read")
+        if (!(all instanceof Map)) throw new IllegalStateException("Rule ${appId} returned its local variables in an unexpected shape")
     }
     def localVariables = (all ?: [:]).collect { name, row ->
         _rmPublicLocalVariable(name?.toString(), row instanceof Map ? [type: row.type?.toString(), value: row.value] : [value: row])
