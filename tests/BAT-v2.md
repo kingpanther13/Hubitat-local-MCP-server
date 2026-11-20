@@ -2833,7 +2833,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 ```
 
 **Expected**: Calls `hub_manage_native_rules_and_apps.hub_list_rules`. Returns list with ids and labels. AI reports count. If Rule Machine is not installed, AI gracefully reports "none found" or equivalent.
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 6f6076d9, driven by a fresh AI client given only the prompt: pass -- one `hub_list_rules` call through `hub_read_rules`; the AI reported the three rules with ids, labels and the count.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- one `hub_list_rules` call through `hub_read_rules`; the AI reported the one rule with its id, label and the count, and named the deleted id that `ghostsFiltered` left out.
 
 ### T203 — Find apps using a device
 
@@ -2908,7 +2908,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 ```
 
 **Expected**: Calls `hub_call_rule` with `action='pause'` → confirms with user → calls `hub_call_rule` with `action='resume'`. Both return `{success: true}`.
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 6f6076d9, driven by a fresh AI client given only the prompt (naming a BAT_E2E_ fixture rule): pass -- `hub_set_rule_paused(paused=true)` (the rule read paused on the hub), stopped for the user's confirmation, then `paused=false`; both `success:true`, and the rule read active afterwards.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- `hub_call_rule(action='pause')` returned `pausRule button -> state.paused=true`, and `hub_get_rule` and `hub_list_rules` both read paused; after `action='resume'` both read active.
 
 **WARNING**: Only runs if user has a BAT-prefixed RM rule OR explicitly identifies a safe rule. Never use a production rule.
 
@@ -2923,7 +2923,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 ```
 
 **Expected**: One `hub_list_rules` call; the AI counts by the per-rule `status` field and names the paused setup rule. FAIL if the AI answers that rule status is not exposed, or walks per-rule config pages to derive it.
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 6f6076d9, driven by a fresh AI client given only the prompt: pass -- one `hub_list_rules` call; the AI counted by `status`: two active, the setup rule paused, none disabled.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- one `hub_list_rules` call; the AI counted by `status`: one active, the setup rule paused, none disabled.
 
 ### T209b — Run actions on an RM rule (bypasses conditions)
 
@@ -2936,7 +2936,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 ```
 
 **Expected**: Calls `hub_call_rule` with `action='actions'`. Returns `{success: true, rmAction: 'runAction button'}`. AI reports success and any downstream device state changes.
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 6f6076d9, driven by a fresh AI client given only the prompt (naming a BAT_E2E_ fixture rule that only logs): pass -- `hub_call_rule(action='actions')` returned `rmAction: 'runAction button'`, and the AI confirmed the run from the rule's log entries with `hub_get_logs`. The client first sent `ruleId` to `hub_set_rule` and `rule_id` to `hub_call_rule`; each unknown-argument refusal named the valid argument and changed nothing.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- `hub_call_rule(action='actions')` returned `rmAction: 'runAction button'`, and the AI confirmed the run from the rule's log entries with `hub_get_logs`.
 
 **WARNING**: Only use a BAT-prefixed rule whose actions are idempotent/reversible. Running arbitrary production rule actions could toggle locks or change HVAC.
 
@@ -2951,7 +2951,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 ```
 
 **Expected**: Calls `hub_set_rule_private_boolean` with `value=true`, then `value=false`. Both return `{success: true, rmAction: 'setRuleBooleanTrue'}` and `{rmAction: 'setRuleBooleanFalse'}` respectively.
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 6f6076d9, driven by a fresh AI client given only the prompt (naming a BAT_E2E_ fixture rule): pass -- the AI read the starting value (true) from `hub_get_rule_health`'s `privateBoolean`, set true then false with `hub_set_rule_private_boolean`, and read each value back the same way.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- the AI read the starting value (true) from `hub_get_rule`'s `health.privateBoolean`, set true then false with `hub_set_rule_private_boolean`, read each value back the same way and restored it.
 
 ### T210 — Filter for disabled apps
 
@@ -4232,7 +4232,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```
 
 **Expected**: The local is created with a `variable` change (`operation="create"`, type integer, value 0). `hub_set_rule(operation="read", args={sections:["variables"]})` or `hub_get_rule`'s `localVariables` lists `batLocal` with type integer. The Set Variable action targeting `batLocal` renders as setting it to 7; the agent takes its native action ID from the write's returned document. Deleting that action, then the local (`variable` with `operation="delete"`), both succeed. The final list no longer contains `batLocal`, and `hub_get_rule` reports no broken markers.
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 6f6076d9, driven by a fresh AI client given only the prompt (the rule named `BAT_E2E_RM561_LocalVar Test`): pass -- the local was created with a `variable` change; `hub_list_rule_local_variables` listed `batLocal` (integer, 0); the Set Variable action was added after one refused guess at its type (nothing written) and read-only form discovery of its fields; the action and then the local were deleted; the list came back empty; `hub_get_rule_health` returned `ok:true` with no issues.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- the local was created with a `variable` change and listed by both `hub_set_rule(read)` and `hub_get_rule`'s `localVariables` (integer, 0); the Set Variable action was added after one refused guess at its type (rolled back, nothing written) and form discovery of its fields; the action and then the local were deleted; `localVariables` came back empty and `health.ok` was true with no issues.
 
 **Failure modes**: The local is missing from the read. The action targets a hub variable instead of the local. The list still shows `batLocal` after removal. The action is removed BEFORE the local so the rule stays healthy -- not because RM blocks deleting a referenced local (it does not; see T655).
 
@@ -4445,7 +4445,7 @@ After the measured window, an independent high-level `hub_get_app_config(include
 ```
 
 **Expected**: one terminal envelope, never a `status: "in_progress"` pause. A completed batch carries no residual `remainingRuleIds`; the separate `continuation_limit` terminal DOES carry it on purpose, naming the rules it never reached, so judge that field against the status rather than treating its presence as a defect. `results[]` holds exactly one row per requested rule, every row naming its `ruleId`, with none appearing twice, and `ruleIds` echoes the requested set once each — a rule re-queued for retry across slices must be reported by its FINAL attempt, not once per attempt, and a tail slice that narrows to a single rule must still contribute that rule's row rather than reporting it only at top level. `success`, `partial` and `failedRuleIds` agree with those collapsed rows: an all-success batch reports `success: true` with `partial` falsy and no `failedRuleIds` (a mid-batch budget pause is not a partial RESULT); any failed row makes the envelope `success: false` with `failedRuleIds` matching exactly the failing rows; and `partial` is true only when SOME rules were actioned and some were not — an all-failed batch is a failure, not a partial one, matching the leaf result. Both rules then read `stopped: true` from `hub_get_rule`'s health.
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 6f6076d9, driven by a fresh AI client given only the prompt (two empty BAT_E2E_ rules): pass -- one `hub_call_rule(ruleId=[a,b], action='stop')` returned a single envelope: `success:true`, `partial:false`, one `results` row per rule with its `ruleId`, no `remainingRuleIds`; both rules then read `stopped:true` from `hub_get_rule_health`. The first call without the acknowledgment key was refused and the retry with it succeeded.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- one `hub_call_rule(ruleId=[a,b], action='stop')` returned a single envelope: `success:true`, `partial:false`, `rmAction: 'stop x2'`, one `results` row per rule with its `ruleId`, no `remainingRuleIds`; both rules then read stopped from `hub_get_rule` and `hub_list_rules`.
 
 **Failure modes**: a rule appearing twice in `results[]`; a result row with no `ruleId`, or a rule missing from `results[]` entirely because the tail slice reported it top-level; a rule that failed early and succeeded on retry still counted in `failedRuleIds`; `partial: true` on a batch where every rule succeeded, or on one where every rule failed; `success: false` with an empty `failedRuleIds` (a failure naming no culprit); `remainingRuleIds` surviving into a COMPLETED terminal envelope (it is expected on a `continuation_limit` one); the envelope reporting success while a rule is not actually stopped; or teardown touching a rule this run did not create.
 

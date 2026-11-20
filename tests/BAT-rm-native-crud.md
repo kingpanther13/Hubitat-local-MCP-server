@@ -233,7 +233,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```
 
 **Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='stop')`, then `hub_get_rule(ruleId=ruleId)` and verifies `health.stopped == true` with `health.eventSubscriptionCount == 0` (0 = read fine, nothing live; null appears only when the App Status read itself failed); it calls `hub_call_rule(ruleId=ruleId, action='start')`, reads the rule again, and verifies `health.stopped == false` and `health.eventSubscriptionCount > 0` (the rule's trigger is device-event-based).
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 6f6076d9, driven by a fresh AI client given only the prompt (a BAT_E2E_ fixture rule with a virtual switch trigger): pass -- after `hub_call_rule(action='stop')`, `hub_get_rule_health` read `stopped:true` with `eventSubscriptionCount` 1 -> 0; after `action='start'`, `stopped:false`, count 1, `ok:true`.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- after `hub_call_rule(action='stop')`, `hub_get_rule` read `stopped:true` with `eventSubscriptionCount` 1 -> 0; after `action='start'`, `stopped:false`, count 1, `ok:true`. The client built the rule's switch trigger with `operation:'form'` after `create` refused its guessed trigger fields.
 
 ### T312 — Update Rule button (re-initialize)
 
@@ -1843,6 +1843,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```
 
 **Expected**: `hub_get_rule(ruleId)` returns `ruleId`, `localVariables: []`, the document sections (`actions: []`, empty `triggers`, `conditions` and `expressions`, and `settings`) and `health` with `ruleFormat: "rm"`, `ok: true`, `broken: false` (Rule Machine's compiled flag from GET /app/ruleBuilderJson, read after the rule's page renders), `brokenRows: []`, `paused: false`, `stopped: false`, `privateBoolean: true` (a new rule's default), `disabledActions: []`, `disabledTriggers: []`, `structuralIssues: []` and integer `eventSubscriptionCount` / `scheduledJobCount`. Nothing is written.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- `hub_get_rule` returned `localVariables: []`, empty document sections and `health` with `ok:true`, `broken:false`, `brokenRows: []`, `paused`/`stopped` false, `privateBoolean:true`, empty disabled lists and both counts 0.
 
 ### T457 — hub_get_rule reports a rule broken by a deleted trigger device without opening its page (issue #254 verification)
 
@@ -1855,6 +1856,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```
 
 **Expected**: `hub_get_rule` renders the rule's page first, which is when Rule Machine updates its broken flag, so it returns `health.broken: true`, `health.ok: false`, `health.brokenRows` naming the trigger row (`kind: "trigger"`) and an `issues` entry naming the broken state. The `hub_set_rule(operation='update')` that adds the Log action is refused before anything is written, with the error naming the broken rows; a following read shows the rule's actions unchanged. SAFETY: only BAT-prefixed devices/rules are touched.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: not run as written: the AI client's own permission layer refused to create the deliberately broken rule. The same check passed the same day in a scripted run on that hub at commit b8256a01 (`hub_get_rule` read `broken:true` with a trigger row in `brokenRows`; the update was refused with the rule's actions unchanged) and in `test_rule_health_broken_true_on_dangling_trigger`.
 
 ### T458 — hub_get_rule reads a Visual Rules Builder rule's health (issue #254)
 
@@ -1867,6 +1869,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```
 
 **Expected**: `hub_get_rule` does NOT reject the VRB rule. It returns `health` with `ruleFormat` `vrb-graph` or `vrb-classic`, `localVariables: null` and a `note` pointing at `hub_get_visual_rule` for the definition. For a graph rule, `broken` is a boolean derived from `validationErrors` (true when non-empty); for a classic VRB rule, `broken` is null. The `hub_set_visual_rule` create response carries a `health` block with the same shape (health is attached to every VRB authoring response, success AND failure). SAFETY: only BAT-prefixed devices/rules are touched.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- a graph Visual Rule read `health.ruleFormat: "vrb-graph"`, `broken:false`, no issues, `localVariables: null` and a note pointing at `hub_get_visual_rule`; the `hub_set_visual_rule` create response carried the same `health` block.
 
 ### T459 — hub_get_rule reads the health of classic apps (Button Controller, Basic Rule) (issue #254)
 
@@ -1879,6 +1882,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```
 
 **Expected**: `hub_get_rule` does NOT reject either app. The Basic Rule returns `health.ruleFormat: "basic-rule"` and the Button Controller `health.ruleFormat: "button-controller"`, both with `broken: null` (no compiled flag for non-RM classic apps), `ok: true`, no `issues` (a page error would be listed there), `localVariables: null` and a `note` pointing at `hub_get_app_config` for the configuration. SAFETY: only BAT-prefixed apps are touched.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- the Basic Rule read `ruleFormat: "basic-rule"` and the Button Controller `"button-controller"`, both `broken:null`, `ok:true`, no issues, with a note pointing at `hub_get_app_config`.
 
 ## Section 6: RM recreation bundle (T460–T464)
 
