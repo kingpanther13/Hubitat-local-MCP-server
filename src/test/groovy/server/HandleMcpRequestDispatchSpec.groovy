@@ -755,6 +755,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         'hub_get_info'        | 'subsection'
         'hub_get_source'      | 'File Manager'
         'hub_set_rule'        | 'do NOT resend it'
+        'hub_get_rule'        | 'sections:[]'
         'unknown_tool_xyz'    | 'narrow your query'
     }
 

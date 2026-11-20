@@ -714,7 +714,12 @@ private void _appConfigAttachStatus(Map result, Integer appId) {
         result.appState = status.appState
         result.eventSubscriptions = status.eventSubscriptions
         result.scheduledJobs = status.scheduledJobs
-        if (_redactsCredentials()) result.statusRedactionNote = "appState values whose names look like credentials, at any depth, read ${_appConfigRedactedMarker()}, as settings do. Turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
+        List redaction = []
+        if (_redactsCredentials()) redaction << "appState values whose names look like credentials, at any depth, read ${_appConfigRedactedMarker()}, as settings do; turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
+        // Access tokens follow their own setting, so say which way it went when the app stores one.
+        if (status.appState.any { it.name?.toString() in ['accessToken', 'clientTokens'] })
+            redaction << (_redactsAccessTokens() ? "The app's access tokens read as redacted (Hide access tokens is on)." : "The app's access tokens are shown, because Hide access tokens is off in the MCP app's settings.")
+        if (redaction) result.statusRedactionNote = redaction.join(' ')
         _appConfigFitStatus(result)
     } catch (Exception e) {
         mcpLog("warn", "hub-admin", "hub_get_app_config app ${appId}: status read failed (${e.message})")

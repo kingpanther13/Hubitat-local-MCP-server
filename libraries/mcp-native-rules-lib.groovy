@@ -50,7 +50,7 @@ def _getAllToolDefinitions_partNativeRM() {
                 type: "object",
                 properties: [
                     ruleId: [type: "integer", minimum: 1, description: "The rule's installed-app id, from hub_list_rules (a Visual Rule's from hub_get_visual_rule)."],
-                    sections: [type: "array", items: [type: "string", enum: ["actions", "conditions", "triggers", "expressions", "settings"]], description: "Document sections to return; default all. localVariables and health are always returned."],
+                    sections: [type: "array", items: [type: "string", enum: ["actions", "conditions", "triggers", "expressions", "settings"]], description: "Document sections to return; default all. localVariables and health are always returned, so [] returns them alone; a long rule's whole document can exceed the response cap."],
                     cursor: [type: "string", description: "Page one section: pass \"\" for the first page, then each nextCursor. Requires exactly one section."],
                     limit: [type: "integer", minimum: 1, maximum: 100, description: "Rows per page when paging (default 50)."]
                 ],

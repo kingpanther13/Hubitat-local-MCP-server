@@ -886,6 +886,26 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !result.containsKey('statusRedactionNote')
     }
 
+    def "statusRedactionNote says whether an app's access token is shown"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        settingsMap.redactAccessTokens = redactTokens
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'accessToken', value: 'tok-123']])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.statusRedactionNote.contains(expected)
+
+        where:
+        redactTokens | expected
+        true         | 'read as redacted'
+        false        | 'are shown, because Hide access tokens is off'
+    }
+
     def "without includeStatus no status lists are returned and the status page is not read"() {
         given:
         settingsMap.enableRead = true

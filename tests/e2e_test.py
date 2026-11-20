@@ -8154,12 +8154,13 @@ def updated() {}
                 if not any(row.get("name") == name for row in form["controls"]):
                     form = self._rm_open(app_id, "doActPage")
                 form = self._rm_submit(app_id, form, control=self._rm_control(form, name=name))
-            # The native editor compiles the added event on a following doActPage render.
+            # The native editor compiles the added event on a following doActPage render. That render comes
+            # before any document read: a read renders the rule's main page, which drops an event not yet compiled.
             for _ in range(3):
+                self._rm_open(app_id, "doActPage")
                 doc = self._native_rule_document(app_id)
                 if len(self._rm_wait_slots(doc)[1]) == 2:
                     break
-                self._rm_open(app_id, "doActPage")
             self._rm_open(app_id, "selectActions")
             doc = self._native_rule_document(app_id)
             wait, slots = self._rm_wait_slots(doc)
@@ -9870,24 +9871,6 @@ def updated() {}
             return True, payload
 
 
-    def _assert_rule_renders(self, app_id: Any) -> None:
-        """Lenient health check for relay-504 soft paths: a dropped response may have committed
-        a block OPENER (IF/Repeat), leaving the rule structurally unbalanced -- which the health
-        tool itself documents as EXPECTED mid-build. A broken flag, broken markers and page errors
-        still fail; structural imbalance alone does not (the caller's reset/closer handles it).
-        A failed read also fails: broken=false from compiled state alone does not show the page renders."""
-        h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})["health"]
-        other = [i for i in h.get("issues") or [] if not str(i).startswith("structural imbalance")]
-        assert h.get("broken") is not True and not other, \
-            f"rule is genuinely broken after the dropped response (not just mid-build imbalance): {h}"
-        assert h.get("unreadable") is not True, \
-            f"rule health could not read the rule after the dropped response (unreadable:true): {h}"
-        assert not h.get("checkErrors"), \
-            f"rule health could not finish its reads after the dropped response (checkErrors): {h}"
-        if h.get("ok") is False:
-            print(f"    rule {app_id} renders with structural imbalance after the dropped response "
-                  "(expected mid-build state; a reset/closer follows)")
-
     def _cache_write_health(self, app_id: Any, result: Any) -> None:
         """Stash the health object a hub_set_rule write already returned (the SAME _rmCheckRuleHealth a
         standalone hub_get_rule re-derives), keyed by app, so a following _assert_rule_healthy
@@ -9913,7 +9896,10 @@ def updated() {}
             assert cached[1].get("ok") is not False, \
                 f"rule health (from the write response) reports broken: {cached[1]}"
             return
-        h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})["health"]
+        # sections=[] reads the health alone: a long rule's whole document can exceed the response cap.
+        result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id), "sections": []}})
+        assert result.get("success") is not False and isinstance(result.get("health"), dict), result
+        h = result["health"]
         # A failed read leaves ok false without being evidence of breakage; name it as such.
         assert not h.get("checkErrors"), f"hub_get_rule could not finish its reads: {h}"
         assert h.get("ok") is not False, f"hub_get_rule reports the rule broken: {h}"
@@ -10071,6 +10057,12 @@ def updated() {}
             document = asyncio.run(read_native_document_sections(fetch_section))
             assert_exact_native_conditions(config, document, changes)
             assert_exact_native_actions(config, document, changes, messages)
+            # Unpaged, a long rule's document can pass the response cap; the guard's hint then names the health-only read.
+            whole = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id)})
+            if whole.get("response_too_large"):
+                assert "sections:[]" in str(whole.get("suggestion")), whole
+            else:
+                assert isinstance(whole.get("health"), dict) and len(whole.get("actions") or []) == len(document["actions"]), whole
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)

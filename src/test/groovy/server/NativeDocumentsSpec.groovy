@@ -254,6 +254,18 @@ class NativeDocumentsSpec extends ToolSpecBase {
         [first, second].every { it.localVariables*.name == ['counter'] && it.health != null && !it.containsKey('conditions') }
     }
 
+    // A long rule's whole document can exceed the response cap, so its health must stay readable on its own.
+    def 'hub_get_rule with no sections returns the health and local variables alone'() {
+        given:
+        settingsMap.enableRead = true
+        when:
+        def inner = mcpDriver.parseInner(mcpDriver.callTool('hub_get_rule', [ruleId: 42, sections: []]))
+        then:
+        inner.keySet() == ['ruleId', 'health', 'localVariables'] as Set
+        inner.health.ok == true
+        inner.localVariables*.name == ['counter']
+    }
+
     def 'hub_get_rule reports a failed local-variable read as a runtime failure, not as no locals'() {
         given:
         script.metaClass._nrHandle = { Long id -> new NativeDocumentChild(events, lifecycle, null, typedSettings) }
