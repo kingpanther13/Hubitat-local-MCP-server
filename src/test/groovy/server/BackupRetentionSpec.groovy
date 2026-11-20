@@ -24,12 +24,19 @@ class BackupRetentionSpec extends ToolSpecBase {
 
     private int hubFilesCalls = 0
 
-    // getHubFiles() as the hub answers it; the root lookups read it, not /hub/fileManager/json.
+    // The root lookups read getHubFiles(), not /hub/fileManager/json. Live hubs answer
+    // FileManagerEntry objects (see hubFileEntry); the maps here carry the same properties.
     private void listFiles(List files) {
         script.metaClass.getHubFiles = { ->
             hubFilesCalls++
             files
         }
+    }
+
+    // A live FileManagerEntry: size is a String byte count, date String epoch milliseconds; a
+    // folder has type "dir", size "0" and a null date.
+    private static Expando hubFileEntry(String name, String type, String size, String date) {
+        return new Expando(name: name, type: type, size: size, date: date)
     }
 
     private List deletedFiles() {
@@ -514,6 +521,7 @@ class BackupRetentionSpec extends ToolSpecBase {
         [[name: 'a.txt', type: 'file', size: 3L, date: 4L]]                        | [[name: 'a.txt', size: 3L, date: 4L]]
         [[name: 'a.txt', type: 'file', size: 'big', date: 'today'], [name: 'd', type: 'dir', size: '0']] | [[name: 'a.txt', size: null, date: null]]
         [[name: null, type: 'file'], [name: 'b.txt', type: 'file']]                 | [[name: 'b.txt', size: null, date: null]]
+        [hubFileEntry('a.txt', 'file', '21', '1795156449220'), hubFileEntry('d', 'dir', '0', null)] | [[name: 'a.txt', size: 21L, date: 1795156449220L]]
         []                                                                         | []
     }
 

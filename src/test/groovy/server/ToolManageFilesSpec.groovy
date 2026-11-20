@@ -70,12 +70,13 @@ class ToolManageFilesSpec extends ToolSpecBase {
     // Shared, because where-block closures that call listing() run on the shared spec instance.
     @Shared private List hubFilesCalls = []
 
-    // getHubFiles() entries carry name, type, size and date only (string size and date, as the
-    // JSON listing sends them); entries is read on each call so a spec can change the files.
+    // Live getHubFiles() answers FileManagerEntry objects, not maps: name, type, a String byte
+    // count as size and String epoch milliseconds as date; a folder has size "0" and a null date.
+    // entries is read on each call so a spec can change the files.
     private void hubFiles(Closure entries) {
         script.metaClass.getHubFiles = { ->
             hubFilesCalls << 'getHubFiles'
-            entries().collect { it.subMap(['name', 'type', 'size', 'date']) }
+            entries().collect { new Expando(name: it.name, type: it.type, size: it.size, date: it.date) }
         }
     }
 
@@ -1528,6 +1529,12 @@ class ToolManageFilesSpec extends ToolSpecBase {
         changes.isEmpty()
         downloads.size() == expectedDownloads
 
+        and: 'a missing file is answered from its failed download, with no root listing'
+        args.fileName != 'missing.txt' || (hubFilesCalls.isEmpty() && hubGet.calls.isEmpty())
+
+        and: 'a subfolder path under a name that is not a listed folder gets no listing hint'
+        !args.fileName?.toString()?.startsWith('my.dir/') || !mcpDriver.parseInner(response).error.contains('List the folder')
+
         where:
         [tool, args, listingFails, needle, expectedDownloads, useGateways] << [
             ['hub_list_files', [:], true, 'Could not list File Manager', 0],
@@ -1551,6 +1558,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
             ['hub_list_files', [folder: 'a b'], false, 'folder must be a relative File Manager folder path', 0],
             ['hub_list_files', [folder: 'a.b'], false, 'folder must be a relative File Manager folder path', 0],
             ['hub_read_file', [fileName: 'my.dir/x.txt'], false, "'my.dir/x.txt' names a file in a subfolder; hub_read_file acts on root files only.", 0],
+            ['hub_delete_file', [fileName: 'my.dir/x.txt', confirm: true], false, "'my.dir/x.txt' names a file in a subfolder; hub_delete_file acts on root files only.", 0],
             ['hub_read_file', [fileName: 'notes.txt', length: 1.5], false, 'length must be an integer from 1 to 60000', 0],
         ].collectMany { row -> [true, false].collect { mode -> row + [mode] } }
     }
