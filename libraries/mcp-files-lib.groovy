@@ -257,7 +257,7 @@ def toolWriteFile(args) {
     String downloadError = "the hub returned no content"
     boolean missing = false
     try { existingBytes = downloadHubFile(fileName) }
-    catch (Exception e) { downloadError = e.message; missing = _filesDownloadMissing(e) }
+    catch (Exception e) { downloadError = e.message ?: e.class.simpleName; missing = _filesDownloadMissing(e) }
     if (existingBytes == null) {
         // Any other failed download may hide an existing file, and overwriting one whose content
         // could not be copied first would lose it, so then only a name the listing lacks is created.
@@ -365,10 +365,24 @@ def toolDeleteFile(args) {
     if (!isBackupFile) {
         byte[] bytes = null
         boolean missing = false
+        String downloadError = null
         try { bytes = downloadHubFile(fileName) }
         catch (Exception e) {
+            downloadError = e.message ?: e.class.simpleName
             missing = _filesDownloadMissing(e)
-            mcpLog("debug", "file-manager", "Could not download '${fileName}' before deletion: ${e.message}")
+            mcpLog("debug", "file-manager", "Could not download '${fileName}' before deletion: ${downloadError}")
+        }
+        if (bytes == null && _loadLimiterRefusedMessage(downloadError)) {
+            // The no-copy delete below is for a file that can never be read; a limiter refusal
+            // passes, so deleting now would lose a copy that a retry could take. The refusal goes
+            // in error, where the load-limiter retry looks for it.
+            mcpLog("warn", "file-manager", "Delete of '${fileName}' refused: the load limiter refused its backup download (${downloadError})")
+            return [
+                success: false,
+                fileName: fileName,
+                error: "Could not read '${fileName}' to take its backup copy (${downloadError}); nothing was deleted.".toString(),
+                note: "The hub's load limiter refused the download, which is temporary. Nothing was deleted; retry in a moment. ${FILES_GUIDE_POINTER}".toString()
+            ]
         }
         if (bytes == null) {
             String kind = missing ? null : _filesRootEntryKind(fileName)
@@ -535,6 +549,6 @@ def _toolDisplayMeta_partFiles() {
         hub_list_files: [title: "List Files", summary: "List files in the hub File Manager, optionally filtered by a name substring."],
         hub_read_file: [title: "Read File", summary: "Read a File Manager file's contents."],
         hub_write_file: [title: "Write File", summary: "Create or update a File Manager file (backs up the existing one; identical content writes nothing)."],
-        hub_delete_file: [title: "Delete File", summary: "Delete a File Manager file (auto-backs up first)."]
+        hub_delete_file: [title: "Delete File", summary: "Delete a File Manager file (takes a backup copy first when possible)."]
     ]
 }

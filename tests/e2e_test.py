@@ -7401,8 +7401,8 @@ def updated() {}
         chunks, offset, length = [], 0, 60000
         while True:
             page = self.client.call_tool("hub_read_file", {"fileName": file_name, "offset": offset, "length": length})
-            # JSON quotes cost several bytes each once escaped, so a full chunk can exceed the
-            # response cap; repeat at the same offset with a smaller length, as the guide says.
+            # Escaped characters (quotes, backslashes, newlines, non-ASCII) take several bytes each, so a
+            # full chunk can exceed the response cap; repeat at the same offset with a smaller length.
             if page.get("response_too_large") and length > 10000:
                 length //= 2
                 continue
@@ -13142,8 +13142,9 @@ def updated() {}
                     decimal = self.client.call_tool("hub_read_file", {"fileName": name, "length": 3.0})
                     assert decimal.get("success") is True and decimal.get("content") == "ver", \
                         f"a whole-number length sent as 3.0 was not accepted: {decimal}"
-                    # Backslashes double once JSON-escaped, so a 60000-character chunk of them is too
-                    # large to send; the suggestion names a smaller length, which then fits.
+                    # Backslashes cost several bytes each once JSON-escaped, so a 30000-character chunk
+                    # read at length 60000 exceeds the response cap; the suggestion names a smaller
+                    # length, which then fits.
                     escaped = f"{PREFIX}561_escaped_{int(time.time())}.txt"
                     escaped_stem = escaped[:-len(".txt")] + "_backup_"
                     try:
@@ -13151,7 +13152,7 @@ def updated() {}
                         assert wr.get("success") is True, f"could not write the backslash fixture: {wr}"
                         big = self.client.call_tool("hub_read_file", {"fileName": escaped, "length": 60000})
                         assert big.get("response_too_large") is True and "length" in str(big.get("suggestion")), \
-                            f"a 60000-character chunk of backslashes was not refused as too large with a length hint: {big}"
+                            f"a 30000-backslash chunk read at length 60000 was not refused as too large with a length hint: {big}"
                         small = self.client.call_tool("hub_read_file", {"fileName": escaped, "length": 10000})
                         assert small.get("success") is True and small.get("chunkLength") == 10000, \
                             f"a 10000-character chunk of backslashes did not fit: {({k: small.get(k) for k in ('success', 'chunkLength', 'response_too_large')})}"

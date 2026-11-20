@@ -581,7 +581,7 @@ Non-destructive radio operations. Destructive radio ops (reset/wipe, firmware up
 | `hub_list_files` | List files in File Manager (optional `filter` name substring; also in `hub_read_files`) |
 | `hub_read_file` | Read a file's contents (also in `hub_read_files`) |
 | `hub_write_file` | Create or update a file (auto-backs up existing) |
-| `hub_delete_file` | Delete a file (auto-backs up first) |
+| `hub_delete_file` | Delete a file (takes a backup copy first when possible) |
 
 Write/delete require the Write master + confirm + a recent backup.
 

@@ -547,6 +547,47 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         uploads[1] == 'notes.txt'
     }
 
+    def 'a delete whose backup-copy download the limiter refused is recognised, reset and repeated'() {
+        given: 'the listing shows the file, so only the refusal stands between the delete and its copy'
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = NOW
+        hubGet.register(RESET) { p -> 'ok' }
+        int downloads = 0
+        def uploads = []
+        def deleted = []
+        script.metaClass.downloadHubFile = { String name ->
+            if (name != 'notes.txt') return null
+            if (++downloads == 1) throw new RuntimeException('App 1 generates excessive hub load')
+            'old'.getBytes('UTF-8')
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        script.metaClass.getHubFiles = { -> [new Expando(name: 'notes.txt', type: 'file', size: '3', date: '1')] }
+
+        when: 'the first attempt alone'
+        def refused = script.toolDeleteFile([fileName: 'notes.txt', confirm: true])
+
+        then: 'nothing is deleted and the refusal sits in error, where the limiter retry looks'
+        refused.success == false
+        refused.error.contains('excessive hub load')
+        script._loadLimiterRefusedResult(refused)
+        deleted.isEmpty()
+        uploads.isEmpty()
+
+        when: 'through executeTool'
+        downloads = 0
+        def result = script.executeTool('hub_delete_file', [fileName: 'notes.txt', confirm: true])
+
+        then: 'the repeat takes the backup copy, then deletes'
+        result.success == true
+        downloads == 2
+        resets() == 1
+        uploads.size() == 1
+        uploads[0].startsWith('notes_backup_')
+        result.backupFile == uploads[0]
+        deleted == ['notes.txt']
+    }
+
     def 'a read refused through its gateway is reset and repeated once'() {
         given:
         settingsMap.useGateways = true

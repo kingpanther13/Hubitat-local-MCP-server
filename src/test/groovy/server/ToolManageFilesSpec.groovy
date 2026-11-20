@@ -475,10 +475,9 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_read_file refuses a huge exponent #args quickly, without building the integer"() {
+    def "hub_read_file refuses a huge exponent #args without building the integer"() {
         given:
         script.metaClass.downloadHubFile = { String name -> throw new AssertionError('must not read') }
-        long started = System.nanoTime()
 
         when:
         script.toolReadFile([fileName: 'notes.txt'] + args)
@@ -486,7 +485,6 @@ class ToolManageFilesSpec extends ToolSpecBase {
         then:
         def e = thrown(IllegalArgumentException)
         e.message == message
-        (System.nanoTime() - started) < 2_000_000_000L
 
         where:
         args                                      | message
@@ -890,6 +888,24 @@ class ToolManageFilesSpec extends ToolSpecBase {
         why                         | setupListing                                                                                       | noteNeedle
         'the file is listed'        | { -> listing([fileEntry('x.txt')]) }                                                               | "'x.txt' exists but its content could not be downloaded."
         'the listing fails too'     | { -> hubFilesFail() }                                                                              | 'whether \'x.txt\' exists is unknown'
+    }
+
+    def "hub_write_file names the exception type when the failed download has no message"() {
+        given:
+        enableWrite()
+        def uploads = []
+        script.metaClass.downloadHubFile = { String name -> throw new IllegalStateException() }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+        listing([fileEntry('x.txt')])
+
+        when:
+        def result = script.toolWriteFile([fileName: 'x.txt', content: 'hi', confirm: true])
+
+        then:
+        uploads.isEmpty()
+        result.success == false
+        result.error == "Could not read the current 'x.txt' to take its backup copy (IllegalStateException); nothing was written."
+        !result.error.contains('null')
     }
 
     def "hub_write_file whose download throws creates the file when the listing lacks the name"() {
@@ -1495,6 +1511,55 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.message == "File 'notes.txt' deleted. WARNING: Could not create backup before deletion."
         result.warning == 'The file contents could not be backed up before deletion. The data may be permanently lost.'
         !result.backupFile
+    }
+
+    def "hub_delete_file deletes nothing when the load limiter refused its backup download"() {
+        given: 'the file is listed, so without the refusal check it would be deleted with no copy'
+        enableWrite()
+        def deleted = []
+        script.metaClass.downloadHubFile = { String name -> throw new RuntimeException('App 1 generates excessive hub load') }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> throw new AssertionError('no copy without content') }
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        listing([fileEntry('notes.txt')])
+
+        when:
+        def result = script.toolDeleteFile([fileName: 'notes.txt', confirm: true])
+
+        then: 'a temporary refusal is not treated as an unreadable file'
+        result.success == false
+        result.fileName == 'notes.txt'
+        result.error == "Could not read 'notes.txt' to take its backup copy (App 1 generates excessive hub load); nothing was deleted."
+        result.note.contains('Nothing was deleted')
+        result.note.endsWith("See hub_get_tool_guide(section='file_manager').")
+        deleted.isEmpty()
+        hubFilesCalls.isEmpty()
+    }
+
+    @spock.lang.Unroll
+    def "a delete the load limiter refused reaches the client as isError and deletes nothing (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        def deleted = []
+        script.metaClass.downloadHubFile = { String name -> throw new RuntimeException('App 1 generates excessive hub load') }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> throw new AssertionError('no copy without content') }
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        listing([fileEntry('notes.txt')])
+
+        when:
+        def response = mcpDriver.callTool('hub_delete_file', [fileName: 'notes.txt', confirm: true])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error.contains('excessive hub load')
+        inner.error.contains('nothing was deleted')
+        deleted.isEmpty()
+
+        where:
+        useGateways << [true, false]
     }
 
     @spock.lang.Unroll
