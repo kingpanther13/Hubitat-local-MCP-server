@@ -8,11 +8,11 @@ Detailed reference for MCP Rule Server tools, the same text `hub_get_tool_guide`
 
 Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level rule_id identifies the target; args cannot override it or confirm. When mandatory guide acknowledgment is enabled, pass its key as top-level bestPracticeKey alongside operation, rule_id, args and confirm.
 
-Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
+Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule; hub_get_rule returns the same document from the read-only tools. A read renders the rule's main page once, because Rule Machine updates its broken flag only then, and returns the result as health, the same report hub_get_rule returns (broken, brokenRows, paused, stopped, privateBoolean, structuralIssues; see builtin_app_tools_rules). The sections come from native state and typed settings. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 
 For large rules, read one section with args:{sections:["settings"],cursor:"",limit:50}. Paging requires exactly one section; limit is 1..100 (default 50). The section keeps its usual map or list shape. Pass the returned top-level nextCursor into args.cursor until nextCursor is null. page returns offset, limit, total and revision, a hash of the complete section; restart if revision changes. Pages may contain fewer than limit rows to fit the response size cap; an individual oversized row is refused explicitly without truncation. Actions retain native order, settings sort by name, and map sections sort by string key. Omit cursor and limit for an unpaged read.
 
-Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",rule_id,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parent_id,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
+Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",rule_id,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parent_id,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting. An update first renders the rule's page and refuses a rule that is already broken, naming its broken rows, before anything is written: repair those rows with operation:"form" or in the Hubitat UI.
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.
@@ -27,7 +27,7 @@ Each change is {part,value}. Supported parts:
 
 Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; not every capability-specific variant is supported. Discover native options through operation:"form" when a document contract is unavailable. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback, native editor diagnostics, expression-reference checks and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
 
-Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state and are never part of document reads.
+Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state; a document read renders only the main page.
 
 ## Native Rule Forms
 
@@ -1021,6 +1021,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - Each input is the field hub_set_native_app(operation='form') returns; a device picker adds `selected`, its devices with labels. `unsupported` lists page parts a form cannot drive, such as a community app's create button. When the page cannot be modelled, `formError` says why: inputs carry no values and there are no controls.
   - `appType.namespace` and `appType.name` name the type; `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
   - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs read as in the form tools: a password input carries no value and `redacted: true`; a credential-named input reads the marker. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - `includeStatus=true` adds the app's App Status lists, for any app and also with `summary=true`: `appState` (the app's stored state as `[{name, value}]`; a community app's working data, a webCoRE piston's definition, logs and trace), `eventSubscriptions` and `scheduledJobs`. With Hide passwords and credentials on, a value whose name looks like a credential reads `***redacted (password)***`, also inside nested maps (a rule's local variables); `statusRedactionNote` says so. When the status page cannot be read the three lists are omitted and `statusNote` says why. hub_get_rule counts a rule's subscriptions and jobs from the same read.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
@@ -1051,7 +1052,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 ### hub_manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules
 
 RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
-(hub_list_rules, hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean and hub_get_rule_health are also in hub_manage_rule_machine, with hub_set_rule and hub_list_rule_local_variables. The reads hub_list_rules, hub_get_rule_health and hub_list_rule_local_variables are also in hub_read_rules.)
+(hub_list_rules, hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean and hub_get_rule are also in hub_manage_rule_machine, with hub_set_rule. The reads hub_list_rules and hub_get_rule are also in hub_read_rules.)
 
 - **hub_list_rules** — every Rule Machine rule (RM 4.x + 5.x, deduplicated by id) with a live **status** ("active" | "paused" | "stopped" | "disabled" | "unknown"), the **disabled** and **paused** booleans (omitted when unknown) and, only when detected, **requiredExpressionFalse: true**.
   - **disabled** is the app's red-X flag from /hub2/appsList.
@@ -1059,14 +1060,14 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
   - The name shows one decoration at a time ("(Stopped)" hides "(Paused)"), so a decorated row also reads that rule's own paused/stopped state; undecorated rows make no extra read, and if that read fails the name decides. Rule Machine refreshes the decoration when the rule's page renders: hub_call_rule(action="stop"/"start") renders it, so the list is current after an MCP stop or start, while a stop made elsewhere shows once the rule's page is next opened.
   - **status** precedence is disabled > stopped > paused > active; the booleans stay independent (a paused rule disabled later reads disabled:true, paused:true, status:"disabled").
   - **unknown**: when /hub2/appsList cannot be read, every rule is unknown, the list is unfiltered (deleted rules may linger) and the result carries **statusNote**; when one rule's entry lacks data, only that rule is unknown.
-  - For one rule's state call hub_get_rule_health. For the disabled flag of other classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances').
+  - For one rule's state call hub_get_rule. For the disabled flag of other classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances').
 - **hub_call_rule** — act on one or more RM rules (ruleId takes an id or an array). `rule` (refused for Rule Machine 5.1 rules) dispatches the whole set in one RMUtils call; `actions`, `stop` and `start` click each rule's page button in turn and return per-rule results, with failedRuleIds/remainingRuleIds on a partial batch
   - action="rule" (default): full evaluation (triggers + conditions + actions); refused for Rule Machine 5.1 rules, where it runs nothing
   - action="actions": run actions only, skip conditions
   - action="stop": stop running actions
   - action="start": restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged)
 - **hub_set_rule_paused** — pause (paused=true) or resume (paused=false) one or more rules in ONE call (ruleId takes an id or an array; multi-id batches existence-check every id first); reversible
-- **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only); hub_get_rule_health reads it back as privateBoolean
+- **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only); hub_get_rule reads it back as health.privateBoolean
 
 Native CRUD (also requires the Write master):
 - **hub_set_native_app** — create, update or drive the forms of every classic app other than Rule Machine rules (see set_native_app_reference). Rule Machine rules use hub_set_rule.
@@ -1077,21 +1078,21 @@ Native CRUD (also requires the Write master):
 - **hub_import_native_app** — creates the app from that JSON under the parent of `parentHintAppId`; the import is active unless `stageDisabled`, with the same failure contract as clone.
 
 - Clone and import read the parent's child apps first: if that read fails nothing is created and the call can be retried, and an ambiguous new child is never guessed at. When staging reaches its continuation limit, the error keeps newAppId, stagedDisabled, stageFailures and stageRemaining: disable those apps directly instead of creating again.
-- **hub_get_rule_health** — read-only health of one rule or built-in classic app; see hub_get_rule_health below.
+- **hub_get_rule** — read-only: one rule's health, document and local variables; see hub_get_rule below.
 
-For reading a native RM rule without editor renders, use hub_set_rule(operation='read'). hub_get_app_config remains available for native configuration diagnostics.
+hub_get_app_config remains available for native configuration diagnostics; with includeStatus=true it also returns any app's appState, eventSubscriptions and scheduledJobs.
 
 For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
 ### Safety model for native CRUD
 1. With backupBeforeRuleEdits on (default), each hub_set_rule update batch, and a native form workflow before its first step, saves a native snapshot to File Manager; backup.backupKey restores the configuration from before it. A failed snapshot stops the edit.
 2. Native form writes check field types and cardinality before submitting. An omitted input keeps its stored value; an unset input with a page default is saved with that default, as the browser does.
-3. A stored setting does not prove runtime behavior: check partial outcomes and hub_get_rule_health after a write.
+3. A stored setting does not prove runtime behavior: check partial outcomes and hub_get_rule after a write.
 4. Deletes are soft by default; force=true also removes children.
 
 ### CRUD workflow example
   hub_set_rule(operation="create", args={parent_id:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true) → app_id
-  hub_get_rule_health(appId=<app_id>) → ok=true, issues:[]
+  hub_get_rule(ruleId=<app_id>) → health.ok=true, health.issues:[]
   hub_delete_native_app(appId=<app_id>, force=true, confirm=true) → {backup: {backupKey: "rm-rule_<app_id>_..."}}
 
 ### hub_list_drivers (list device driver TYPES on the hub)
@@ -1114,27 +1115,25 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 `actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), one rule at a time, not RMUtils: that is the route the hub UI takes. `stop` and `start` read the rule's stopped state first and leave a rule already in the target state alone, so they are safe to repeat; a repeated `rule` or `actions` runs the actions again. Only `rule` goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation). An id whose app is not a Rule Machine rule (the Rule Machine parent app, a Basic Rule, any other app) is refused for every action before anything is dispatched, as it is by hub_set_rule_paused and hub_set_rule_private_boolean.
 
-### hub_get_rule_health
+### hub_get_rule
 
-`ruleFormat` says what was inspected: `rm` (Rule Machine or Button Rule) / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
+`hub_get_rule(ruleId, sections?, cursor?, limit?)` reads one rule. It returns `ruleId`, `health`, `localVariables` and, for a Rule Machine 5.1 rule or Button Rule, the document hub_set_rule(operation='read') returns: `actions`, `conditions`, `triggers`, `expressions` and `settings`, all by default, or the ones named in `sections`. Page one section with `cursor` ("" first, then each `nextCursor`) and `limit` (1-100, default 50), exactly as the hub_set_rule read does (see set_rule_reference). A Visual Rule or a classic app returns `health`, `localVariables: null` and a `note` naming the tool that reads it.
 
-- **Rule Machine**: the rule's page is rendered once, then its compiled state (/app/ruleBuilderJson) is read once. Rule Machine updates its `broken` flag only when the page renders, so a rule whose trigger device was deleted reads broken here without opening the editor first. The report carries `broken`, `paused`, `stopped`, `privateBoolean`, `disabledActions` (the native ids of actions switched off in the rule; `disabledTriggers` likewise when present), `disabled` (red-X), `label` (runtime decoration removed), `structuralIssues` (for a Rule Machine 5.1 rule the same IF/Repeat block and expression check hub_set_rule runs; for older rule types the IF/Repeat balance of its action rows), and the page's own error, `*BROKEN*` label or `**Broken Trigger|Action|Condition**` markers as `issues`.
-- **Visual Rules Builder**: the engine's own verdict — a graph rule's `validationErrors` (broken when non-empty) and pause state, with the rule's own name as `label`.
-- **Other built-in classic apps** (Basic Rule, Button Controller, Room Lighting, …): label, red-X and page errors; `broken` is null.
-- User and community apps are not read (their page runs their own code); use hub_get_app_config.
-- `eventSubscriptionCount` / `scheduledJobCount` are the app's live subscriptions and scheduled jobs (null with a `checkErrors` entry when that read fails). Visual Rule write responses embed this report without them.
+- `localVariables`: `[{name, type, value}]`, the rule's own list, including a value the running rule just set. `type` is Rule Machine's token (integer, bigdecimal, string, boolean, datetime), the value a hub_set_rule variable change takes. A credential-named variable's value is hidden (`redacted:true`) while credential hiding is on. Hub globals are read with hub_list_variables.
+- A read that fails returns `success:false` with `error` and `note`; nothing is changed, so retry it.
 
-`ok:true` means everything was read and nothing is wrong. `ok:false` with `unreadable:false` means `issues` names a problem or `checkErrors` names a read that failed, leaving part of the rule unchecked; `unreadable:true` means nothing could be read, which is not evidence of breakage. A `checkErrors` entry is not evidence about the rule either: repeat the call to finish the check. A structural issue is expected while a block is built across several calls; finish it with a hub_set_rule(operation='update') terminator change, and compare with hub_set_rule(operation='read') before considering a restore.
+`health` has the same shape here, in hub_set_rule's read and in its write responses' documents:
 
-### hub_list_rule_local_variables
+- `ruleFormat` says what was inspected: `rm` (any Rule Machine rule or Button Rule) / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
+- Every app with a classic page has it rendered once first. Rule Machine updates its `broken` flag only then, so a rule whose trigger device was deleted reads broken here without opening the editor.
+- **Rule Machine**: `broken` (from /app/ruleBuilderJson), `brokenRows` (`[{kind: trigger|action|condition, text}]`, each row the page marks `**Broken Trigger|Action|Condition**`), `disabledActions` and `disabledTriggers` (native ids of rows switched off; `[]` when none), `structuralIssues` (the IF/Repeat block and expression check hub_set_rule runs) and `privateBoolean`.
+- **Visual Rules Builder**: the engine's own verdict, a graph rule's `validationErrors` (broken when non-empty), and its pause state, with the rule's own name as `label`.
+- **Other apps** (Basic Rule, Button Controller, Room Lighting, user and community apps): label, red-X and page errors; `broken` is null.
+- `paused`, `stopped` and `privateBoolean` come from the app's state on its App Status page; when the state carries no flag, the page name's "(Paused)" or "(Stopped)" decoration is used. `label` has that decoration removed. `disabled` is the red-X flag.
+- `eventSubscriptionCount` and `scheduledJobCount` count the app's live subscriptions and scheduled jobs from the same read; the lists themselves come from hub_get_app_config(includeStatus=true).
+- A value the hub does not return reads null.
 
-List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals). Requires the Read master.
-
-- Hub globals are covered by hub_list_variables; native locals are written through hub_set_rule(operation='update') variable changes.
-- Reads the rule's own local-variable list, which includes a value the running rule just set (for a 4.x rule, its stored list overlaid with each variable's live value). A credential-named variable's value is hidden (`redacted:true`) while credential hiding is on.
-- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is Rule Machine's own token (integer, bigdecimal, string, boolean, datetime), the same value a hub_set_rule variable change takes; the rule page shows it as Number, Decimal, String, Boolean, DateTime.
-- Rule Machine 4.x and 5.1 rules and Button Rules are read; any other app id is refused.
-- Use to confirm a local exists (and its type) before targeting it with a Set Variable action or a hub_set_rule variable change.
+`ok:true` means everything was read and nothing is wrong. `ok:false` with `unreadable:false` means `issues` names a problem or `checkErrors` names a read that failed, leaving part of the rule unchecked; `unreadable:true` means nothing could be read, which is not evidence of breakage. A `checkErrors` entry is not evidence about the rule either: repeat the call to finish the check. A structural issue is expected while a block is built across several calls; finish it with a hub_set_rule(operation='update') terminator change, and compare with hub_get_rule(sections=['actions']) before considering a restore. hub_set_rule(operation='update') refuses a rule that is already broken before writing anything.
 
 ### hub_delete_native_app
 
@@ -1379,7 +1378,7 @@ VRB2 separates STORAGE from ACTIVATION. A document that fails the hub's own vali
 - `validationErrors` — the hub's human-readable problems. `validationIssues` is the same list in editor form (`{nodeId, field, message}`) so you can highlight the offending node, and `referencedDeviceIds` lists the devices the graph touched.
 - `revision` (reads and writes) — the hub's opaque optimistic-concurrency token for the stored document. `ruleApps` (reads with `includeRuleApps: true`; otherwise `ruleAppCount`) lists the installed apps a `runRule` action can legally target. The raw `ruleJson` string is left out of a read whose `definition` parsed. `runtimeGraph` (reads) summarizes the live runtime, and is absent when nothing is active.
 - `createRoute` (create and restore-recreate) — `createchild` when the per-version child route made the rule, `createVisualRuleBuilderRule` when the legacy builder-page fallback did; the fallback is the only path where the firmware, not your definition, picked the builder. `createRouteNote` appears beside it when the child route answered with a redirect to the new rule's builder page instead of a configure Location (the id was adopted from that redirect).
-- Every field in the two bullets above is OPTIONAL on the wire and appears only when the firmware sends it. `hub_get_rule_health(appId)` reads the same verdict later; for a graph Visual Rule `broken: true` means non-empty `validationErrors`.
+- Every field in the two bullets above is OPTIONAL on the wire and appears only when the firmware sends it. `hub_get_rule(ruleId)` reads the same verdict later as `health`; for a graph Visual Rule `broken: true` means non-empty `validationErrors`.
 - When the firmware sends them, the hub's own `storedSuccessfully` / `activatedSuccessfully` flags are passed through verbatim. `activatedSuccessfully` takes precedence over the inferred `activated`.
 
 The serialized document is capped at 100,000 UTF-8 bytes; an oversized one is not stored at all. On the wire the graph travels as a JSON STRING inside `{name, ruleJson}` — the tool handles the double-encoding; always pass `definition` as a normal JSON object.

@@ -1191,7 +1191,7 @@ def toolSetVisualRule(args) {
     // resolves to a concrete rule id, matching installed-app rule IDs (issue #254 follow-up). For a
     // graph Visual Rule _rmCheckRuleHealth reads validationErrors as the broken verdict; the
     // confirm pre-flight throw is left to propagate (it must go through the shared validation renderer, not a hand-built result).
-    // We re-call _rmCheckRuleHealth (one or two extra localhost GETs for a graph rule) rather
+    // We re-call _rmCheckRuleHealth (a few extra localhost GETs, its App Status read included) rather
     // than synthesizing the report from the data _toolSetVisualRuleImpl already holds: that keeps
     // a SINGLE source of truth for the health shape (no drift), and the cost is a cheap localhost
     // read on an infrequent write.
@@ -1986,7 +1986,7 @@ VRB2 separates STORAGE from ACTIVATION. A document that fails the hub's own vali
 - `validationErrors` — the hub's human-readable problems. `validationIssues` is the same list in editor form (`{nodeId, field, message}`) so you can highlight the offending node, and `referencedDeviceIds` lists the devices the graph touched.
 - `revision` (reads and writes) — the hub's opaque optimistic-concurrency token for the stored document. `ruleApps` (reads with `includeRuleApps: true`; otherwise `ruleAppCount`) lists the installed apps a `runRule` action can legally target. The raw `ruleJson` string is left out of a read whose `definition` parsed. `runtimeGraph` (reads) summarizes the live runtime, and is absent when nothing is active.
 - `createRoute` (create and restore-recreate) — `createchild` when the per-version child route made the rule, `createVisualRuleBuilderRule` when the legacy builder-page fallback did; the fallback is the only path where the firmware, not your definition, picked the builder. `createRouteNote` appears beside it when the child route answered with a redirect to the new rule's builder page instead of a configure Location (the id was adopted from that redirect).
-- Every field in the two bullets above is OPTIONAL on the wire and appears only when the firmware sends it. `hub_get_rule_health(appId)` reads the same verdict later; for a graph Visual Rule `broken: true` means non-empty `validationErrors`.
+- Every field in the two bullets above is OPTIONAL on the wire and appears only when the firmware sends it. `hub_get_rule(ruleId)` reads the same verdict later as `health`; for a graph Visual Rule `broken: true` means non-empty `validationErrors`.
 - When the firmware sends them, the hub's own `storedSuccessfully` / `activatedSuccessfully` flags are passed through verbatim. `activatedSuccessfully` takes precedence over the inferred `activated`.
 
 The serialized document is capped at 100,000 UTF-8 bytes; an oversized one is not stored at all. On the wire the graph travels as a JSON STRING inside `{name, ruleJson}` — the tool handles the double-encoding; always pass `definition` as a normal JSON object.

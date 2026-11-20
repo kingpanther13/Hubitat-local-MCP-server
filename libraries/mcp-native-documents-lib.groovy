@@ -17,9 +17,10 @@ private Object _ndJson(Object value) {
 
 private Object _ndRuleHealth(Long id) { _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}")) }
 
+// A never-written lifecycle flag is false; one stored in any other form than a flag is malformed (null).
 private Boolean _ndNativeFlag(Map health, String name) {
     if (!health.containsKey(name)) return false
-    health.get(name) instanceof Boolean ? health.get(name) : null
+    _appStateFlag(health.get(name))
 }
 
 private List _ndSettings(Long id) {
@@ -101,9 +102,8 @@ private Map _ndRender(Long id, String page) {
     rendered
 }
 
-Map toolGetRuleDocument(Map args) {
-    Long id = _ndId(args.rule_id)
-    def allowed = ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']
+// The document read's section, cursor and limit arguments, checked before anything is read.
+private Map _ndDocumentArgs(Map args, List allowed, String toolName) {
     def sections = args.sections == null ? allowed : args.sections
     if (!(sections instanceof List) || sections.any { !(it in allowed) }) throw new IllegalArgumentException('Unknown document section')
     boolean paged = args.containsKey('cursor') || args.containsKey('limit')
@@ -112,51 +112,77 @@ Map toolGetRuleDocument(Map args) {
     def limit = args.containsKey('limit') ? args.limit : 50
     if (paged && (!(cursor instanceof String) || !(limit instanceof Number) || !limit.toString().isLong() || limit < 1 || limit > 100))
         throw new IllegalArgumentException('Read cursor must be a string and limit an integer from 1 to 100')
-    if (paged) _parseListCursor(cursor, Integer.MAX_VALUE, 'hub_set_rule')
-    boolean requiredEnabled = _nrHandle(id).getSetting('useST') == true
-    Map nativeState = _nrState(id)
-    def structuralIssues = _ndStructuralIssues(nativeState, requiredEnabled)
-    def document = [rule_id: id, validation: [structuralIssues: structuralIssues, uiChecked: false]]
+    if (paged) _parseListCursor(cursor, Integer.MAX_VALUE, toolName)
+    [sections: sections, paged: paged, cursor: cursor, limit: limit]
+}
+
+// A rule's local variables as name/type/value rows, credential-named values hidden as settings are.
+private List _ndLocalVariables(Long id) {
+    def all = _nrHandle(id).getAllLocalVars()
+    // A rule with no locals answers an empty map, so a null is a failed read, not an empty list.
+    if (all == null) throw new IllegalStateException("Rule ${id}'s local variables could not be read")
+    if (!(all instanceof Map)) throw new IllegalStateException("Rule ${id} returned its local variables in an unexpected shape")
+    all.collect { name, row -> _rmPublicLocalVariable(name?.toString(), row instanceof Map ? [type: row.type?.toString(), value: row.value] : [value: row]) }.sort { it.name }
+}
+
+// localVariables:true is hub_get_rule's read: the local variables ride as their own list instead of the variables section.
+Map toolGetRuleDocument(Map args) {
+    Long id = _ndId(args.rule_id)
+    boolean withLocals = args.localVariables == true
+    String toolName = withLocals ? 'hub_get_rule' : 'hub_set_rule'
+    List allowed = withLocals ? ['actions', 'conditions', 'triggers', 'expressions', 'settings'] : ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']
+    Map read = _ndDocumentArgs(args, allowed, toolName)
+    List sections = read.sections
+    def cursor = read.cursor
+    def limit = read.limit
+    _nrHandle(id)
     try {
-        def health = _ndRuleHealth(id)
-        if (health instanceof Map) document.validation.structuralIssues = _ndStructuralIssues(nativeState + health, requiredEnabled)
-        document.nativeHealth = health instanceof Map && health.broken instanceof Boolean ? [available: true, broken: health.broken, stopped: _ndNativeFlag(health, 'stopped'), paused: _ndNativeFlag(health, 'paused')] : [available: false]
-    } catch (Exception failure) { document.nativeHealth = [available: false, error: failure.message?.toString()] }
-    if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
-        [id: actionId.toString(), value: nativeState.actions instanceof Map ? _nmEntry(nativeState.actions, actionId.toString()) : null]
-    }
-    if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
-    if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
-    if ('expressions' in sections) document.expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
-    if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars().collectEntries { name, row ->
-        Map shown = _rmPublicLocalVariable(name.toString(), row instanceof Map ? row : [value: row])
-        shown.remove('name')
-        [(name): row instanceof Map ? row + shown : shown]
-    }
-    if ('settings' in sections) document.settings = _ndSettings(id)
-    if (paged) {
-        String section = sections[0]
-        def complete = document.get(section)
-        List rows = complete instanceof Map ? complete.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() } :
-            (section == 'settings' ? complete.sort { a, b -> a.name <=> b.name } : complete)
-        int total = rows.size()
-        int start = _parseListCursor(cursor, total, 'hub_set_rule')
-        int end = Math.min(start + limit.toInteger(), total)
-        document.page = [offset: start, limit: limit, total: total,
-            revision: _mrtrSha256(groovy.json.JsonOutput.toJson(_mrtrCanonicalArgs(complete)))]
-        // Match the tools/call JSON-within-text envelope; reserve 1 KiB for its actual request ID and response metadata.
-        int budget = _responseSizeLimitBytes() - 1024
-        while (true) {
-            List selected = rows.subList(start, end)
-            document.put(section, complete instanceof Map ? selected.collectEntries { entry -> [(entry.key): entry.value] } : selected)
-            document.nextCursor = end < total ? end.toString() : null
-            def envelope = jsonRpcResult(0, [content: [[type: 'text', text: groovy.json.JsonOutput.toJson(document)]]])
-            if (groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length <= budget) break
-            if (end - start <= 1) throw new IllegalArgumentException('A native document row or its validation metadata exceeds the response size limit; it cannot be returned without truncation')
-            end = start + (end - start).intdiv(2)
+        // The health read renders the rule's page first, so the state read after it carries a fresh broken flag.
+        def document = [ruleId: id, health: _rmCheckRuleHealth(id as Integer)]
+        Map nativeState = _nrState(id)
+        if (withLocals) document.localVariables = _ndLocalVariables(id)
+        if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
+            [id: actionId.toString(), value: nativeState.actions instanceof Map ? _nmEntry(nativeState.actions, actionId.toString()) : null]
         }
+        if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
+        if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
+        if ('expressions' in sections) document.expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
+        if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars().collectEntries { name, row ->
+            Map shown = _rmPublicLocalVariable(name.toString(), row instanceof Map ? row : [value: row])
+            shown.remove('name')
+            [(name): row instanceof Map ? row + shown : shown]
+        }
+        if ('settings' in sections) document.settings = _ndSettings(id)
+        if (read.paged) {
+            String section = sections[0]
+            def complete = document.get(section)
+            List rows = complete instanceof Map ? complete.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() } :
+                (section == 'settings' ? complete.sort { a, b -> a.name <=> b.name } : complete)
+            int total = rows.size()
+            int start = _parseListCursor(cursor, total, toolName)
+            int end = Math.min(start + limit.toInteger(), total)
+            document.page = [offset: start, limit: limit, total: total,
+                revision: _mrtrSha256(groovy.json.JsonOutput.toJson(_mrtrCanonicalArgs(complete)))]
+            // Match the tools/call JSON-within-text envelope; reserve 1 KiB for its actual request ID and response metadata.
+            int budget = _responseSizeLimitBytes() - 1024
+            while (true) {
+                List selected = rows.subList(start, end)
+                document.put(section, complete instanceof Map ? selected.collectEntries { entry -> [(entry.key): entry.value] } : selected)
+                document.nextCursor = end < total ? end.toString() : null
+                def envelope = jsonRpcResult(0, [content: [[type: 'text', text: groovy.json.JsonOutput.toJson(document)]]])
+                if (groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length <= budget) break
+                if (end - start <= 1) throw new IllegalArgumentException('A native document row or its validation metadata exceeds the response size limit; it cannot be returned without truncation')
+                end = start + (end - start).intdiv(2)
+            }
+        }
+        document
+    } catch (IllegalArgumentException refused) {
+        throw refused
+    } catch (Exception failure) {
+        mcpLogError('rm-native', "${toolName} read failed for rule ${id}: ${failure.message}".toString(), failure)
+        [success: false, ruleId: id, error: "Rule ${id} could not be read: ${failure.message ?: failure.toString()}".toString(),
+         note: "Nothing was changed. Retry once; if it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
     }
-    document
 }
 
 private List _ndChanges(Object changes, boolean allowEmpty = false) {
@@ -501,6 +527,15 @@ Map toolUpdateRuleDocument(Map args) {
         if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
         try { _ndPreflight(id, changes) }
         catch (Exception failure) { return [success: false, partial: false, rule_id: id, error: failure.message?.toString()] }
+        // Rule Machine sets broken only when the rule's page renders, so the health read renders it before
+        // the check: a rule that was already broken is refused here, not reported broken after the write.
+        Map beforeHealth = _rmCheckRuleHealth(id as Integer)
+        if (beforeHealth.broken == true) {
+            String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { "${it.kind} '${it.text}'" }.join('; ') : ''
+            return [success: false, partial: false, rule_id: id, broken: true, brokenRows: beforeHealth.brokenRows,
+                error: "Rule ${id} is already broken${rows}; no change was written.".toString(),
+                note: "Repair the broken rows first: open the rule with hub_set_rule(operation:'form') or in the Hubitat UI and replace or remove what refers to the missing device or variable, then retry. hub_get_rule lists the broken rows; see hub_get_tool_guide(section='set_rule_reference').".toString()]
+        }
         Map backup
         try { backup = _ndEditBackup(id, 'pre-document-update') }
         catch (Exception failure) { return [success: false, partial: false, rule_id: id, error: "Pre-edit backup failed; no document changes were applied: ${failure.message}".toString()] }
@@ -650,11 +685,11 @@ String _ndGuide() {
 
 Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level rule_id identifies the target; args cannot override it or confirm. When mandatory guide acknowledgment is enabled, pass its key as top-level bestPracticeKey alongside operation, rule_id, args and confirm.
 
-Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
+Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule; hub_get_rule returns the same document from the read-only tools. A read renders the rule's main page once, because Rule Machine updates its broken flag only then, and returns the result as health, the same report hub_get_rule returns (broken, brokenRows, paused, stopped, privateBoolean, structuralIssues; see builtin_app_tools_rules). The sections come from native state and typed settings. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 
 For large rules, read one section with args:{sections:["settings"],cursor:"",limit:50}. Paging requires exactly one section; limit is 1..100 (default 50). The section keeps its usual map or list shape. Pass the returned top-level nextCursor into args.cursor until nextCursor is null. page returns offset, limit, total and revision, a hash of the complete section; restart if revision changes. Pages may contain fewer than limit rows to fit the response size cap; an individual oversized row is refused explicitly without truncation. Actions retain native order, settings sort by name, and map sections sort by string key. Omit cursor and limit for an unpaged read.
 
-Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",rule_id,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parent_id,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
+Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",rule_id,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parent_id,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting. An update first renders the rule's page and refuses a rule that is already broken, naming its broken rows, before anything is written: repair those rows with operation:"form" or in the Hubitat UI.
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.
@@ -669,7 +704,7 @@ Each change is {part,value}. Supported parts:
 
 Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; not every capability-specific variant is supported. Discover native options through operation:"form" when a document contract is unavailable. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback, native editor diagnostics, expression-reference checks and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
 
-Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state and are never part of document reads.
+Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state; a document read renders only the main page.
 
 ## Native Rule Forms
 

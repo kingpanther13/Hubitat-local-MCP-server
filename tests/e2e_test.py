@@ -1382,7 +1382,7 @@ class TestRunner:
         self.verbose = verbose
         self.results: list[dict] = []  # {name, group, status, message, duration}
         # (app_id, health) the last RM write returned, so _assert_rule_healthy can assert on it without
-        # a second hub_get_rule_health round-trip. Keyed by app; cleared on a relay-dropped/soft write.
+        # a second hub_get_rule round-trip. Keyed by app; cleared on a relay-dropped/soft write.
         self._last_write_health: tuple[str, dict] | None = None
         # The pre-edit backup toggle as this runner last set it; None until it sets it.
         self._backups_on: bool | None = None
@@ -6409,13 +6409,13 @@ class TestRunner:
             cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
             assert (cfg.get("app") or {}).get("name") == "Basic Rule-1.0", f"unexpected Basic Rule config: {cfg}"
 
-            # HEALTH on a classic app (issue #254): hub_get_rule_health covers Basic Rule via the
+            # HEALTH on a classic app (issue #254): hub_get_rule covers Basic Rule via the
             # generic configPage checks and names it in ruleFormat (broken is null -- no compiled
             # boolean for non-RM classic apps).
             bh = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+                "tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})["health"]
             assert bh.get("ruleFormat") == "basic-rule", \
-                f"hub_get_rule_health should classify a Basic Rule as basic-rule: {bh}"
+                f"hub_get_rule should classify a Basic Rule as basic-rule: {bh}"
             assert bh.get("broken") is None, f"a classic app has no compiled broken boolean: {bh}"
 
             # EDIT: write the Notes field, then read the app back: the note must have landed and the
@@ -6559,7 +6559,7 @@ class TestRunner:
             assert set((settings().get("roomDevsL") or {}).keys()) == {switch_a, switch_b}, \
                 f"roomDevsL should hold both switches: {settings().get('roomDevsL')}"
             # ...and takes effect: the page's Done re-subscribes the instance to the new devices.
-            health = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            health = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})["health"]
             assert (health.get("eventSubscriptionCount") or 0) >= 2, \
                 f"the write must reach the running instance (subscriptions), not just storage: {health}"
 
@@ -7077,11 +7077,11 @@ def updated() {}
                 f"(settings.buttonDev={persisted!r})"
             )
 
-            # HEALTH on a live Button Controller (issue #254): hub_get_rule_health classifies it
+            # HEALTH on a live Button Controller (issue #254): hub_get_rule classifies it
             # as button-controller (a classic app, broken=null) -- the only live proof of the
-            # button-controller classification branch against a real ruleBuilderJson body.
+            # button-controller classification branch.
             ch = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_get_rule_health", "args": {"appId": controller_id}})
+                "tool": "hub_get_rule", "args": {"ruleId": int(controller_id)}})["health"]
             assert ch.get("ruleFormat") == "button-controller", \
                 f"controller {controller_id} should classify as button-controller: {ch}"
             assert ch.get("broken") is None, f"a classic app has no compiled broken boolean: {ch}"
@@ -7115,7 +7115,7 @@ def updated() {}
             assert acted.get("success") is True and not acted.get("partial"), acted
             document = self._native_rule_document(rule_id)
             assert len(document["actions"]) == 1 and document["actions"][0]["value"]["method"] == "getLogMsg", document
-            assert document["nativeHealth"]["available"] and not document["nativeHealth"]["broken"], document
+            assert document["health"]["broken"] is False, document
             # Reading the actual Button Rule page also detects a wrong mainPage commit.
             page = self.client.call_tool("hub_get_app_config", {
                 "appId": rule_id, "pageName": "selectActions"})
@@ -7172,7 +7172,7 @@ def updated() {}
 
     def _native_rule_document(self, app_id: Any) -> dict:
         doc = self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id)})
-        assert str(doc.get("rule_id")) == str(app_id), doc
+        assert str(doc.get("ruleId")) == str(app_id), doc
         return doc
 
     def _rm_rule(self, suffix: str, changes: list[dict] | None = None, **options: Any) -> tuple[int, dict]:
@@ -7193,7 +7193,7 @@ def updated() {}
     def _rm_settings(self, app_id: Any) -> dict[str, dict]:
         doc = self._rm_call({"operation": "read", "rule_id": int(app_id),
                              "args": {"sections": ["settings"]}})
-        assert str(doc.get("rule_id")) == str(app_id) and isinstance(doc.get("settings"), list), doc
+        assert str(doc.get("ruleId")) == str(app_id) and isinstance(doc.get("settings"), list), doc
         return {row["name"]: row for row in doc["settings"]}
 
     def _rm_values(self, app_id: Any) -> dict[str, Any]:
@@ -7295,10 +7295,11 @@ def updated() {}
         assert len(names) == 1, form
         return form, names[0].removeprefix("tCapab")
 
-    def _rm_health(self, app_id: Any, **extra: Any) -> dict:
-        health = self.client.call_tool("hub_get_rule_health", {"appId": int(app_id), **extra})
-        assert health.get("success") is not False, health
-        return health
+    def _rm_health(self, app_id: Any) -> dict:
+        """The rule's health report from hub_get_rule."""
+        result = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id)})
+        assert result.get("success") is not False and isinstance(result.get("health"), dict), result
+        return result["health"]
 
     def _rm_page(self, app_id: Any, page: str | None = None) -> str:
         """The rule's rendered page as text, read without opening the editor."""
@@ -7475,9 +7476,9 @@ def updated() {}
     def test_set_rule_self_gateway_envelope_create(self) -> None:
         app_id, doc = self._rm_rule("EnvCreate", [native_log("envelope-create")])
         try:
-            assert str(doc.get("rule_id")) == str(app_id), doc
+            assert str(doc.get("ruleId")) == str(app_id), doc
             assert [row["value"]["method"] for row in doc["actions"]] == ["getLogMsg"], doc
-            assert doc["validation"]["structuralIssues"] == [] and doc["nativeHealth"]["broken"] is False, doc
+            assert doc["health"]["structuralIssues"] == [] and doc["health"]["broken"] is False, doc
         finally:
             self._delete_native(app_id)
 
@@ -7833,17 +7834,22 @@ def updated() {}
             listed = self.client.call_tool("hub_list_rules", {"labelFilter": f"{PREFIX}RuleHealthSrc".lower()}).get("rules", [])
             row = next(r for r in listed if str(r.get("id")) == str(app_id))
             assert row.get("type") == "Rule-5.1" and row.get("rmVersion") == "5.x", row
-            # The source selector is gone; a client still sending it is told so.
+            # The read carries the rule's document and its local variables beside its health.
+            read = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})
+            assert str(read.get("ruleId")) == str(app_id) and read.get("localVariables") == [], read
+            assert [row["value"]["method"] for row in read.get("actions", [])] == ["getLogMsg"], read
+            assert "variables" not in read and health.get("brokenRows") == [], read
+            # The tool takes ruleId; a client still sending appId is told so.
             try:
-                stale = self.client.call_tool("hub_get_rule_health", {"appId": int(app_id), "source": "configPage"})
+                stale = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "appId": int(app_id)})
             except McpToolError as exc:
                 stale = _tool_error_payload(exc)
-            assert "Unknown hub_get_rule_health argument: source" in str(stale.get("error")), stale
+            assert "Unknown hub_get_rule argument: appId" in str(stale.get("error")), stale
         finally:
             self._delete_native(app_id)
         # An id no app holds is reported as not found, not read as a built-in app.
         try:
-            missing = self.client.call_tool("hub_get_rule_health", {"appId": 999999999})
+            missing = self.client.call_tool("hub_get_rule", {"ruleId": 999999999})
         except McpToolError as exc:
             missing = _tool_error_payload(exc)
         assert isinstance(missing, dict) and "App 999999999 not found" in str(missing.get("error")), missing
@@ -8127,7 +8133,7 @@ def updated() {}
             settings = self._rm_settings(app_id)
             assert settings["tCapab" + slot]["value"] == "Mode" and settings["modesX" + slot]["value"] in ([day], [int(day)], f'["{day}"]'), settings
             assert "tstate" + slot not in settings and settings["tstate" + original_slots[0]]["value"] == "on", settings
-            assert doc["nativeHealth"]["broken"] is False and doc["validation"]["structuralIssues"] == [], doc
+            assert doc["health"]["broken"] is False and doc["health"]["structuralIssues"] == [], doc
         finally:
             self._delete_native(app_id)
 
@@ -8712,7 +8718,7 @@ def updated() {}
 
     @test("native_apps")
     def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
-        # Running the rule's actions sets its local variable, which hub_list_rule_local_variables reads
+        # Running the rule's actions sets its local variable, which hub_get_rule reads
         # back at once. action 'rule', named or by default, is refused on this 5.1 rule, and the Rule
         # Machine parent app is refused as not a rule. Deleting a local variable an action still uses
         # is applied (RM allows it) but reported as leaving the rule broken, as the editor shows.
@@ -8721,12 +8727,12 @@ def updated() {}
             self._rm_variable_action("refLocal", "number", [native_field("valNumber.#", "number", 9)])])
 
         def local_value() -> Any:
-            listed = self.client.call_tool("hub_read_rules", {"tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
+            listed = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id), "sections": ["actions"]}})
             return next((row.get("value") for row in listed.get("localVariables", []) if row.get("name") == "refLocal"), None)
 
         try:
-            listed = self.client.call_tool("hub_list_rule_local_variables", {"appId": app_id})
-            assert listed.get("total") == 1 and listed["localVariables"][0]["type"] == "integer", listed
+            listed = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id)})
+            assert len(listed.get("localVariables") or []) == 1 and listed["localVariables"][0]["type"] == "integer", listed
             assert local_value() == 0
             # RMUtils runRule runs nothing on a Rule Machine 5.1 rule, so it is refused with nothing
             # dispatched, including when action is omitted (it defaults to 'rule').
@@ -8738,7 +8744,8 @@ def updated() {}
                 assert "is refused for Rule Machine 5.1 rules" in str(refused.get("error")) \
                     and "action:'actions'" in str(refused.get("error")), (call_args, refused)
             assert local_value() == 0, "a refused runRule changed the local variable"
-            # The Rule Machine parent app is not a rule: running its actions and reading its locals are refused.
+            # The Rule Machine parent app is not a rule: running its actions is refused, and reading it returns
+            # its health with no local variables.
             parent_id = self._native_rule_parent_id()
             try:
                 parent_run = self.client.call_tool("hub_call_rule", {"ruleId": parent_id, "action": "actions"})
@@ -8746,23 +8753,20 @@ def updated() {}
                 parent_run = _tool_error_payload(exc)
             assert f"App {parent_id} is a Rule Machine app, not a Rule Machine rule" in str(parent_run.get("error")) \
                 and "Nothing was dispatched" in str(parent_run.get("error")), parent_run
-            try:
-                parent_locals = self.client.call_tool("hub_list_rule_local_variables", {"appId": parent_id})
-            except McpToolError as exc:
-                parent_locals = _tool_error_payload(exc)
-            assert f"App {parent_id} is not a Rule Machine rule" in str(parent_locals.get("error")) \
-                and "it is a Rule Machine app" in str(parent_locals.get("error")), parent_locals
+            parent_read = self.client.call_tool("hub_get_rule", {"ruleId": int(parent_id)})
+            assert parent_read.get("localVariables") is None and "actions" not in parent_read \
+                and "not a Rule Machine rule" in str(parent_read.get("note")), parent_read
             assert local_value() == 0, "a refused call on the Rule Machine parent changed the rule's local variable"
             ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "actions"})
             assert ran.get("success") is not False, ran
             self._rm_wait(lambda: local_value() == 9, what="refLocal=9 after the rule's actions ran")
             assert self._native_rule_document(app_id)["variables"]["refLocal"]["value"] == 9
-            # An id that is not a rule is refused rather than read as a rule with no locals.
+            # An id with no app is refused rather than read as a rule with no locals.
             try:
-                missing = self.client.call_tool("hub_list_rule_local_variables", {"appId": 999999999})
+                missing = self.client.call_tool("hub_get_rule", {"ruleId": 999999999})
             except McpToolError as exc:
                 missing = _tool_error_payload(exc)
-            assert "App 999999999 is not a Rule Machine rule" in str(missing.get("error")), missing
+            assert "App 999999999 not found" in str(missing.get("error")), missing
             # The runtime tools refuse an id with no app instead of reporting a dispatch that did nothing.
             for tool, args in (("hub_call_rule", {"ruleId": 999999999}),
                                ("hub_set_rule_paused", {"ruleId": 999999999, "paused": True}),
@@ -9355,7 +9359,7 @@ def updated() {}
             assert str(values.get("useST", "false")).lower() != "true", values.get("useST")
             pickers = [v for k, v in values.items() if k.startswith("onOffSwitch.")]
             assert pickers == [[str(switch)]], pickers
-            assert doc["nativeHealth"]["broken"] is False
+            assert doc["health"]["broken"] is False
         finally:
             self._delete_native(app_id)
 
@@ -9463,7 +9467,7 @@ def updated() {}
             doc = self._native_rule_document(copy_id)
             assert len(doc["triggers"]) == 1 and [r["value"]["method"] for r in doc["actions"]] == ["getLogMsg"], doc
             assert self._rm_values(copy_id)["logmsg." + str(doc["actions"][0]["id"])] == "deleted-rule marker"
-            assert doc["nativeHealth"]["broken"] is False, doc
+            assert doc["health"]["broken"] is False, doc
         finally:
             if copy_id:
                 self._delete_native(copy_id)
@@ -9842,7 +9846,7 @@ def updated() {}
         tool itself documents as EXPECTED mid-build. A broken flag, broken markers and page errors
         still fail; structural imbalance alone does not (the caller's reset/closer handles it).
         A failed read also fails: broken=false from compiled state alone does not show the page renders."""
-        h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
+        h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})["health"]
         other = [i for i in h.get("issues") or [] if not str(i).startswith("structural imbalance")]
         assert h.get("broken") is not True and not other, \
             f"rule is genuinely broken after the dropped response (not just mid-build imbalance): {h}"
@@ -9856,7 +9860,7 @@ def updated() {}
 
     def _cache_write_health(self, app_id: Any, result: Any) -> None:
         """Stash the health object a hub_set_rule write already returned (the SAME _rmCheckRuleHealth a
-        standalone hub_get_rule_health re-derives), keyed by app, so a following _assert_rule_healthy
+        standalone hub_get_rule re-derives), keyed by app, so a following _assert_rule_healthy
         skips the extra round-trip. Cleared on a relay-dropped/soft envelope (no health) -> live fetch.
         Also cleared when the returned probe carries no verdict -- skipped:true (shed under the time
         budget), unreadable:true (probe fetch failed), or a non-empty checkErrors (a read failed;
@@ -9879,10 +9883,10 @@ def updated() {}
             assert cached[1].get("ok") is not False, \
                 f"rule health (from the write response) reports broken: {cached[1]}"
             return
-        h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
+        h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})["health"]
         # A failed read leaves ok false without being evidence of breakage; name it as such.
-        assert not h.get("checkErrors"), f"hub_get_rule_health could not finish its reads: {h}"
-        assert h.get("ok") is not False, f"hub_get_rule_health reports the rule broken: {h}"
+        assert not h.get("checkErrors"), f"hub_get_rule could not finish its reads: {h}"
+        assert h.get("ok") is not False, f"hub_get_rule reports the rule broken: {h}"
 
 
     def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine", *, inline: bool = False) -> None:
@@ -10031,7 +10035,7 @@ def updated() {}
             async def fetch_section(section: str, cursor: str, limit: int) -> dict:
                 page = self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id),
                     "args": {"sections": [section], "cursor": cursor, "limit": limit}})
-                assert str(page.get("rule_id")) == str(app_id), page
+                assert str(page.get("ruleId")) == str(app_id), page
                 return page
 
             document = asyncio.run(read_native_document_sections(fetch_section))
@@ -10208,7 +10212,7 @@ def updated() {}
                         "appId": app_id, "paused": paused, "confirm": True}})
                 assert repeated.get("success") is True and repeated.get("rulePaused") is paused, repeated
                 health = self.client.call_tool("hub_read_rules", {
-                    "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+                    "tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})["health"]
                 assert health.get("paused") is paused and health.get("label") == expected_name, \
                     f"health disagrees with the Visual Rule's own state/name: {health}"
 
@@ -10310,13 +10314,13 @@ def updated() {}
                 assert still_classic.get("thenNodes"), \
                     f"the refused classic edit must have left the actions in place: {still_classic}"
 
-            # HEALTH on a Visual Rule (issue #254): hub_get_rule_health must NOT reject a VRB
+            # HEALTH on a Visual Rule (issue #254): hub_get_rule must NOT reject a VRB
             # rule -- it reports the engine-native verdict. ruleFormat identifies which engine
             # answered (vrb-graph reports broken from validationErrors; vrb-classic has none).
             vh = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+                "tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})["health"]
             assert vh.get("ruleFormat") in ("vrb-graph", "vrb-classic"), \
-                f"hub_get_rule_health did not recognize VRB rule {app_id} (ruleFormat={vh.get('ruleFormat')!r}): {vh}"
+                f"hub_get_rule did not recognize VRB rule {app_id} (ruleFormat={vh.get('ruleFormat')!r}): {vh}"
             if vh.get("ruleFormat") == "vrb-graph":
                 # Freshly created + healthy, so the validationErrors-derived boolean must be False
                 # (isinstance(bool) accepted either verdict and wouldn't catch an always-true regression).
@@ -10678,8 +10682,8 @@ def updated() {}
             # The RM rule must have survived the refused delete: health still reads
             # it (a deleted rule fetch fails -> ok:false, label:null).
             health = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": rm_id},
-            })
+                "tool": "hub_get_rule", "args": {"ruleId": int(rm_id)},
+            })["health"]
             assert f"{PREFIX}VrbTypeGate" in str(health.get("label") or ""), \
                 f"RM rule {rm_id} did not survive the type-gated delete: {health}"
             assert health.get("ok") is not False, \
@@ -17423,7 +17427,7 @@ def updated() {}
         parent_len = len(parent.get("content", ""))
         sub_content = sub.get("content", "")
         # A focused rule-diagnostics slice excludes the separate native lifecycle reference.
-        assert "hub_get_rule_health" in sub_content, f"rule diagnostics reference missing: {sub_content[:200]!r}"
+        assert "### hub_get_rule" in sub_content, f"rule diagnostics reference missing: {sub_content[:200]!r}"
         assert "### Safety model for native CRUD" not in sub_content, "sub-section leaked the native CRUD reference"
         assert len(sub_content) < parent_len / 2, (
             f"sub-section is {len(sub_content)} chars against a "

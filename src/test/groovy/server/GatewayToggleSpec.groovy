@@ -156,7 +156,7 @@ class GatewayToggleSpec extends ToolSpecBase {
             'hub_list_files', 'hub_read_file', 'hub_write_file', 'hub_delete_file',
             'hub_list_device_dependents', 'hub_get_app_config',
             'hub_list_rules', 'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
-            'hub_set_rule', 'hub_delete_native_app', 'hub_get_rule_health',
+            'hub_set_rule', 'hub_delete_native_app', 'hub_get_rule',
             'hub_get_visual_rule', 'hub_set_visual_rule', 'hub_delete_visual_rule',
             'hub_list_dashboards', 'hub_get_dashboard', 'hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard',
             'hub_update_mcp_settings',
@@ -358,7 +358,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         and: 'read native tools stay visible (Read master is still ON)'
         names.contains('hub_list_rules')
         names.contains('hub_list_device_dependents')
-        names.contains('hub_get_rule_health')
+        names.contains('hub_get_rule')
 
         and: 'read tools outside the native group are still present'
         names.contains('hub_get_app_config')
@@ -533,7 +533,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         // The flat-mode guard's hint must filter through getHiddenToolNames() — telling a
         // stale client to call hub_list_rules when it's also disabled by the Read master
         // would just trade one error for another. hub_manage_native_rules_and_apps mixes
-        // read sub-tools (hub_list_rules, hub_get_rule_health) and write sub-tools, so both
+        // read sub-tools (hub_list_rules, hub_get_rule) and write sub-tools, so both
         // masters must be OFF to hide the whole gateway.
         given:
         settingsMap.useGateways = false

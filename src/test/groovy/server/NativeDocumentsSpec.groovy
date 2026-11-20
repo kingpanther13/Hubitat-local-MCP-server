@@ -11,6 +11,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
     void setupSpec() { appExecutor.getApp() >> serverApp }
 
     List events
+    List renders
+    Map pageBody
     Map nativeState
     boolean failAction
     boolean broken
@@ -19,6 +21,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     void setup() {
         events = []
+        renders = []
+        pageBody = null
         failAction = false
         broken = false
         typedSettings = [:]
@@ -45,9 +49,19 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script.metaClass._nmOrderActions = { Long id, List ids -> events << 'order'; [success: true] }
         script.metaClass._nmAddTerminator = { Long id, String subtype -> events << 'terminator'; [success: true] }
         hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [[name: 'flag', type: 'bool', multiple: false, value: false], [name: 'count', type: 'number', value: 0]]]) }
-        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson([broken: broken] + lifecycle) }
-        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: lifecycle.stopped ? [] : [[name: 'switch']], scheduledJobs: []]) }
+        // /app/ruleBuilderJson serializes the rule's whole state, and statusJson lists the same state as appState rows.
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(nativeState + [broken: broken] + lifecycle) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: lifecycle.stopped ? [] : [[name: 'switch']], scheduledJobs: [],
+            appState: (nativeState + lifecycle).collect { k, v -> [name: k, value: v] }]) }
+        hubGet.register('/installedapp/configure/json/42') { q -> renders << 'mainPage'; pageJson() }
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean retry = false -> events << [path: path, body: body]; lifecycle.stopped = false; lifecycle.paused = false; [status: 200] }
+    }
+
+    // The rule's main page as /installedapp/configure/json renders it.
+    private String pageJson() {
+        JsonOutput.toJson([app: [id: 42, label: 'Doc rule', name: 'Rule-5.1', disabled: false, appType: [namespace: 'hubitat', name: 'Rule-5.1']],
+            configPage: [name: 'mainPage', sections: [[title: '', input: [], body: pageBody ? [pageBody] : []]]],
+            settings: [useST: typedSettings.useST == true]])
     }
 
     private Map logChange() {
@@ -184,16 +198,88 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
-    def 'read document returns native stable order typed values and locals without rendering'() {
+    def 'read document returns native stable order typed values and locals, rendering only the main page'() {
         when:
         def result = script.executeTool('hub_set_rule', [operation: 'read', rule_id: 42, args: [:]])
         then:
-        result.rule_id == 42L
+        result.ruleId == 42L
+        !result.containsKey('rule_id')
+        result.health.ok == true
+        result.health.ruleFormat == 'rm'
+        !result.containsKey('validation') && !result.containsKey('nativeHealth')
+        renders == ['mainPage']
         result.actions*.id == ['3', '1']
         result.settings.find { it.name == 'flag' }.value == false
         result.settings.find { it.name == 'count' }.value == 0
         result.variables.counter.value == 0
         events.empty
+    }
+
+    @spock.lang.Unroll
+    def 'hub_get_rule returns the same document with health and the local variables as their own list (useGateways=#useGateways)'() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.useGateways = useGateways
+        nativeState.allLocalVars.doorCode = [type: 'string', value: '4321']
+        when:
+        def response = mcpDriver.callTool('hub_get_rule', [ruleId: 42])
+        def inner = mcpDriver.parseInner(response)
+        def read = script.toolGetRuleDocument([rule_id: 42])
+        then:
+        !response.result.isError
+        inner.ruleId == 42
+        inner.health.ok == true
+        inner.health.privateBoolean == null
+        inner.localVariables == [[name: 'counter', type: 'integer', value: 0], [name: 'doorCode', type: 'string', value: null, redacted: true]]
+        !inner.containsKey('variables')
+        inner.actions*.id == read.actions*.id
+        inner.conditions == read.conditions
+        inner.triggers == read.triggers
+        inner.expressions == read.expressions
+        inner.settings*.name == read.settings*.name
+        !JsonOutput.toJson(inner).contains('4321')
+        events.empty
+        where:
+        useGateways << [true, false]
+    }
+
+    def 'hub_get_rule pages one section and still returns its local variables'() {
+        when:
+        def first = script.toolGetNativeRule([ruleId: 42, sections: ['actions'], cursor: '', limit: 1])
+        def second = script.toolGetNativeRule([ruleId: 42, sections: ['actions'], cursor: first.nextCursor, limit: 1])
+        then:
+        first.actions*.id == ['3']
+        second.actions*.id == ['1']
+        second.nextCursor == null
+        [first, second].every { it.localVariables*.name == ['counter'] && it.health != null && !it.containsKey('conditions') }
+    }
+
+    def 'hub_get_rule reports a failed local-variable read as a runtime failure, not as no locals'() {
+        given:
+        script.metaClass._nrHandle = { Long id -> new NativeDocumentChild(events, lifecycle, null, typedSettings) }
+        when:
+        def result = script.toolGetNativeRule([ruleId: 42, sections: ['actions']])
+        then:
+        result.success == false
+        result.error.contains("Rule 42's local variables could not be read")
+        result.note.contains("hub_get_tool_guide(section='builtin_app_tools_rules')")
+    }
+
+    def 'hub_get_rule reports an unexpected local-variable shape instead of an empty list'() {
+        given:
+        script.metaClass._nrHandle = { Long id -> new Expando(getAllLocalVars: { -> 'unexpected' }) }
+        when:
+        def result = script.toolGetNativeRule([ruleId: 42, sections: ['actions']])
+        then:
+        result.success == false
+        result.error.contains('unexpected shape')
+    }
+
+    def 'hub_get_rule lists a rule with no locals as an empty list'() {
+        given:
+        nativeState.allLocalVars.clear()
+        expect:
+        script.toolGetNativeRule([ruleId: 42, sections: ['actions']]).localVariables == []
     }
 
     def 'native password and credential-named settings are redacted without rendering or altering false and zero'() {
@@ -249,7 +335,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         when:
         def document = script.toolGetRuleDocument([rule_id: 42, sections: ['expressions']])
         then:
-        document.validation.structuralIssues.isEmpty()
+        document.health.structuralIssues.isEmpty()
         nativeState.hasPredicate == true
         nativeState.eval.isEmpty()
         events.isEmpty()
@@ -268,7 +354,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         when:
         def document = script.toolGetRuleDocument([rule_id: 42, sections: ['expressions']])
         then:
-        document.validation.structuralIssues.any { it.contains(expected) }
+        document.health.structuralIssues.any { it.contains(expected) }
         events.isEmpty()
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]], confirm: true])
@@ -510,16 +596,85 @@ class NativeDocumentsSpec extends ToolSpecBase {
         brokenEditor << [false, true]
     }
 
-    def 'broken native health prevents finalization'() {
+    def 'a rule that is already broken is refused before any change, naming its broken rows'() {
         given:
         broken = true
+        pageBody = [element: 'href', title: 'Select Trigger Events', description: 'Porch switch turns on **Broken Trigger**']
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
-        result.partial
+        !result.partial
         result.broken
-        !events.any { it instanceof Map }
+        result.brokenRows == [[kind: 'trigger', text: 'Porch switch turns on']]
+        result.error.contains("already broken: trigger 'Porch switch turns on'")
+        result.note.contains("operation:'form'")
+        events.empty
+        nativeState.actionList == ['3', '1']
+    }
+
+    def 'the update renders the page before its broken check, so a broken flag that only rendering sets refuses the write'() {
+        given: "Rule Machine sets broken when the page renders, as after a trigger device is deleted"
+        hubGet.register('/installedapp/configure/json/42') { q -> renders << 'mainPage'; broken = true; pageJson() }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def paths = hubGet.calls*.path
+        then:
+        paths.indexOf('/installedapp/configure/json/42') < paths.indexOf('/app/ruleBuilderJson/42')
+        !result.success
+        !result.partial
+        result.error.contains('already broken')
+        events.empty
+    }
+
+    def 'the document read renders the page before reading health, so a render-time broken flag is reported'() {
+        given:
+        hubGet.register('/installedapp/configure/json/42') { q -> renders << 'mainPage'; broken = true; pageJson() }
+        pageBody = [element: 'paragraph', description: 'Log hello **Broken Action**']
+        when:
+        def document = script.toolGetRuleDocument([rule_id: 42, sections: ['actions']])
+        def paths = hubGet.calls*.path
+        then:
+        paths.indexOf('/installedapp/configure/json/42') < paths.indexOf('/app/ruleBuilderJson/42')
+        document.health.broken == true
+        document.health.ok == false
+        events.empty
+    }
+
+    def 'a broken health result does not fail the document read'() {
+        given:
+        broken = true
+        when:
+        def document = script.toolGetRuleDocument([rule_id: 42, sections: ['actions']])
+        then:
+        document.health.broken == true
+        document.actions*.id == ['3', '1']
+        !document.containsKey('success')
+    }
+
+    def 'Stop Repeating in an IF / Repeat / END-REP / ELSE / END-IF sequence reads with no structural issue'() {
+        given:
+        nativeState.actionList = ['1', '2', '3', '4', '5', '6', '7']
+        nativeState.actions = ['1': [method: 'getIfThen', rule: '1'], '2': [method: 'getRepeat'], '3': [method: 'getLogMsg'],
+                               '4': [method: 'getEndRepeat'], '5': [method: 'getElse'], '6': [method: 'getStopRepeat'], '7': [method: 'getEndIf']]
+        nativeState.eval = ['1': ['4']]
+        when:
+        def document = script.toolGetRuleDocument([rule_id: 42, sections: ['actions']])
+        then:
+        document.health.structuralIssues == []
+        document.health.ok == true
+    }
+
+    def 'a runtime failure in the document read returns success false with a recovery note instead of throwing'() {
+        given:
+        script.metaClass._nrState = { Long id -> throw new IllegalStateException('Native state is unavailable') }
+        when:
+        def result = script.executeTool('hub_set_rule', [operation: 'read', rule_id: 42, args: [:]])
+        then:
+        result.success == false
+        result.ruleId == 42L
+        result.error.contains('Native state is unavailable')
+        result.note.contains("hub_get_tool_guide(section='builtin_app_tools_rules')")
     }
 
     def 'native time triggers use scheduled jobs as activation evidence'() {
@@ -1235,13 +1390,14 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         Map health = [broken: false, stopped: false, paused: false]
         health.put(flag, malformed)
-        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(health) }
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(nativeState + health) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [], scheduledJobs: [],
+            appState: health.collect { k, v -> [name: k, value: v] }]) }
         when:
         def document = script.toolGetRuleDocument([rule_id: 42, sections: ['actions']])
         then:
-        document.nativeHealth.available
-        document.nativeHealth.get(flag) == null
-        document.nativeHealth.get(flag == 'stopped' ? 'paused' : 'stopped') == false
+        document.health.get(flag) == null
+        document.health.get(flag == 'stopped' ? 'paused' : 'stopped') == false
         events.empty
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
@@ -1253,22 +1409,36 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.actionList == ['3', '1']
         where:
         flag      | malformed
-        'stopped' | 'false'
+        'stopped' | 'no'
         'stopped' | null
         'stopped' | 0
-        'paused'  | 'true'
+        'paused'  | 'yes'
         'paused'  | [:]
         'paused'  | []
+    }
+
+    def 'lifecycle flags stored as true or false text read as flags, as hub_list_rules reads them'() {
+        given:
+        lifecycle.stopped = 'true'
+        lifecycle.paused = 'false'
+        when:
+        def document = script.toolGetRuleDocument([rule_id: 42, sections: ['actions']])
+        then:
+        document.health.stopped == true
+        document.health.paused == false
+        script._ndNativeFlag([stopped: 'true'], 'stopped') == true
+        script._ndNativeFlag([paused: 'false'], 'paused') == false
     }
 
     def 'absent native lifecycle flags retain the platform false default'() {
         given:
         hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson([broken: false]) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [[name: 'switch']], scheduledJobs: [], appState: []]) }
         when:
         def document = script.toolGetRuleDocument([rule_id: 42, sections: ['actions']])
         then:
-        document.nativeHealth.stopped == false
-        document.nativeHealth.paused == false
+        document.health.stopped == false
+        document.health.paused == false
         events.empty
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])

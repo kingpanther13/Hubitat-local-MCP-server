@@ -591,7 +591,7 @@ class ModernMrtrScenario:
                     },
                 })
                 page = _tool_payload(result, f"independent persisted {section} readback")
-                assert str(page.get("rule_id")) == fixture_id, "Native section read returned another rule"
+                assert str(page.get("ruleId")) == fixture_id, "Native section read returned another rule"
                 return page
 
             document = await read_native_document_sections(fetch_section)

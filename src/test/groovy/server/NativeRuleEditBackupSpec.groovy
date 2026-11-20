@@ -43,7 +43,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
             [backupKey: 'rm-rule_42_fixture', ruleId: id]
         }
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30, boolean retry = false ->
-            if (path.startsWith('/app/ruleBuilderJson/')) return [broken: false, stopped: false, paused: false]
+            if (path.startsWith('/app/ruleBuilderJson/')) return JsonOutput.toJson([broken: false, stopped: false, paused: false])
             if (path.startsWith('/installedapp/settings/')) return [settings: []]
             if (path.startsWith('/installedapp/statusJson/')) return [eventSubscriptions: [], scheduledJobs: []]
             events << 'open'
@@ -95,7 +95,9 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         then:
         result.success
         result.backup.backupKey == 'rm-rule_42_fixture'
-        events == ['preflight', 'snapshot', 'apply']
+        // The page render ('open') of the broken pre-check comes after preflight and before the snapshot;
+        // the read-back document renders it again after the edit.
+        events == ['preflight', 'open', 'snapshot', 'apply', 'open']
     }
 
     def 'disabled backups preserve explicit opt out without affecting the edit'() {
@@ -105,7 +107,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         def result = script.toolUpdateRuleDocument(update())
         then:
         result.success
-        events == ['preflight', 'apply']
+        events == ['preflight', 'open', 'apply', 'open']
     }
 
     def 'failed snapshot prevents document mutation'() {
@@ -116,7 +118,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         then:
         !result.success
         !result.partial
-        events == ['preflight', 'snapshot']
+        events == ['preflight', 'open', 'snapshot']
     }
 
     def 'partial document changes retain their pre-edit recovery handle'() {

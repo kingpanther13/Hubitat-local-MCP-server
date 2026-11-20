@@ -425,7 +425,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         inner.success == true
         inner.note.contains('render timed out')
         inner.note.contains('hub_list_rules')
-        inner.note.contains('hub_get_rule_health')
+        inner.note.contains('hub_get_rule ')
 
         where:
         action  | useGateways

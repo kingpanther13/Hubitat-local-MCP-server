@@ -429,11 +429,6 @@ private stripOptionsHtml(options) {
     return options
 }
 
-// The Rule Machine parent app is not a rule; older hubs still run Rule-4.x children.
-private boolean _rmIsRuleAppType(String name) {
-    return name != null && name ==~ /(Button )?Rule-\d.*/
-}
-
 // A 404/410 from a configure or summary read means the app is gone or is an install shell whose
 // page cannot render; any other failure returns null. HttpResponseException is duck-typed off the
 // exception because it fails to load on the test classpath.
@@ -465,6 +460,7 @@ def toolGetAppConfig(args) {
     }
 
     boolean includeSettings = args?.includeSettings == true
+    boolean includeStatus = args?.includeStatus == true
 
     // The thin per-app record renders no page, so it stays cheap on apps with expensive pages.
     if (args?.summary == true) {
@@ -499,6 +495,7 @@ def toolGetAppConfig(args) {
         catch (Exception lookup) { mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: type namespace unreadable: ${lookup.message}") }
         summaryResult.success = true
         summaryResult.endpoint = summaryPath
+        if (includeStatus) _appConfigAttachStatus(summaryResult, appIdStr as Integer)
         return summaryResult
     }
 
@@ -705,8 +702,23 @@ def toolGetAppConfig(args) {
     } else if (settingsCount > 0) {
         result.settingsNote = "Raw settings omitted; pass includeSettings=true to include them."
     }
+    if (includeStatus) _appConfigAttachStatus(result, appIdStr as Integer)
 
     return result
+}
+
+// includeStatus: the app's App Status lists from the one shared read. A failed read leaves the rest of the result standing.
+private void _appConfigAttachStatus(Map result, Integer appId) {
+    try {
+        Map status = _appStatusRead(appId)
+        result.appState = status.appState
+        result.eventSubscriptions = status.eventSubscriptions
+        result.scheduledJobs = status.scheduledJobs
+        if (_redactsCredentials()) result.statusRedactionNote = "appState values whose names look like credentials, at any depth, read ${_appConfigRedactedMarker()}, as settings do. Turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "hub_get_app_config app ${appId}: status read failed (${e.message})")
+        result.statusNote = "The app's status page could not be read (${e.message ?: e.toString()}), so appState, eventSubscriptions and scheduledJobs are omitted. Retry; the rest of this read is unaffected.".toString()
+    }
 }
 
 // Rule Machine wraps each disabled action or trigger row, and its "Disabled Action" / "Disabled Trigger" legend,
@@ -2937,6 +2949,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "The page to read instead of the default page: a page.hrefs[].page name from a page of this app already read."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
+                    includeStatus: [type: "boolean", description: "Also return the app's App Status lists: appState (the app's stored state as [{name, value}], credential-named values redacted), eventSubscriptions and scheduledJobs (default false). Works with summary=true.", default: false],
                     summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user) and the type's namespace, no config page; pageName/includeSettings ignored.", default: false]
                 ],
                 required: ["appId"]

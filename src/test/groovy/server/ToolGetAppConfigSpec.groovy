@@ -827,6 +827,130 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    // -------------------------------------------------------------------------
+    // includeStatus flag
+    // -------------------------------------------------------------------------
+
+    // statusJson as the hub serves it: appState is a LIST of {name, value} rows.
+    private void registerAppStatus(List appState, int appId = 35) {
+        hubGet.register("/installedapp/statusJson/${appId}".toString()) { params ->
+            JsonOutput.toJson([installedApp: [id: appId], appSettings: [],
+                               eventSubscriptions: [[deviceId: 12, name: 'switch', handler: 'handler']],
+                               scheduledJobs: [[handler: 'poll', nextRunTime: '2026-11-20T10:00:00+0000']],
+                               appState: appState])
+        }
+    }
+
+    def "includeStatus=true returns appState, eventSubscriptions and scheduledJobs, credential-named values hidden at any depth"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'paused', value: false],
+                           [name: 'apiKey', value: 'secret-api-key'],
+                           [name: 'allLocalVars', value: [counter: [type: 'integer', value: 3], doorCode: [type: 'string', value: '4321']]],
+                           [name: 'lv_doorCode', value: [type: 'string', value: '4321']],
+                           [name: 'history', value: [[when: 1, alarmPin: '9999'], 'plain']]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.success == true
+        result.eventSubscriptions == [[deviceId: 12, name: 'switch', handler: 'handler']]
+        result.scheduledJobs == [[handler: 'poll', nextRunTime: '2026-11-20T10:00:00+0000']]
+        result.appState.find { it.name == 'paused' }.value == false
+        result.appState.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        result.appState.find { it.name == 'allLocalVars' }.value.counter == [type: 'integer', value: 3]
+        result.appState.find { it.name == 'allLocalVars' }.value.doorCode == '***redacted (password)***'
+        result.appState.find { it.name == 'lv_doorCode' }.value == '***redacted (password)***'
+        result.appState.find { it.name == 'history' }.value == [[when: 1, alarmPin: '***redacted (password)***'], 'plain']
+        result.statusRedactionNote.contains('***redacted (password)***')
+        !JsonOutput.toJson(result).contains('4321') && !JsonOutput.toJson(result).contains('secret-api-key')
+        hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
+    }
+
+    def "includeStatus=true reads values as stored with Hide passwords and credentials off"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'apiKey', value: 'secret-api-key']])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState == [[name: 'apiKey', value: 'secret-api-key']]
+        !result.containsKey('statusRedactionNote')
+    }
+
+    def "without includeStatus no status lists are returned and the status page is not read"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        !result.containsKey('appState') && !result.containsKey('eventSubscriptions') && !result.containsKey('scheduledJobs')
+        !hubGet.calls.any { it.path.startsWith('/installedapp/statusJson/') }
+    }
+
+    def "a failed status read leaves the page read standing and says why the lists are missing"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params -> throw new IOException('status timeout') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.success == true
+        result.page != null
+        !result.containsKey('appState')
+        result.statusNote.contains('status timeout')
+    }
+
+    def "includeStatus works with summary=true and renders no page"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/json/35') { params -> JsonOutput.toJson([id: 35, name: 'webCoRE Piston', type: 'webCoRE Piston', disabled: false, user: true]) }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'ady624', name: 'webCoRE Piston']] }
+        registerAppStatus([[name: 'piston', value: [o: [], s: [[t: 'action']]]]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, summary: true, includeStatus: true])
+
+        then:
+        result.success == true
+        result.appState == [[name: 'piston', value: [o: [], s: [[t: 'action']]]]]
+        result.scheduledJobs.size() == 1
+        !hubGet.calls.any { it.path.startsWith('/installedapp/configure/json/') }
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_app_config via dispatch returns the status lists with includeStatus (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'stopped', value: true]])
+
+        when:
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeStatus: true])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        !response.result.isError
+        inner.appState == [[name: 'stopped', value: true]]
+        inner.eventSubscriptions.size() == 1
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "includeSettings=true: settings map present and populated"() {
         given:
         settingsMap.enableRead = true
