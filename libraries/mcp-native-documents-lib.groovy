@@ -531,7 +531,7 @@ Map toolUpdateRuleDocument(Map args) {
         // the check: a rule that was already broken is refused here, not reported broken after the write.
         Map beforeHealth = _rmCheckRuleHealth(id as Integer)
         if (beforeHealth.broken == true) {
-            String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { "${it.kind} '${it.text}'" }.join('; ') : ''
+            String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { it.text ? "${it.kind} '${it.text}'" : "${it.kind} on line ${it.position} of its section" }.join('; ') : ''
             return [success: false, partial: false, ruleId: id, broken: true, brokenRows: beforeHealth.brokenRows,
                 error: "Rule ${id} is already broken${rows}; no change was written.".toString(),
                 note: "Repair the broken rows first: open the rule with hub_set_rule(operation:'form') or in the Hubitat UI and replace or remove what refers to the missing device or variable, then retry. hub_get_rule lists the broken rows; see hub_get_tool_guide(section='set_rule_reference').".toString()]

@@ -10719,7 +10719,7 @@ String _rmNotRuleText(Map typesById) {
 }
 
 String _rmMissingAppText(id) {
-    return "${_rmNoAppText([id])}; find rule ids with hub_list_rules, or any app's id with hub_list_apps".toString()
+    return "${_rmNoAppText([id])}; find rule ids with hub_list_rules, or any app's id with hub_list_apps.".toString()
 }
 
 // The rule types whose native model hub_set_rule reads and edits.
@@ -10741,8 +10741,9 @@ Map _rmLookupFailure(Map reasonsById) {
             note: "Nothing was changed. Retry once; if it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
 }
 
-// The rows a rendered rule page marks broken. Rule Machine appends its **Broken Trigger|Action|Condition**
-// marker to the row it cannot resolve, in the summary under a page link or in a paragraph, one row per line.
+// The rows a rendered rule page marks broken, one row per line of a summary under a page link or a paragraph.
+// Rule Machine may replace an unresolvable row's whole description with its **Broken Trigger|Action|Condition**
+// marker, so such a row is identified by its line position in that block and carries no text.
 private List _rmBrokenRows(Map cfg) {
     def kinds = ["**Broken Trigger**": "trigger", "**Broken Action**": "action", "**Broken Condition**": "condition"]
     def rows = []
@@ -10754,9 +10755,7 @@ private List _rmBrokenRows(Map cfg) {
                 kinds.each { marker, kind ->
                     if (!line.contains(marker)) return
                     String text = line.replace(marker, "").trim()
-                    // A marker printed on its own line belongs to the row above it.
-                    if (!text && idx > 0) text = lines[idx - 1]
-                    rows << [kind: kind, text: text]
+                    rows << [kind: kind, text: text ?: null, position: idx + 1]
                 }
             }
         }
@@ -12522,7 +12521,7 @@ Every action on a Rule Machine rule drives the rule's own page buttons (`runActi
 
 - `ruleFormat` says what was inspected: `rm` (any Rule Machine rule or Button Rule) / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
 - Every app with a classic page has it rendered once first. Rule Machine updates its `broken` flag only then, so a rule whose trigger device was deleted reads broken here without opening the editor.
-- **Rule Machine**: `broken` (from /app/ruleBuilderJson), `brokenRows` (`[{kind: trigger|action|condition, text}]`, each row the page marks `**Broken Trigger|Action|Condition**`), `disabledActions` and `disabledTriggers` (native ids of rows switched off; `[]` when none), `structuralIssues` (the IF/Repeat block and expression check hub_set_rule runs) and `privateBoolean`.
+- **Rule Machine**: `broken` (from /app/ruleBuilderJson), `brokenRows` (`[{kind: trigger|action|condition, text, position}]`, each row the page marks `**Broken Trigger|Action|Condition**`; `position` is the row's line in its page section, and `text` is null when the hub replaced the row's whole description with the marker), `disabledActions` and `disabledTriggers` (native ids of rows switched off; `[]` when none), `structuralIssues` (the IF/Repeat block and expression check hub_set_rule runs) and `privateBoolean`.
 - **Visual Rules Builder**: the engine's own verdict, a graph rule's `validationErrors` (broken when non-empty), and its pause state, with the rule's own name as `label`.
 - **Other apps** (Basic Rule, Button Controller, Room Lighting, user and community apps): label, red-X and page errors; `broken` is null.
 - `paused`, `stopped` and `privateBoolean` come from the app's state on its App Status page; when the state carries no flag, the page name's "(Paused)" or "(Stopped)" decoration is used. `label` has that decoration removed. `disabled` is the red-X flag.

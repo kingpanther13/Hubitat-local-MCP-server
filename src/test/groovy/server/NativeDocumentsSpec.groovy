@@ -606,11 +606,25 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !result.success
         !result.partial
         result.broken
-        result.brokenRows == [[kind: 'trigger', text: 'Porch switch turns on']]
+        result.brokenRows == [[kind: 'trigger', text: 'Porch switch turns on', position: 1]]
         result.error.contains("already broken: trigger 'Porch switch turns on'")
         result.note.contains("operation:'form'")
         events.empty
         nativeState.actionList == ['3', '1']
+    }
+
+    def 'a refused update names a row the hub replaced with the bare marker by its line'() {
+        given:
+        broken = true
+        pageBody = [element: 'href', title: 'Select Trigger Events', description: '**Broken Trigger**']
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        result.brokenRows == [[kind: 'trigger', text: null, position: 1]]
+        result.error.contains('already broken: trigger on line 1 of its section')
+        !result.error.contains("''")
+        events.empty
     }
 
     def 'the update renders the page before its broken check, so a broken flag that only rendering sets refuses the write'() {

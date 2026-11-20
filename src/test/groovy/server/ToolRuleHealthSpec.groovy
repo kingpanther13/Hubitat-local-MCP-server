@@ -134,8 +134,23 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         paths.indexOf('/installedapp/configure/json/100') < paths.indexOf('/app/ruleBuilderJson/100')
         h.broken == true
         h.ok == false
-        h.brokenRows == [[kind: 'trigger', text: 'BAT_E2E_SW turns on']]
+        h.brokenRows == [[kind: 'trigger', text: 'BAT_E2E_SW turns on', position: 1]]
         h.issues.any { it.contains('compiled broken:true') && it.contains('brokenRows') && !it.contains('hub_set_rule') }
+    }
+
+    def "a row whose whole description the hub replaced with the marker is named by its line, not by the row above it"() {
+        given: "the live page prints the broken trigger as the bare marker under a healthy trigger"
+        hubGet.register('/installedapp/configure/json/100') {
+            configJson(100, [body: [[element: 'href', title: 'Select Trigger Events', description: 'Kitchen switch turns on<br>**Broken Trigger**']]])
+        }
+        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson(ruleState([broken: true])) }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100, ruleState([broken: true])) }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.brokenRows == [[kind: 'trigger', text: null, position: 2]]
     }
 
     def "brokenRows names each row the page marks, from page links and paragraphs"() {
@@ -149,10 +164,10 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         when:
         def rows = script._rmCheckRuleHealth(100).brokenRows
 
-        then: "a marker on its own line belongs to the row above it"
-        rows == [[kind: 'trigger', text: 'Switch Porch turns on'],
-                 [kind: 'condition', text: 'IF (Contact & Door open) THEN'],
-                 [kind: 'action', text: 'Log <done>']]
+        then: "a bare marker line is its own row, which the hub has replaced with the marker"
+        rows == [[kind: 'trigger', text: 'Switch Porch turns on', position: 2],
+                 [kind: 'condition', text: null, position: 2],
+                 [kind: 'action', text: 'Log <done>', position: 3]]
     }
 
     @spock.lang.Unroll

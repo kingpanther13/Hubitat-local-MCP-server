@@ -7889,7 +7889,7 @@ def updated() {}
             health = self._rm_health(app_id)
             assert health.get("broken") is True and health.get("ok") is False and health.get("ruleFormat") == "rm", health
             rows = health.get("brokenRows") or []
-            assert any(row.get("kind") == "trigger" for row in rows), health
+            assert any(row.get("kind") == "trigger" and isinstance(row.get("position"), int) for row in rows), health
             # The update renders the page before its broken check, so it is refused before anything is written.
             refused = self._rm_call({"operation": "update", "ruleId": int(edit_id),
                                      "args": {"changes": [native_log("not written")]}, "confirm": True})
