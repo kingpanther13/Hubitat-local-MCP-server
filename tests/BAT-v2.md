@@ -1190,7 +1190,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 ```
 
 **Expected v0.8.0**: Discovers `hub_manage_files` → `hub_write_file` (and `hub_delete_file` in teardown).
-**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131, 67 File Manager files and two folders) running commit 170b4103, driven by a fresh AI client given only the prompts: pass -- read the `file_manager` guide for the key, `hub_write_file(fileName:'bat-test.txt', content, confirm:true)` created the file, and `hub_delete_file(fileName, confirm:true)` deleted it after a backup copy (removed in teardown).
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131, 67 File Manager files and two folders) running commit b2b84aa3, driven by a fresh AI client given only the prompts: pass -- read the `file_manager` guide for the key, `hub_write_file(fileName:'bat-test.txt', content, confirm:true)` created the file, and `hub_delete_file(fileName, confirm:true)` deleted it after a backup copy (removed in teardown).
 
 ### T59 — Discover hub_delete_logs (hub_manage_logs)
 
@@ -2570,7 +2570,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 
 **Expected**: `hub_write_file` (and `hub_delete_file` in teardown).
 **Equivalent to**: T58
-**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131, 67 File Manager files and two folders) running commit 170b4103, driven by a fresh AI client given only the prompts: pass -- `hub_write_file(fileName:'bat-nl-note.txt', content, confirm:true)` then `hub_delete_file(fileName, confirm:true)`; the answer named the backup copy, which was removed in teardown.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131, 67 File Manager files and two folders) running commit b2b84aa3, driven by a fresh AI client given only the prompts: pass -- `hub_write_file(fileName:'bat-nl-note.txt', content, confirm:true)` then `hub_delete_file(fileName, confirm:true)`; the answer named the backup copy, which was removed in teardown.
 
 ---
 

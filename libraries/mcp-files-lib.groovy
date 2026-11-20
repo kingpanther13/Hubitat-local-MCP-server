@@ -22,7 +22,7 @@ private void _filesRequireRootName(String fileName, String toolName) {
     if (fileName.contains("/")) {
         String folder = fileName.substring(0, fileName.lastIndexOf('/'))
         String rootOnly = "'${fileName}' names a file in a subfolder; ${toolName} acts on root files only."
-        // Pointing at a folder the hub cannot list would only send the caller into a failing call.
+        // A folder the hub cannot list gets no listing hint, because that call would fail.
         throw new IllegalArgumentException(toolName == "hub_write_file"
             ? "'${fileName}' names a file in a subfolder. hub_write_file writes root files only; it cannot write into a subfolder.".toString()
             : _filesValidFolder(folder)
@@ -273,7 +273,7 @@ def toolWriteFile(args) {
                 success: false,
                 fileName: fileName,
                 error: "Could not read the current '${fileName}' to take its backup copy (${downloadError}); nothing was written.".toString(),
-                note: "${cause} Retry once the read recovers, write the content under a new name, or save the current content from directDownload and then replace the file by uploading it in Settings > File Manager. ${FILES_GUIDE_POINTER}".toString(),
+                note: "${cause} Retry once the read recovers, write the content under a new name, or save the current content from directDownload, then upload the new content over the file in Settings > File Manager. ${FILES_GUIDE_POINTER}".toString(),
                 directDownload: _filesDownloadUrl(fileName)
             ]
         }

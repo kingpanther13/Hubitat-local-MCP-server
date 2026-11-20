@@ -879,7 +879,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.error == "Could not read the current 'x.txt' to take its backup copy (File Manager API transient error); nothing was written."
         result.note.count('File Manager API transient error') == 0
         result.note.contains(noteNeedle)
-        result.note.contains('Retry once the read recovers, write the content under a new name, or save the current content from directDownload and then replace the file by uploading it in Settings > File Manager.')
+        result.note.contains('Retry once the read recovers, write the content under a new name, or save the current content from directDownload, then upload the new content over the file in Settings > File Manager.')
         !result.note.contains('download the current file from directDownload first')
         result.note.endsWith("See hub_get_tool_guide(section='file_manager').")
         result.note.count('hub_get_tool_guide') == 1
