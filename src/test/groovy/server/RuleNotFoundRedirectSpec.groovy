@@ -246,8 +246,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         typeName                | _
         'Rule Machine 5.1'      | _   // fragment: "rule machine"
         'Rule-5.1'              | _   // fragment: "rule-5"
-        'Rule-5.0'              | _   // fragment: "rule-5"
-        'Rule-4.1'              | _   // fragment: "rule-4"
         'Room Lights'           | _   // fragment: "room light"
         'Room Lighting'         | _   // fragment: "room light"
         'Basic Rules'           | _   // fragment: "basic rules"
@@ -275,7 +273,7 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
     def "hub_export_custom_rule (b) RM rule id -- read-verb redirect in exception"() {
         given:
         hubGet.register('/hub2/appsList') { _ ->
-            appsListJson(500, 'Rule-5.0')
+            appsListJson(500, 'Rule-5.1')
         }
 
         when:

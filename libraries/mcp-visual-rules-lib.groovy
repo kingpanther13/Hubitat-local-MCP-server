@@ -408,6 +408,11 @@ private Map _vrbSetPaused(Integer appId, boolean paused) {
     }
 }
 
+// A run request whose answer was lost or unreadable may still have reached the hub.
+private String _vrbRunUncertainNote() {
+    "The request may have reached the hub and run the rule before failing. Check the rule's effects and hub_get_logs before retrying, because a retry runs it again. See hub_get_tool_guide(section='builtin_app_tools_rules')."
+}
+
 private Map _vrbRunNow(Integer appId) {
     // GET /app/ruleBuilderRun/<id> -> {success, message?}: the builder's own run button. The rule's
     // conditions still pick the branch. A refusal is returned with the hub's message; nothing else is tried.
@@ -415,12 +420,14 @@ private Map _vrbRunNow(Integer appId) {
     try {
         text = hubInternalGet("/app/ruleBuilderRun/${appId}")
     } catch (Exception e) {
-        return [success: false, ruleId: appId, error: "hub_call_rule action=actions: /app/ruleBuilderRun failed (${e.message})".toString()]
+        return [success: false, ruleId: appId, error: "hub_call_rule action=actions: /app/ruleBuilderRun failed (${e.message})".toString(),
+                note: _vrbRunUncertainNote()]
     }
     def parsed = null
     try { parsed = text ? new groovy.json.JsonSlurper().parseText(text) : null } catch (Exception ignored) { }
     if (!(parsed instanceof Map)) {
-        return [success: false, ruleId: appId, error: "hub_call_rule action=actions: /app/ruleBuilderRun returned a non-JSON response: ${text?.take(200)}".toString()]
+        return [success: false, ruleId: appId, error: "hub_call_rule action=actions: /app/ruleBuilderRun returned a non-JSON response: ${text?.take(200)}".toString(),
+                note: _vrbRunUncertainNote()]
     }
     if (parsed.success != true) {
         return [success: false, ruleId: appId, error: "The hub did not run Visual Rule ${appId}: ${parsed.message ?: 'its run endpoint answered success:false'}".toString(),

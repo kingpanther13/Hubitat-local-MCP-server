@@ -363,7 +363,7 @@ private Map _nfPublic(Map context, List optionsFor) {
 private Map _nfBackup(Long id, def nativeApp, String page) {
     boolean builtIn = nativeApp?.appType?.namespace == 'hubitat'
     if (builtIn && nativeApp.appType.name == 'Rule Machine') return [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow']
-    if (builtIn && nativeApp.appType.name in ['Rule-5.1', 'Button Rule-5.1']) return _ndEditBackup(id, 'pre-native-form')
+    if (_rmIsEditableRuleType(nativeApp?.appType?.name, nativeApp?.appType?.namespace)) return _ndEditBackup(id, 'pre-native-form')
     if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
     _rmBackupBeforeEdit(id.toInteger(), 'pre-native-form', page)
 }

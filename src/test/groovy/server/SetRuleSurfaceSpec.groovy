@@ -100,6 +100,45 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         when:
         script.toolSetRule([operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']]], confirm: true])
         then:
-        thrown(IllegalArgumentException)
+        def refused = thrown(IllegalArgumentException)
+        refused.message == 'App 42 is a Motion Lighting app, not a rule'
+    }
+
+    def 'form opens the Rule Machine parent app'() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule Machine']] }
+        script.metaClass.toolCallAppForm = { Map args, String toolName -> [opened: args.ruleId] }
+        expect:
+        script.toolSetRule([operation: 'form', ruleId: 28, args: [steps: [[kind: 'open']]], confirm: true]) == [opened: 28]
+    }
+
+    def 'every operation words its refusals as hub_get_rule does: #label'() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> app == null ? null : [id: id, parentAppId: 28L, appType: [namespace: namespace, name: app]] }
+        script.metaClass.toolCallAppForm = { Map args, String toolName -> throw new AssertionError('unexpected native form') }
+        when:
+        script.toolSetRule(request + [ruleId: 42])
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message.startsWith(expected)
+        where:
+        label                       | request                                                                         | app                        | namespace || expected
+        'read, no app'              | [operation: 'read']                                                             | null                       | 'hubitat' || "No app with id 42 is installed; find rule ids with hub_list_rules"
+        'form, no app'              | [operation: 'form', confirm: true, args: [steps: [[kind: 'open']]]]             | null                       | 'hubitat' || "No app with id 42 is installed"
+        'read, a non-rule app'      | [operation: 'read']                                                             | 'Motion Lighting'          | 'hubitat' || 'App 42 is a Motion Lighting app, not a rule'
+        'read, a Visual Rule'       | [operation: 'read']                                                             | 'Visual Rule Builder 2.0'  | 'hubitat' || 'App 42 is a Visual Rule Builder 2.0 rule: Visual Rules are read with hub_get_visual_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here'
+        'form, another rule type'   | [operation: 'form', confirm: true, args: [steps: [[kind: 'open']]]]             | 'Rule-6.0'                 | 'hubitat' || 'App 42 is a Rule-6.0 rule: rules of that type are read with hub_get_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here'
+    }
+
+    def '_rmIsEditableRuleType names the Rule Machine 5.1 rule and Button Rule types in the hubitat namespace'() {
+        expect:
+        script._rmIsEditableRuleType(name, namespace) == expected
+        where:
+        name              | namespace || expected
+        'Rule-5.1'        | 'hubitat' || true
+        'Button Rule-5.1' | 'hubitat' || true
+        'Rule Machine'    | 'hubitat' || false
+        'Rule-5.1'        | 'acme'    || false
+        null              | 'hubitat' || false
     }
 }

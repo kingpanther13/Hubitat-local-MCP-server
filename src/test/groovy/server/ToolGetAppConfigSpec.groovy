@@ -953,6 +953,97 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    @spock.lang.Unroll
+    def "includeStatus masks an accessToken state row for #who"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactAccessTokens = setting
+        if (client) script.callerClient = [id: 'c1']
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'accessToken', value: 'a1b2c3d4-live-token'], [name: 'paused', value: false]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState.find { it.name == 'accessToken' }.value == shown
+        result.appState.find { it.name == 'paused' }.value == false
+
+        cleanup:
+        script.callerClient = null
+
+        where:
+        who                               | setting | client | shown
+        'the main token, setting on'      | true    | false  | '***redacted (access token)***'
+        'a per-client token, setting off' | false   | true   | '***redacted (access token)***'
+        'the main token, setting off'     | false   | false  | 'a1b2c3d4-live-token'
+    }
+
+    def "includeStatus masks each per-client token inside a clientTokens state row"() {
+        given: "credentials shown, so only the access-token setting can hide the tokens"
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        settingsMap.redactAccessTokens = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'clientTokens', value: [c1: [label: 'Desk', token: 'client-token-one'], c2: [label: 'Phone', token: 'client-token-two']]]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState.find { it.name == 'clientTokens' }.value == [c1: [label: 'Desk', token: '***redacted (access token)***'],
+                                                                     c2: [label: 'Phone', token: '***redacted (access token)***']]
+        !JsonOutput.toJson(result).contains('client-token-')
+    }
+
+    def "includeStatus too large for one response lists appState names only, then cuts subscriptions and jobs with their totals"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass._responseSizeLimitBytes = { -> limit }
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [],
+                               eventSubscriptions: (1..subs).collect { [deviceId: it, name: 'switch', handler: 'handler'] },
+                               scheduledJobs: [[handler: 'poll', nextRunTime: '2026-11-20T10:00:00+0000']],
+                               appState: [[name: 'piston', value: 'x' * 20000], [name: 'paused', value: false]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.success == true
+        result.statusTruncated == true
+        result.appState == [[name: 'piston'], [name: 'paused']]
+        result.statusTruncatedNote.contains('values omitted')
+        result.statusTruncatedNote.contains("hub_get_tool_guide(section='builtin_app_tools_apps')")
+        (result.eventSubscriptions.size() < subs) == cut
+        result.containsKey('eventSubscriptionsTotal') == cut
+        !cut || (result.eventSubscriptionsTotal == subs && result.statusTruncatedNote.contains("eventSubscriptions lists the first ${result.eventSubscriptions.size()} of ${subs}"))
+        result.scheduledJobs.size() == 1
+        !result.containsKey('scheduledJobsTotal')
+        script._appConfigResultBytes(result) <= limit - 1024
+
+        where:
+        limit | subs | cut
+        12000 | 3    | false
+        12000 | 400  | true
+    }
+
+    def "includeStatus within the size budget is returned whole"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'piston', value: 'x' * 20000]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState[0].value.size() == 20000
+        !result.containsKey('statusTruncated')
+    }
+
     def "includeSettings=true: settings map present and populated"() {
         given:
         settingsMap.enableRead = true
@@ -2686,7 +2777,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         script.toolGetAppConfig([appId: 35, pageName: 'selectTriggers']).page.sections[0].paragraphs[0].disabled == ['Switch A turns on']
     }
 
-    def "disabled rows fall back to the page when the rule state cannot be read or the rule is not a 5.1 rule"() {
+    def "disabled rows fall back to the page when the rule state cannot be read"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -2702,12 +2793,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         para.disabled == ["Notify Pushover: 'Fixed mismatch'"]
-        stateReads == reads
+        stateReads == 1
 
         where:
-        appName    | reads
-        'Rule-5.1' | 1
-        'Rule-5.0' | 0
+        appName << ['Rule-5.1', 'Button Rule-5.1']
     }
 
     def "a Rule Machine main page's action link lists the disabled rows its summary holds"() {
@@ -2872,8 +2961,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         name               | expected
         'Rule-5.1'         | true
         'Button Rule-5.1'  | true
-        'Rule-4.1'         | true
-        'Rule-4.0'         | true
+        'Rule-6.0'         | true
         'Rule Machine'     | false
         'Room Lights'      | false
         'My Rule-5.1'      | false

@@ -10377,7 +10377,8 @@ Boolean _appStateFlag(Object value) {
  * eventSubscriptions and scheduledJobs, an absent section reading as an empty list. With Hide
  * passwords and credentials on, an appState value whose name looks like a credential reads as the
  * same marker includeSettings uses; state nests (a rule's allLocalVars map), so map keys are tested
- * the same way at every level. Throws when the page cannot be read.
+ * the same way at every level. Access tokens (an accessToken row, the clientTokens map) are masked
+ * whenever tool results mask them. Throws when the page cannot be read.
  */
 Map _appStatusRead(Integer appId) {
     def status = _rmFetchStatusJson(appId)
@@ -10391,7 +10392,15 @@ Map _appStatusRead(Integer appId) {
     sections.each { key, value ->
         if (value != null && !(value instanceof List)) throw new IllegalStateException("App ${appId}'s status page returned ${key} in an unexpected shape")
     }
-    [appState: appState.findAll { it instanceof Map }.collect { row -> [name: row.name, value: _appStateMasked(row.name?.toString(), row.value)] },
+    boolean maskTokens = _redactsAccessTokens()
+    [appState: appState.findAll { it instanceof Map }.collect { row ->
+        String key = row.name?.toString()
+        def value = _appStateMasked(key, row.value)
+        // A state row is {name, value}, so the central token pass, which keys on the map key, never sees the
+        // row's name; run it on the row as the {name: value} entry it stands for.
+        if (maskTokens) value = _redactAccessTokens([(key): value]).get(key)
+        [name: row.name, value: value]
+     },
      eventSubscriptions: sections.eventSubscriptions ?: [], scheduledJobs: sections.scheduledJobs ?: []]
 }
 
@@ -10413,7 +10422,7 @@ private Map _appStatusFlag(Map status, String name) {
  * health source across every rule engine (issue #254 + the VRB follow-up).
  * Returns a normalized map or null when appId is not a recognized rule shape:
  *
- *   - classic Rule Machine -> [ruleFormat:"rm", broken:<bool>, paused, actionList, state]
+ *   - classic Rule Machine -> [ruleFormat:"rm", broken:<bool, null without the flag>, paused, actionList, state]
  *     from GET /app/ruleBuilderJson (the real `broken` boolean and the whole app state).
  *   - graph Visual Rule (VRB 2.0) -> [ruleFormat:"vrb-graph", broken:<validationErrors
  *     non-empty>, validationErrors, paused, label] from GET /app/ruleBuilder20Json. VRB rules ARE
@@ -10453,14 +10462,17 @@ private Map _ruleCompiledState(Integer appId) {
                         paused: parsed.rulePaused instanceof Boolean ? parsed.rulePaused : null,
                         label: parsed.name?.toString()]
             }
-            if (parsed.containsKey("broken")) {
+            // Rule Machine state is known by its broken flag or by its trigger and condition maps, so a
+            // state with the maps and no broken flag is still a rule whose broken reads null.
+            boolean rmMaps = parsed.capabstrue instanceof Map && parsed.capabsfalse instanceof Map
+            if (parsed.containsKey("broken") || rmMaps) {
                 // Native RM treats a never-written pause flag as false. Keep malformed
                 // flags and unrelated broken-only maps unknown rather than guessing.
                 Boolean nativePaused = parsed.paused instanceof Boolean ? parsed.paused :
-                    (!parsed.containsKey("paused") && parsed.broken instanceof Boolean && parsed.capabstrue instanceof Map && parsed.capabsfalse instanceof Map ? false : null)
+                    (!parsed.containsKey("paused") && parsed.broken instanceof Boolean && rmMaps ? false : null)
                 // actionList is RM's own display order (appSettings key order is arbitrary); state is the
                 // whole app state, so health reads its runtime flags and structure from this one fetch.
-                return [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
+                return [ruleFormat: "rm", broken: parsed.containsKey("broken") ? parsed.broken == true : null, validationErrors: [],
                         paused: nativePaused,
                         actionList: (parsed.actionList instanceof List ? parsed.actionList : null),
                         state: parsed, endpoint: "ruleBuilderJson"]
@@ -10706,6 +10718,22 @@ String _rmNotRuleText(Map typesById) {
     return "Apps ${typesById.collect { id, typeName -> "${id} (${typeName})" }.join(', ')} are not rules".toString()
 }
 
+String _rmMissingAppText(id) {
+    return "${_rmNoAppText([id])}; find rule ids with hub_list_rules, or any app's id with hub_list_apps".toString()
+}
+
+// The rule types whose native model hub_set_rule reads and edits.
+boolean _rmIsEditableRuleType(name, namespace = 'hubitat') {
+    return namespace?.toString() == 'hubitat' && name?.toString() in ['Rule-5.1', 'Button Rule-5.1']
+}
+
+// An installed app hub_set_rule cannot edit, in hub_get_rule's wording; a rule of another type is named as one.
+String _rmNotEditableText(id, String typeName) {
+    if (_rmIsVisualRuleType(typeName)) return "App ${id} is a ${typeName} rule: Visual Rules are read with hub_get_visual_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here".toString()
+    if (_rmIsRuleAppType(typeName)) return "App ${id} is a ${typeName} rule: rules of that type are read with hub_get_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here".toString()
+    return _rmNotRuleText([(id): typeName ?: 'unknown type'])
+}
+
 // A rule-tool target whose lookup failed: nothing was run, since the target was never confirmed.
 Map _rmLookupFailure(Map reasonsById) {
     def detail = reasonsById.collect { id, why -> "app ${id}: ${why}" }.join('; ')
@@ -10776,7 +10804,7 @@ Map _rmCheckRuleHealth(Integer appId) {
         identified = false
         checkErrors << "app ${appId} could not be identified (${lookup.message ?: lookup.toString()}), so its type was taken from its page".toString()
     }
-    if (identified && installed == null) throw new IllegalArgumentException("${_rmNoAppText([appId])}; find rule ids with hub_list_rules, or any app's id with hub_list_apps")
+    if (identified && installed == null) throw new IllegalArgumentException(_rmMissingAppText(appId))
     String typeName = installed?.appType?.name?.toString()
     boolean visual = _rmIsVisualRuleType(typeName)
     boolean read = false
@@ -10829,6 +10857,9 @@ Map _rmCheckRuleHealth(Integer appId) {
             if (cs.ruleFormat == "rm") compiled = cs.state
         } else if (cs?.readError) {
             checkErrors << "compiled-state read failed: ${cs.readError}".toString()
+        } else if (_rmIsEditableRuleType(typeName)) {
+            // The read answered, but not with Rule Machine state: that is a failed read, not a rule with no flags.
+            checkErrors << "the rule's compiled state was read but is not Rule Machine state, so its broken flag and disabled rows were not checked".toString()
         }
     }
     if (compiled != null) {
@@ -12390,7 +12421,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - Each input is the field hub_set_native_app(operation='form') returns; a device picker adds `selected`, its devices with labels. `unsupported` lists page parts a form cannot drive, such as a community app's create button. When the page cannot be modelled, `formError` says why: inputs carry no values and there are no controls.
   - `appType.namespace` and `appType.name` name the type; `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
   - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs read as in the form tools: a password input carries no value and `redacted: true`; a credential-named input reads the marker. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
-  - `includeStatus=true` adds the app's App Status lists, for any app and also with `summary=true`: `appState` (the app's stored state as `[{name, value}]`; a community app's working data, a webCoRE piston's definition, logs and trace), `eventSubscriptions` and `scheduledJobs`. With Hide passwords and credentials on, a value whose name looks like a credential reads `***redacted (password)***`, also inside nested maps (a rule's local variables); `statusRedactionNote` says so. When the status page cannot be read the three lists are omitted and `statusNote` says why. hub_get_rule counts a rule's subscriptions and jobs from the same read.
+  - `includeStatus=true` adds the app's App Status lists, for any app and also with `summary=true`: `appState` (the app's stored state as `[{name, value}]`; a community app's working data, a webCoRE piston's definition, logs and trace), `eventSubscriptions` and `scheduledJobs`. With Hide passwords and credentials on, a value whose name looks like a credential reads `***redacted (password)***`, also inside nested maps (a rule's local variables); `statusRedactionNote` says so. Access tokens (an `accessToken` entry, each per-client token in `clientTokens`) read `***redacted (access token)***` whenever Hide access tokens is on, and always for a per-client token. When the lists would push the response past the size cap (a webCoRE piston's state can), `appState` lists names only with its values omitted, `statusTruncated` is true and `statusTruncatedNote` says what was cut; if that is still too large, `eventSubscriptions` and `scheduledJobs` are cut too, with `eventSubscriptionsTotal` / `scheduledJobsTotal` giving their full counts. When the status page cannot be read the three lists are omitted and `statusNote` says why. hub_get_rule counts a rule's subscriptions and jobs from the same read.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.

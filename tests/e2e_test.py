@@ -8787,6 +8787,11 @@ def updated() {}
             # An id with no app is refused rather than read as a rule with no locals.
             missing = refused("hub_get_rule", {"ruleId": 999999999})
             assert "No app with id 999999999 is installed" in str(missing.get("error")), missing
+            # hub_set_rule words both refusals as hub_get_rule does.
+            set_missing = self._rm_call({"operation": "read", "ruleId": 999999999})
+            assert "No app with id 999999999 is installed" in str(set_missing.get("error")), set_missing
+            set_parent = self._rm_call({"operation": "read", "ruleId": int(parent_id)})
+            assert f"App {parent_id} is a Rule Machine app, not a rule" in str(set_parent.get("error")), set_parent
             # The runtime tools refuse an id with no app, alone or in a batch with a real rule, before
             # anything is dispatched: the batch's real rule does not run either.
             for tool, args in (("hub_call_rule", {"ruleId": 999999999}),
@@ -12099,6 +12104,17 @@ def updated() {}
                 "redactAccessTokens on: endpoint URLs missing or not marked as redacted"
             assert not any(t in hidden for t in tokens), \
                 "redactAccessTokens on: the access token is still in the page read"
+            # The app's state holds the same token as an accessToken row, which includeStatus returns as
+            # {name, value}; the central pass keys on map keys, so the row is masked on its own.
+            status = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": str(self.client.app_id), "summary": True, "includeStatus": True}})
+            assert not any(t in json.dumps(status) for t in tokens), \
+                "redactAccessTokens on: the access token is still in the includeStatus read"
+            rows = [r for r in (status.get("appState") or []) if isinstance(r, dict) and r.get("name") == "accessToken"]
+            assert len(rows) == 1, "includeStatus read lists no accessToken state row for the server app"
+            if not status.get("statusTruncated"):
+                assert rows[0].get("value") == marker, "redactAccessTokens on: the accessToken state row is not marked as redacted"
         finally:
             unwinding = sys.exc_info()[0] is not None
             try:
@@ -15439,7 +15455,7 @@ def updated() {}
                 assert "protected" in message.lower() and app_id in message, \
                     f"expected protected-app refusal, got: {message}"
             else:
-                assert "ruleId must identify native Rule-5.1, Button Rule-5.1 or Rule Machine" in message, \
+                assert f"App {app_id} is a" in message and "not a rule" in message, \
                     f"RM form must refuse the non-RM MCP app before accessing its editor: {message}"
             assert read_settings() == before, "refused generic edit changed persisted settings"
 

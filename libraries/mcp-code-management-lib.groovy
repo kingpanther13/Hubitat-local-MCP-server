@@ -556,7 +556,7 @@ def toolGetAppConfig(args) {
     // RM keeps which rows are disabled in its state; the page only italicises them. Other rule versions, or unreadable
     // state, leave the page as the only marker.
     boolean rmHasDisabled = isRmRule
-    if (isRmRule && [appTypeRaw instanceof Map ? appTypeRaw.name : null, parsed.app.name].any { it?.toString() in ['Rule-5.1', 'Button Rule-5.1'] }) {
+    if (isRmRule && [appTypeRaw instanceof Map ? appTypeRaw.name : null, parsed.app.name].any { _rmIsEditableRuleType(it) }) {
         try {
             Map rmState = _nrState(appIdStr as Long)
             rmHasDisabled = [rmState.disabledActions, rmState.disabledTriggers].any { it instanceof Collection && !it.isEmpty() }
@@ -715,10 +715,43 @@ private void _appConfigAttachStatus(Map result, Integer appId) {
         result.eventSubscriptions = status.eventSubscriptions
         result.scheduledJobs = status.scheduledJobs
         if (_redactsCredentials()) result.statusRedactionNote = "appState values whose names look like credentials, at any depth, read ${_appConfigRedactedMarker()}, as settings do. Turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
+        _appConfigFitStatus(result)
     } catch (Exception e) {
         mcpLog("warn", "hub-admin", "hub_get_app_config app ${appId}: status read failed (${e.message})")
         result.statusNote = "The app's status page could not be read (${e.message ?: e.toString()}), so appState, eventSubscriptions and scheduledJobs are omitted. Retry; the rest of this read is unaffected.".toString()
     }
+}
+
+// A large appState (a webCoRE piston) can push the whole read past the tools/call size cap, which would lose all
+// of it. Over budget, appState keeps its names only; still over, the subscription and job lists are cut in half
+// until it fits, each with its full count.
+private void _appConfigFitStatus(Map result) {
+    int budget = _responseSizeLimitBytes() - 1024
+    if (_appConfigResultBytes(result) <= budget) return
+    result.appState = result.appState.collect { row -> [name: row?.name] }
+    result.statusTruncated = true
+    List cut = []
+    ['eventSubscriptions', 'scheduledJobs'].each { key ->
+        List full = result.get(key)
+        int keep = full.size()
+        while (keep > 0 && _appConfigResultBytes(result) > budget) {
+            keep = keep.intdiv(2)
+            result.put(key, full.take(keep))
+        }
+        if (keep < full.size()) {
+            result.put("${key}Total".toString(), full.size())
+            cut << "${key} lists the first ${keep} of ${full.size()}".toString()
+        }
+    }
+    result.statusTruncatedNote = ("The status lists were too large for one response, so appState lists names only, its values omitted" +
+        (cut ? "; ${cut.join('; ')}" : "") + ". The app's App Status page in the Hubitat UI shows the values. " +
+        "See hub_get_tool_guide(section='builtin_app_tools_apps').").toString()
+}
+
+// The tools/call response this result would make: JSON inside the text content, so quotes are escaped twice.
+private int _appConfigResultBytes(Map result) {
+    def envelope = jsonRpcResult(0, [content: [[type: 'text', text: groovy.json.JsonOutput.toJson(result)]]])
+    groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length
 }
 
 // Rule Machine wraps each disabled action or trigger row, and its "Disabled Action" / "Disabled Trigger" legend,
@@ -2949,7 +2982,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "The page to read instead of the default page: a page.hrefs[].page name from a page of this app already read."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
-                    includeStatus: [type: "boolean", description: "Also return the app's App Status lists: appState (the app's stored state as [{name, value}], credential-named values redacted), eventSubscriptions and scheduledJobs (default false). Works with summary=true.", default: false],
+                    includeStatus: [type: "boolean", description: "Also return the app's App Status lists: appState (the app's stored state as [{name, value}], credential-named values redacted), eventSubscriptions and scheduledJobs (default false). Works with summary=true. Lists too large for one response come back cut, with statusTruncated=true.", default: false],
                     summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user) and the type's namespace, no config page; pageName/includeSettings ignored.", default: false]
                 ],
                 required: ["appId"]

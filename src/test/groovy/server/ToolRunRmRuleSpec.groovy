@@ -165,6 +165,35 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.error.contains('runAction button click failed')
         result.error.contains('btn POST refused')
         rmUtils.calls.isEmpty()
+
+        and: 'the note warns that the actions may have run and a retry runs them again'
+        result.note.contains('may have reached the hub and run')
+        result.note.contains('hub_get_logs')
+        result.note.contains('a retry runs the actions again')
+        result.note.contains("hub_get_tool_guide(section='builtin_app_tools_rules')")
+    }
+
+    @spock.lang.Unroll
+    def "a failed #button click on action=#action says re-issuing is safe"() {
+        given:
+        rule(107, false, false)
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> throw new IllegalStateException('btn POST refused') }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 107, action: action])
+
+        then:
+        result.success == false
+        result.error.contains("${button} button click failed")
+        result.note.contains('Re-issuing is safe')
+        result.note.contains("already ${state} is left alone")
+        result.note.contains('hub_list_rules')
+        result.note.contains("hub_get_tool_guide(section='builtin_app_tools_rules')")
+
+        where:
+        action  | button     | state
+        'stop'  | 'stopRule' | 'stopped'
+        'pause' | 'pausRule' | 'paused'
     }
 
     def "array ruleId with action=actions clicks runAction per rule and aggregates"() {
@@ -757,6 +786,31 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error.contains('busy')
+        result.note.contains('Re-issuing is safe')
+        result.note.contains('already paused is left alone')
+        result.note.contains("hub_get_tool_guide(section='builtin_app_tools_rules')")
+    }
+
+    @spock.lang.Unroll
+    def "a Visual Rule run whose answer is #label may have run, and the note says so"() {
+        given:
+        visualRule(175, 'graph', false)
+        hubGet.register('/app/ruleBuilderRun/175', answer)
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 175, action: 'actions'])
+
+        then:
+        result.success == false
+        result.error.contains(error)
+        result.note.contains('may have reached the hub and run the rule')
+        result.note.contains('hub_get_logs')
+        result.note.contains("hub_get_tool_guide(section='builtin_app_tools_rules')")
+
+        where:
+        label         | answer                                               | error
+        'lost'        | { params -> throw new IOException('read timed out') } | '/app/ruleBuilderRun failed (read timed out)'
+        'not JSON'    | { params -> '<html>Proxy error</html>' }              | 'non-JSON response'
     }
 
     @spock.lang.Unroll

@@ -666,7 +666,8 @@ Map toolSetRule(Map request) {
     if (operation == 'update') return toolUpdateRuleDocument(arguments + [ruleId: request.ruleId, confirm: true])
     Long id = _ndId(request.ruleId)
     def target = getAppByAppId(id)
-    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || !(target?.appType?.name in ['Rule-5.1', 'Button Rule-5.1', 'Rule Machine'])) throw new IllegalArgumentException('ruleId must identify native Rule-5.1, Button Rule-5.1 or Rule Machine')
+    boolean rmParent = target?.appType?.namespace == 'hubitat' && target?.appType?.name == 'Rule Machine'
+    if (target?.id?.toString() != id.toString() || !rmParent) _nrRequireEditableRule(target, id)
     toolCallAppForm(arguments + [ruleId: request.ruleId, confirm: true], 'hub_set_rule')
 }
 

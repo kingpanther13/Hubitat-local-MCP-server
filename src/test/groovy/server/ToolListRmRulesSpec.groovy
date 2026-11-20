@@ -404,7 +404,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         registerRmAppsList([
             ruleNode(401, 'Play room toggle (Paused)'),
             ruleNode(402, 'Hall motion <span style="color:red">(Paused)</span>'),
-            ruleNode(403, 'Garden lights (Paused)', false, 'Rule-4.1')
+            ruleNode(403, 'Garden lights (Paused)', false, 'Button Rule-5.1')
         ])
         [401, 402, 403].each { registerRuleState(it, [paused: true]) }
 
@@ -421,8 +421,8 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         r402.paused == true
         r402.status == 'paused'
 
-        and: 'an older rule type is annotated the same way, by the same generic path'
-        r403.type == 'Rule-4.1'
+        and: 'a Button Rule is annotated the same way, by the same generic path'
+        r403.type == 'Button Rule-5.1'
         r403.paused == true
         r403.status == 'paused'
     }

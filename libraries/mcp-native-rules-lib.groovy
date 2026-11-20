@@ -571,7 +571,8 @@ private Map _rmRunActionsButton(Integer ruleId) {
     try {
         _rmClickAppButton(ruleId, "runAction")
     } catch (Exception e) {
-        return [success: false, ruleId: ruleId, error: "hub_call_rule action=actions: runAction button click failed (${e.message})"]
+        return [success: false, ruleId: ruleId, error: "hub_call_rule action=actions: runAction button click failed (${e.message})".toString(),
+                note: "The click may have reached the hub and run the rule's actions before failing. Check the rule's effects and hub_get_logs before retrying, because a retry runs the actions again. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
     }
     return [success: true, ruleId: ruleId, rmAction: "runAction button"]
 }
@@ -613,7 +614,8 @@ private Map _rmToggleButton(Integer ruleId, String action, String flag, String b
     try {
         _rmClickAppButton(ruleId, button)
     } catch (Exception e) {
-        return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${button} button click failed (${e.message})".toString()]
+        return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${button} button click failed (${e.message})".toString(),
+                note: "Re-issuing is safe: the rule's state is read first and a rule already ${target ? flag : 'not ' + flag} is left alone. Confirm with hub_get_rule or hub_list_rules. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
     }
     def out = [success: true, ruleId: ruleId, rmAction: clicked]
     // The click alone leaves the rule's "(Stopped)"/"(Paused)" name decoration stale until its page is next
@@ -645,7 +647,8 @@ private Map _vrbTogglePaused(Integer ruleId, String action) {
     } catch (Exception e) {
         sent = [success: false, error: "pause endpoint failed: ${e.message}"]
     }
-    if (sent.success != true) return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${sent.error}".toString()]
+    if (sent.success != true) return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${sent.error}".toString(),
+        note: "Re-issuing is safe: the Visual Rule's state is read first and a rule already ${target ? 'paused' : 'not paused'} is left alone. Confirm with hub_get_rule or hub_list_rules. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
     return [success: true, ruleId: ruleId, rmAction: "ruleBuilderPause -> ${target}".toString()]
 }
 
@@ -1619,7 +1622,7 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
     def payload = new groovy.json.JsonSlurper().parseText(raw)
     def identity = payload instanceof Map && payload.appReplacements instanceof Map ? payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }?.value : null
     def data = payload instanceof Map && payload.appData instanceof Map ? payload.appData.find { key, value -> key.toString() == ruleId.toString() }?.value : null
-    if (!(identity instanceof Map) || identity.appTypeNamespace != 'hubitat' || !(identity.appTypeName in ['Rule-5.1', 'Button Rule-5.1']) ||
+    if (!(identity instanceof Map) || !_rmIsEditableRuleType(identity.appTypeName, identity.appTypeNamespace) ||
         !identity.parentAppInstalledAppId?.toString()?.isLong() || identity.parentAppInstalledAppId.toString().toLong() <= 0L ||
         !(payload.deviceReplacements instanceof Map) || !(data instanceof Map) || !(data.state instanceof Map) ||
         ['actions', 'capabstrue', 'capabsfalse', 'eval'].any { data.state.get(it) != null && !(data.state.get(it) instanceof Map) } ||
@@ -2613,9 +2616,9 @@ def toolGetNativeRule(args) {
         mcpLogError("rm-native", "hub_get_rule lookup failed for app ${id}", lookup)
         return [ruleId: id] + _rmLookupFailure([(id): (lookup.message ?: lookup.toString()).toString()])
     }
-    if (target == null) throw new IllegalArgumentException("${_rmNoAppText([id])}; find rule ids with hub_list_rules, or any app's id with hub_list_apps")
+    if (target == null) throw new IllegalArgumentException(_rmMissingAppText(id))
     String typeName = target.appType?.name?.toString()
-    if (target.appType?.namespace?.toString() == "hubitat" && typeName in ["Rule-5.1", "Button Rule-5.1"]) return toolGetRuleDocument(docArgs)
+    if (_rmIsEditableRuleType(typeName, target.appType?.namespace)) return toolGetRuleDocument(docArgs)
     String note = _rmIsVisualRuleType(typeName) ? "A Visual Rule's definition is read with hub_get_visual_rule." :
         (_rmIsRuleAppType(typeName) ? "Only a Rule Machine 5.1 rule or Button Rule has a document; this rule returns its health alone." :
             "This app is not a Rule Machine rule; read its configuration with hub_get_app_config.")

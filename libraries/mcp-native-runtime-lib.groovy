@@ -7,14 +7,17 @@ private Long _nrCreatedAppId(Object response) {
     match.find() && match.group(1).isLong() && match.group(1).toLong() > 0L ? match.group(1).toLong() : null
 }
 
+// The rule tools share one refusal for an id with no app and for an app that is not an editable rule.
+private void _nrRequireEditableRule(target, Long ruleId) {
+    if (target == null || target.id?.toString() != ruleId.toString()) throw new IllegalArgumentException(_rmMissingAppText(ruleId))
+    String typeName = target.appType?.name?.toString()
+    if (!_rmIsEditableRuleType(typeName, target.appType?.namespace)) throw new IllegalArgumentException(_rmNotEditableText(ruleId, typeName))
+}
+
 def _nrHandle(Long ruleId) {
     if (ruleId == null || ruleId <= 0L) throw new IllegalArgumentException('A positive rule ID is required')
     def target = getAppByAppId(ruleId)
-    if (target == null || target.id?.toString() != ruleId.toString()) throw new IllegalArgumentException('Rule not found')
-    def type = target.appType
-    if (type?.namespace != 'hubitat' || !(type?.name in ['Rule-5.1', 'Button Rule-5.1'])) {
-        throw new IllegalArgumentException('Target must be a native Rule-5.1 or Button Rule-5.1')
-    }
+    _nrRequireEditableRule(target, ruleId)
     def parentId = target.parentAppId
     if (parentId == null || !parentId.toString().isLong() || parentId.toString().toLong() <= 0L) {
         throw new IllegalArgumentException('Native rule has no valid parent')
@@ -142,10 +145,8 @@ Map _nrWriteSettings(Long ruleId, List rows) {
 
 private Map _nrRulePages(Long ruleId) {
     def target = getAppByAppId(ruleId)
-    def type = target?.appType
-    if (target?.id?.toString() != ruleId.toString() || type?.namespace != 'hubitat' || !(type?.name in ['Rule-5.1', 'Button Rule-5.1'])) {
-        throw new IllegalArgumentException('Target must be a native Rule-5.1 or Button Rule-5.1')
-    }
+    _nrRequireEditableRule(target, ruleId)
+    def type = target.appType
     type.name == 'Button Rule-5.1' ? [primary: 'selectActions', actions: 'selectActionsX'] : [primary: 'mainPage', actions: 'selectActions']
 }
 

@@ -301,14 +301,13 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.ok == false
     }
 
-    @spock.lang.Unroll
-    def "a #typeName rule takes the same path as any rule; a value the hub does not return reads null, not a failed check"() {
-        given: "an older rule type stores no broken flag, so its state is not recognized as compiled Rule Machine state"
-        appType(typeName)
-        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson([lvList: [], private: true]) }
-        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }
-        hubGet.register('/installedapp/configure/json/100') { configJson(100, [typeName: typeName]) }
-        hubGet.register('/installedapp/statusJson/100') { statusJson(100, [private: true]) }
+    def "a rule whose state has no broken flag reads broken null, not a failed check"() {
+        given: "Rule Machine state, known by its trigger and condition maps, without the broken key"
+        Map state = ruleState()
+        state.remove('broken')
+        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson(state) }
+        hubGet.register('/installedapp/configure/json/100') { configJson(100) }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100, state) }
 
         when:
         def h = script._rmCheckRuleHealth(100)
@@ -316,16 +315,34 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         then:
         h.ruleFormat == 'rm'
         h.broken == null
-        h.disabledActions == null
-        h.structuralIssues == []
+        h.disabledActions == []
         h.privateBoolean == true
-        h.stopped == false
         h.checkErrors == []
         h.issues == []
         h.ok == true
+        count('/app/ruleBuilder20Json/100') == 0
+    }
 
-        where:
-        typeName << ['Rule-4.1', 'Rule-5.0', 'Button Rule-4.1']
+    def "a rule whose compiled read answers with no Rule Machine state is a failed check"() {
+        given:
+        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson([lvList: [], private: true]) }
+        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }
+        hubGet.register('/installedapp/configure/json/100') { configJson(100) }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100, [private: true]) }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.ruleFormat == 'rm'
+        h.unreadable == false
+        h.broken == null
+        h.disabledActions == null
+        h.privateBoolean == true
+        h.checkErrors.size() == 1
+        h.checkErrors[0].contains('is not Rule Machine state')
+        h.issues == []
+        h.ok == false
     }
 
     def "a rule whose compiled read fails still reports ruleFormat rm"() {
@@ -696,7 +713,6 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         typeName         | format       | pointer              | useGateways
         'Basic Rule-1.0' | 'basic-rule' | 'hub_get_app_config' | true
         'Basic Rule-1.0' | 'basic-rule' | 'hub_get_app_config' | false
-        'Rule-5.0'       | 'rm'         | 'health alone'       | true
     }
 
     def "hub_get_rule names a missing app as a validation error before any read"() {
