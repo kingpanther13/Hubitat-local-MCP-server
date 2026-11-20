@@ -325,8 +325,8 @@ private String findRuleAppRedirect(ruleId, String verb) {
         "rule machine", "rule-5", "rule-4", "room light", "basic rules", "visual rule"
     ]
 
-    // Subset of ruleTypeFragments that are RM-specific. hub_call_rule (RMUtils) only works for
-    // Rule Machine rules -- pointing Room Lighting / Basic Rules / VRB ids there would fail.
+    // Subset of ruleTypeFragments that are RM-specific: the test-verb hint names hub_call_rule only for
+    // these, since it refuses Room Lighting and Basic Rules ids.
     def rmTypeFragments = ["rule machine", "rule-5", "rule-4"]
 
     def idStr = ruleId?.toString()?.trim()
@@ -382,7 +382,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
                 "Use `hub_manage_native_rules_and_apps -> hub_delete_native_app(appId=${idStr}, confirm=true)` to delete it programmatically " +
                 "(requires the Write master)."
         } else if (verb == "test") {
-            // hub_call_rule routes through RMUtils and is RM-only. Point non-RM rule-likes at hub_get_app_config instead.
+            // Point non-RM rule-likes at hub_get_app_config instead of hub_call_rule.
             if (isRmRule) {
                 return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                     "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +

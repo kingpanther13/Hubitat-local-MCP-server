@@ -651,7 +651,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
         then:
         def refused = thrown(IllegalArgumentException)
-        refused.message.contains('App 100 not found')
+        refused.message.contains('No app with id 100 is installed')
         hubGet.calls.isEmpty()
     }
 
@@ -708,7 +708,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('App 999 not found')
+        mcpDriver.parseInner(response).error.contains('No app with id 999 is installed')
         mcpDriver.parseInner(response).error.contains('hub_list_rules')
         hubGet.calls.isEmpty()
     }

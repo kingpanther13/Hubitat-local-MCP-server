@@ -73,7 +73,6 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             ['toolUpdateDashboard', [dashboardId: '42', name: 'Changed']],
             ['toolDeleteDashboard', [dashboardId: '42']],
             ['toolRunRmRule', [ruleId: 42, action: 'stop']],
-            ['toolSetRulePaused', [ruleId: 42, paused: true]],
             ['toolSetRmRuleBoolean', [ruleId: 42, value: true]]
         ]].combinations()
         method = row[0]
@@ -221,7 +220,6 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         where:
         method                  | args
         'toolRunRmRule'          | [action: 'actions']
-        'toolSetRulePaused'      | [paused: true]
         'toolSetRmRuleBoolean'   | [value: true]
     }
 

@@ -104,7 +104,6 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_import_native_app -> builtin_app_tools_crud
 - hub_call_rule -> builtin_app_tools_rules
 - hub_set_app_disabled -> builtin_app_tools_rules
-- hub_set_rule_paused -> builtin_app_tools_rules
 - hub_set_rule_private_boolean -> builtin_app_tools_rules
 - hub_delete_bundle -> bundles
 - hub_export_bundle -> bundles
@@ -1049,25 +1048,21 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - Data-quality warning types in dataQualityWarnings[]: heid-whitespace-normalized (padded heID normalized; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid, skipped-malformed-component
   - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via hub_update_app are not detectable
 
-### hub_manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules
+### hub_manage_native_rules_and_apps (11 tools) — read, trigger, AND full CRUD on native RM rules
 
-RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
-(hub_list_rules, hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean and hub_get_rule are also in hub_manage_rule_machine, with hub_set_rule. The reads hub_list_rules and hub_get_rule are also in hub_read_rules.)
+Rule runtime control surface (hub_list_rules = Read master; hub_call_rule and the private boolean = Write master):
+(hub_list_rules, hub_call_rule, hub_set_rule_private_boolean and hub_get_rule are also in hub_manage_rule_machine, with hub_set_rule. The reads hub_list_rules and hub_get_rule are also in hub_read_rules.)
 
-- **hub_list_rules** — every Rule Machine rule (RM 4.x + 5.x, deduplicated by id) with a live **status** ("active" | "paused" | "stopped" | "disabled" | "unknown"), the **disabled** and **paused** booleans (omitted when unknown) and, only when detected, **requiredExpressionFalse: true**.
+- **hub_list_rules** — every Rule Machine rule (deduplicated by id) with a live **status** ("active" | "paused" | "stopped" | "disabled" | "unknown"), the **disabled** and **paused** booleans (omitted when unknown) and, only when detected, **requiredExpressionFalse: true**.
   - **disabled** is the app's red-X flag from /hub2/appsList.
   - **paused** and **stopped** come from Rule Machine's name decoration. The appsList name and the RMUtils label are compared with markup stripped and entities decoded; the text the appsList name adds — "(Paused)", "(Stopped)", "(Required Expression false)" — sets the flag. A rule literally NAMED "... (Paused)" or "... (Stopped)" carries the suffix in both strings and is not flagged. A stopped rule's label and name come back without the decoration, in the encoding they already use.
-  - The name shows one decoration at a time ("(Stopped)" hides "(Paused)"), so a decorated row also reads that rule's own paused/stopped state; undecorated rows make no extra read, and if that read fails the name decides. Rule Machine refreshes the decoration when the rule's page renders: hub_call_rule(action="stop"/"start") renders it, so the list is current after an MCP stop or start, while a stop made elsewhere shows once the rule's page is next opened.
+  - The name shows one decoration at a time ("(Stopped)" hides "(Paused)"), so a decorated row also reads that rule's own paused/stopped state; undecorated rows make no extra read. If that read fails, the name decides and the row carries **statusSource: "name"**, with **statusSourceNote** listing those ids. Rule Machine refreshes the decoration when the rule's page renders: hub_call_rule(action="stop"/"start"/"pause"/"resume") renders it, so the list is current after an MCP stop, start, pause or resume, while a stop made elsewhere shows once the rule's page is next opened.
   - **status** precedence is disabled > stopped > paused > active; the booleans stay independent (a paused rule disabled later reads disabled:true, paused:true, status:"disabled").
   - **unknown**: when /hub2/appsList cannot be read, every rule is unknown, the list is unfiltered (deleted rules may linger) and the result carries **statusNote**; when one rule's entry lacks data, only that rule is unknown.
   - For one rule's state call hub_get_rule. For the disabled flag of other classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances').
-- **hub_call_rule** — act on one or more RM rules (ruleId takes an id or an array). `rule` (refused for Rule Machine 5.1 rules) dispatches the whole set in one RMUtils call; `actions`, `stop` and `start` click each rule's page button in turn and return per-rule results, with failedRuleIds/remainingRuleIds on a partial batch
-  - action="rule" (default): full evaluation (triggers + conditions + actions); refused for Rule Machine 5.1 rules, where it runs nothing
-  - action="actions": run actions only, skip conditions
-  - action="stop": stop running actions
-  - action="start": restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged)
-- **hub_set_rule_paused** — pause (paused=true) or resume (paused=false) one or more rules in ONE call (ruleId takes an id or an array; multi-id batches existence-check every id first); reversible
-- **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only); hub_get_rule reads it back as health.privateBoolean
+- **hub_call_rule** — run, stop, start, pause or resume one or more rules (ruleId takes an id or an array): Rule Machine rules and Button Rules, and Visual Rules for actions, pause and resume. Each rule is acted on in turn, with per-rule results and failedRuleIds/remainingRuleIds on a partial batch; see hub_call_rule below.
+- **hub_set_rule_private_boolean** — set the private boolean of one or more Rule Machine rules in one RMUtils dispatch (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only); hub_get_rule reads it back as health.privateBoolean. It is the one rule tool that still goes through RMUtils, so the hub's per-app load limiter can refuse it: a refusal changes nothing, and a reset of the app runtime statistics (hub_delete_logs(mode='appRuntimeStats', confirm=true), or the server's automatic reset) followed by a retry clears it.
+- Every id is checked before anything is dispatched: an id with no app, or an app that is not a rule (the Rule Machine parent app, a Basic Rule, any other app), refuses the whole call, a batch included; a lookup that fails refuses it too, with success:false.
 
 Native CRUD (also requires the Write master):
 - **hub_set_native_app** — create, update or drive the forms of every classic app other than Rule Machine rules (see set_native_app_reference). Rule Machine rules use hub_set_rule.
@@ -1106,14 +1101,14 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 ### hub_call_rule
 
-`action` selects which Rule Machine verb to invoke (default `rule`):
+`action` selects what to do (default `actions`):
 
-- **`rule`** → RMUtils `runRule`: re-evaluate the rule's conditions, then run the matching true/false action set. Rule Machine 5.1 accepts runRule and runs nothing, so a call naming any 5.1 rule (Rule-5.1 or Button Rule-5.1) is refused before anything is dispatched; use `actions` to run a 5.1 rule's actions.
-- **`actions`**: click the rule's Run Actions button (`runAction`) to run the action list directly, skipping condition evaluation.
-- **`stop`**: halt the rule's in-progress actions.
-- **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged).
+- **`actions`**: run the rule's actions directly, skipping condition evaluation. A Rule Machine rule's Run Actions button (`runAction`) is clicked; a Visual Rule runs through its builder's run endpoint, whose conditions still pick the branch. A Visual Rule the hub does not run comes back as success:false with the hub's own message.
+- **`stop`**: halt the rule's in-progress actions (Rule Machine only).
+- **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged; Rule Machine only).
+- **`pause`** / **`resume`**: pause or resume the rule; a paused rule does not fire on its triggers. A Rule Machine rule's Pause button (`pausRule`) is clicked; a Visual Rule is paused through its builder's pause endpoint.
 
-`actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), one rule at a time, not RMUtils: that is the route the hub UI takes. `stop` and `start` read the rule's stopped state first and leave a rule already in the target state alone, so they are safe to repeat; a repeated `rule` or `actions` runs the actions again. Only `rule` goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation). An id whose app is not a Rule Machine rule (the Rule Machine parent app, a Basic Rule, any other app) is refused for every action before anything is dispatched, as it is by hub_set_rule_paused and hub_set_rule_private_boolean.
+Every action on a Rule Machine rule drives the rule's own page buttons (`runAction`, `stopRule`, `pausRule`), one rule at a time, not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. `stop`, `start`, `pause` and `resume` read the rule's state first and leave a rule already in the target state alone (rmAction:"noop"), so they are safe to repeat; a repeated `actions` runs the actions again. After a stop, start, pause or resume the rule's page is rendered once, so hub_list_rules shows the new status at once. `stop` or `start` naming a Visual Rule, which has no stop, refuses the whole call before anything runs. An id with no app, or an app that is not a rule (the Rule Machine parent app, a Basic Rule, any other app), is refused for every action before anything is dispatched, as it is by hub_set_rule_private_boolean.
 
 ### hub_get_rule
 

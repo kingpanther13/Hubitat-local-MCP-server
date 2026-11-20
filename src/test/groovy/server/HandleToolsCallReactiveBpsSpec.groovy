@@ -274,7 +274,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
          'hub_manage_virtual_device', 'hub_call_device_command', 'hub_clone_native_app',
          'hub_call_rule', 'hub_delete_device', 'hub_call_zwave', 'hub_call_device_swap',
          'hub_delete_native_app', 'hub_clone_native_app', 'hub_export_native_app',
-         'hub_import_native_app', 'hub_set_app_disabled', 'hub_set_rule_paused',
+         'hub_import_native_app', 'hub_set_app_disabled',
          'hub_set_rule_private_boolean', 'hub_call_zigbee', 'hub_call_matter',
          'hub_call_device_replace', 'hub_update_firmware', 'hub_call_destructive_ops',
          'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',

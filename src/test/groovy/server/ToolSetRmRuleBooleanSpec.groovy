@@ -12,15 +12,23 @@ import support.ToolSpecBase
  * (capitalized strings, integers, yes/no, on/off) throw IllegalArgumentException.
  *
  * Covers: gate-throw, missing ruleId, missing value, the full accept matrix,
- * the full reject matrix, and rmAction mapping for each resolved Boolean.
+ * the full reject matrix, rmAction mapping for each resolved Boolean, and the target guard
+ * every id passes before the one RMUtils dispatch.
  */
 class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
     RMUtilsMock rmUtils
+    // App type per id for the getAppByAppId stub; an id mapped to null has no app, an absent id is a Rule-5.1 rule.
+    Map<Integer, String> appTypes = [:]
 
     def setup() {
         rmUtils = new RMUtilsMock()
         rmUtils.install()
+        script.metaClass.getAppByAppId = { Long id ->
+            Integer key = id as Integer
+            if (appTypes.containsKey(key) && appTypes[key] == null) return null
+            [id: id, appType: [namespace: 'hubitat', name: appTypes.containsKey(key) ? appTypes[key] : 'Rule-5.1']]
+        }
     }
 
     def cleanup() {
@@ -369,22 +377,71 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         inner.success == true
         inner.ruleIds == [900, 901]
 
-        and: 'one dispatch for the whole set, and the skipped-check flag rode the envelope out'
-        // No RMUtils rule-list stub here, so the pre-dispatch existence check cannot run --
-        // idsVerified:false is the contract (omitting it would read as "verified").
-        inner.idsVerified == false
+        and: 'one dispatch for the whole set, after every id passed the target guard'
+        !inner.containsKey('idsVerified')
         rmUtils.calls.findAll { it.method == 'sendAction' && it.action == 'setRuleBooleanFalse' }.size() == 1
 
         where:
         useGateways << [true, false]
     }
 
-    def "a single-id call carries NO idsVerified key at all"() {
-        when:
-        def result = script.toolSetRmRuleBoolean([ruleId: 800, value: true])
+    @spock.lang.Unroll
+    def "#label is refused before the dispatch"() {
+        given:
+        appTypes.putAll(types)
 
-        then: 'the existence check is a multi-id-batch contract; a single id never claims verification'
+        when:
+        script.toolSetRmRuleBoolean([ruleId: ids, value: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(message)
+        ex.message.contains('hub_set_rule_private_boolean only acts on rules')
+        ex.message.contains('Nothing was dispatched')
+        rmUtils.calls.isEmpty()
+
+        where:
+        label                                 | ids          | types                              | message
+        'an id with no app'                   | 999999       | [999999: null]                     | 'No app with id 999999 is installed'
+        'a batch holding an id with no app'   | [900, 10]    | [10: null]                         | 'No app with id 10 is installed'
+        'the Rule Machine parent'             | 20           | [20: 'Rule Machine']               | 'App 20 is a Rule Machine app, not a rule'
+        'a Visual Rule'                       | 21           | [21: 'Visual Rule Builder 2.0']    | 'App 21 is a Visual Rule Builder 2.0 app, not a rule'
+    }
+
+    @spock.lang.Unroll
+    def "a lookup that fails refuses the dispatch as a runtime failure (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        script.metaClass.getAppByAppId = { Long id ->
+            if (id == 901L) throw new RuntimeException('hub busy')
+            [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']]
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: [900, 901], value: true])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        response.result.isError == true
+        inner.success == false
+        inner.ruleIds == [900, 901]
+        inner.error.contains('app 901: hub busy')
+        inner.note.contains('Nothing was changed')
+        rmUtils.calls.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "a Button Rule passes the guard and is dispatched"() {
+        given:
+        appTypes[902] = 'Button Rule-5.1'
+
+        when:
+        def result = script.toolSetRmRuleBoolean([ruleId: 902, value: false])
+
+        then:
         result.success == true
-        !result.containsKey('idsVerified')
+        rmUtils.calls.find { it.method == 'sendAction' }.ruleIds == [902]
     }
 }

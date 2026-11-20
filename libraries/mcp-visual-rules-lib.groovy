@@ -408,6 +408,29 @@ private Map _vrbSetPaused(Integer appId, boolean paused) {
     }
 }
 
+private Map _vrbRunNow(Integer appId) {
+    // GET /app/ruleBuilderRun/<id> -> {success, message?}: the builder's own run button. The rule's
+    // conditions still pick the branch. A refusal is returned with the hub's message; nothing else is tried.
+    def text
+    try {
+        text = hubInternalGet("/app/ruleBuilderRun/${appId}")
+    } catch (Exception e) {
+        return [success: false, ruleId: appId, error: "hub_call_rule action=actions: /app/ruleBuilderRun failed (${e.message})".toString()]
+    }
+    def parsed = null
+    try { parsed = text ? new groovy.json.JsonSlurper().parseText(text) : null } catch (Exception ignored) { }
+    if (!(parsed instanceof Map)) {
+        return [success: false, ruleId: appId, error: "hub_call_rule action=actions: /app/ruleBuilderRun returned a non-JSON response: ${text?.take(200)}".toString()]
+    }
+    if (parsed.success != true) {
+        return [success: false, ruleId: appId, error: "The hub did not run Visual Rule ${appId}: ${parsed.message ?: 'its run endpoint answered success:false'}".toString(),
+                note: "Nothing else was tried. Read the rule with hub_get_visual_rule; a rule whose definition has validation errors does not run."]
+    }
+    def out = [success: true, ruleId: appId, rmAction: "ruleBuilderRun"]
+    if (parsed.message) out.message = parsed.message.toString()
+    return out
+}
+
 private void _vrbForceDelete(Integer appId) {
     // Standard force-delete path -- the same one the builder UIs use.
     hubInternalGetRaw("/installedapp/forcedelete/${appId}/quiet")

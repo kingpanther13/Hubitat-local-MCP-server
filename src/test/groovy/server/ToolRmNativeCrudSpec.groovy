@@ -1573,17 +1573,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         cIdx == 7
     }
 
-    def "_rmSendActionErrorNote leaves load-limiter recovery to the central wrapper"() {
-        expect: "a limiter refusal is not blamed on the ids, and names no page-button workaround"
+    def "_rmSendActionErrorNote says a load-limiter refusal changed nothing and a reset then a retry clears it"() {
+        expect: "a limiter refusal is not blamed on the ids, and names the reset"
         def limited = script._rmSendActionErrorNote([100], "App 100 generates excessive hub load")
-        limited.contains("load limiter")
+        limited.contains("load limiter refused the dispatch, so nothing was changed")
+        limited.contains("hub_delete_logs(mode='appRuntimeStats', confirm=true)")
         !limited.contains("Verify the ruleId")
-        !limited.contains("pausRule")
 
-        and: "a LIST dispatch keeps its partial-dispatch warning either way"
+        and: "the refusal ran nothing, so a LIST dispatch carries no partial-dispatch warning"
         def multi = script._rmSendActionErrorNote([100, 101], "App 100 generates excessive hub load")
-        multi.contains("100, 101")
-        multi.contains("part of the set may already have been actioned")
+        multi == limited
+
+        and: "a LIST dispatch that failed otherwise may have set part of the set"
+        def partial = script._rmSendActionErrorNote([100, 101], "timeout")
+        partial.contains("100, 101")
+        partial.contains("part of the set may already have been set")
 
         and: "any other failure points at the id and Rule Machine"
         def plain = script._rmSendActionErrorNote([100], "some other error")

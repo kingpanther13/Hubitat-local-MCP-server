@@ -8,7 +8,7 @@
 
 **Dedicated test-hub prompt:** "Create a disposable test device, inspect its preferences and configuration, and verify boolean, numeric, text and enum changes using an independent native read. Restore each original value and verify restoration, then remove only the device and driver you created. Leave every existing device and automation unchanged."
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 112 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 111 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2663,7 +2663,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_set_rule_paused` with `ruleId=[A,B,C]` (one call, array form) + `paused=true`, verify via `hub_list_rules` status, then one array-form resume + verify. FAIL only if the AI claims batch pause is impossible; three sequential single-rule calls is a soft pass (the array form is the intended one-step path).
+**Expected**: `hub_call_rule` with `ruleId=[A,B,C]` (one call, array form) + `action='pause'`, verify via `hub_list_rules` status, then one array-form `action='resume'` + verify. FAIL only if the AI claims batch pause is impossible; three sequential single-rule calls is a soft pass (the array form is the intended one-step path).
 
 #### T303 — Point a caller automation at a replacement rule
 
@@ -2774,19 +2774,19 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 113 |
+| Total distinct tools in codebase | 111 |
 
 With Developer Mode on, `hub_update_package` joins the flat core tools, so a Developer Mode hub lists one more.
 
 **8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (5), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (5), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
-**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (5), `hub_manage_destructive_ops` (4), `hub_manage_devices` (10), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (10), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (5), `hub_manage_destructive_ops` (4), `hub_manage_devices` (10), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (9), `hub_manage_variables` (8)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 112 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 111 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -2801,7 +2801,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 ### Safety Rules for Section 11
 
 - Tests are **read-only or reversibly-trigger** — no create/modify/delete of RM rules or RL instances (platform blocks that anyway)
-- `hub_call_rule`, `hub_set_rule_paused`, `hub_set_rule_private_boolean` tests must target a BAT-created or explicitly user-identified rule, NEVER a random production rule
+- `hub_call_rule` and `hub_set_rule_private_boolean` tests must target a BAT-created or explicitly user-identified rule, NEVER a random production rule
 - Tests skip entirely if the Read master is disabled — that's the expected behavior of `the Read master gate()`
 
 ### T200 — List installed apps (default)
@@ -2874,7 +2874,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_manage_native_rules_and_apps` with no args, sees 12 tools. AI describes native RM authoring through `hub_set_rule`, generic classic-app authoring through `hub_set_native_app`, runtime controls, app enable/disable/delete/clone/export/import and rule health.
+**Expected**: AI calls `hub_manage_native_rules_and_apps` with no args, sees 11 tools. AI describes native RM authoring through `hub_set_rule`, generic classic-app authoring through `hub_set_native_app`, runtime controls, app enable/disable/delete/clone/export/import and rule health.
 
 ### T207 — AI uses native RM rule creation via hub_manage_native_rules_and_apps
 
@@ -2907,7 +2907,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: Calls `hub_set_rule_paused` with `paused=true` (pauses) → confirms with user → calls `hub_set_rule_paused` with `paused=false` (resumes). Both return `{success: true}`.
+**Expected**: Calls `hub_call_rule` with `action='pause'` → confirms with user → calls `hub_call_rule` with `action='resume'`. Both return `{success: true}`.
 **Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 6f6076d9, driven by a fresh AI client given only the prompt (naming a BAT_E2E_ fixture rule): pass -- `hub_set_rule_paused(paused=true)` (the rule read paused on the hub), stopped for the user's confirmation, then `paused=false`; both `success:true`, and the rule read active afterwards.
 
 **WARNING**: Only runs if user has a BAT-prefixed RM rule OR explicitly identifies a safe rule. Never use a production rule.
@@ -2916,7 +2916,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 
 ```json
 {
-  "setup_prompt": "List Rule Machine rules and identify one labeled with 'BAT' prefix, or if none exists, ask the user to identify a safe test rule. Pause it with hub_set_rule_paused.",
+  "setup_prompt": "List Rule Machine rules and identify one labeled with 'BAT' prefix, or if none exists, ask the user to identify a safe test rule. Pause it with hub_call_rule(action='pause').",
   "test_prompt": "How many of my Rule Machine rules are active right now, and which ones are paused or disabled?",
   "teardown_prompt": "Resume the rule that was paused during setup and verify it reads active again."
 }

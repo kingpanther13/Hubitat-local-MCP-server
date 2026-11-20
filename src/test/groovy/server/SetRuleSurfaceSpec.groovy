@@ -66,7 +66,7 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         script._isRuleReadCall('hub_set_rule', [operation: 'read', confirm: true])
         script._isRuleReadCall('hub_set_rule', [operation: 'form', confirm: false])
         !script._isRuleReadCall('hub_set_rule', [operation: 'form', confirm: true])
-        !script._isRuleReadCall('hub_set_rule_paused', [:])
+        !script._isRuleReadCall('hub_call_rule', [:])
         !script._isRuleReadCall('hub_set_rule', 'invalid arguments')
         !script._isRuleReadCall('hub_set_rule', null)
 

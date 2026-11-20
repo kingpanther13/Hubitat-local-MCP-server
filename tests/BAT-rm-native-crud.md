@@ -11,8 +11,7 @@ Supplement to `tests/BAT-v2.md`. These scenarios retain the behavioral acceptanc
 **Existing tools also exercised** (already present in the repo, verified behavior):
 
 - `hub_manage_native_rules_and_apps.hub_list_rules`
-- `hub_manage_native_rules_and_apps.hub_call_rule(ruleId=ruleId, action=...)` -- supports `rule` / `actions` / `stop`
-- `hub_manage_native_rules_and_apps.hub_set_rule_paused` (value=true to pause, value=false to resume)
+- `hub_manage_native_rules_and_apps.hub_call_rule(ruleId=ruleId, action=...)` -- supports `actions` / `stop` / `start` / `pause` / `resume`
 - `hub_manage_native_rules_and_apps.hub_set_rule_private_boolean`
 - `hub_read_apps_code.hub_get_app_config` (used as fallback verification)
 
@@ -199,7 +198,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: AI calls `hub_delete_native_app(appId=ruleId, force=true)`. Tool returns `{success: true}` (302 redirect from `/installedapp/forcedelete/<id>/quiet` is handled as success). `hub_list_rules` confirms the rule is gone.
 
-### T309 — Pause / Resume via hub_set_rule_paused path
+### T309 — Pause / Resume via hub_call_rule
 
 ```json
 {
@@ -209,7 +208,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_set_rule_paused(ruleId=ruleId, value=true)` (verified paused), then `hub_set_rule_paused(ruleId=ruleId, value=false)` (verified active). Both return `{success: true}`. Post-test invariant: [INV-1] `configPage.error == null` in both paused and resumed states.
+**Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='pause')` (verified paused), then `hub_call_rule(ruleId=ruleId, action='resume')` (verified active). Both return `{success: true}` with `rmAction` naming the pausRule button. Post-test invariant: [INV-1] `configPage.error == null` in both paused and resumed states.
 
 ### T310 — Run Actions verb (runRuleAct)
 
@@ -221,7 +220,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI uses `hub_call_rule` tool with `action='actions'`. Returns `{success: true, rmAction: 'runRuleAct'}`. This covers the `runRuleAct` lifecycle verb from matrix §7.
+**Expected**: AI uses `hub_call_rule` tool with `action='actions'` (the default). Returns `{success: true, rmAction: 'runAction button'}`: the rule's own Run Actions button, the UI's route for the `runRuleAct` lifecycle verb from matrix §7.
 
 ### T311 — Stop / Start lifecycle buttons
 
@@ -802,7 +801,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI creates the rule via `hub_set_rule` and pauses it via `hub_set_rule_paused`; `statusJson` shows rule disabled. `hub_get_app_config.actions` has all 4 HSM actions. HSM real state untouched. [INV-1] `configPage.error == null`.
+**Expected**: AI creates the rule via `hub_set_rule` and pauses it via `hub_call_rule(action='pause')`; `statusJson` shows rule disabled. `hub_get_app_config.actions` has all 4 HSM actions. HSM real state untouched. [INV-1] `configPage.error == null`.
 
 ### T361 — HSM per-rule arm/disarm + cancel rule alert + arm all rules
 

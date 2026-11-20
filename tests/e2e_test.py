@@ -1633,8 +1633,8 @@ class TestRunner:
     def _call_with_limiter_reset(self, gateway: str, tool: str, args: dict, label: str,
                                  resets: int = 1) -> tuple[Any, str | None]:
         """One gateway call under the platform load-limiter contract: (envelope, limiter_message).
-        The limiter reaches us in TWO shapes -- some tools RAISE it, the RMUtils-backed ones
-        (hub_set_rule_paused, hub_call_rule, hub_set_rule_private_boolean) return it inside a
+        The limiter reaches us in TWO shapes -- some tools RAISE it, the RMUtils-backed one
+        (hub_set_rule_private_boolean) returns it inside a
         {'success': False, 'error': '...excessive hub load'} envelope -- so both are normalized
         into the second element. Each trip resets the runtime statistics and retries, up to
         `resets` rounds. A non-None second element can survive the retry; the caller decides
@@ -7499,21 +7499,20 @@ def updated() {}
             assert str(label).endswith(" (Paused)"), listed
 
             def set_paused(paused: bool) -> None:
-                result = self.client.call_tool_result("hub_set_rule_paused", {"ruleId": app_id, "paused": paused})
-                if result.get("success") is False and "excessive hub load" in str(result.get("error", "")):
-                    # RMUtils is refused once the hub's load limiter trips; the rule's own Pause button
-                    # (a toggle) is the UI's route and is never limited.
-                    print("    [LIMITER] hub_set_rule_paused refused; toggling the pausRule button instead")
-                    # A limiter refusal is not blamed on the rule id.
-                    assert "load limiter" in str(result.get("note")) and "Verify the ruleId" not in str(result.get("note")), result
-                    form = self._rm_open(app_id)
-                    self._rm_submit(app_id, form, control=self._rm_control(form, name="pausRule"))
-                else:
-                    assert result.get("success") is not False, result
+                # Pause and resume click the rule's own Pause button (a toggle), the UI's route, which the
+                # hub's load limiter never refuses; the paused state is read first.
+                result = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "pause" if paused else "resume"})
+                assert result.get("success") is True and result.get("rmAction", "").startswith("pausRule button"), result
                 self._rm_wait(lambda: self._rm_health(app_id).get("paused") is paused, what=f"paused={paused}")
+                # A rule already in the target state is left alone rather than toggled back.
+                again = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "pause" if paused else "resume"})
+                assert again.get("success") is True and again.get("rmAction") == "noop", again
+                assert self._rm_health(app_id).get("paused") is paused
 
             for paused in (True, False):
                 set_paused(paused)
+                # The pause re-renders the rule's page, so the list shows it at once.
+                assert self._rm_listed(app_id).get("paused") is paused
                 assert self._rm_health(app_id).get("label") == label
             # A new rule's private boolean starts true, and health reads back each value set.
             assert self._rm_health(app_id).get("privateBoolean") is True
@@ -7833,7 +7832,7 @@ def updated() {}
             assert health.get("structuralIssues") == [] and not health.get("checkErrors"), health
             listed = self.client.call_tool("hub_list_rules", {"labelFilter": f"{PREFIX}RuleHealthSrc".lower()}).get("rules", [])
             row = next(r for r in listed if str(r.get("id")) == str(app_id))
-            assert row.get("type") == "Rule-5.1" and row.get("rmVersion") == "5.x", row
+            assert row.get("type") == "Rule-5.1" and "rmVersion" not in row, row
             # The read carries the rule's document and its local variables beside its health.
             read = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})
             assert str(read.get("ruleId")) == str(app_id) and read.get("localVariables") == [], read
@@ -7852,7 +7851,7 @@ def updated() {}
             missing = self.client.call_tool("hub_get_rule", {"ruleId": 999999999})
         except McpToolError as exc:
             missing = _tool_error_payload(exc)
-        assert isinstance(missing, dict) and "App 999999999 not found" in str(missing.get("error")), missing
+        assert isinstance(missing, dict) and "No app with id 999999999 is installed" in str(missing.get("error")), missing
 
     @test("native_apps")
     def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
@@ -8514,12 +8513,8 @@ def updated() {}
             edit(target_b, bulb, "dimmerActs", "getSetColor", [("color", "enum", "Custom RGB color"), ("colorH", "text", "#00ff00")],
                  {"color": "Custom RGB color", "colorH": "#00ff00"})
             self._rm_refuse_all(target_b, [[action("dimmerActs", "getSetColor", [("colorLevel", "number", 40)], id=bulb)]])
-            paused = self.client.call_tool_result("hub_set_rule_paused", {"ruleId": [target_a, target_b], "paused": True})
-            if paused.get("success") is False:
-                # The hub's load limiter may refuse a batch outright; it then pauses neither rule.
-                assert "excessive hub load" in str(paused.get("error", "")), paused
-                return
-            assert sorted(map(str, paused.get("ruleIds", []))) == sorted(map(str, (target_a, target_b))), paused
+            paused = self.client.call_tool("hub_call_rule", {"ruleId": [target_a, target_b], "action": "pause"})
+            assert paused.get("success") is True and sorted(map(str, paused.get("ruleIds", []))) == sorted(map(str, (target_a, target_b))), paused
             self._rm_wait(lambda: all(self._rm_health(r).get("paused") is True for r in (target_a, target_b)), what="both rules paused")
         finally:
             for app_id in (caller, target_a, target_b):
@@ -8718,10 +8713,11 @@ def updated() {}
 
     @test("native_apps")
     def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
-        # Running the rule's actions sets its local variable, which hub_get_rule reads
-        # back at once. action 'rule', named or by default, is refused on this 5.1 rule, and the Rule
-        # Machine parent app is refused as not a rule. Deleting a local variable an action still uses
-        # is applied (RM allows it) but reported as leaving the rule broken, as the editor shows.
+        # Running the rule's actions sets its local variable, which hub_get_rule reads back at once.
+        # Every refusal below (an action that no longer exists, the Rule Machine parent app, an id with
+        # no app, a batch holding one) runs nothing, so the variable keeps its value until the run.
+        # Deleting a local variable an action still uses is applied (RM allows it) but reported as
+        # leaving the rule broken, as the editor shows.
         app_id, _ = self._rm_rule("RefLocal", [
             native_change("variable", operation="create", name="refLocal", type="integer", value=0),
             self._rm_variable_action("refLocal", "number", [native_field("valNumber.#", "number", 9)])])
@@ -8730,53 +8726,46 @@ def updated() {}
             listed = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id), "sections": ["actions"]}})
             return next((row.get("value") for row in listed.get("localVariables", []) if row.get("name") == "refLocal"), None)
 
+        def refused(tool: str, args: dict) -> dict:
+            try:
+                return self.client.call_tool(tool, args)
+            except McpToolError as exc:
+                return _tool_error_payload(exc)
+
         try:
             listed = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id)})
             assert len(listed.get("localVariables") or []) == 1 and listed["localVariables"][0]["type"] == "integer", listed
             assert local_value() == 0
-            # RMUtils runRule runs nothing on a Rule Machine 5.1 rule, so it is refused with nothing
-            # dispatched, including when action is omitted (it defaults to 'rule').
-            for call_args in ({"ruleId": app_id, "action": "rule"}, {"ruleId": app_id}):
-                try:
-                    refused = self.client.call_tool("hub_call_rule", call_args)
-                except McpToolError as exc:
-                    refused = _tool_error_payload(exc)
-                assert "is refused for Rule Machine 5.1 rules" in str(refused.get("error")) \
-                    and "action:'actions'" in str(refused.get("error")), (call_args, refused)
-            assert local_value() == 0, "a refused runRule changed the local variable"
+            # 'rule' (an RMUtils evaluate, which runs nothing on a current rule) is no longer an action.
+            gone_action = refused("hub_call_rule", {"ruleId": app_id, "action": "rule"})
+            assert "Invalid action 'rule'" in str(gone_action.get("error")), gone_action
             # The Rule Machine parent app is not a rule: running its actions is refused, and reading it returns
             # its health with no local variables.
             parent_id = self._native_rule_parent_id()
-            try:
-                parent_run = self.client.call_tool("hub_call_rule", {"ruleId": parent_id, "action": "actions"})
-            except McpToolError as exc:
-                parent_run = _tool_error_payload(exc)
-            assert f"App {parent_id} is a Rule Machine app, not a Rule Machine rule" in str(parent_run.get("error")) \
+            parent_run = refused("hub_call_rule", {"ruleId": parent_id, "action": "actions"})
+            assert f"App {parent_id} is a Rule Machine app, not a rule" in str(parent_run.get("error")) \
                 and "Nothing was dispatched" in str(parent_run.get("error")), parent_run
             parent_read = self.client.call_tool("hub_get_rule", {"ruleId": int(parent_id)})
             assert parent_read.get("localVariables") is None and "actions" not in parent_read \
                 and "not a Rule Machine rule" in str(parent_read.get("note")), parent_read
-            assert local_value() == 0, "a refused call on the Rule Machine parent changed the rule's local variable"
-            ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "actions"})
-            assert ran.get("success") is not False, ran
-            self._rm_wait(lambda: local_value() == 9, what="refLocal=9 after the rule's actions ran")
-            assert self._native_rule_document(app_id)["variables"]["refLocal"]["value"] == 9
             # An id with no app is refused rather than read as a rule with no locals.
-            try:
-                missing = self.client.call_tool("hub_get_rule", {"ruleId": 999999999})
-            except McpToolError as exc:
-                missing = _tool_error_payload(exc)
-            assert "App 999999999 not found" in str(missing.get("error")), missing
-            # The runtime tools refuse an id with no app instead of reporting a dispatch that did nothing.
+            missing = refused("hub_get_rule", {"ruleId": 999999999})
+            assert "No app with id 999999999 is installed" in str(missing.get("error")), missing
+            # The runtime tools refuse an id with no app, alone or in a batch with a real rule, before
+            # anything is dispatched: the batch's real rule does not run either.
             for tool, args in (("hub_call_rule", {"ruleId": 999999999}),
-                               ("hub_set_rule_paused", {"ruleId": 999999999, "paused": True}),
-                               ("hub_set_rule_private_boolean", {"ruleId": 999999999, "value": True})):
-                try:
-                    gone = self.client.call_tool(tool, args)
-                except McpToolError as exc:
-                    gone = _tool_error_payload(exc)
+                               ("hub_call_rule", {"ruleId": [int(app_id), 999999999], "action": "actions"}),
+                               ("hub_set_rule_private_boolean", {"ruleId": 999999999, "value": True}),
+                               ("hub_set_rule_private_boolean", {"ruleId": [int(app_id), 999999999], "value": False})):
+                gone = refused(tool, args)
                 assert "No app with id 999999999 is installed" in str(gone.get("error")) \
                     and "Nothing was dispatched" in str(gone.get("error")), (tool, gone)
+            assert local_value() == 0, "a refused call changed the rule's local variable"
+            assert self._rm_health(app_id).get("privateBoolean") is True, "a refused batch set the rule's private boolean"
+            ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id})
+            assert ran.get("success") is True and ran.get("rmAction") == "runAction button", ran
+            self._rm_wait(lambda: local_value() == 9, what="refLocal=9 after the rule's actions ran")
+            assert self._native_rule_document(app_id)["variables"]["refLocal"]["value"] == 9
             result = self._rm_call({"operation": "update", "rule_id": app_id, "confirm": True, "args": {
                 "changes": [native_change("variable", operation="delete", name="refLocal")]}})
             assert result.get("success") is False and result.get("partial") is True and "broken" in str(result).lower(), result
@@ -10326,6 +10315,32 @@ def updated() {}
                 # (isinstance(bool) accepted either verdict and wouldn't catch an always-true regression).
                 assert vh.get("broken") is False, \
                     f"a freshly-created healthy graph VRB rule should report broken:false: {vh}"
+
+            # hub_call_rule on a Visual Rule. It has no stop, so stop and start are refused before anything
+            # runs; pause and resume go through the builder's pause endpoint after reading the paused state,
+            # so a rule already there is left alone.
+            for action in ("stop", "start"):
+                try:
+                    no_stop = self.client.call_tool("hub_call_rule", {"ruleId": int(app_id), "action": action})
+                except McpToolError as exc:
+                    no_stop = _tool_error_payload(exc)
+                assert "Visual Rules have no stop or start" in str(no_stop.get("error")) \
+                    and "Nothing was dispatched" in str(no_stop.get("error")), (action, no_stop)
+            assert self._get_visual_rule(app_id).get("rulePaused") is False
+            for action, paused in (("resume", False), ("pause", True), ("pause", True), ("resume", False)):
+                before = self._get_visual_rule(app_id).get("rulePaused")
+                toggled = self.client.call_tool("hub_call_rule", {"ruleId": int(app_id), "action": action})
+                expected = "noop" if before is paused else f"ruleBuilderPause -> {str(paused).lower()}"
+                assert toggled.get("success") is True and toggled.get("rmAction") == expected, (action, toggled)
+                assert self._get_visual_rule(app_id).get("rulePaused") is paused, f"hub_call_rule {action} did not land"
+            # Its actions run through the builder's run endpoint (the action re-asserts the switch's own state).
+            # A Visual Rule Builder 2.0 rule runs; a 1.0 rule's answer is returned as the hub gives it.
+            ran = self.client.call_tool_result("hub_call_rule", {"ruleId": int(app_id), "action": "actions"})
+            if fmt == "graph":
+                assert ran.get("success") is True and ran.get("rmAction") == "ruleBuilderRun", ran
+            else:
+                assert ran.get("success") is True or "did not run Visual Rule" in str(ran.get("error")), ran
+                print(f"    hub_call_rule actions on a 1.0 Visual Rule: {ran}")
 
             # LIST: no-args mode must include the new rule.
             listed = self._get_visual_rule()

@@ -496,16 +496,16 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         given:
         hubGet.register(RESET) { p -> 'ok' }
         int calls = 0
-        script.metaClass.toolSetRulePaused = { args ->
+        script.metaClass.toolSetRmRuleBoolean = { args ->
             calls++
-            calls == 1 ? [success: false, error: 'App 1 generates excessive hub load'] : [success: true, paused: true]
+            calls == 1 ? [success: false, error: 'App 1 generates excessive hub load'] : [success: true, rmAction: 'setRuleBooleanTrue']
         }
 
         when:
-        def result = script.executeTool('hub_set_rule_paused', [ruleId: 5, paused: true])
+        def result = script.executeTool('hub_set_rule_private_boolean', [ruleId: 5, value: true])
 
         then:
-        result == [success: true, paused: true]
+        result == [success: true, rmAction: 'setRuleBooleanTrue']
         calls == 2
         resets() == 1
     }

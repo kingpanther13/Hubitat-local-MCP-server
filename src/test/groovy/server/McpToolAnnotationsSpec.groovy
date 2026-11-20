@@ -138,7 +138,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_delete_bundle', 'hub_export_bundle',
             'hub_restore_backup', 'hub_delete_backup',
             'hub_write_file', 'hub_delete_file',
-            'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
+            'hub_call_rule', 'hub_set_rule_private_boolean',
             'hub_set_rule', 'hub_clone_native_app',
             'hub_import_native_app', 'hub_delete_native_app', 'hub_export_native_app'
         ]
@@ -331,7 +331,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_delete_item', 'hub_delete_backup',
             'hub_install_bundle', 'hub_delete_bundle', 'hub_export_bundle',
             'hub_write_file', 'hub_delete_file',
-            'hub_set_rule_paused', 'hub_set_rule_private_boolean',
+            'hub_set_rule_private_boolean',
             'hub_set_app_disabled',
             'hub_export_native_app',
             'hub_delete_visual_rule',
@@ -537,7 +537,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_delete_bundle', 'hub_export_bundle',
             'hub_restore_backup', 'hub_delete_backup',
             'hub_write_file', 'hub_delete_file',
-            'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
+            'hub_call_rule', 'hub_set_rule_private_boolean',
             'hub_set_rule', 'hub_set_native_app', 'hub_set_app_disabled', 'hub_clone_native_app',
             'hub_import_native_app', 'hub_delete_native_app', 'hub_export_native_app',
             'hub_set_visual_rule', 'hub_delete_visual_rule',
@@ -568,7 +568,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 112
+        names.size() == 111
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk
