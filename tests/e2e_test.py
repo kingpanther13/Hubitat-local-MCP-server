@@ -13119,26 +13119,44 @@ def updated() {}
                             listed = self.client.call_tool("hub_read_files", {"tool": "hub_list_files", "args": {"filter": underscored.rsplit(".", 1)[0]}})
                             for f in listed.get("files") or []:
                                 self.client.call_tool("hub_delete_file", {"fileName": f["name"], "confirm": True})
-                    self._expect_tool_refusal("hub_list_files", {"folder": "a b"},
-                                              "relative File Manager folder")
+                    for bad_folder in ("a b", "a.b"):
+                        self._expect_tool_refusal("hub_list_files", {"folder": bad_folder},
+                                                  "relative File Manager folder")
+                    # A folder part the hub could never list gets no hub_list_files hint.
+                    for tool, extra in (("hub_read_file", {}), ("hub_delete_file", {"confirm": True})):
+                        try:
+                            self.client.call_tool(tool, {"fileName": "my.dir/x.txt", **extra})
+                        except McpToolError as exc:
+                            assert f"{tool} acts on root files only." in str(exc) and "hub_list_files" not in str(exc), \
+                                f"{tool} refused 'my.dir/x.txt' with the wrong text: {exc}"
+                        else:
+                            raise AssertionError(f"{tool} must refuse 'my.dir/x.txt'")
                     decimal = self.client.call_tool("hub_read_file", {"fileName": name, "length": 3.0})
                     assert decimal.get("success") is True and decimal.get("content") == "ver", \
                         f"a whole-number length sent as 3.0 was not accepted: {decimal}"
                     folder, cursor = None, ""
                     for _ in range(100):
                         root = self.client.call_tool("hub_read_files", {"tool": "hub_list_files", "args": {"cursor": cursor}})
-                        # Only a folder whose name passes the file-name check reaches the folder refusal.
-                        folder = next((f.get("name") for f in root.get("files") or [] if f.get("type") == "dir"
-                                       and re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]*", str(f.get("name")))), None)
+                        # Only a folder whose name passes the file-name check reaches the folder refusal,
+                        # and only one holding files keeps the write leg safe (see below).
+                        for f in root.get("files") or []:
+                            nm = str(f.get("name"))
+                            if f.get("type") != "dir" or not re.fullmatch(r"[A-Za-z0-9_-]+", nm):
+                                continue
+                            inside = self.client.call_tool("hub_read_files", {"tool": "hub_list_files", "args": {"folder": nm, "cursor": ""}})
+                            if inside.get("files"):
+                                folder = nm
+                                break
                         cursor = root.get("nextCursor")
                         if folder or not cursor:
                             break
                     if folder is None:
-                        print("    [SKIP] folder-name legs: the root listing on this hub has no type:'dir' entry with a valid file name")
+                        print("    [SKIP] folder-name legs: the root listing on this hub has no type:'dir' entry with a valid name that holds files")
                     else:
-                        # The write leg is safe on any hub: the hub itself refuses to overwrite a folder.
-                        # So is the delete leg: the hub ignores a delete of a folder name, so even a
-                        # regressed refusal could not remove the folder.
+                        # The write leg is safe because the folder holds files: the hub refuses to
+                        # overwrite a folder only then, and replaces an empty one with the file.
+                        # The delete leg is safe too: the hub ignores a delete of a folder name, so even
+                        # a regressed refusal could not remove the folder.
                         for tool, extra in (("hub_read_file", {}), ("hub_write_file", {"content": "x", "confirm": True}),
                                             ("hub_delete_file", {"confirm": True})):
                             refused = self.client.call_tool_failure(tool, {"fileName": folder, **extra})

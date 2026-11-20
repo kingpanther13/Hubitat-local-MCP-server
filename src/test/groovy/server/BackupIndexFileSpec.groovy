@@ -7,7 +7,8 @@ import support.ToolSpecBase
 /**
  * The backup index's real File Manager calls (issues #506 / #517): every other spec swaps the
  * index file for the harness store, so this one runs the production read/write through
- * downloadHubFile / uploadHubFile.
+ * downloadHubFile / uploadHubFile. The root lookups read getHubFiles(), stubbed on
+ * script.metaClass in the shape the JSON listing sends (string size and date).
  */
 class BackupIndexFileSpec extends ToolSpecBase {
     @Override
@@ -25,13 +26,23 @@ class BackupIndexFileSpec extends ToolSpecBase {
         script.metaClass.deleteHubFile = { String name -> files.remove(name) }
     }
 
+    private int hubFilesCalls = 0
+
+    // getHubFiles() as the hub answers it: name, type, size and date per root entry.
+    private void listFilesLive() {
+        script.metaClass.getHubFiles = { ->
+            hubFilesCalls++
+            files.keySet().collect { [name: it, type: 'file', size: '2', date: '100'] }
+        }
+    }
+
     private Map indexFile() {
         new JsonSlurper().parseText(new String(files['mcp-backup-index.json'] as byte[], 'UTF-8')) as Map
     }
 
     def 'a publication writes the index to mcp-backup-index.json'() {
         given:
-        hubGet.register('/hub/fileManager/json') { params -> JsonOutput.toJson([files: []]) }
+        listFilesLive()
 
         when:
         script._publishItemBackup('app_1', [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
@@ -44,12 +55,6 @@ class BackupIndexFileSpec extends ToolSpecBase {
         !atomicStateMap.containsKey('itemBackupManifest')
     }
 
-    private void listFilesLive() {
-        hubGet.register('/hub/fileManager/json') { params ->
-            JsonOutput.toJson([files: files.keySet().collect { [name: it, type: 'file', size: '2', date: '100'] }])
-        }
-    }
-
     def 'a new class load reads the index file back'() {
         given:
         files['mcp-backup-index.json'] = JsonOutput.toJson([version: 1, entries: [
@@ -59,9 +64,10 @@ class BackupIndexFileSpec extends ToolSpecBase {
         when:
         def view = script._itemBackupManifest()
 
-        then: 'one listing to see the file, then the read'
+        then: 'one in-process listing to see the file, then the read; no HTTP listing'
         view.keySet() == ['app_7'] as Set
-        hubGet.calls*.path == ['/hub/fileManager/json']
+        hubFilesCalls == 1
+        hubGet.calls.isEmpty()
     }
 
     def 'a listed index whose read keeps failing is retried, then left alone'() {
@@ -107,9 +113,7 @@ class BackupIndexFileSpec extends ToolSpecBase {
     def 'a missing index file is rebuilt from the listing and saved'() {
         given:
         files['mcp-rm-backup-8-20260102-030405-678.json'] = '{}'.getBytes('UTF-8')
-        hubGet.register('/hub/fileManager/json') { params ->
-            JsonOutput.toJson([files: files.keySet().collect { [name: it, type: 'file', size: '2', date: '100'] }])
-        }
+        listFilesLive()
 
         when:
         def view = script._itemBackupManifest()

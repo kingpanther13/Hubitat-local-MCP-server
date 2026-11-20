@@ -18,8 +18,13 @@ import support.ToolSpecBase
  *   - hubInternalGet                        -> HarnessSpec's hubGet.register(path); the
  *                                              /hub/fileManager/json stubs use the shape live
  *                                              hubs send (see listing() below)
+ *   - getHubFiles                           -> the root name and type lookups; listing() stubs
+ *                                              it on script.metaClass with the same entries and
+ *                                              records each call in hubFilesCalls
  *   - downloadHubFile / uploadHubFile /
- *     deleteHubFile                         -> stubbed per-test on script.metaClass
+ *     deleteHubFile                         -> stubbed per-test on script.metaClass; a missing
+ *                                              name throws NoSuchFileException and a folder
+ *                                              FileSystemException, as on a live hub
  *
  * hub_write_file + hub_delete_file are gated centrally by the Write master at the
  * executeTool chokepoint (enableWrite, default ON; only an explicit ==false blocks),
@@ -39,6 +44,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     def setup() {
         sharedLocation.hub = new TestHub(localIP: '192.168.1.50')
+        hubFilesCalls.clear()
     }
 
     // Entries as live hubs send them: string id, size and date; a folder has size "0" and no
@@ -53,11 +59,39 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     // The /hub/fileManager/json answer as live hubs send it: path is null at the root and the
-    // folder name in a folder, and excludedFiles is a count.
+    // folder name in a folder, and excludedFiles is a count. A root listing also stubs getHubFiles.
     private void listing(List files, Map extra = [:], String folder = null) {
         hubGet.register(folder ? "/hub/fileManager/json?folder=${folder}".toString() : '/hub/fileManager/json') { params ->
             JsonOutput.toJson([backupSelection: [excludedFiles: 0], files: files, path: folder, freeSpace: 1006527975] + extra)
         }
+        if (!folder) hubFiles { -> files }
+    }
+
+    // Shared, because where-block closures that call listing() run on the shared spec instance.
+    @Shared private List hubFilesCalls = []
+
+    // getHubFiles() entries carry name, type, size and date only (string size and date, as the
+    // JSON listing sends them); entries is read on each call so a spec can change the files.
+    private void hubFiles(Closure entries) {
+        script.metaClass.getHubFiles = { ->
+            hubFilesCalls << 'getHubFiles'
+            entries().collect { it.subMap(['name', 'type', 'size', 'date']) }
+        }
+    }
+
+    private void hubFilesFail(String message = 'down') {
+        script.metaClass.getHubFiles = { ->
+            hubFilesCalls << 'getHubFiles'
+            throw new RuntimeException(message)
+        }
+    }
+
+    private static java.nio.file.NoSuchFileException noSuchFile(String name) {
+        return new java.nio.file.NoSuchFileException(name)
+    }
+
+    private static java.nio.file.FileSystemException fileSystemError(String name) {
+        return new java.nio.file.FileSystemException(name, null, 'Exception occured while reading file')
     }
 
     private void enableWrite() {
@@ -359,10 +393,10 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.nextOffset == 6
     }
 
-    def "hub_read_file says a missing file does not exist"() {
-        given: 'the hub throws with just the name, as it does for a missing file'
-        script.metaClass.downloadHubFile = { String name -> throw new RuntimeException(name) }
-        listing([fileEntry('other.txt')])
+    def "hub_read_file says a missing file does not exist, with no listing"() {
+        given: 'the hub throws NoSuchFileException for a missing file; a listing would fail'
+        script.metaClass.downloadHubFile = { String name -> throw noSuchFile(name) }
+        hubFilesFail()
 
         when:
         def result = script.toolReadFile([fileName: 'missing.txt'])
@@ -373,6 +407,22 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.note.contains('hub_list_files')
         result.note.endsWith("See hub_get_tool_guide(section='file_manager').")
         result.note.count('hub_get_tool_guide') == 1
+        hubFilesCalls.isEmpty()
+        hubGet.calls.isEmpty()
+    }
+
+    def "hub_read_file still reports an unlisted name as missing when its download fails another way"() {
+        given:
+        script.metaClass.downloadHubFile = { String name -> throw fileSystemError(name) }
+        listing([fileEntry('other.txt')])
+
+        when:
+        def result = script.toolReadFile([fileName: 'missing.txt'])
+
+        then:
+        result.error == "File 'missing.txt' does not exist in File Manager."
+        hubFilesCalls == ['getHubFiles']
+        hubGet.calls.isEmpty()
     }
 
     @spock.lang.Unroll
@@ -393,7 +443,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         where:
         why                           | setupListing
         'the file is listed'          | { -> listing([fileEntry('notes.txt')]) }
-        'the listing fails too'       | { -> hubGet.register('/hub/fileManager/json') { params -> throw new RuntimeException('down') } }
+        'the listing fails too'       | { -> hubFilesFail() }
     }
 
     @spock.lang.Unroll
@@ -572,7 +622,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         when:
         script."${method}"([fileName: fileName, content: 'x', confirm: true])
 
-        then: 'the refusal names only the calling tool, and read and delete point at the folder listing'
+        then: 'the refusal names only the calling tool; read and delete point at the folder listing only for a folder the hub can list'
         def e = thrown(IllegalArgumentException)
         e.message == message
         hubGet.calls.isEmpty()
@@ -584,6 +634,10 @@ class ToolManageFilesSpec extends ToolSpecBase {
         'hub_delete_file' | 'toolDeleteFile' | 'webcore/x.js'     || "'webcore/x.js' names a file in a subfolder; hub_delete_file acts on root files only. List the folder with hub_list_files(folder: 'webcore'); its files download from that listing's downloadUrlBase."
         'hub_write_file'  | 'toolWriteFile'  | 'webcore/x.js'     || "'webcore/x.js' names a file in a subfolder. hub_write_file writes root files only; it cannot write into a subfolder."
         'hub_write_file'  | 'toolWriteFile'  | '../escape'        || "'../escape' names a file in a subfolder. hub_write_file writes root files only; it cannot write into a subfolder."
+        'hub_read_file'   | 'toolReadFile'   | 'my.dir/x.txt'     || "'my.dir/x.txt' names a file in a subfolder; hub_read_file acts on root files only."
+        'hub_delete_file' | 'toolDeleteFile' | 'my.dir/x.txt'     || "'my.dir/x.txt' names a file in a subfolder; hub_delete_file acts on root files only."
+        'hub_read_file'   | 'toolReadFile'   | '../escape'        || "'../escape' names a file in a subfolder; hub_read_file acts on root files only."
+        'hub_delete_file' | 'toolDeleteFile' | '/x.txt'           || "'/x.txt' names a file in a subfolder; hub_delete_file acts on root files only."
     }
 
     @spock.lang.Unroll
@@ -612,7 +666,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         given:
         enableWrite()
         def changes = []
-        script.metaClass.downloadHubFile = { String name -> throw new RuntimeException(name) }
+        script.metaClass.downloadHubFile = { String name -> throw fileSystemError(name) }
         script.metaClass.uploadHubFile = { String name, byte[] content -> changes << "upload ${name}" }
         script.metaClass.deleteHubFile = { String name -> changes << "delete ${name}" }
         listing([fileEntry('a.txt'), dirEntry(folder)])
@@ -809,7 +863,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         where:
         why                         | setupListing                                                                                       | noteNeedle
         'the file is listed'        | { -> listing([fileEntry('x.txt')]) }                                                               | 'File Manager API transient error'
-        'the listing fails too'     | { -> hubGet.register('/hub/fileManager/json') { params -> throw new RuntimeException('down') } }  | 'whether \'x.txt\' exists is unknown'
+        'the listing fails too'     | { -> hubFilesFail() }                                                                              | 'whether \'x.txt\' exists is unknown'
     }
 
     def "hub_write_file whose download throws creates the file when the listing lacks the name"() {
@@ -828,6 +882,26 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.success == true
         result.message == "File 'x.txt' created."
         result.backupFile == null
+    }
+
+    def "hub_write_file creates a name the download reports missing, with no listing, even when a listing would fail"() {
+        given:
+        enableWrite()
+        def uploads = []
+        script.metaClass.downloadHubFile = { String name -> throw noSuchFile(name) }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+        hubFilesFail()
+
+        when:
+        def result = script.toolWriteFile([fileName: 'x.txt', content: 'hi', confirm: true])
+
+        then:
+        uploads == ['x.txt']
+        result.success == true
+        result.message == "File 'x.txt' created."
+        result.backupFile == null
+        hubFilesCalls.isEmpty()
+        hubGet.calls.isEmpty()
     }
 
     @spock.lang.Unroll
@@ -872,7 +946,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.success == false
         result.fileName == 'x.txt'
         result.error.contains('hub storage full')
-        result.note == 'Nothing was written. Retry once File Manager accepts writes.'
+        result.note == "Nothing was written. Retry once File Manager accepts writes. See hub_get_tool_guide(section='file_manager')."
     }
 
     def "a write whose upload fails after the backup copy names that copy in its note"() {
@@ -890,6 +964,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         then:
         result.success == false
         result.note ==~ /Its previous content is kept in the backup copy 'notes_backup_\d{8}-\d{6}-\d{3}\.txt'\. .*/
+        result.note.endsWith("See hub_get_tool_guide(section='file_manager').")
     }
 
     // -------- toolDeleteFile (DESTRUCTIVE: Write master + confirm + 24h backup) --------
@@ -940,9 +1015,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ['notes-2_backup_20080101-000000.txt', 'notes_backup_20080101-000000.json', 'notes_backup_old.txt',
          'xnotes_backup_20080101-000000.txt'].each { files[it] = 'other'.getBytes('UTF-8') }
         files['notes.txt'] = 'current'.getBytes('UTF-8')
-        hubGet.register('/hub/fileManager/json') { params ->
-            JsonOutput.toJson([backupSelection: [excludedFiles: 0], files: files.keySet().collect { fileEntry(it, 3) }, path: null, freeSpace: 1006527975])
-        }
+        hubFiles { -> files.keySet().collect { fileEntry(it, 3) } }
         script.metaClass.downloadHubFile = { String name -> files[name] }
         script.metaClass.uploadHubFile = { String name, byte[] content -> files[name] = content }
         script.metaClass.deleteHubFile = { String name -> files.remove(name) }
@@ -991,7 +1064,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     def "hub_write_file still writes when the listing for pruning fails"() {
         given:
         enableWrite()
-        hubGet.register('/hub/fileManager/json') { params -> throw new RuntimeException('listing unavailable') }
+        hubFilesFail('listing unavailable')
         def uploads = []
         script.metaClass.downloadHubFile = { String name -> name == 'notes.txt' ? 'old'.getBytes('UTF-8') : null }
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
@@ -1024,7 +1097,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.success == false
         result.fileName == 'notes.txt'
         result.error == "Could not back up existing 'notes.txt' before overwriting: hub storage full"
-        result.note == "Nothing was written; 'notes.txt' still holds its previous content. Retry once File Manager accepts writes."
+        result.note == "Nothing was written; 'notes.txt' still holds its previous content. Retry once File Manager accepts writes. See hub_get_tool_guide(section='file_manager')."
         uploads.size() == 1
         uploads[0].startsWith('notes_backup_')
     }
@@ -1240,6 +1313,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
             "rm-rule_43_keep": [type: "rm-rule", ruleId: 43, fileName: "mcp-rm-backup-43-keep.json", timestamp: 3L]
         ]
         def deleted = []
+        listing([fileEntry('mcp-rm-backup-42-old.json')])
         script.metaClass.downloadHubFile = { String name -> throw new AssertionError("backup files must not be backed up again") }
         script.metaClass.uploadHubFile = { String name, byte[] content -> throw new AssertionError("backup files must not be uploaded again") }
         script.metaClass.deleteHubFile = { String name -> deleted << name }
@@ -1249,6 +1323,8 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
         then:
         result.success == true
+        result.message.contains("deleted permanently")
+        !result.containsKey('warning')
         deleted == ["mcp-rm-backup-42-old.json"]
         backupIndex.keySet() == ["rm-rule_43_keep"] as Set
     }
@@ -1270,7 +1346,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.keySet() == ['success', 'fileName', 'error', 'note'] as Set
         result.fileName == 'notes.txt'
         result.error == "Failed to delete 'notes.txt': permission denied"
-        result.note ==~ /Its backup copy 'notes_backup_.*' was taken first\. Check with hub_list_files whether 'notes\.txt' is still listed before retrying\./
+        result.note ==~ /Its backup copy 'notes_backup_.*' was taken first\. Check with hub_list_files whether 'notes\.txt' is still listed before retrying\. See hub_get_tool_guide\(section='file_manager'\)\./
     }
 
     @spock.lang.Unroll
@@ -1304,7 +1380,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         enableWrite()
         def deleted = []
         def uploads = []
-        script.metaClass.downloadHubFile = { String name -> throw new RuntimeException(name) }
+        script.metaClass.downloadHubFile = { String name -> throw noSuchFile(name) }
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         script.metaClass.deleteHubFile = { String name -> deleted << name }
         listing([fileEntry('other.txt')])
@@ -1312,7 +1388,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         when:
         def result = script.toolDeleteFile([fileName: fileName, confirm: true])
 
-        then:
+        then: 'a normal name is settled by its download; a backup-named one, which takes no download, by the listing'
         result.success == false
         result.error == "File '${fileName}' does not exist in File Manager; nothing was deleted."
         result.note.contains('hub_list_files')
@@ -1320,19 +1396,37 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.note.endsWith("See hub_get_tool_guide(section='file_manager').")
         deleted.isEmpty()
         uploads.isEmpty()
+        hubFilesCalls.size() == listings
+        hubGet.calls.isEmpty()
 
         where:
-        fileName                           | retryHint
-        'missing.txt'                      | true
-        'notes_backup_20260419-100000.txt' | false
-        'mcp-rm-backup-42-old.json'        | false
+        fileName                           | retryHint | listings
+        'missing.txt'                      | true      | 0
+        'notes_backup_20260419-100000.txt' | false     | 1
+        'mcp-rm-backup-42-old.json'        | false     | 1
+    }
+
+    def "hub_delete_file still reports an unlisted name as missing when its download fails another way"() {
+        given:
+        enableWrite()
+        def deleted = []
+        script.metaClass.downloadHubFile = { String name -> throw fileSystemError(name) }
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        listing([fileEntry('other.txt')])
+
+        when:
+        def result = script.toolDeleteFile([fileName: 'missing.txt', confirm: true])
+
+        then:
+        result.error == "File 'missing.txt' does not exist in File Manager; nothing was deleted."
+        deleted.isEmpty()
+        hubFilesCalls == ['getHubFiles']
     }
 
     def "a missing file's delete note points at its backup copies"() {
         given:
         enableWrite()
-        script.metaClass.downloadHubFile = { String name -> throw new RuntimeException(name) }
-        listing([fileEntry('other.txt')])
+        script.metaClass.downloadHubFile = { String name -> throw noSuchFile(name) }
 
         expect:
         script.toolDeleteFile([fileName: 'notes.txt', confirm: true]).note ==
@@ -1383,7 +1477,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String name -> throw new RuntimeException('read timed out') }
         script.metaClass.uploadHubFile = { String name, byte[] content -> throw new AssertionError('no copy without content') }
         script.metaClass.deleteHubFile = { String name -> deleted << name }
-        hubGet.register('/hub/fileManager/json') { params -> throw new RuntimeException('down') }
+        hubFilesFail()
 
         when:
         def result = script.toolDeleteFile([fileName: fileName, confirm: true])
@@ -1409,11 +1503,18 @@ class ToolManageFilesSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         def downloads = [], changes = []
-        script.metaClass.downloadHubFile = { String name -> downloads << name; throw new RuntimeException(name) }
+        script.metaClass.downloadHubFile = { String name ->
+            downloads << name
+            throw name == 'missing.txt' ? noSuchFile(name) : fileSystemError(name)
+        }
         script.metaClass.uploadHubFile = { String name, byte[] content -> changes << "upload ${name}" }
         script.metaClass.deleteHubFile = { String name -> changes << "delete ${name}" }
-        if (listingFails) hubGet.register('/hub/fileManager/json') { params -> throw new RuntimeException('Connection refused') }
-        else listing([fileEntry('other.txt'), fileEntry('listed.txt'), dirEntry('webcore')])
+        if (listingFails) {
+            hubGet.register('/hub/fileManager/json') { params -> throw new RuntimeException('Connection refused') }
+            hubFilesFail('Connection refused')
+        } else {
+            listing([fileEntry('other.txt'), fileEntry('listed.txt'), dirEntry('webcore')])
+        }
 
         when:
         def response = mcpDriver.callTool(tool, args)
@@ -1448,6 +1549,8 @@ class ToolManageFilesSpec extends ToolSpecBase {
             ['hub_write_file', [fileName: 'listed.txt', content: 'x', confirm: true], false, "Could not read the current 'listed.txt'", 1],
             ['hub_write_file', [fileName: 'notes.txt', content: 'x', confirm: true], true, "Could not read the current 'notes.txt'", 1],
             ['hub_list_files', [folder: 'a b'], false, 'folder must be a relative File Manager folder path', 0],
+            ['hub_list_files', [folder: 'a.b'], false, 'folder must be a relative File Manager folder path', 0],
+            ['hub_read_file', [fileName: 'my.dir/x.txt'], false, "'my.dir/x.txt' names a file in a subfolder; hub_read_file acts on root files only.", 0],
             ['hub_read_file', [fileName: 'notes.txt', length: 1.5], false, 'length must be an integer from 1 to 60000', 0],
         ].collectMany { row -> [true, false].collect { mode -> row + [mode] } }
     }

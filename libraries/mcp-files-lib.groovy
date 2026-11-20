@@ -21,20 +21,35 @@ private String _filesDownloadUrl(String name) {
 private void _filesRequireRootName(String fileName, String toolName) {
     if (fileName.contains("/")) {
         String folder = fileName.substring(0, fileName.lastIndexOf('/'))
+        String rootOnly = "'${fileName}' names a file in a subfolder; ${toolName} acts on root files only."
+        // Pointing at a folder the hub cannot list would only send the caller into a failing call.
         throw new IllegalArgumentException(toolName == "hub_write_file"
             ? "'${fileName}' names a file in a subfolder. hub_write_file writes root files only; it cannot write into a subfolder.".toString()
-            : "'${fileName}' names a file in a subfolder; ${toolName} acts on root files only. List the folder with hub_list_files(folder: '${folder}'); its files download from that listing's downloadUrlBase.".toString())
+            : _filesValidFolder(folder)
+                ? "${rootOnly} List the folder with hub_list_files(folder: '${folder}'); its files download from that listing's downloadUrlBase.".toString()
+                : rootOnly)
     }
     if (!(fileName ==~ /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/)) {
         throw new IllegalArgumentException("Invalid file name '${fileName}'. Only letters, numbers, hyphens, underscores and periods; cannot start with a period.")
     }
 }
 
-// The hub's download exception names only the file, so the listing is what tells a missing file
-// from a folder or an unreadable one.
+// The hub cannot create or list a folder whose name has a space or a dot.
+private boolean _filesValidFolder(String folder) {
+    return folder ==~ /[A-Za-z0-9_\/-]+/ && !folder.split("/").any { it == "" }
+}
+
+// A download of a name the hub does not hold throws NoSuchFileException, which settles it
+// without a listing.
+private boolean _filesDownloadMissing(Exception e) {
+    return e.class.simpleName == "NoSuchFileException"
+}
+
+// A folder and an unreadable file both fail their download with FileSystemException, so only the
+// listing tells them apart.
 private String _filesRootEntryKind(String name) {
     try {
-        def entry = _fileManagerListing().files.find { it.name == name }
+        def entry = _fileManagerRootEntries().find { it.name == name }
         return entry == null ? null : (entry.type == "dir" ? "dir" : "file")
     } catch (Exception e) {
         mcpLog("warn", "file-manager", "Could not list File Manager to check '${name}': ${e.message}")
@@ -138,16 +153,15 @@ def toolListFiles(args = null) {
     def cursor = args?.cursor
     def filterLower = _filesFoldCase(args?.filter?.toString()?.trim())
     def folder = args?.folder?.toString()?.trim()?.replaceAll(/^\/+|\/+$/, "")
-    // No spaces: the hub can neither create nor list a folder whose name has one.
-    if (folder && (!(folder ==~ /[A-Za-z0-9_.\/-]+/) || folder.split("/").any { it == ".." || it == "." || it == "" })) {
-        throw new IllegalArgumentException("folder must be a relative File Manager folder path such as 'webcore' (letters, digits, dot, underscore, hyphen, '/' between parts; no spaces, no '..').")
+    if (folder && !_filesValidFolder(folder)) {
+        throw new IllegalArgumentException("folder must be a relative File Manager folder path such as 'webcore' (letters, digits, underscore and hyphen, '/' between parts; no spaces or dots).")
     }
     Map listing
     try { listing = _fileManagerListing(folder ?: null) }
     catch (Exception e) {
         mcpLogError("file-manager", "File Manager listing failed${folder ? " for folder '${folder}'" : ''}", e)
         return [success: false, error: "Could not list File Manager: ${e.message}",
-                note: "Nothing was changed. Retry in a moment; if it keeps failing, check Settings > File Manager in the hub web UI."]
+                note: "Nothing was changed. Retry in a moment; if it keeps failing, check Settings > File Manager in the hub web UI. ${FILES_GUIDE_POINTER}".toString()]
     }
     List fileList = listing.files.collect { f ->
         Map entry = [name: f.name]
@@ -184,7 +198,7 @@ def toolReadFile(args) {
         if (bytes == null) throw new Exception("the hub returned no content")
         content = new String(bytes, "UTF-8")
     } catch (Exception e) {
-        String kind = _filesRootEntryKind(fileName)
+        String kind = _filesDownloadMissing(e) ? null : _filesRootEntryKind(fileName)
         if (kind == null) {
             mcpLog("info", "file-manager", "Read of '${fileName}' refused: no such file")
             return _filesMissing(fileName, "File '${fileName}' does not exist in File Manager.")
@@ -236,12 +250,13 @@ def toolWriteFile(args) {
 
     byte[] existingBytes = null
     String downloadError = "the hub returned no content"
+    boolean missing = false
     try { existingBytes = downloadHubFile(fileName) }
-    catch (Exception e) { downloadError = e.message }
+    catch (Exception e) { downloadError = e.message; missing = _filesDownloadMissing(e) }
     if (existingBytes == null) {
-        // A failed download is not proof the file is new: overwriting a file whose content could
-        // not be copied first would lose it, so only a name the listing lacks is created.
-        String kind = _filesRootEntryKind(fileName)
+        // Any other failed download may hide an existing file, and overwriting one whose content
+        // could not be copied first would lose it, so then only a name the listing lacks is created.
+        String kind = missing ? null : _filesRootEntryKind(fileName)
         if (kind == "dir") return _filesFolderResult(fileName)
         if (kind != null) {
             mcpLog("warn", "file-manager", "Write of '${fileName}' refused: its current content could not be read (${downloadError})")
@@ -285,7 +300,7 @@ def toolWriteFile(args) {
                 success: false,
                 fileName: fileName,
                 error: "Could not back up existing '${fileName}' before overwriting: ${e.message}".toString(),
-                note: "Nothing was written; '${fileName}' still holds its previous content. Retry once File Manager accepts writes.".toString()
+                note: "Nothing was written; '${fileName}' still holds its previous content. Retry once File Manager accepts writes. ${FILES_GUIDE_POINTER}".toString()
             ]
         }
         mcpLog("info", "file-manager", "Backed up existing '${fileName}' to '${backupFileName}' before overwriting (${existingBytes.length} bytes)")
@@ -318,8 +333,8 @@ def toolWriteFile(args) {
             fileName: fileName,
             error: "Failed to write file '${fileName}': ${e.message}",
             note: backupFileName
-                ? "Its previous content is kept in the backup copy '${backupFileName}'. Read '${fileName}' to see what it holds now before retrying.".toString()
-                : "Nothing was written. Retry once File Manager accepts writes."
+                ? "Its previous content is kept in the backup copy '${backupFileName}'. Read '${fileName}' to see what it holds now before retrying. ${FILES_GUIDE_POINTER}".toString()
+                : "Nothing was written. Retry once File Manager accepts writes. ${FILES_GUIDE_POINTER}".toString()
         ]
     }
 }
@@ -336,16 +351,21 @@ def toolDeleteFile(args) {
         fileName.startsWith("mcp-rm-backup-") || fileName.startsWith("mcp-prerestore-")
 
     // deleteHubFile does not fail for a missing name, so existence is checked first: through the
-    // backup download for a normal file, and through the listing when that download fails or
-    // when no download is taken. A failed listing proves nothing, so the delete goes ahead.
+    // backup download for a normal file, and through the listing when that download fails for
+    // another reason or when no download is taken. A failed listing proves nothing, so the delete
+    // goes ahead.
     String backupFileName = null
     boolean existenceUnknown = false
     if (!isBackupFile) {
         byte[] bytes = null
+        boolean missing = false
         try { bytes = downloadHubFile(fileName) }
-        catch (Exception e) { mcpLog("debug", "file-manager", "Could not download '${fileName}' before deletion: ${e.message}") }
+        catch (Exception e) {
+            missing = _filesDownloadMissing(e)
+            mcpLog("debug", "file-manager", "Could not download '${fileName}' before deletion: ${e.message}")
+        }
         if (bytes == null) {
-            String kind = _filesRootEntryKind(fileName)
+            String kind = missing ? null : _filesRootEntryKind(fileName)
             if (kind == "dir") return _filesFolderResult(fileName)
             if (kind == null) {
                 // The name may be gone because an earlier delete of it landed; its copy shows where.
@@ -415,8 +435,8 @@ def toolDeleteFile(args) {
             fileName: fileName,
             error: "Failed to delete '${fileName}': ${e.message}",
             note: backupFileName
-                ? "Its backup copy '${backupFileName}' was taken first. Check with hub_list_files whether '${fileName}' is still listed before retrying.".toString()
-                : "Check with hub_list_files whether '${fileName}' is still listed before retrying."
+                ? "Its backup copy '${backupFileName}' was taken first. Check with hub_list_files whether '${fileName}' is still listed before retrying. ${FILES_GUIDE_POINTER}".toString()
+                : "Check with hub_list_files whether '${fileName}' is still listed before retrying. ${FILES_GUIDE_POINTER}".toString()
         ]
     }
 }

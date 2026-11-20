@@ -500,15 +500,21 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         file.content.length() == 30000
     }
 
-    // A File Manager listing in the shape live hubs send.
-    private static String fileManagerJson(List entries) {
-        groovy.json.JsonOutput.toJson([backupSelection: [excludedFiles: 0], files: entries, path: null, freeSpace: 1006527975])
+    // getHubFiles() root entries as the hub answers them (string size and date), counting calls.
+    private List hubFilesCalls = []
+
+    private void hubFiles(List entries) {
+        script.metaClass.getHubFiles = { -> hubFilesCalls << 'getHubFiles'; entries }
     }
 
-    def "adminReadFile says a missing file does not exist"() {
+    private void hubFilesFail() {
+        script.metaClass.getHubFiles = { -> hubFilesCalls << 'getHubFiles'; throw new RuntimeException('down') }
+    }
+
+    def "adminReadFile says a missing file does not exist, with no listing"() {
         given:
-        script.metaClass.downloadHubFile = { String fn -> throw new RuntimeException(fn) }
-        script.metaClass.hubGet = { String p, Map q -> fileManagerJson([[id: '1', type: 'file', name: 'other.txt', size: '1', date: '1', backupIncluded: true]]) }
+        script.metaClass.downloadHubFile = { String fn -> throw new java.nio.file.NoSuchFileException(fn) }
+        hubFilesFail()
 
         when:
         def r = script.adminReadFile([fileName: 'missing.txt'])
@@ -516,12 +522,26 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         then:
         r.success == false
         r.error == "File 'missing.txt' does not exist in File Manager."
+        hubFilesCalls.isEmpty()
+    }
+
+    def "adminReadFile still reports an unlisted name as missing when its download fails another way"() {
+        given:
+        script.metaClass.downloadHubFile = { String fn -> throw new java.nio.file.FileSystemException(fn, null, 'Exception occured while reading file') }
+        hubFiles([[name: 'other.txt', type: 'file', size: '1', date: '1']])
+
+        when:
+        def r = script.adminReadFile([fileName: 'missing.txt'])
+
+        then:
+        r.error == "File 'missing.txt' does not exist in File Manager."
+        hubFilesCalls == ['getHubFiles']
     }
 
     def "adminReadFile reports a folder name as a folder"() {
         given:
-        script.metaClass.downloadHubFile = { String fn -> throw new RuntimeException(fn) }
-        script.metaClass.hubGet = { String p, Map q -> fileManagerJson([[id: '2', type: 'dir', name: 'webcore', size: '0']]) }
+        script.metaClass.downloadHubFile = { String fn -> throw new java.nio.file.FileSystemException(fn, null, 'Exception occured while reading file') }
+        hubFiles([[name: 'webcore', type: 'dir', size: '0']])
 
         when:
         def r = script.adminReadFile([fileName: 'webcore'])
@@ -551,6 +571,7 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         [length: 60001]               | 'length must be an integer from 1 to 60000'
         [length: 1.5]                 | 'length must be an integer from 1 to 60000'
         [fileName: 'webcore/x.js']    | "'webcore/x.js' names a file in a subfolder; hub_read_file acts on root files only. Open the 'webcore' folder in Hubitat > Settings > File Manager."
+        [fileName: 'my.dir/x.js']     | "'my.dir/x.js' names a file in a subfolder; hub_read_file acts on root files only."
         [fileName: 'my file.txt']     | "Invalid file name 'my file.txt'"
         [fileName: '.hidden']         | "Invalid file name '.hidden'"
     }
@@ -624,7 +645,7 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         def uploads = []
         script.metaClass.downloadHubFile = { String fn -> throw new RuntimeException('transient') }
         script.metaClass.uploadHubFile = { String fn, byte[] bytes -> uploads << fn }
-        script.metaClass.hubGet = { String p, Map q -> fileManagerJson(entries) }
+        hubFiles(entries)
 
         when:
         def r = script.adminWriteFile([fileName: 'notes.txt', content: 'new', confirm: true])
@@ -636,8 +657,8 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
 
         where:
         why                    | entries                                                           | outcome           | succeeded | error                                                      | expectedUploads
-        'the file is listed'   | [[id: '1', type: 'file', name: 'notes.txt', size: '3', date: '1']] | 'overwrites it'   | true      | null                                                       | ['notes.txt']
-        'it is a folder'       | [[id: '2', type: 'dir', name: 'notes.txt', size: '0']]            | 'is refused'      | false     | "'notes.txt' is a folder, not a file."                     | []
+        'the file is listed'   | [[type: 'file', name: 'notes.txt', size: '3', date: '1']]         | 'overwrites it'   | true      | null                                                       | ['notes.txt']
+        'it is a folder'       | [[type: 'dir', name: 'notes.txt', size: '0']]                     | 'is refused'      | false     | "'notes.txt' is a folder, not a file."                     | []
         'it is not listed'     | []                                                                | 'creates it'      | true      | null                                                       | ['notes.txt']
     }
 
@@ -646,7 +667,7 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         def uploads = []
         script.metaClass.downloadHubFile = { String fn -> throw new RuntimeException('transient') }
         script.metaClass.uploadHubFile = { String fn, byte[] bytes -> uploads << fn }
-        script.metaClass.hubGet = { String p, Map q -> throw new RuntimeException('down') }
+        hubFilesFail()
 
         when:
         def r = script.adminWriteFile([fileName: 'notes.txt', content: 'new', confirm: true])
@@ -654,6 +675,22 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         then:
         r.success == true
         uploads == ['notes.txt']
+    }
+
+    def "adminWriteFile creates a name the download reports missing, with no listing"() {
+        given:
+        def uploads = []
+        script.metaClass.downloadHubFile = { String fn -> throw new java.nio.file.NoSuchFileException(fn) }
+        script.metaClass.uploadHubFile = { String fn, byte[] bytes -> uploads << fn }
+        hubFilesFail()
+
+        when:
+        def r = script.adminWriteFile([fileName: 'notes.txt', content: 'new', confirm: true])
+
+        then:
+        r.success == true
+        uploads == ['notes.txt']
+        hubFilesCalls.isEmpty()
     }
 
     @Unroll

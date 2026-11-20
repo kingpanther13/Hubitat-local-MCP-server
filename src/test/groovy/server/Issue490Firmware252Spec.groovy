@@ -1492,7 +1492,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.calls.isEmpty()
 
         where:
-        folder << ['../etc', 'a/../b', 'a//b', 'x;rm', 'a b']
+        folder << ['../etc', 'a/../b', 'a//b', 'x;rm', 'a b', 'a.b']
     }
 
     // ---------------- apps, dependents, events ----------------

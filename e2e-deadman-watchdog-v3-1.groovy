@@ -2766,7 +2766,7 @@ def adminReadFile(args) {
         if (bytes == null) throw new Exception("the hub returned no content")
         content = new String(bytes, "UTF-8")
     } catch (Exception e) {
-        String kind = adminRootEntryKind(fileName)
+        String kind = adminDownloadMissing(e) ? null : adminRootEntryKind(fileName)
         if (kind == null) {
             return [success: false, fileName: fileName, error: "File '${fileName}' does not exist in File Manager.",
                     note: "Check the exact file name in Hubitat > Settings > File Manager."]
@@ -2794,24 +2794,33 @@ def adminReadFile(args) {
 private void adminRequireRootFileName(String fileName, String toolName) {
     if (fileName.contains("/")) {
         String folder = fileName.substring(0, fileName.lastIndexOf('/'))
+        String rootOnly = "'${fileName}' names a file in a subfolder; ${toolName} acts on root files only."
+        // The hub cannot create a folder whose name has a space or a dot, so none is named.
+        boolean validFolder = folder ==~ /[A-Za-z0-9_\/-]+/ && !folder.split("/").any { it == "" }
         throw new IllegalArgumentException(toolName == "hub_write_file"
             ? "'${fileName}' names a file in a subfolder. hub_write_file writes root files only; it cannot write into a subfolder.".toString()
-            : "'${fileName}' names a file in a subfolder; ${toolName} acts on root files only. Open the '${folder}' folder in Hubitat > Settings > File Manager.".toString())
+            : validFolder ? "${rootOnly} Open the '${folder}' folder in Hubitat > Settings > File Manager.".toString() : rootOnly)
     }
     if (!(fileName ==~ /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/)) {
         throw new IllegalArgumentException("Invalid file name '${fileName}'. Only letters, numbers, hyphens, underscores and periods; cannot start with a period.")
     }
 }
 
-// Copied from _filesRootEntryKind; reads the raw listing because fileManagerNames() drops entry types.
+// Copied from _filesDownloadMissing: a name the hub does not hold throws NoSuchFileException.
+private boolean adminDownloadMissing(Exception e) {
+    return e.class.simpleName == "NoSuchFileException"
+}
+
+// Copied from _filesRootEntryKind: a folder and an unreadable file both fail their download with
+// FileSystemException, so only the listing tells them apart. It reads getHubFiles() because
+// fileManagerNames() drops entry types.
 private String adminRootEntryKind(String name) {
-    def listing
-    try { listing = _parseJsonBody(hubGet("/hub/fileManager/json", [:])) } catch (Exception ignored) { return "unknown" }
-    def files = listing instanceof List ? listing : (listing instanceof Map && listing.files instanceof List ? listing.files : null)
-    if (files == null) return "unknown"
-    def entry = files.find { (it instanceof Map ? it.name : it)?.toString() == name }
+    def files
+    try { files = getHubFiles() } catch (Exception ignored) { return "unknown" }
+    if (!(files instanceof Collection)) return "unknown"
+    def entry = files.find { it?.name?.toString() == name }
     if (entry == null) return null
-    return (entry instanceof Map && entry.type?.toString() == "dir") ? "dir" : "file"
+    return entry.type?.toString() == "dir" ? "dir" : "file"
 }
 
 private Map adminFolderResult(String name) {
@@ -2844,11 +2853,12 @@ def adminWriteFile(args) {
     String content = args.content.toString()
     byte[] incomingBytes = content.getBytes("UTF-8")
     byte[] existingBytes = null
-    try { existingBytes = downloadHubFile(fileName) } catch (Exception ignored) { /* checked below */ }
+    boolean missing = false
+    try { existingBytes = downloadHubFile(fileName) } catch (Exception e) { missing = adminDownloadMissing(e) }
     // Unlike the server, an unreadable existing file is still overwritten: this copy already
     // overwrites a readable file with no backup copy, so an unreadable one is no worse, and
     // refusing could block a repair upload.
-    if (existingBytes == null && adminRootEntryKind(fileName) == "dir") return adminFolderResult(fileName)
+    if (existingBytes == null && !missing && adminRootEntryKind(fileName) == "dir") return adminFolderResult(fileName)
     if (existingBytes != null && (existingBytes as List) == (incomingBytes as List)) {
         return [success: true, unchanged: true, message: "File '${fileName}' already holds this exact content; nothing was written.",
                 fileName: fileName, contentLength: content.length()]

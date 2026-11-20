@@ -9174,10 +9174,9 @@ Map _fileManagerListing(String folder = null) {
         files = parsed.containsKey("files") ? parsed.files : parsed.values()?.flatten()
     }
     if (!(files instanceof List)) throw new IllegalStateException("/hub/fileManager/json returned an unrecognised shape")
-    Closure asLong = { v -> v != null && v.toString().isLong() ? v.toString().toLong() : null }
     List entries = (files as List).collect { f ->
         f instanceof Map
-            ? [name: f.name?.toString(), type: f.type?.toString(), size: asLong(f.size), date: asLong(f.date),
+            ? [name: f.name?.toString(), type: f.type?.toString(), size: _fileManagerLong(f.size), date: _fileManagerLong(f.date),
                backupIncluded: f.backupIncluded instanceof Boolean ? f.backupIncluded : null]
             : [name: f?.toString(), type: null, size: null, date: null, backupIncluded: null]
     }.findAll { it.name }
@@ -9190,12 +9189,26 @@ Map _fileManagerListing(String folder = null) {
     }
     Map selection = (parsed instanceof Map && parsed.backupSelection instanceof Map) ? parsed.backupSelection : null
     return [files: entries,
-            freeSpace: parsed instanceof Map ? asLong(parsed.freeSpace) : null,
+            freeSpace: parsed instanceof Map ? _fileManagerLong(parsed.freeSpace) : null,
             excludedFiles: selection?.excludedFiles]
 }
 
+private Long _fileManagerLong(v) {
+    return v != null && v.toString().isLong() ? v.toString().toLong() : null
+}
+
+// The root entries as [name, type, size, date]. getHubFiles() answers in-process in less than half
+// the time of /hub/fileManager/json; it lacks only the backup and free-space fields, which name and
+// type lookups do not need. size and date stay null when unknown, as in _fileManagerListing.
+List _fileManagerRootEntries() {
+    def files = getHubFiles()
+    if (!(files instanceof Collection)) throw new IllegalStateException("getHubFiles() returned no file list")
+    return files.collect { f -> [name: f?.name?.toString(), type: f?.type?.toString(), size: _fileManagerLong(f?.size), date: _fileManagerLong(f?.date)] }
+        .findAll { it.name }
+}
+
 List _fileManagerRootFiles() {
-    return _fileManagerListing().files.findAll { it.type != "dir" }.collect { [name: it.name, size: it.size, date: it.date] }
+    return _fileManagerRootEntries().findAll { it.type != "dir" }.collect { [name: it.name, size: it.size, date: it.date] }
 }
 
 private void _commitItemBackupManifest(Map manifest) {
@@ -12389,7 +12402,7 @@ Files download from http://<hub IP>/local/<filename> (`downloadUrlBase` in hub_l
 
 Use to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Each file carries `size` (bytes) and `lastModified` (epoch ms). **`filter`:** case-insensitive substring match on the file name -- pass `filter: "backup"` to find backups instead of paging the whole listing and matching client-side. **Cursor pagination:** page size 100 -- omit the cursor for an unbounded list; pass "" for the first page and iterate `nextCursor`.
 
-**Folders:** the root listing includes subfolders as entries with `type: "dir"` (no size); list one with `folder: "<name>"` (nested as `a/b`; letters, digits, dot, underscore and hyphen, no spaces -- the hub can neither create nor list a folder with a space). Files carry `type: "file"`, and `backupIncluded: false` marks a file a full local backup leaves out (past its 100 MiB File Manager limit). The response adds `freeSpaceBytes` and `filesExcludedFromFullBackup` (a count). A folder that is empty or does not exist lists no files. A file in a subfolder downloads from that listing's `downloadUrlBase` + its name.
+**Folders:** the root listing includes subfolders as entries with `type: "dir"` (no size); list one with `folder: "<name>"` (nested as `a/b`; letters, digits, underscore and hyphen; no spaces or dots -- the hub can neither create nor list a folder with either). Files carry `type: "file"`, and `backupIncluded: false` marks a file a full local backup leaves out (past its 100 MiB File Manager limit). The response adds `freeSpaceBytes` and `filesExcludedFromFullBackup` (a count). A folder that is empty or does not exist lists no files. A file in a subfolder downloads from that listing's `downloadUrlBase` + its name.
 
 ### hub_read_file
 
