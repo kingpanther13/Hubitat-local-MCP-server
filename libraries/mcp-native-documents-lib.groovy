@@ -563,7 +563,7 @@ Map toolCreateRuleDocument(Map args) {
     requireDestructiveConfirm(args.confirm)
     _requireUnprotectedAppMutation(parentId, 'create native rule child')
     def parent = getAppByAppId(parentId)
-    if (parent?.appType?.namespace != 'hubitat' || parent?.appType?.name != 'Rule Machine') throw new IllegalArgumentException('parentId must identify native Rule Machine')
+    if (parent?.appType?.namespace != 'hubitat' || parent?.appType?.name != 'Rule Machine') throw new IllegalArgumentException('parentId must identify native Rule Machine: hub_list_apps(scope:"instances") lists its app id')
     try { _ndPreflight(null, changes) }
     catch (IllegalArgumentException failure) { return [success: false, partial: false, error: failure.message?.toString()] }
     Long id = null
@@ -605,7 +605,7 @@ private Map _ndOperationSchema(String operation, String toolName = 'hub_set_rule
         properties.cursor = [type: 'string']
         properties.limit = [type: 'integer', minimum: 1, maximum: 100]
     } else if (operation == 'create') {
-        properties = [parentId: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes]
+        properties = [parentId: [type: 'integer', minimum: 1, description: 'The installed Rule Machine app id (the parent of every rule): hub_list_apps(scope:"instances") lists it as "Rule Machine".'], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes]
         required = ['parentId', 'name', 'changes']
     } else if (operation == 'update') {
         properties.changes = changes
@@ -692,7 +692,7 @@ Read hub_set_rule(operation:"read",ruleId,args:{sections:[...]}) before editing 
 
 For large rules, read one section with args:{sections:["settings"],cursor:"",limit:50}. Paging requires exactly one section; limit is 1..100 (default 50). The section keeps its usual map or list shape. Pass the returned top-level nextCursor into args.cursor until nextCursor is null. page returns offset, limit, total and revision, a hash of the complete section; restart if revision changes. Pages may contain fewer than limit rows to fit the response size cap; an individual oversized row is refused explicitly without truncation. Actions retain native order, settings sort by name, and map sections sort by string key. Omit cursor and limit for an unpaged read.
 
-Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",ruleId,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parentId,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned ruleId and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting. An update first renders the rule's page and refuses a rule that is already broken, naming its broken rows, before anything is written: repair those rows with operation:"form" or in the Hubitat UI.
+Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",ruleId,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parentId,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine; parentId is the installed Rule Machine app's id, which hub_list_apps(scope:"instances") lists. A failed creation can leave a native child: inspect returned ruleId and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting. An update first renders the rule's page and refuses a rule that is already broken, naming its broken rows, before anything is written: repair those rows with operation:"form" or in the Hubitat UI.
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.
