@@ -16,14 +16,14 @@ class SetRuleAccessSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         settingsMap.enableMandatoryBPS = true
         writes = []
-        script.metaClass.toolGetRuleDocument = { Map args -> [rule_id: args.rule_id, actions: []] }
+        script.metaClass.toolGetRuleDocument = { Map args -> [ruleId: args.ruleId, actions: []] }
         script.metaClass.toolUpdateRuleDocument = { Map args -> writes << args; [success: true] }
     }
 
     void cleanup() { script.callerClient = null }
 
     private static Map update(boolean confirm = true) {
-        [operation: 'update', rule_id: 42, confirm: confirm,
+        [operation: 'update', ruleId: 42, confirm: confirm,
          args: [changes: [[part: 'required', value: [tokens: ['1']]]]]]
     }
 
@@ -37,7 +37,7 @@ class SetRuleAccessSpec extends ToolSpecBase {
         writes.empty
         !atomicStateMap.mrtrRequests
         where:
-        request << [[:], [operation: 'read', rule_id: 42], [operation: 'create'],
+        request << [[:], [operation: 'read', ruleId: 42], [operation: 'create'],
                     [operation: 'update', confirm: false], [operation: 'form']]
     }
 
@@ -51,7 +51,7 @@ class SetRuleAccessSpec extends ToolSpecBase {
         failure.message.contains('Read tools are disabled')
         writes.empty
         where:
-        request << [[:], [operation: 'read', rule_id: 42], [operation: 'update']]
+        request << [[:], [operation: 'read', ruleId: 42], [operation: 'update']]
     }
 
     def 'confirmed writes require Write and the correct guide acknowledgment'() {
@@ -98,7 +98,7 @@ class SetRuleAccessSpec extends ToolSpecBase {
         where:
         request                                    | write
         [:]                                        | false
-        [operation: 'read', rule_id: 42]            | false
+        [operation: 'read', ruleId: 42]            | false
         [operation: 'update', confirm: false]       | false
         [operation: 'form']                        | false
         update()                                   | true
@@ -108,7 +108,7 @@ class SetRuleAccessSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = true
         expect:
-        !script._mrtrEligibleCall('hub_manage_rule_machine', 'hub_set_rule', [args: [operation: 'read', rule_id: 42]])
+        !script._mrtrEligibleCall('hub_manage_rule_machine', 'hub_set_rule', [args: [operation: 'read', ruleId: 42]])
         !script._isActualWriteCall('hub_manage_rule_machine', 'hub_set_rule', [args: [operation: 'update']])
         script._mrtrEligibleCall('hub_manage_rule_machine', 'hub_set_rule', [args: update()])
         script._isActualWriteCall('hub_manage_rule_machine', 'hub_set_rule', [args: update()])
@@ -122,7 +122,7 @@ class SetRuleAccessSpec extends ToolSpecBase {
         settingsMap.clientWrite_1 = false
         expect:
         script._clientToolDenial('hub_set_rule', [:]) == null
-        script._clientToolDenial('hub_set_rule', [operation: 'read', rule_id: 42]) == null
+        script._clientToolDenial('hub_set_rule', [operation: 'read', ruleId: 42]) == null
         script._clientToolDenial('hub_set_rule', update()).contains('Write tools are disabled')
         when:
         settingsMap.clientRead_1 = false
@@ -138,7 +138,7 @@ class SetRuleAccessSpec extends ToolSpecBase {
         settingsMap.clientTools_1 = ['hub_set_rule']
         when:
         script.executeTool('hub_set_rule', [operation: 'create', confirm: true,
-            args: [parent_id: 7, name: 'Wrong parent', changes: []]])
+            args: [parentId: 7, name: 'Wrong parent', changes: []]])
         then:
         def failure = thrown(IllegalArgumentException)
         failure.message.contains('cannot target the MCP Rule Server app itself')

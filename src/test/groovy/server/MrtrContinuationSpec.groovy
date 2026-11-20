@@ -99,12 +99,12 @@ class MrtrContinuationSpec extends ToolSpecBase {
     }
 
     private Map documentArgs(int ruleId, String message = 'worker edit') {
-        [operation: 'update', rule_id: ruleId, confirm: true, args: [changes: [[part: 'action', value: [type: 'messageActs',
+        [operation: 'update', ruleId: ruleId, confirm: true, args: [changes: [[part: 'action', value: [type: 'messageActs',
             subtype: 'getLogMsg', fields: [[name: 'logmsg.#', type: 'textarea', value: message]]]]]]]
     }
 
     private Map documentResult(Map args) {
-        [success: true, rule_id: args.rule_id, results: args.changes.collect { [part: it.part, result: [success: true]] }]
+        [success: true, ruleId: args.ruleId, results: args.changes.collect { [part: it.part, result: [success: true]] }]
     }
 
     def "argument canonicalization preserves collision-named data and value types"() {
@@ -168,7 +168,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         settingsMap.useGateways = useGateways
         stateMap.lastBackupTimestamp = 1234567890000L
-        def leafArgs = [operation: 'update', rule_id: 782, confirm: true, args: [changes: editShape]]
+        def leafArgs = [operation: 'update', ruleId: 782, confirm: true, args: [changes: editShape]]
         def wireArgs = outer == leaf
             ? leafArgs
             : [tool: leaf, args: leafArgs]
@@ -260,8 +260,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         runInMillisCalls.empty
         where:
         leaf                       | args
-        'hub_set_rule' | [operation: 'create', args: [parent_id: 28, name: 'Unconfirmed', changes: [[part: 'variable', value: [operation: 'create', name: 'Counter', type: 'integer', value: 0]]]], confirm: false]
-        'hub_set_rule'         | [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: false]
+        'hub_set_rule' | [operation: 'create', args: [parentId: 28, name: 'Unconfirmed', changes: [[part: 'variable', value: [operation: 'create', name: 'Counter', type: 'integer', value: 0]]]], confirm: false]
+        'hub_set_rule'         | [operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']]], confirm: false]
         'hub_set_native_app'   | [operation: 'update', app_id: 42, args: [fields: [comments: 'x']]]
         'hub_set_native_app'   | [operation: 'form', app_id: 42, args: [steps: [[kind: 'open']]], confirm: false]
     }
@@ -627,7 +627,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         complete.result.resultType == 'complete'
         complete.result.isError != true
         inner.success == true
-        inner.rule_id == 321
+        inner.ruleId == 321
         inner.mrtr.rounds == 1
         leafCalls.get() == 1
 
@@ -659,7 +659,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         complete.result.resultType == 'complete'
         complete.result.isError != true
         !complete.result.containsKey('requestState')
-        mcpDriver.parseInner(complete).rule_id == 322
+        mcpDriver.parseInner(complete).ruleId == 322
         replay.result.resultType == 'complete'
         mcpDriver.parseInner(replay).results == [[part: 'action', result: [success: true]]]
         leafCalls.get() == 1
@@ -1180,10 +1180,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
         then:
         runInMillisCalls.size() == 1
         runInMillisCalls[0][0..1] == [50, 'runMrtrSlice']
-        seen == [documentArgs(654, 'gateway worker').args + [rule_id: 654, confirm: true]]
+        seen == [documentArgs(654, 'gateway worker').args + [ruleId: 654, confirm: true]]
         complete.result.resultType == 'complete'
         complete.result.isError != true
-        inner.rule_id == 654
+        inner.ruleId == 654
         inner.success == true
     }
 
@@ -1439,7 +1439,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         then:
         replay.result.resultType == 'complete'
         mcpDriver.parseInner(replay).success == true
-        mcpDriver.parseInner(replay).rule_id == 654
+        mcpDriver.parseInner(replay).ruleId == 654
         calls == 1
         runInMillisCalls.size() == 1
 

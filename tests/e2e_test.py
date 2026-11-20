@@ -6315,12 +6315,12 @@ class TestRunner:
     @test("native_apps")
     def test_set_native_app_lifecycle(self) -> None:
         app_id = self._create_native_rule("NativeApp")
-        opened = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
+        opened = self.client.call_tool("hub_set_rule", {"operation": "form", "ruleId": int(app_id),
             "args": {"steps": [{"kind": "open"}]}, "confirm": True})
         assert opened.get("success") is True, opened
         renamed = f"{PREFIX}NativeApp_Renamed"
-        edited = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
-            "args": {"steps": [{"kind": "submit", "expect_page": opened["page"]["name"],
+        edited = self.client.call_tool("hub_set_rule", {"operation": "form", "ruleId": int(app_id),
+            "args": {"steps": [{"kind": "submit", "expectPage": opened["page"]["name"],
                                   "fields": {"origLabel": renamed}}]}, "confirm": True})
         assert edited.get("success") is True, edited
         # VERIFY the RENAME actually applied via the read-only hub_get_app_config.
@@ -6565,14 +6565,14 @@ class TestRunner:
 
             # #461: the motion trigger lives on onMeansPage, revealed by choosing the means first.
             form = self._native_app_form(app_id, {"kind": "open"})
-            form = self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(form, kind="href", page="onMeansPage")))
+            form = self._native_app_form(app_id, self._native_app_step(form, control=self._rm_control(form, kind="href", page="onMeansPage")))
             assert form["page"]["name"] == "onMeansPage", f"the href did not open onMeansPage: {form['page']}"
-            form = self._native_app_form(app_id, self._rm_step(form, fields={"onMeans": ["motion becomes active"]}))
+            form = self._native_app_form(app_id, self._native_app_step(form, fields={"onMeans": ["motion becomes active"]}))
             assert self._native_app_field(form, "onMeans").get("value") == ["motion becomes active"], \
                 f"a multi-select enum write should read back as sent: {self._native_app_field(form, 'onMeans')}"
             motions = self._native_app_field(form, "motions")
-            form = self._native_app_form(app_id, self._rm_step(form, fields={"motions": [motion] if motions["multiple"] else motion}))
-            form = self._native_app_form(app_id, self._rm_step(form, control=self._native_app_done(form)))
+            form = self._native_app_form(app_id, self._native_app_step(form, fields={"motions": [motion] if motions["multiple"] else motion}))
+            form = self._native_app_form(app_id, self._native_app_step(form, control=self._native_app_done(form)))
             assert form["page"]["name"] == "mainPage", f"onMeansPage Done did not return to mainPage: {form['page']}"
             assert motion in (settings().get("motions") or {}), f"motions not set: {settings().get('motions')}"
 
@@ -6588,13 +6588,13 @@ class TestRunner:
             form = self._native_app_form(app_id, {"kind": "open", "page": "offMeansPage", "from": "mainPage"},
                                          {"kind": "submit", "expect_page": "offMeansPage", "fields": {"offMeans": ["illuminance rises"]}})
             done = self._native_app_done(form)
-            refused = self._native_app("form", {"steps": [self._rm_step(form, control=done)]}, app_id, refused=True)
+            refused = self._native_app("form", {"steps": [self._native_app_step(form, control=done)]}, app_id, refused=True)
             assert "illumsOff" in str(refused.get("error")), \
                 f"Done with an empty required input must be refused: {refused}"
             assert refused.get("partial") is False and not refused.get("reopen_required"), \
                 f"a refused Done must report that nothing was submitted: {refused}"
             illums = self._native_app_field(form, "illumsOff")
-            fixed = self._native_app_form(app_id, self._rm_step(form, fields={"illumsOff": [omni] if illums["multiple"] else omni}),
+            fixed = self._native_app_form(app_id, self._native_app_step(form, fields={"illumsOff": [omni] if illums["multiple"] else omni}),
                                           {"kind": "submit", "expect_page": form["page"]["name"], "activate": done["control_id"]})
             assert fixed["page"]["name"] == "mainPage", f"Done should pass once the required input is set: {fixed}"
             off_settings = settings()
@@ -6865,11 +6865,11 @@ def updated() {}
 
             form = self._native_app_form(wizard, {"kind": "open"})
             assert form["page"]["name"] == "pageOne", f"the wizard opened on {form['page']}"
-            form = self._native_app_form(wizard, self._rm_step(form, {"first": "one"}, self._rm_control(form, name="_action_next")))
+            form = self._native_app_form(wizard, self._native_app_step(form, {"first": "one"}, self._rm_control(form, name="_action_next")))
             assert form["page"]["name"] == "pageTwo", f"Next did not reach pageTwo: {form['page']}"
             done = self._rm_control(form, name="_action_done")
             assert done["kind"] == "navigation" and not form.get("unsupported"), f"pageTwo should offer _action_done and nothing unsupported: {form}"
-            form = self._native_app_form(wizard, self._rm_step(form, {"second": "two"}, done))
+            form = self._native_app_form(wizard, self._native_app_step(form, {"second": "two"}, done))
             assert form["page"]["name"] == "pageTwo", f"the hub should answer _action_done by rendering pageTwo again: {form['page']}"
             # The install's Done stored only pageOne. pageTwo's unset inputs post their page defaults as the
             # browser does, except a default outside the enum's own options.
@@ -6995,10 +6995,10 @@ def updated() {}
             # A field submit saves an invalid email as the browser does; navigating is refused until it is fixed.
             # The textarea's pattern is not checked: the page renders none on a textarea.
             form = self._native_app_form(instance, {"kind": "open"})
-            form = self._native_app_form(instance, self._rm_step(form, {"mail": "not-an-email"}))
+            form = self._native_app_form(instance, self._native_app_step(form, {"mail": "not-an-email"}))
             done = self._rm_control(form, name="_action_update")
             try:
-                blocked = self._native_app("form", {"steps": [self._rm_step(form, None, done)]}, instance)
+                blocked = self._native_app("form", {"steps": [self._native_app_step(form, None, done)]}, instance)
             except McpToolError as exc:
                 blocked = _tool_error_payload(exc)
             assert blocked.get("success") is False and "mail: 'not-an-email' is not a valid email address" in str(blocked.get("error")) \
@@ -7109,7 +7109,7 @@ def updated() {}
             # The rule is RM-wire-format: author an action via hub_set_rule; its document's
             # native health below shows it renders (not the broken orphan a bare createchild produces).
             acted = self._write_once("hub_manage_rule_machine", "hub_set_rule",
-                {"operation": "update", "rule_id": int(rule_id),
+                {"operation": "update", "ruleId": int(rule_id),
                  "args": {"changes": [native_log("E2E button rule")]}, "confirm": True},
                 "button rule action")
             assert acted.get("success") is True and not acted.get("partial"), acted
@@ -7171,7 +7171,7 @@ def updated() {}
         self._delete_native(created["app_id"])
 
     def _native_rule_document(self, app_id: Any) -> dict:
-        doc = self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id)})
+        doc = self.client.call_tool("hub_set_rule", {"operation": "read", "ruleId": int(app_id)})
         assert str(doc.get("ruleId")) == str(app_id), doc
         return doc
 
@@ -7183,7 +7183,7 @@ def updated() {}
 
     def _rm_update(self, app_id: Any, changes: list[dict]) -> dict:
         result = self._set_rule(app_id, changes)
-        assert str(result.get("rule_id")) == str(app_id), result
+        assert str(result.get("ruleId")) == str(app_id), result
         return result
 
     def _rm_ids(self, result: dict) -> list[str]:
@@ -7191,7 +7191,7 @@ def updated() {}
         return [str((row.get("result") or {}).get("id")) for row in result.get("results", [])]
 
     def _rm_settings(self, app_id: Any) -> dict[str, dict]:
-        doc = self._rm_call({"operation": "read", "rule_id": int(app_id),
+        doc = self._rm_call({"operation": "read", "ruleId": int(app_id),
                              "args": {"sections": ["settings"]}})
         assert str(doc.get("ruleId")) == str(app_id) and isinstance(doc.get("settings"), list), doc
         return {row["name"]: row for row in doc["settings"]}
@@ -7240,7 +7240,7 @@ def updated() {}
 
     def _rm_refuse(self, app_id: Any, changes: list[dict]) -> str:
         return self._rm_refused(self._rm_call({
-            "operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}))
+            "operation": "update", "ruleId": int(app_id), "args": {"changes": changes}, "confirm": True}))
 
     def _rm_refuse_all(self, app_id: Any, cases: list[list[dict]]) -> None:
         """Each case is refused, and together they leave the rule exactly as it was."""
@@ -7250,7 +7250,7 @@ def updated() {}
         assert self._rm_snapshot(app_id) == before, "a refused edit changed the rule"
 
     def _rm_form(self, app_id: Any, *steps: dict) -> dict:
-        result = self._rm_call({"operation": "form", "rule_id": int(app_id),
+        result = self._rm_call({"operation": "form", "ruleId": int(app_id),
                                 "args": {"steps": list(steps)}, "confirm": True})
         assert result.get("success") is True, result
         return result
@@ -7259,13 +7259,18 @@ def updated() {}
         return self._rm_form(app_id, {"kind": "open", **({"page": page} if page else {})})
 
     @staticmethod
-    def _rm_step(form: dict, fields: dict | None = None, control: dict | None = None) -> dict:
-        step = {"kind": "submit", "expect_page": form["page"]["name"]}
+    def _rm_step(form: dict, fields: dict | None = None, control: dict | None = None,
+                 expect_key: str = "expectPage") -> dict:
+        step = {"kind": "submit", expect_key: form["page"]["name"]}
         if fields is not None:
             step["fields"] = fields
         if control is not None:
             step["activate"] = control["control_id"]
         return step
+
+    def _native_app_step(self, form: dict, fields: dict | None = None, control: dict | None = None) -> dict:
+        """A submit step for hub_set_native_app, which spells the page guard expect_page."""
+        return self._rm_step(form, fields, control, expect_key="expect_page")
 
     def _rm_submit(self, app_id: Any, form: dict, fields: dict | None = None, control: dict | None = None) -> dict:
         return self._rm_form(app_id, self._rm_step(form, fields, control))
@@ -7440,6 +7445,15 @@ def updated() {}
         guide = json.dumps(self.client.call_tool("hub_get_tool_guide", {"section": "set_rule_reference"}))
         for word in ("hub_set_rule", "condition", "trigger", "action", "fields"):
             assert word in guide, f"set_rule_reference does not mention {word!r}"
+        # The retired snake_case keys are refused by name, before anything is read or written.
+        for args, named in (({"operation": "read", "rule_id": 1}, "set_rule argument: rule_id"),
+                            ({"operation": "create", "args": {"parent_id": 1, "name": "x", "changes": []}},
+                             "Unknown args property: parent_id")):
+            try:
+                refused = self.client.call_tool("hub_set_rule", args)
+            except McpToolError as exc:
+                refused = exc.content_text
+            assert named in str(refused), f"hub_set_rule must refuse {args} by naming the old key: {refused}"
 
     @test("infrastructure")
     def test_set_rule_self_gateway_meta(self) -> None:
@@ -7459,10 +7473,10 @@ def updated() {}
         app_id, _ = self._rm_rule("EnvEdit", [native_log("first")])
         try:
             probe = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-                "operation": "update", "rule_id": app_id, "args": {"changes": [native_log("unconfirmed")]}}})
+                "operation": "update", "ruleId": app_id, "args": {"changes": [native_log("unconfirmed")]}}})
             assert probe.get("confirm_required") is True, probe
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-                "operation": "update", "rule_id": app_id, "confirm": True,
+                "operation": "update", "ruleId": app_id, "confirm": True,
                 "args": {"changes": [native_log("via-envelope"), native_log("wrapped-list")]}}})
             assert result.get("success") is True and not result.get("partial"), result
             assert (result.get("backup") or {}).get("backupKey"), f"the update took no pre-edit snapshot: {result}"
@@ -7560,7 +7574,7 @@ def updated() {}
                 self._rm_wait(lambda: self._rm_listed(app_id).get("disabled") is True, what="disabled")
                 self._rm_refuse(app_id, [native_log("disabled must not land")])
                 self._rm_refused(self._rm_call({
-                    "operation": "form", "rule_id": app_id, "confirm": True, "args": {"steps": [{"kind": "open"}]}}))
+                    "operation": "form", "ruleId": app_id, "confirm": True, "args": {"steps": [{"kind": "open"}]}}))
             finally:
                 self.client.call_tool("hub_set_app_disabled", {"appId": app_id, "disabled": False})
             self._rm_wait(lambda: self._rm_listed(app_id).get("status") == "active", what="enabled")
@@ -7772,7 +7786,7 @@ def updated() {}
             opened = self._rm_form(app_id, {"kind": "open", "page": "selectTriggers"}, {"kind": "open", "page": "mainPage"})
             assert [row["page"] for row in opened["completed"]] == ["selectTriggers", "mainPage"], opened
             before = self._rm_settings(app_id)
-            bad = self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+            bad = self._rm_call({"operation": "form", "ruleId": app_id, "confirm": True, "args": {
                 "steps": [{"kind": "open", "page": "mainPage"}, {"kind": "bogus_op"},
                           {"kind": "submit", "fields": {"comments": "must-not-land"}}]}})
             self._rm_refused(bad)
@@ -7810,7 +7824,7 @@ def updated() {}
             values = self._rm_values(app_id)
             assert values.get("comments") == "BAT_E2E raw settings", values.get("comments")
             assert sorted(values.get("logging") or []) == ["Actions", "Triggers"], values.get("logging")
-            refused = self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+            refused = self._rm_call({"operation": "form", "ruleId": app_id, "confirm": True, "args": {
                 "steps": [self._rm_step(form, fields={"origLabel": {"a": "b"}})]}})
             self._rm_refused(refused)
             assert self._rm_values(app_id) == values, "a refused form submit changed the rule"
@@ -7960,7 +7974,7 @@ def updated() {}
             daily = next(row for row in form["fields"] if row["name"].startswith("startingDC") and row["type"] == "time")
             form = self._rm_submit(app_id, form, fields={frequency["name"]: "Hourly"})
             assert daily["name"] not in {row["name"] for row in form["fields"]}, form
-            stale = self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+            stale = self._rm_call({"operation": "form", "ruleId": app_id, "confirm": True, "args": {
                 "steps": [self._rm_step(form, fields={daily["name"]: "2026-01-01T08:00:00.000-0500"})]}})
             assert daily["name"] in self._rm_refused(stale) and not stale.get("partial"), stale
             form = self._rm_submit(app_id, form, fields={frequency["name"]: "Cron String"})
@@ -8018,18 +8032,18 @@ def updated() {}
                     native_change("action", type="dimmerActs", subtype="getSetLevel", missingLevel=True, fields=[]),
                     native_change("variable", operation="set", name="MissingCreateVariable", value=1)):
             result = self._rm_call({"operation": "create", "confirm": True, "args": {
-                "parent_id": self._native_rule_parent_id(), "name": f"{PREFIX}CreateRefused_{_run_artifact_suffix()}",
+                "parentId": self._native_rule_parent_id(), "name": f"{PREFIX}CreateRefused_{_run_artifact_suffix()}",
                 "changes": [native_log("first"), bad]}})
-            if result.get("rule_id"):
-                self.created_native_app_ids.append(str(result["rule_id"]))
+            if result.get("ruleId"):
+                self.created_native_app_ids.append(str(result["ruleId"]))
             self._rm_refused(result)
         assert rule_ids() == before, "a refused create left a child rule"
         result = self._rm_call({"operation": "create", "confirm": True, "args": {
-            "parent_id": self._native_rule_parent_id(), "name": f"{PREFIX}CreateStop_{_run_artifact_suffix()}",
+            "parentId": self._native_rule_parent_id(), "name": f"{PREFIX}CreateStop_{_run_artifact_suffix()}",
             "changes": [self._rm_switch_trigger(switch), self._rm_switch_trigger(switch, "purple"),
                         self._rm_switch_condition(switch), native_change("required", tokens=["3"]),
                         native_log("skipped action")]}})
-        app_id = result.get("rule_id")
+        app_id = result.get("ruleId")
         if app_id:
             self.created_native_app_ids.append(str(app_id))
         try:
@@ -8211,7 +8225,7 @@ def updated() {}
             settings = self._rm_settings(app_id)
             assert not any(prefix + replacement in settings for prefix in ("tCapab", "tDev", "tstate")), settings
             states = [row["value"] for name, row in settings.items() if re.fullmatch(r"tstate\d+", name)]
-            stopped = self._rm_call({"operation": "update", "rule_id": app_id, "confirm": True, "args": {
+            stopped = self._rm_call({"operation": "update", "ruleId": app_id, "confirm": True, "args": {
                 "changes": [self._rm_switch_trigger(switch, "off"), self._rm_switch_trigger(switch, "purple"),
                             self._rm_switch_trigger(switch), native_log("trigger-stop-skipped")]}})
             assert "tstate" in self._rm_refused(stopped) and stopped.get("partial") is True, stopped
@@ -8230,7 +8244,7 @@ def updated() {}
 
     def _rm_stop(self, app_id: Any, changes: list[dict], kept: list[str], absent: list[str]) -> str:
         """A batch stopped at a failed change: the prefix landed, the rest did not run."""
-        result = self._rm_call({"operation": "update", "rule_id": int(app_id), "confirm": True,
+        result = self._rm_call({"operation": "update", "ruleId": int(app_id), "confirm": True,
                                                         "args": {"changes": changes}})
         error = self._rm_refused(result)
         rows = result.get("results", [])
@@ -8299,7 +8313,7 @@ def updated() {}
         try:
             form, index = self._rm_new_action_editor(app_id)
             page = form["page"]["name"]
-            result = self._rm_form(app_id, *[{"kind": "submit", "expect_page": page, "fields": {name + index: value}}
+            result = self._rm_form(app_id, *[{"kind": "submit", "expectPage": page, "fields": {name + index: value}}
                                              for name, value in (("actType.", "messageActs"), ("actSubType.", "getLogMsg"),
                                                                  ("logmsg.", "drive-complete"))])
             assert len(result["completed"]) == 3, result
@@ -8311,7 +8325,7 @@ def updated() {}
             for step in (self._rm_step(form, fields={"tCapab999999": "Switch"}),
                          {**self._rm_step(form, fields={}), "activate": "noSuchButtonE2E"},
                          self._rm_step(form, fields={"tstate" + slot: "E2E Not A State"})):
-                self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id,
+                self._rm_refused(self._rm_call({"operation": "form", "ruleId": app_id,
                                                                         "confirm": True, "args": {"steps": [step]}}))
             assert self._rm_settings(app_id) == before, "a refused form step changed the rule"
             form = self._rm_open(app_id, "selectTriggers")
@@ -8322,7 +8336,7 @@ def updated() {}
             assert values["logmsg." + index] == "drive-complete" and values["tDev" + slot] == [str(switch2)], values
             form, repeat = self._rm_new_action_editor(app_id)
             page = form["page"]["name"]
-            repeated = self._rm_form(app_id, *[{"kind": "submit", "expect_page": page, "fields": {name + repeat: value}}
+            repeated = self._rm_form(app_id, *[{"kind": "submit", "expectPage": page, "fields": {name + repeat: value}}
                                                for name, value in (("actType.", "repeatActs"), ("actSubType.", "getRepeat"),
                                                                    ("repeatMinute.", 5))])
             self._rm_submit(app_id, repeated, control=self._rm_control(repeated, name="actionDone"))
@@ -8766,7 +8780,7 @@ def updated() {}
             assert ran.get("success") is True and ran.get("rmAction") == "runAction button", ran
             self._rm_wait(lambda: local_value() == 9, what="refLocal=9 after the rule's actions ran")
             assert self._native_rule_document(app_id)["variables"]["refLocal"]["value"] == 9
-            result = self._rm_call({"operation": "update", "rule_id": app_id, "confirm": True, "args": {
+            result = self._rm_call({"operation": "update", "ruleId": app_id, "confirm": True, "args": {
                 "changes": [native_change("variable", operation="delete", name="refLocal")]}})
             assert result.get("success") is False and result.get("partial") is True and "broken" in str(result).lower(), result
             assert "refLocal" not in self._native_rule_document(app_id)["variables"]
@@ -8940,7 +8954,7 @@ def updated() {}
             assert "Broken Condition" in self._rm_page(app_id), "deleting the device did not break its condition"
             self._rm_refuse_all(app_id, [[native_log("gated edit", id=gated, condition=gone)]])
             # An unrelated edit does not report success while that conditional action is broken.
-            unrelated = self._rm_call({"operation": "update", "rule_id": int(app_id),
+            unrelated = self._rm_call({"operation": "update", "ruleId": int(app_id),
                                        "args": {"changes": [native_log("unrelated")]}, "confirm": True})
             assert unrelated.get("success") is False and f"Native action {gated} is broken" in str(unrelated.get("error")), unrelated
         finally:
@@ -9018,12 +9032,12 @@ def updated() {}
             # This test runs with pre-edit backups on: the backup's own config read must not reset the
             # form's page (#543), so a key must come back and the page must survive.
             assert (form.get("backup") or {}).get("backupKey"), f"the form took no pre-edit backup: {form}"
-            form = self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(form, kind="href", page="prefPkgInstall")))
-            form = self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(form, kind="href", page="prefPkgInstallUrl")))
+            form = self._native_app_form(app_id, self._native_app_step(form, control=self._rm_control(form, kind="href", page="prefPkgInstall")))
+            form = self._native_app_form(app_id, self._native_app_step(form, control=self._rm_control(form, kind="href", page="prefPkgInstallUrl")))
             assert form["page"]["name"] == "prefPkgInstallUrl", f"the href did not open prefPkgInstallUrl: {form['page']}"
             self._rm_control(form, name="_action_next")
             url = "https://example.invalid/e2e-manifest.json"
-            form = self._native_app_form(app_id, self._rm_step(form, fields={"pkgInstall": url}))
+            form = self._native_app_form(app_id, self._native_app_step(form, fields={"pkgInstall": url}))
             assert form["page"]["name"] == "prefPkgInstallUrl", f"writing pkgInstall left the page: {form['page']}"
             stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
                 "appId": app_id, "pageName": "prefPkgInstallUrl", "includeSettings": True}})
@@ -9101,7 +9115,7 @@ def updated() {}
             return self._native_app("update", step, app_id)
         form = self._native_app_form(app_id, {"kind": "open"})
         match = {"control_id": f"{step['press']}||{step['state']}"} if step.get("state") else {}
-        return self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(
+        return self._native_app_form(app_id, self._native_app_step(form, control=self._rm_control(
             form, name=step["press"], kind="button", **match)))
 
     def _ensure_builtin_app_fixture(self, rows: list[dict], key: str, configure: list[dict],
@@ -9604,7 +9618,7 @@ def updated() {}
             keys = self._rm_backup_keys(app_id)
             self._native_rule_document(app_id)
             self._rm_call({})
-            self._rm_call({"operation": "update", "rule_id": app_id})
+            self._rm_call({"operation": "update", "ruleId": app_id})
             self._rule_edit_backups(False)
             try:
                 skipped = self._rm_update(app_id, [native_log("unprotected edit")])
@@ -9631,7 +9645,7 @@ def updated() {}
             assert blank_times <= {name for name, row in self._rm_settings(app_id).items()
                                    if row["type"] == "time" and row.get("value") == ""}
             assert self._rm_values(app_id).get("comments") in (None, "")
-            self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+            self._rm_refused(self._rm_call({"operation": "form", "ruleId": app_id, "confirm": True, "args": {
                 "steps": [self._rm_step(page, fields={"comments": "stale edit must not apply"})]}}))
             assert self._rm_values(app_id).get("comments") in (None, "")
         finally:
@@ -9639,13 +9653,13 @@ def updated() {}
                 self._delete_native(app_id)
 
     def _native_form_control(self, app_id: Any, page: str, name: str) -> dict:
-        opened = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
+        opened = self.client.call_tool("hub_set_rule", {"operation": "form", "ruleId": int(app_id),
             "args": {"steps": [{"kind": "open", "page": page}]}, "confirm": True})
         assert opened.get("success") is True, opened
         controls = [row for row in opened["controls"] if row.get("name") == name]
         assert len(controls) == 1, opened
-        result = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
-            "args": {"steps": [{"kind": "submit", "expect_page": opened["page"]["name"],
+        result = self.client.call_tool("hub_set_rule", {"operation": "form", "ruleId": int(app_id),
+            "args": {"steps": [{"kind": "submit", "expectPage": opened["page"]["name"],
                                   "activate": controls[0]["control_id"]}]}, "confirm": True})
         assert result.get("success") is True, result
         return result
@@ -9669,7 +9683,7 @@ def updated() {}
         self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
         label = (f"{PREFIX}{suffix}_{_run_artifact_suffix()}_"
                  f"{self._native_rule_fixture_seq}{name_suffix}")
-        args = {"operation": "create", "args": {"parent_id": self._native_rule_parent_id(),
+        args = {"operation": "create", "args": {"parentId": self._native_rule_parent_id(),
                 "name": label, "changes": changes or []}, "confirm": True}
         if best_practice_key is not None:
             args["bestPracticeKey"] = best_practice_key
@@ -9678,7 +9692,7 @@ def updated() {}
             created = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule", "args": args,
             })
-            app_id = created.get("rule_id")
+            app_id = created.get("ruleId")
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
                 raise
@@ -9718,7 +9732,7 @@ def updated() {}
         # on the fresh-create path (created stays None on the 504 adopt-by-label path, which has no envelope).
         if created is not None:
             assert created.get("success") is True and not created.get("partial"), created
-            assert str(created.get("rule_id")) == str(app_id), created
+            assert str(created.get("ruleId")) == str(app_id), created
         self.created_native_app_ids.append(str(app_id))
 
         if return_result:
@@ -9797,7 +9811,7 @@ def updated() {}
     def _set_rule(self, app_id: Any, changes: list[dict], strict: bool = False) -> Any:
         """Apply native document changes once; a lost write response requires verification."""
         result = self.client.call_tool("hub_set_rule", {
-            "operation": "update", "rule_id": int(app_id),
+            "operation": "update", "ruleId": int(app_id),
             "args": {"changes": changes}, "confirm": True})
         assert result.get("success") is True and not result.get("partial"), result
         self._last_write_health = None
@@ -9945,7 +9959,7 @@ def updated() {}
                 self._delete_native(first["app_id"], gateway="hub_manage_native_rules_and_apps")
                 parent = next(r for r in self._installed_app_rows() if r.get("type") == "Button Controllers")
             page = self._native_app_form(parent["id"], {"kind": "open"})
-            made = self._native_app_form(parent["id"], self._rm_step(page, control=self._rm_control(
+            made = self._native_app_form(parent["id"], self._native_app_step(page, control=self._rm_control(
                 page, kind="create_child", value="Button Controller-5.1")))
             controller_id = made.get("created_app_id")
             assert controller_id, f"the Button Controllers page did not create a controller: {made}"
@@ -9953,7 +9967,7 @@ def updated() {}
 
             form = self._native_app_form(controller_id, {"kind": "open"})
             picker = self._native_app_field(form, "buttonDev")
-            form = self._native_app_form(controller_id, self._rm_step(
+            form = self._native_app_form(controller_id, self._native_app_step(
                 form, fields={"buttonDev": [str(device_id)] if picker["multiple"] else str(device_id)}))
             bound = self._native_app_field(form, "buttonDev").get("value")
             assert str(device_id) in ([str(v) for v in bound] if isinstance(bound, list) else [str(bound)]), \
@@ -9971,7 +9985,7 @@ def updated() {}
         changes, messages = lane_mrtr_changes("MRTR regular E2E proof", str(self.get_test_temperature_ids()[0]))
         app_id = self._create_native_rule("MrtrContinuation")
         try:
-            args = {"operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}
+            args = {"operation": "update", "ruleId": int(app_id), "args": {"changes": changes}, "confirm": True}
             gateway = "hub_manage_rule_machine"
             result = self.client.call_tool(gateway, {"tool": "hub_set_rule", "args": args})
             request_state = self.client._last_request_state
@@ -10017,12 +10031,12 @@ def updated() {}
             assert replay_value == result, "Terminal replay changed the public mutation result"
             info = self.client.call_tool("hub_get_info", {})
             recent = [row for row in info.get("recentWrites", []) if row.get("tool") == "hub_set_rule"
-                      and str(row.get("rule_id")) == str(app_id)]
+                      and str(row.get("ruleId")) == str(app_id)]
             assert recent and recent[0].get("status") == "finished" and recent[0].get("success") is True, recent
             config = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeSettings": True})
 
             async def fetch_section(section: str, cursor: str, limit: int) -> dict:
-                page = self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id),
+                page = self.client.call_tool("hub_set_rule", {"operation": "read", "ruleId": int(app_id),
                     "args": {"sections": [section], "cursor": cursor, "limit": limit}})
                 assert str(page.get("ruleId")) == str(app_id), page
                 return page
@@ -15393,7 +15407,7 @@ def updated() {}
                     "tool": leaf,
                     "args": ({"operation": "update", "app_id": int(app_id), "args": {"fields": {"mcpLogLevel": original_level}},
                               "confirm": True}
-                             if leaf == "hub_set_native_app" else {"operation": "form", "rule_id": int(app_id),
+                             if leaf == "hub_set_native_app" else {"operation": "form", "ruleId": int(app_id),
                                  "args": {"steps": [{"kind": "open"}]}, "confirm": True})})
             except (McpError, McpToolError) as exc:
                 message = str(exc)
@@ -15403,7 +15417,7 @@ def updated() {}
                 assert "protected" in message.lower() and app_id in message, \
                     f"expected protected-app refusal, got: {message}"
             else:
-                assert "rule_id must identify native Rule-5.1, Button Rule-5.1 or Rule Machine" in message, \
+                assert "ruleId must identify native Rule-5.1, Button Rule-5.1 or Rule Machine" in message, \
                     f"RM form must refuse the non-RM MCP app before accessing its editor: {message}"
             assert read_settings() == before, "refused generic edit changed persisted settings"
 
@@ -17339,7 +17353,7 @@ def updated() {}
         try:
             key = self._section_key_after_refusals(
                 "hub_manage_rule_machine", "hub_set_rule", "set_rule_reference",
-                {"operation": "create", "args": {"parent_id": self._native_rule_parent_id(), "name": f"{PREFIX}BPS_SetRule_Refused", "changes": []}, "confirm": True})
+                {"operation": "create", "args": {"parentId": self._native_rule_parent_id(), "name": f"{PREFIX}BPS_SetRule_Refused", "changes": []}, "confirm": True})
             app_id = self._create_native_rule("BPS_SetRule", best_practice_key=key)
         finally:
             self._bps_fixture_cleanup(app_id)
@@ -18214,7 +18228,7 @@ def updated() {}
         try:
             # The legacy era gets the same isError envelope over the success:false document failure.
             try:
-                result = legacy.call_tool("hub_set_rule", {"operation": "update", "rule_id": int(app_id),
+                result = legacy.call_tool("hub_set_rule", {"operation": "update", "ruleId": int(app_id),
                     "args": {"changes": [native_log(kept), native_change("action", type="messageActs", subtype="getLogMsg", fields=[
                         native_field("logmsg.#", "textarea", "partial marker"),
                         native_field("noSuchField.#", "number", 1)]),

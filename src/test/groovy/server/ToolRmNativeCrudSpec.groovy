@@ -1185,7 +1185,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posted.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[origLabel]") }
         result.error?.contains("failed during the closing Done")
         result.note?.contains("press Done")
-        result.note?.contains('hub_set_rule(operation:"form", rule_id:361, args:{steps:[{kind:"open"},{kind:"submit",expect_page:"<returned page>",activate:"_action_update|Done|"}]}, confirm:true)')
+        result.note?.contains('hub_set_rule(operation:"form", ruleId:361, args:{steps:[{kind:"open"},{kind:"submit",expectPage:"<returned page>",activate:"_action_update|Done|"}]}, confirm:true)')
         !posted.any { it.path == "/installedapp/btn" }
         !result.note?.contains("button=")
     }
@@ -3010,7 +3010,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [operation: 'create', args: [parent_id: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'create', args: [parentId: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
         response.result.isError != true
         mcpDriver.parseInner(response).confirm_required == true
@@ -3049,7 +3049,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [operation: 'create', confirm: true, args: [parent_id: 21, changes: [[part:'required', value:[tokens:['1']]]]]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'create', confirm: true, args: [parentId: 21, changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('Missing required args property')
@@ -3062,14 +3062,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         Map received
-        script.metaClass.toolCreateRuleDocument = { Map args -> received = args; [success: true, created: true, rule_id: 974] }
-        def args = [operation: 'create', args: [parent_id: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]], confirm:true]
+        script.metaClass.toolCreateRuleDocument = { Map args -> received = args; [success: true, created: true, ruleId: 974] }
+        def args = [operation: 'create', args: [parentId: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]], confirm:true]
         when:
         def response = mcpDriver.callTool('hub_set_rule', args)
         then:
         response.error == null
         !response.result.isError
-        mcpDriver.parseInner(response).rule_id == 974
+        mcpDriver.parseInner(response).ruleId == 974
         received == args.args + [confirm: true]
         where:
         useGateways << [true, false]
@@ -3080,7 +3080,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', rule_id: 100, args: [changes: [[part:'required', value:[tokens:['1']]]]]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', ruleId: 100, args: [changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
         response.result.isError != true
         mcpDriver.parseInner(response).confirm_required == true
@@ -3093,15 +3093,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.toolUpdateRuleDocument = { Map args -> [success: false, partial: true, rule_id: args.rule_id, error: 'Native typed readback rejected'] }
+        script.metaClass.toolUpdateRuleDocument = { Map args -> [success: false, partial: true, ruleId: args.ruleId, error: 'Native typed readback rejected'] }
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', rule_id: 100, confirm: true, args: [changes: [[part:'required', value:[tokens:['1']]]]]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', ruleId: 100, confirm: true, args: [changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
         response.error == null
         def inner = mcpDriver.parseInner(response)
         !inner.success
         inner.partial
-        inner.rule_id == 100
+        inner.ruleId == 100
         inner.error.contains('readback rejected')
         where:
         useGateways << [true, false]
@@ -3356,12 +3356,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         Map received
-        script.metaClass.toolCreateRuleDocument = { Map args -> received = args; [success:true, rule_id: 974] }
-        def args = [operation: 'create', args: [parent_id:21, name:'BAT-gw-rule', changes:[[part:'required', value:[tokens:['1']]]]], confirm:true]
+        script.metaClass.toolCreateRuleDocument = { Map args -> received = args; [success:true, ruleId: 974] }
+        def args = [operation: 'create', args: [parentId:21, name:'BAT-gw-rule', changes:[[part:'required', value:[tokens:['1']]]]], confirm:true]
         when:
         def result = script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', args)
         then:
-        result.rule_id == 974
+        result.ruleId == 974
         received == args.args + [confirm: true]
     }
 

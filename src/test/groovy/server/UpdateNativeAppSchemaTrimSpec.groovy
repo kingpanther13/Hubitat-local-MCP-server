@@ -422,7 +422,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def probe = script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', [operation: 'update'])
         then:
         probe.confirm_required
-        probe.inputSchema.required.containsAll(['rule_id', 'args', 'confirm'])
+        probe.inputSchema.required.containsAll(['ruleId', 'args', 'confirm'])
         probe.inputSchema.properties.args.required == ['changes']
         !JsonOutput.toJson(probe).contains(OPEN_MARKER)
         !JsonOutput.toJson(probe).contains(CLOSE_MARKER)

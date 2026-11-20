@@ -188,7 +188,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         result.success
         raws == ['/installedapp/createchild/hubitat/Rule-5.1/parent/43']
         posts*.body*._action_update == ['Done']
-        result.note.contains("hub_set_rule(operation:'update', rule_id:91")
+        result.note.contains("hub_set_rule(operation:'update', ruleId:91")
     }
 
     def 'a create drops the caller cached form context of the parent page it changed'() {

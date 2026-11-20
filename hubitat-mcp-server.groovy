@@ -676,7 +676,7 @@ private Set _installedAppTargetTools() {
 private boolean _targetsThisApp(Map args) {
     String self = app?.id?.toString()
     if (!self || args == null) return false
-    return ["appId", "app_id", "sourceAppId", "ruleId", "rule_id", "parent_id"].any { key ->
+    return ["appId", "app_id", "sourceAppId", "ruleId", "parentId"].any { key ->
         def target = args.get(key)
         def ids = (target instanceof Collection) ? target : [target]
         ids.any { it?.toString() == self }
@@ -4895,7 +4895,7 @@ def _mrtrRecentOperations(int limit = 10) {
         if (callerClient == null && rec.clientLabel) row.client = rec.clientLabel
         if (status == "terminal" && rec.terminalResult instanceof Map) {
             Map result = rec.terminalResult as Map
-            ["success", "appId", "ruleId", "rule_id", "newAppId", "deviceId", "driverId", "error"].each {
+            ["success", "appId", "ruleId", "newAppId", "deviceId", "driverId", "error"].each {
                 if (result.containsKey(it)) row.put(it, result.get(it))
             }
             if (result.device instanceof Map && result.device.id != null) row.deviceId = result.device.id
@@ -5224,7 +5224,7 @@ private Map _toolLogDetails(reactiveToolName, toolName, args, Map extra = [:]) {
     def details = [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]
     // A gateway call arrives as the envelope {tool, args}; the leaf's own arguments sit inside it.
     def leafArgs = (reactiveToolName != toolName && args instanceof Map && args.args instanceof Map) ? args.args : args
-    def appId = leafArgs instanceof Map ? (leafArgs.appId ?: leafArgs.nativeAppId ?: leafArgs.rule_id) : null
+    def appId = leafArgs instanceof Map ? (leafArgs.appId ?: leafArgs.nativeAppId ?: (reactiveToolName == 'hub_set_rule' ? leafArgs.ruleId : null)) : null
     if (appId != null && appId.toString()) details.appId = appId.toString()
     return details + extra
 }
@@ -5539,7 +5539,7 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_get_source":
             return "Source file exceeds the inline cap. Use offset/length to read it in chunks, use hub_list_files / hub_read_file via the File Manager bridge, or fetch the source from version control instead."
         case "hub_set_rule":
-            return "operation:'read': page one section, args:{sections:['actions'], cursor:'', limit:50}, and follow nextCursor. A create/update/form write was applied before its response was measured: do NOT resend it. Find a created rule with hub_list_rules(labelFilter:<name>); confirm what landed with hub_set_rule(operation:'read', rule_id, args:{sections:[...]}). An update's pre-edit backup, when pre-edit backups are on, is listed by hub_list_backups(scope:'source'). Smaller batches keep write responses under the cap."
+            return "operation:'read': page one section, args:{sections:['actions'], cursor:'', limit:50}, and follow nextCursor. A create/update/form write was applied before its response was measured: do NOT resend it. Find a created rule with hub_list_rules(labelFilter:<name>); confirm what landed with hub_set_rule(operation:'read', ruleId, args:{sections:[...]}). An update's pre-edit backup, when pre-edit backups are on, is listed by hub_list_backups(scope:'source'). Smaller batches keep write responses under the cap."
         case "hub_get_hub_mesh":
             return "This tool has no filters or pagination -- the payload is driven by the shared/linked device and hub-variable lists on a large multi-hub mesh. Read the full device inventory via hub_list_devices (which does paginate) instead; note include_token is off by default and does not affect size."
         default:
@@ -5933,7 +5933,7 @@ def getGatewayConfig() {
             description: "Native app lifecycle and Rule Machine control. Use hub_set_rule for native RM read/create/update/form operations, and the dedicated tools to delete/clone/export/import apps or run/pause rules. Confirmed writes require a recent hub backup; inspect partial outcomes and native health before retrying. hub_set_native_app creates, updates and drives the forms of every other classic app.",
             tools: ["hub_set_native_app", "hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_private_boolean", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule"],
             summaries: [
-                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
+                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, ruleId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
 
                 hub_list_rules: "List all Rule Machine rules with IDs, labels and status (uses RMUtils — RM only)",
                 hub_call_rule: "Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (a Visual Rule: actions, pause, resume). Args: ruleId (id or array of ids), action (actions/stop/start/pause/resume, default actions)",
@@ -5947,7 +5947,7 @@ def getGatewayConfig() {
                 hub_get_rule: "Read one rule: its health (broken, broken rows, paused, stopped, private boolean, disabled rows, block structure, live subscription and job counts) and, for a Rule Machine 5.1 rule, its actions, conditions, triggers, expressions, settings and local variables. Also reads a Visual Rule's or classic app's health. Args: ruleId, sections?, cursor?, limit?"
             ],
             searchHints: [
-                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
+                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, ruleId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
 
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
                 hub_call_rule: "trigger fire execute run actions stop start pause resume unpause native rule machine rule visual rule",
@@ -6059,7 +6059,7 @@ def getGatewayConfig() {
             description: "Native Rule Machine authoring and runtime control. hub_set_rule provides read/create/update/form operations; call without operation for help or without confirm for a write-operation schema. Confirmed writes require a recent hub backup. Use hub_delete_native_app to delete a rule. Visual Rules Builder has dedicated tools; read-only rule diagnostics are in hub_read_rules.",
             tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_private_boolean", "hub_get_rule", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
             summaries: [
-                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
+                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, ruleId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
                 hub_list_rules: "List all Rule Machine rules with IDs, labels and status (RMUtils — RM only)",
                 hub_call_rule: "Run the actions of one or more rules, or stop, start, pause or resume them (a Visual Rule: actions, pause, resume). Args: ruleId (id or array of ids), action (actions/stop/start/pause/resume, default actions)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules. Args: ruleId (id or array of ids), value (bool)",
@@ -6070,7 +6070,7 @@ def getGatewayConfig() {
                 hub_delete_visual_rule: "Delete a Visual Rules Builder rule (type-gated; returns the pre-delete definition for recovery). Args: appId, confirm."
             ],
             searchHints: [
-                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
+                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, ruleId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
                 hub_list_rules: "rule machine rules native builtin automation list enumerate RM",
                 hub_call_rule: "trigger fire execute run actions native rule machine rule visual rule stop start pause resume unpause",
                 hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
@@ -12461,9 +12461,9 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 4. Deletes are soft by default; force=true also removes children.
 
 ### CRUD workflow example
-  hub_set_rule(operation="create", args={parent_id:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true) → app_id
-  hub_get_rule(ruleId=<app_id>) → health.ok=true, health.issues:[]
-  hub_delete_native_app(appId=<app_id>, force=true, confirm=true) → {backup: {backupKey: "rm-rule_<app_id>_..."}}
+  hub_set_rule(operation="create", args={parentId:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true) → ruleId
+  hub_get_rule(ruleId=<ruleId>) → health.ok=true, health.issues:[]
+  hub_delete_native_app(appId=<ruleId>, force=true, confirm=true) → {backup: {backupKey: "rm-rule_<ruleId>_..."}}
 
 ### hub_list_drivers (list device driver TYPES on the hub)
 

@@ -2604,7 +2604,7 @@ def toolGetNativeRule(args) {
     if (raw == null) throw new IllegalArgumentException("ruleId is required")
     if (!(raw instanceof Number) || !raw.toString().isLong() || raw.toString().toLong() <= 0L) throw new IllegalArgumentException("ruleId must be a positive integer")
     Long id = raw.toString().toLong()
-    Map docArgs = [rule_id: id, localVariables: true]
+    Map docArgs = [ruleId: id, localVariables: true]
     ['sections', 'cursor', 'limit'].each { key -> if (args.containsKey(key)) docArgs.put(key, args.get(key)) }
     _ndDocumentArgs(docArgs, ['actions', 'conditions', 'triggers', 'expressions', 'settings'], 'hub_get_rule')
     def target
@@ -2723,7 +2723,7 @@ private Map _naOperationSchema(String operation) {
         controller_id: [type: 'integer', minimum: 1], button_number: [type: 'integer', minimum: 1],
         event: [type: 'string', enum: ['pushed', 'held', 'doubleTapped', 'released']]], required: ['app_type']]
     if (operation == 'update') return [type: 'object', additionalProperties: false, properties: [fields: [type: 'object'], page: [type: 'string']], required: ['fields']]
-    if (operation == 'form') return _ndOperationSchema('form')
+    if (operation == 'form') return _ndOperationSchema('form', 'hub_set_native_app')
     throw new IllegalArgumentException('Unknown native app operation; use create, update or form')
 }
 
@@ -3018,7 +3018,7 @@ private Map _naCreate(Map args) {
                       fields_applied: written.keySet().collect { it.toString() } - back.not_landed - back.consumed] + report
         if (back.consumed) result.fields_consumed = back.consumed
         List notes = [type == 'rule_machine' ?
-            "Created Rule Machine rule ${childId}. Author its triggers and actions with hub_set_rule(operation:'update', rule_id:${childId}, args:{changes:[...]}, confirm:true)." :
+            "Created Rule Machine rule ${childId}. Author its triggers and actions with hub_set_rule(operation:'update', ruleId:${childId}, args:{changes:[...]}, confirm:true)." :
             "Created ${type} app ${childId}. Set more inputs with hub_set_native_app(operation:'update', app_id:${childId}, args:{fields:{...}}, confirm:true) or drive its pages with operation:'form'."]
         if (back.not_landed) {
             result.fields_not_landed = back.not_landed
@@ -3107,7 +3107,7 @@ private Map _naCreateButtonRule(Map args) {
             throw new IllegalStateException('The controller did not open a new Button Rule')
         }
         return [success: true, app_id: ruleId, app_type: 'button_rule', label: rule.label?.toString(), controller_id: controllerId, button_number: number, event: event, backup: backup,
-         note: "Created button rule ${ruleId}; the controller seeded its trigger (button ${number} ${event}). Author its actions with hub_set_rule(operation:'update', rule_id:${ruleId}, args:{changes:[...]}, confirm:true); it shows as not installed until it has one.${guide}".toString()]
+         note: "Created button rule ${ruleId}; the controller seeded its trigger (button ${number} ${event}). Author its actions with hub_set_rule(operation:'update', ruleId:${ruleId}, args:{changes:[...]}, confirm:true); it shows as not installed until it has one.${guide}".toString()]
     } catch (Exception failure) {
         if (failure instanceof IllegalArgumentException && !attempted) throw failure
         mcpLogError('rm-native', "hub_set_native_app create: button rule under controller ${controllerId} failed", failure)
@@ -3270,7 +3270,7 @@ hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and co
 
 operation:"create" with args:{app_type,name?,fields?} does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), presses that page's Create control, fills the new app's first page with fields and presses its Done, which installs the app. name goes to the label input the first page renders (origLabel, name, or the hub's own label field); a type whose first page renders none of them (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. fields are checked against that page before anything is saved: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input left empty for the Done is refused with success:false, and the new app is removed. Inputs that a choice reveals belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. installed:false means the first page has no Done (Basic Rule: finish it with form). A Done the hub answers by rendering the first page again returns success:false with what that page asks for, and the new app is removed. app_type rule_machine makes only an empty rule.
 
-A button_rule takes args:{app_type:"button_rule",controller_id,button_number,event} and no name or fields. It runs the Button Controller's own Add Button, the button number, then that event's Create Button Rule control. The controller needs its button device assigned first. A button number the controller does not offer returns success:false after its page's Cancel, with the controller as before and the recovery point taken before the call rendered anything. The controller seeds the trigger; add the actions with hub_set_rule(operation:"update",rule_id:<returned app_id>).
+A button_rule takes args:{app_type:"button_rule",controller_id,button_number,event} and no name or fields. It runs the Button Controller's own Add Button, the button number, then that event's Create Button Rule control. The controller needs its button device assigned first. A button number the controller does not offer returns success:false after its page's Cancel, with the controller as before and the recovery point taken before the call rendered anything. The controller seeds the trigger; add the actions with hub_set_rule(operation:"update",ruleId:<returned app_id>).
 
 ### update
 
@@ -3280,5 +3280,5 @@ Each update first takes a recovery point, before it renders any page: an exact e
 
 ### form
 
-operation:"form" with args:{steps:[...],options_for?} runs the native form engine on any enabled classic app. Steps, control IDs, validation and limits are those of Native Rule Forms in set_rule_reference. While pre-edit backups are on (the default), a workflow takes the same recovery point as update before its first render. Protected and disabled apps are refused. A create_child control works only for built-in child app types.'''
+operation:"form" with args:{steps:[...],options_for?} runs the native form engine on any enabled classic app. Steps, control IDs, validation and limits are those of Native Rule Forms in set_rule_reference, which spells this tool's expect_page and options_for as expectPage and optionsFor. While pre-edit backups are on (the default), a workflow takes the same recovery point as update before its first render. Protected and disabled apps are refused. A create_child control works only for built-in child app types.'''
 }

@@ -1736,7 +1736,7 @@ native Rule Machine.''',
 A read renders the rule's main page once, because Rule Machine updates its broken flag only then.
 An update refuses a rule that is already broken.
 A partial update can leave preceding changes committed; not every capability-specific variant is supported.
-expect_page Even open renders execute app code
+expectPage Even open renders execute app code
 dependent fields require another submit; success means returned, not that the app's intended runtime behavior was independently verified.''',
         device_authorization: '''## Device Authorization (CRITICAL)
 Body.''',
@@ -1804,7 +1804,7 @@ def test_check_tool_guide_generated_unresolvable_section_method_flagged(monkeypa
     "A read renders the rule's main page once, because Rule Machine updates its broken flag only then",
     "refuses a rule that is already broken",
     "A partial update can leave preceding changes committed", "not every capability-specific variant is supported",
-    "expect_page", "Even open renders execute app code",
+    "expectPage", "Even open renders execute app code",
     "dependent fields require another submit",
     "not that the app's intended runtime behavior was independently verified",
 ])

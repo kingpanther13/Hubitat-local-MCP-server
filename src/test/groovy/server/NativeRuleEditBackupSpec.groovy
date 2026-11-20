@@ -84,7 +84,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
     }
 
     private static Map update() {
-        [rule_id: 42, confirm: true, changes: [
+        [ruleId: 42, confirm: true, changes: [
             [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]],
             [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]]]]
     }
@@ -189,7 +189,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         result instanceof Map
         result.success == false
         result.partial == false
-        result.rule_id == 42L
+        result.ruleId == 42L
         result.error == 'read unavailable'
         sharedMap('NATIVE_FORM_BUSY').isEmpty()
         sharedMap('NATIVE_FORM_CONTEXTS').size() == 3

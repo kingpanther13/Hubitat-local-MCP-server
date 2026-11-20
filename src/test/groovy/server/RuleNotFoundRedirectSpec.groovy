@@ -329,7 +329,7 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
         where:
         appType | editor
-        'Rule-5.1' | 'hub_set_rule(rule_id=300)'
+        'Rule-5.1' | 'hub_set_rule(ruleId=300)'
         'Room Lights' | "hub_set_native_app(operation='update', app_id=300)"
         'Basic Rules' | "hub_set_native_app(operation='update', app_id=300)"
         'Visual Rule Builder 2.0' | 'hub_set_visual_rule(appId=300)'

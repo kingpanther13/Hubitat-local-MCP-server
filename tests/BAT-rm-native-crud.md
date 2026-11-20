@@ -4,7 +4,7 @@ Supplement to `tests/BAT-v2.md`. These scenarios retain the behavioral acceptanc
 
 **Current tools exercised**:
 
-- `hub_manage_rule_machine.hub_set_rule` (`operation=create` with `args.parent_id` and `args.name`; `operation=update` with `rule_id` and `args.changes`; `operation=read` and `operation=form` for native inspection and editor workflows)
+- `hub_manage_rule_machine.hub_set_rule` (`operation=create` with `args.parentId` and `args.name`; `operation=update` with `ruleId` and `args.changes`; `operation=read` and `operation=form` for native inspection and editor workflows)
 - `hub_manage_native_rules_and_apps.hub_delete_native_app`
 - `hub_manage_native_rules_and_apps.hub_get_rule_health`
 
@@ -91,7 +91,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule(operation="create", args={parent_id:<Rule Machine app id>, name:'BAT-RM-Empty Create'}, confirm=true)`, captures the returned `rule_id`, then reads it back with `hub_set_rule(operation="read")` or `hub_read_apps_code.hub_get_app_config(appId=ruleId)`. Post-test invariant: [INV-1] `configPage.error == null`. With no triggers, `statusJson.eventSubscriptions` may be empty — that's expected for a triggerless rule. Teardown succeeds with `{success: true}`.
+**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule(operation="create", args={parentId:<Rule Machine app id>, name:'BAT-RM-Empty Create'}, confirm=true)`, captures the returned `ruleId`, then reads it back with `hub_set_rule(operation="read")` or `hub_read_apps_code.hub_get_app_config(appId=ruleId)`. Post-test invariant: [INV-1] `configPage.error == null`. With no triggers, `statusJson.eventSubscriptions` may be empty — that's expected for a triggerless rule. Teardown succeeds with `{success: true}`.
 
 ### T301 — Rename an existing rule
 
@@ -103,7 +103,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI opens the rule's main page and submits its label input (`origLabel`) with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` returns the new label. Post-test invariants: [INV-1] `configPage.error == null` after the update (render guard), and the app's `label` field matches the new name.
+**Expected**: AI opens the rule's main page and submits its label input (`origLabel`) with `hub_set_rule(operation="form", ruleId, args={steps:[{kind:"open"}, {kind:"submit", expectPage:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` returns the new label. Post-test invariants: [INV-1] `configPage.error == null` after the update (render guard), and the app's `label` field matches the new name.
 
 ### T302 — Set rule notes (comments textarea)
 
@@ -115,7 +115,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI submits the main page's `comments` textarea with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` shows the comments field unchanged. Post-test invariant: [INV-1] `configPage.error == null`; textarea whitespace is preserved exactly.
+**Expected**: AI submits the main page's `comments` textarea with `hub_set_rule(operation="form", ruleId, args={steps:[{kind:"open"}, {kind:"submit", expectPage:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` shows the comments field unchanged. Post-test invariant: [INV-1] `configPage.error == null`; textarea whitespace is preserved exactly.
 
 ### T303 — Enable Required Expression flag
 
@@ -127,7 +127,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI submits `useST=true` on the main page with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`. `hub_get_app_config(appId=ruleId)` shows `useST=true` and exposes the required-expression editor inputs. Post-test invariant: [INV-1] `configPage.error == null` — toggling useST often hits the `.size()` render-path bug, so this is a deliberate regression check.
+**Expected**: AI submits `useST=true` on the main page with `hub_set_rule(operation="form", ruleId, args={steps:[{kind:"open"}, {kind:"submit", expectPage:<main page>, fields:{...}}]}, confirm=true)`. `hub_get_app_config(appId=ruleId)` shows `useST=true` and exposes the required-expression editor inputs. Post-test invariant: [INV-1] `configPage.error == null` — toggling useST often hits the `.size()` render-path bug, so this is a deliberate regression check.
 
 ### T304 — Convert rule to function mode
 
@@ -139,7 +139,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI submits `isFunction=true` on the main page with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` returns `isFunction=true`. Post-test invariant: [INV-1] `configPage.error == null`.
+**Expected**: AI submits `isFunction=true` on the main page with `hub_set_rule(operation="form", ruleId, args={steps:[{kind:"open"}, {kind:"submit", expectPage:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` returns `isFunction=true`. Post-test invariant: [INV-1] `configPage.error == null`.
 
 ### T305 — Set all three logging options + dValues toggle
 
@@ -151,13 +151,13 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI submits `logging=['Events','Triggers','Actions']` (a list for the multi-select) and `dValues=true` on the main page with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`. `hub_get_app_config(appId=ruleId)` shows `logging` as a 3-element enum array and `dValues=true`. Post-test invariants: [INV-1] `configPage.error == null`; the enum array is not collapsed to a scalar (regression guard for list-vs-string marshaling).
+**Expected**: AI submits `logging=['Events','Triggers','Actions']` (a list for the multi-select) and `dValues=true` on the main page with `hub_set_rule(operation="form", ruleId, args={steps:[{kind:"open"}, {kind:"submit", expectPage:<main page>, fields:{...}}]}, confirm=true)`. `hub_get_app_config(appId=ruleId)` shows `logging` as a 3-element enum array and `dValues=true`. Post-test invariants: [INV-1] `configPage.error == null`; the enum array is not collapsed to a scalar (regression guard for list-vs-string marshaling).
 
 ### T306 — Full round-trip: many fields populated and surviving an updateRule re-init
 
 ```json
 {
-  "setup_prompt": "Create a scratch native RM rule via hub_set_rule(operation='create', args={parent_id:<Rule Machine app id>, name:'BAT-RM-Full Create'}, confirm=true). Capture the returned rule_id.",
+  "setup_prompt": "Create a scratch native RM rule via hub_set_rule(operation='create', args={parentId:<Rule Machine app id>, name:'BAT-RM-Full Create'}, confirm=true). Capture the returned ruleId.",
   "test_prompt": "STEP 1 (populate in one edit): In a single edit, populate the rule with every rule-level field at once — comments 'Created with every rule-level field populated', enable the Required Expression feature, mark it NOT a function, logging ['Triggers','Actions'], and enable Display Current Values. Verify the edit reports no config-page error and that all five fields were applied.\n\nSTEP 2 (read-back #1): Read the rule back including its settings. Assert every one of these round-trips: app.label === 'BAT-RM-Full Create'; settings.comments === the exact string; settings.useST === 'true'; settings.isFunction === 'false'; settings.logging is a JSON array === ['Triggers','Actions'] (length 2, NOT collapsed to CSV); settings.dValues === 'true'. The page paragraphs MUST include 'Define Required Expression' — this proves useST=true actually exposed the required-expression editor section.\n\nSTEP 3 (force a re-init): Press the rule's 'Update Rule' button to force it to re-initialize. Verify there is no config-page error.\n\nSTEP 4 (read-back #2, post re-init): Read the rule back again including its settings. Assert ALL fields from STEP 2 are still present with the same values and logging is STILL a 2-element array. This is the wire-format regression guard — enum-multi persisted from the in-memory write must survive the updateRule re-marshal.\n\nReport any field whose read value does not match what was sent, either after STEP 2 or after STEP 4.",
   "teardown_prompt": "Force-delete the rule via hub_delete_native_app(appId=<id>, force=true, confirm=true)."
 }
@@ -1830,7 +1830,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_native_app(operation='create', args={app_type: 'button_rule', controller_id, button_number: 1, event: 'pushed'})` (no `name`) returns `success: true` with the rule's `app_id` and `controller_id`, and the trigger auto-seeded (Button, button 1, pushed). The rule renders (NOT the broken "Cannot set property '1' on null object" orphan a bare createchild produces). `hub_set_rule(operation='update', rule_id=<app_id>, args={changes: [<log action>]})` authors the action (RM-wire-format). Post-test invariant: [INV-1] the button rule's `configPage.error == null`. Teardown deletes the controller (cascading to the grandchild rule) and the device.
+**Expected**: `hub_set_native_app(operation='create', args={app_type: 'button_rule', controller_id, button_number: 1, event: 'pushed'})` (no `name`) returns `success: true` with the rule's `app_id` and `controller_id`, and the trigger auto-seeded (Button, button 1, pushed). The rule renders (NOT the broken "Cannot set property '1' on null object" orphan a bare createchild produces). `hub_set_rule(operation='update', ruleId=<app_id>, args={changes: [<log action>]})` authors the action (RM-wire-format). Post-test invariant: [INV-1] the button rule's `configPage.error == null`. Teardown deletes the controller (cascading to the grandchild rule) and the device.
 
 ### T456 — hub_get_rule_health prefers the ruleBuilderJson compiled-state boolean (issue #254)
 

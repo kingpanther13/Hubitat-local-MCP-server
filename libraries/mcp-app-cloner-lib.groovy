@@ -1545,7 +1545,9 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     } catch (Exception e) {
         mcpLog("error", "rm-native", "restore of rule ${ruleId} from ${fileName} failed during ${step}: ${e.message}")
         // Rule Machine rules take their form through hub_set_rule; every other app through hub_set_native_app.
-        String formCall = savedAppType in ['rule_machine', 'button_rule'] ? "hub_set_rule(operation:\"form\", rule_id:${ruleId}" : "hub_set_native_app(operation:\"form\", app_id:${ruleId}"
+        boolean ruleForm = savedAppType in ['rule_machine', 'button_rule']
+        String formCall = ruleForm ? "hub_set_rule(operation:\"form\", ruleId:${ruleId}" : "hub_set_native_app(operation:\"form\", app_id:${ruleId}"
+        String expectKey = ruleForm ? 'expectPage' : 'expect_page'
         return [
             success: false,
             type: "rm-rule",
@@ -1557,7 +1559,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             error: "Restore applied partially; failed during ${step}: ${e.message}",
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
-                : "The settings were replayed but the app's Done did not run, so its subscriptions may still reflect the pre-restore state: press Done in the app, or run ${formCall}, args:{steps:[{kind:\"open\"},{kind:\"submit\",expect_page:\"<returned page>\",activate:\"_action_update|Done|\"}]}, confirm:true).").toString()
+                : "The settings were replayed but the app's Done did not run, so its subscriptions may still reflect the pre-restore state: press Done in the app, or run ${formCall}, args:{steps:[{kind:\"open\"},{kind:\"submit\",${expectKey}:\"<returned page>\",activate:\"_action_update|Done|\"}]}, confirm:true).").toString()
         ]
     }
 

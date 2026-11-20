@@ -24,11 +24,11 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
     def 'read and form dispatch map top level identity into private helpers'() {
         given:
         script.metaClass.toolGetRuleDocument = { Map args -> args }
-        script.metaClass.toolCallAppForm = { Map args -> args }
+        script.metaClass.toolCallAppForm = { Map args, String toolName -> args + [toolName: toolName] }
         script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: ruleType]] }
         expect:
-        script.toolSetRule([operation: 'read', rule_id: 42, args: [sections: ['actions']]]) == [rule_id: 42, sections: ['actions']]
-        script.toolSetRule([operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true]) == [app_id: 42, steps: [[kind: 'open']], confirm: true]
+        script.toolSetRule([operation: 'read', ruleId: 42, args: [sections: ['actions']]]) == [ruleId: 42, sections: ['actions']]
+        script.toolSetRule([operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']]], confirm: true]) == [ruleId: 42, steps: [[kind: 'open']], confirm: true, toolName: 'hub_set_rule']
         where:
         ruleType << ['Rule-5.1', 'Button Rule-5.1']
     }
@@ -39,8 +39,8 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         script.metaClass.toolUpdateRuleDocument = { Map args -> args }
         def changes = [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]]
         expect:
-        script.toolSetRule([operation: 'create', args: [parent_id: 28, name: 'Example', changes: []], confirm: true]) == [parent_id: 28, name: 'Example', changes: [], confirm: true]
-        script.toolSetRule([operation: 'update', rule_id: 42, args: [changes: changes], confirm: true]) == [rule_id: 42, changes: changes, confirm: true]
+        script.toolSetRule([operation: 'create', args: [parentId: 28, name: 'Example', changes: []], confirm: true]) == [parentId: 28, name: 'Example', changes: [], confirm: true]
+        script.toolSetRule([operation: 'update', ruleId: 42, args: [changes: changes], confirm: true]) == [ruleId: 42, changes: changes, confirm: true]
     }
 
     def 'unknown operations and nested authority overrides are rejected'() {
@@ -49,15 +49,33 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         then:
         thrown(IllegalArgumentException)
         where:
-        request << [[operation: 'delete'], [operation: 'read', rule_id: 42, args: [rule_id: 99]],
+        request << [[operation: 'delete'], [operation: 'read', ruleId: 42, args: [ruleId: 99]],
                     [operation: 'update', args: [confirm: true]], [operation: 'form', args: [app_id: 99]],
                     [operation: 'read', extra: true], [operation: 'form', args: [unknown: true]],
-                    [operation: 'update', confirm: 'true'], [operation: 'read', rule_id: 0],
-                    [operation: 'read', rule_id: true], [operation: 'read', rule_id: 1.5],
-                    [operation: 'create', args: [parent_id: false]],
-                    [operation: 'create', args: [parent_id: 2.5]],
+                    [operation: 'update', confirm: 'true'], [operation: 'read', ruleId: 0],
+                    [operation: 'read', ruleId: true], [operation: 'read', ruleId: 1.5],
+                    [operation: 'create', args: [parentId: false]],
+                    [operation: 'create', args: [parentId: 2.5]],
                     [operation: 'update', args: [changes: 'not an array']],
                     [operation: 'form', args: [steps: [[kind: 'unknown']]]]]
+    }
+
+    def 'the old snake_case keys are refused by name before anything runs'() {
+        given:
+        settingsMap.enableMandatoryBPS = false
+        script.metaClass.getAppByAppId = { Long id -> throw new AssertionError('unexpected native access') }
+        when:
+        script.executeTool('hub_set_rule', request)
+        then:
+        def failure = thrown(IllegalArgumentException)
+        failure.message.contains(named)
+        where:
+        request                                                                                          || named
+        [operation: 'read', rule_id: 42, args: [:]]                                                      || 'Unknown hub_set_rule argument: rule_id'
+        [operation: 'create', args: [parent_id: 28, name: 'Example', changes: []]]                       || 'Unknown args property: parent_id'
+        [operation: 'create', confirm: true, args: [parent_id: 28, name: 'Example']]                     || 'Unknown args property: parent_id'
+        [operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']], options_for: ['devices']]]       || 'Unknown args property: options_for'
+        [operation: 'form', ruleId: 42, args: [steps: [[kind: 'submit', expect_page: 'mainPage']]]]      || 'Unknown args.steps property: expect_page'
     }
 
     def 'read shaped classification includes discovery but excludes confirmed writes'() {
@@ -78,9 +96,9 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
     def 'form rejects unrelated native apps before executing helper'() {
         given:
         script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Motion Lighting']] }
-        script.metaClass.toolCallAppForm = { Map args -> throw new AssertionError('unexpected native form') }
+        script.metaClass.toolCallAppForm = { Map args, String toolName -> throw new AssertionError('unexpected native form') }
         when:
-        script.toolSetRule([operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true])
+        script.toolSetRule([operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']]], confirm: true])
         then:
         thrown(IllegalArgumentException)
     }

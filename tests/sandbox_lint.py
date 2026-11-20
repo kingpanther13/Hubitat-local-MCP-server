@@ -1947,7 +1947,7 @@ def check_tool_guide_generated() -> list[dict]:
             "A read renders the rule's main page once, because Rule Machine updates its broken flag only then",
             "refuses a rule that is already broken",
             "A partial update can leave preceding changes committed", "not every capability-specific variant is supported",
-            "expect_page", "Even open renders execute app code",
+            "expectPage", "Even open renders execute app code",
             "dependent fields require another submit",
             "not that the app's intended runtime behavior was independently verified",
         ],

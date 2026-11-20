@@ -95,7 +95,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         script.metaClass.toolUpdateRuleDocument = { a -> throw new IllegalArgumentException("trigger is required") }
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', rule_id: 1, confirm: true, args: [changes: []]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', ruleId: 1, confirm: true, args: [changes: []]])
 
         then:
         response.result.isError == true

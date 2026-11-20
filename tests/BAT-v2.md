@@ -1673,9 +1673,9 @@ Tests that an agent verifies a rule write from the rule itself and never repeats
 ```
 
 **Expected**:
-- Agent creates the rule with `hub_manage_rule_machine(tool=hub_set_rule, args={operation: "create", args: {parent_id: <Rule Machine app id>, name: "BAT Finding4 Rule", changes: [<switch-on action>]}, confirm: true})`, or creates it and adds the action with one `operation: "update"` call.
+- Agent creates the rule with `hub_manage_rule_machine(tool=hub_set_rule, args={operation: "create", args: {parentId: <Rule Machine app id>, name: "BAT Finding4 Rule", changes: [<switch-on action>]}, confirm: true})`, or creates it and adds the action with one `operation: "update"` call.
 - The write reports `success: true`, and its returned document lists one switch action.
-- Agent verifies with `hub_set_rule(operation: "read", rule_id, args: {sections: ["actions"]})` or `hub_read_apps_code(tool=hub_get_app_config, args={appId: ..., includeSettings: true})`, which shows one "On: BAT Partial Test Switch" action.
+- Agent verifies with `hub_set_rule(operation: "read", ruleId, args: {sections: ["actions"]})` or `hub_read_apps_code(tool=hub_get_app_config, args={appId: ..., includeSettings: true})`, which shows one "On: BAT Partial Test Switch" action.
 - Agent reports the action was added.
 
 **What an agent must NOT do**:
@@ -2884,7 +2884,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule` with `operation="create"` (the Rule Machine `parent_id`, the `name`, and `changes` holding the motion trigger and the switch-on action), or creates the rule and adds both with one `operation="update"` call. Returns the new `rule_id`. Does NOT fall back to `hub_create_custom_rule` (that creates an MCP-engine rule, not a native RM rule).
+**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule` with `operation="create"` (the Rule Machine `parentId`, the `name`, and `changes` holding the motion trigger and the switch-on action), or creates the rule and adds both with one `operation="update"` call. Returns the new `ruleId`. Does NOT fall back to `hub_create_custom_rule` (that creates an MCP-engine rule, not a native RM rule).
 
 ### T208 — AI creates a Room Lighting instance
 
@@ -3661,7 +3661,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The agent adds one Set Variable action with `hub_set_rule(operation="update", rule_id=N, args={changes:[{part:"action", value:{...}}]}, confirm=true)`, using `operation="form"` to discover the action's native inputs when it needs them. The write reports `success=true`. `hub_get_rule_health` reports no broken markers. The action renders on the rule's main page as "Set bat_setvar_test to 99".
+**Expected**: The agent adds one Set Variable action with `hub_set_rule(operation="update", ruleId=N, args={changes:[{part:"action", value:{...}}]}, confirm=true)`, using `operation="form"` to discover the action's native inputs when it needs them. The write reports `success=true`. `hub_get_rule_health` reports no broken markers. The action renders on the rule's main page as "Set bat_setvar_test to 99".
 
 **Failure modes**: The action renders as "Set bat_setvar_test to null" or carries a broken marker. The value is stored as text for a numeric variable. A variable name the hub does not have is accepted and leaves a broken action, instead of a refusal that writes nothing.
 
@@ -4052,9 +4052,9 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_rule)` ONCE with `operation="create"`, `args={parent_id:<Rule Machine app id>, name:'BAT Bundle Create', changes:[<Switch on trigger>, <switch off action>]}` and `confirm=true`. The response reports `success=true`, `broken=false` and the new `rule_id`, and its document lists one trigger and one action. mainPage renders the Switch on trigger and the "Off: BAT Bundle Switch" action. `hub_get_rule_health` reports `ok=true`.
+**Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_rule)` ONCE with `operation="create"`, `args={parentId:<Rule Machine app id>, name:'BAT Bundle Create', changes:[<Switch on trigger>, <switch off action>]}` and `confirm=true`. The response reports `success=true`, `broken=false` and the new `ruleId`, and its document lists one trigger and one action. mainPage renders the Switch on trigger and the "Off: BAT Bundle Switch" action. `hub_get_rule_health` reports `ok=true`.
 
-**Failure modes**: AI splits into a create call and a separate update call (acceptable result, but a Partial: the single call was the point). Only an empty named rule is created. The response omits the new `rule_id` (needed for teardown). mainPage renders only the trigger OR only the action.
+**Failure modes**: AI splits into a create call and a separate update call (acceptable result, but a Partial: the single call was the point). Only an empty named rule is created. The response omits the new `ruleId` (needed for teardown). mainPage renders only the trigger OR only the action.
 
 ---
 
@@ -4414,8 +4414,8 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ```json
 {
-  "setup_prompt": "Create one uniquely named BAT_E2E_SDK_MRTR_<random> Rule Machine rule through the official mcp==2.2.0 high-level client, using hub_set_rule operation=create with args.parent_id, args.name and args.changes; retain its returned rule_id.",
-  "test_prompt": "Make one high-level Client.call_tool edit through hub_set_rule operation=update with rule_id and args.changes containing 100 real native changes. Allow the SDK's standard Streamable HTTP client to complete every state-only continuation automatically.",
+  "setup_prompt": "Create one uniquely named BAT_E2E_SDK_MRTR_<random> Rule Machine rule through the official mcp==2.2.0 high-level client, using hub_set_rule operation=create with args.parentId, args.name and args.changes; retain its returned ruleId.",
+  "test_prompt": "Make one high-level Client.call_tool edit through hub_set_rule operation=update with ruleId and args.changes containing 100 real native changes. Allow the SDK's standard Streamable HTTP client to complete every state-only continuation automatically.",
   "teardown_prompt": "In a finally block, delete only the exact rule created for this run. If creation lost its response, use a bounded settle/retry to adopt at most one exact random-name match before deleting it. Refuse ambiguous matches. Never sweep existing apps or delete backup artifacts."
 }
 ```

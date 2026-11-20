@@ -1257,7 +1257,11 @@ class NativeFormsSpec extends ToolSpecBase {
         then:
         definitions*.name == ['hub_set_rule']
         script._ndOperationSchema('form').properties.steps.maxItems == 16
-        script._naOperationSchema('form') == script._ndOperationSchema('form')
+        script._naOperationSchema('form') == script._ndOperationSchema('form', 'hub_set_native_app')
+        script._ndOperationSchema('form').properties.keySet() == ['steps', 'optionsFor'] as Set
+        script._ndOperationSchema('form').properties.steps.items.properties.containsKey('expectPage')
+        script._naOperationSchema('form').properties.keySet() == ['steps', 'options_for'] as Set
+        script._naOperationSchema('form').properties.steps.items.properties.containsKey('expect_page')
         !definitions[0].inputSchema.required?.contains('confirm')
         script._ndGuide().contains('Even open renders execute app code')
     }
