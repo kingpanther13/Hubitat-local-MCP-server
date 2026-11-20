@@ -171,7 +171,7 @@ Defaults: 30 executions within 60 seconds. Configurable in app settings.
 ## File Manager Safety
 
 - `hub_write_file` auto-backs up existing file before overwriting
-- `hub_delete_file` takes a backup copy first when possible; a file that is itself a backup (`_backup_`, `mcp-backup-`, `mcp-rm-backup-`, `mcp-prerestore-` names) gets none, and if the copy cannot be written or the content cannot be read the delete still runs with a `warning`
+- `hub_delete_file` takes a backup copy first when possible; a file that is itself a backup (`_backup_`, `mcp-backup-`, `mcp-rm-backup-`, `mcp-prerestore-` names) gets none. If the hub's load limiter refuses the backup download, the delete returns `success: false` and deletes nothing; retry in a moment. Otherwise, if the copy cannot be written or the content cannot be read, the delete still runs with a `warning`
 - Both require the Write master ON + confirm + a recent backup
 - File names must match `^[A-Za-z0-9_-][A-Za-z0-9._-]*$` (no spaces, no leading period)
 - Files persist on hub even if MCP is uninstalled

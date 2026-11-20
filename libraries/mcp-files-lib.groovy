@@ -273,7 +273,7 @@ def toolWriteFile(args) {
                 success: false,
                 fileName: fileName,
                 error: "Could not read the current '${fileName}' to take its backup copy (${downloadError}); nothing was written.".toString(),
-                note: "${cause} Retry in a moment, write the content under a new name, or download the current file from directDownload first. ${FILES_GUIDE_POINTER}".toString(),
+                note: "${cause} Retry once the read recovers, write the content under a new name, or save the current content from directDownload and then replace the file by uploading it in Settings > File Manager. ${FILES_GUIDE_POINTER}".toString(),
                 directDownload: _filesDownloadUrl(fileName)
             ]
         }
@@ -509,7 +509,7 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_delete_file",
-            description: "⚠️ Permanently delete a file from the hub's File Manager. A backup copy is taken first when possible (backupFile/undoHint in the result); a file that is itself a backup gets none, and if no copy can be taken (unreadable content or a failed upload) the delete still runs with a warning. Requires confirm=true and a hub backup from the last 24 hours — get user approval first.",
+            description: "⚠️ Permanently delete a file from the hub's File Manager. A backup copy is taken first when possible (backupFile/undoHint in the result); a file that is itself a backup gets none, and if no copy can be taken (unreadable content or a failed upload) the delete still runs with a warning, except that a download the load limiter refused deletes nothing (retry). Requires confirm=true and a hub backup from the last 24 hours — get user approval first.",
             inputSchema: [
                 type: "object",
                 properties: [

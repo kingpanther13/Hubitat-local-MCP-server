@@ -2753,33 +2753,26 @@ def adminGetJobs(args) {
     ]
 }
 
-// hub_read_file: copied from toolReadFile (libraries/mcp-files-lib.groovy).
+// hub_read_file: copied from toolReadFile (hubitat-mcp-server.groovy). downloadHubFile + chunk.
 def adminReadFile(args) {
-    if (!args.fileName) throw new IllegalArgumentException("fileName is required.")
-    String fileName = args.fileName.toString()
-    adminRequireRootFileName(fileName, "hub_read_file")
-    int requestedOffset = adminFileIntArg(args, "offset", 0, 0, Integer.MAX_VALUE)
-    int requestedLength = adminFileIntArg(args, "length", 30000, 1, 60000)
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+    def maxChunkSize = 60000
+    def requestedOffset = args.offset ? args.offset as int : 0
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : 30000
     def content
     try {
-        def bytes = downloadHubFile(fileName)
-        if (bytes == null) throw new Exception("the hub returned no content")
+        def bytes = downloadHubFile(args.fileName)
+        if (bytes == null) throw new Exception("File not found in File Manager")
         content = new String(bytes, "UTF-8")
     } catch (Exception e) {
-        String kind = adminDownloadMissing(e) ? null : adminRootEntryKind(fileName)
-        if (kind == null) {
-            return [success: false, fileName: fileName, error: "File '${fileName}' does not exist in File Manager.",
-                    note: "Check the exact file name in Hubitat > Settings > File Manager."]
-        }
-        if (kind == "dir") return adminFolderResult(fileName)
-        return [success: false, fileName: fileName, error: "File '${fileName}' could not be read: ${e.message}",
-                note: "Check the file name in Hubitat > Settings > File Manager."]
+        return [success: false, error: "File '${args.fileName}' could not be read: ${e.message}",
+                suggestion: "Check the file name in Hubitat > Settings > File Manager."]
     }
     def totalLength = content.length()
-    int endIndex = (int) Math.min((long) requestedOffset + requestedLength, (long) totalLength)
+    def endIndex = Math.min(requestedOffset + requestedLength, totalLength)
     def chunk = (requestedOffset < totalLength) ? content.substring(requestedOffset, endIndex) : ""
     def hasMore = endIndex < totalLength
-    def result = [success: true, fileName: fileName, totalLength: totalLength, offset: requestedOffset,
+    def result = [success: true, fileName: args.fileName, totalLength: totalLength, offset: requestedOffset,
                   chunkLength: chunk.length(), hasMore: hasMore, content: chunk]
     if (hasMore) {
         result.nextOffset = endIndex
@@ -2789,91 +2782,20 @@ def adminReadFile(args) {
     return result
 }
 
-// Copied from _filesRequireRootName: these tools act on root files only, and the hub accepts
-// only these characters in a name it uploads; a leading period fails its upload.
-private void adminRequireRootFileName(String fileName, String toolName) {
-    if (fileName.contains("/")) {
-        String folder = fileName.substring(0, fileName.lastIndexOf('/'))
-        String rootOnly = "'${fileName}' names a file in a subfolder; ${toolName} acts on root files only."
-        // The hub cannot create a folder whose name has a space or a dot, so none is named.
-        boolean validFolder = folder ==~ /[A-Za-z0-9_\/-]+/ && !folder.split("/").any { it == "" }
-        throw new IllegalArgumentException(toolName == "hub_write_file"
-            ? "'${fileName}' names a file in a subfolder. hub_write_file writes root files only; it cannot write into a subfolder.".toString()
-            : validFolder ? "${rootOnly} Open the '${folder}' folder in Hubitat > Settings > File Manager.".toString() : rootOnly)
-    }
-    if (!(fileName ==~ /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/)) {
-        throw new IllegalArgumentException("Invalid file name '${fileName}'. Only letters, numbers, hyphens, underscores and periods; cannot start with a period.")
-    }
-}
-
-// Copied from _filesDownloadMissing: a name the hub does not hold throws NoSuchFileException.
-private boolean adminDownloadMissing(Exception e) {
-    return e.class.simpleName == "NoSuchFileException"
-}
-
-// Copied from _filesRootEntryKind: a folder and an unreadable file both fail their download with
-// FileSystemException, so only the listing tells them apart. It reads getHubFiles() because
-// fileManagerNames() drops entry types.
-private String adminRootEntryKind(String name) {
-    def files
-    try { files = getHubFiles() } catch (Exception ignored) { return "unknown" }
-    if (!(files instanceof Collection)) return "unknown"
-    def entry = files.find { it?.name?.toString() == name }
-    if (entry == null) return null
-    return entry.type?.toString() == "dir" ? "dir" : "file"
-}
-
-private Map adminFolderResult(String name) {
-    return [success: false, fileName: name, error: "'${name}' is a folder, not a file.",
-            note: "This server has no folder listing; open the folder in Hubitat > Settings > File Manager."]
-}
-
-private int adminFileIntArg(Map args, String key, int defaultValue, int min, int max) {
-    def v = args?.get(key)
-    if (v == null) return defaultValue
-    String t = (v instanceof Number || v instanceof CharSequence) ? v.toString().trim() : ""
-    String outOfRange = "${key} must be an integer from ${min} to ${max}; got ${v}."
-    // JSON clients may send 3 as 3.0; a number with no fractional part is still that integer.
-    if (v instanceof Number && !t.isLong() && t.isBigDecimal()) {
-        BigDecimal d = new BigDecimal(t)
-        // Range first: toBigInteger() on an exponent such as 1E+1000000000 builds the whole number.
-        if (d.compareTo(new BigDecimal(min)) < 0 || d.compareTo(new BigDecimal(max)) > 0) {
-            throw new IllegalArgumentException(outOfRange)
-        }
-        if (d.signum() == 0 || d.stripTrailingZeros().scale() <= 0) t = d.toBigInteger().toString()
-    }
-    if (!t.isLong() || t.toLong() < min || t.toLong() > max) {
-        throw new IllegalArgumentException(outOfRange)
-    }
-    return t.toInteger()
-}
-
-// hub_write_file: copied from toolWriteFile (libraries/mcp-files-lib.groovy) without the backup copy.
+// hub_write_file: copied from toolWriteFile (hubitat-mcp-server.groovy). uploadHubFile + name check.
 def adminWriteFile(args) {
     requireConfirm(args)
-    if (!args.fileName) throw new IllegalArgumentException("fileName is required.")
-    if (args.content == null) throw new IllegalArgumentException("content is required.")
-    String fileName = args.fileName.toString()
-    adminRequireRootFileName(fileName, "hub_write_file")
-    String content = args.content.toString()
-    byte[] incomingBytes = content.getBytes("UTF-8")
-    byte[] existingBytes = null
-    boolean missing = false
-    try { existingBytes = downloadHubFile(fileName) } catch (Exception e) { missing = adminDownloadMissing(e) }
-    // Unlike the server, an unreadable existing file is still overwritten: this copy already
-    // overwrites a readable file with no backup copy, so an unreadable one is no worse, and
-    // refusing could block a repair upload.
-    if (existingBytes == null && !missing && adminRootEntryKind(fileName) == "dir") return adminFolderResult(fileName)
-    if (existingBytes != null && (existingBytes as List) == (incomingBytes as List)) {
-        return [success: true, unchanged: true, message: "File '${fileName}' already holds this exact content; nothing was written.",
-                fileName: fileName, contentLength: content.length()]
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+    if (args.content == null) throw new IllegalArgumentException("content is required")
+    if (!(args.fileName ==~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/)) {
+        throw new IllegalArgumentException("Invalid file name '${args.fileName}'. Only letters, numbers, hyphens, underscores, and periods; cannot start with a period.")
     }
     try {
-        uploadHubFile(fileName, incomingBytes)
-        return [success: true, message: "File '${fileName}' written.", fileName: fileName, contentLength: content.length()]
+        uploadHubFile(args.fileName, args.content.getBytes("UTF-8"))
+        return [success: true, message: "File '${args.fileName}' written.", fileName: args.fileName, contentLength: args.content.length()]
     } catch (Exception e) {
         log.error "adminWriteFile: ${e.message}"
-        return [success: false, fileName: fileName, error: "Failed to write file '${fileName}': ${e.message}"]
+        return [success: false, error: "Failed to write file '${args.fileName}': ${e.message}"]
     }
 }
 
@@ -3082,7 +3004,7 @@ def getManualToolDefinitions() {
         [name: "hub_get_jobs", annotations: [title: "Get Jobs", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List scheduled + running hub jobs."],
         [name: "hub_read_file", annotations: [title: "Read File", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Read a File Manager file (chunked).",
          inputSchema: [type: "object", properties: [fileName: [type: "string"], offset: [type: "integer"], length: [type: "integer"]], required: ["fileName"]]],
-        [name: "hub_write_file", annotations: [title: "Write File", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Write a File Manager file. confirm:true required.",
+        [name: "hub_write_file", annotations: [title: "Write File", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Write a File Manager file. confirm:true required.",
          inputSchema: [type: "object", properties: [fileName: [type: "string"], content: [type: "string"], confirm: [type: "boolean"]], required: ["fileName", "content", "confirm"]]],
         [name: "hub_create_backup", annotations: [title: "Create Backup", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false], description: "Trigger a hub DB backup. confirm:true required.",
          inputSchema: [type: "object", properties: [confirm: [type: "boolean"]], required: ["confirm"]]],
