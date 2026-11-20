@@ -1166,7 +1166,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 ```
 
 **Expected v0.8.0**: Discovers `hub_read_files` → `hub_list_files` (also in `hub_manage_files`).
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123, 34 File Manager files and one folder) running commit 0005a112, driven by a fresh AI client given only the prompts: pass -- read the `file_manager` guide, then `hub_read_files` → `hub_list_files` with no arguments; the AI listed all 34 files grouped by kind with the free space and download base, and named the `webcore` folder.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131, 67 File Manager files and two folders) running commit 00b2a32c, driven by a fresh AI client given only the prompts: pass -- read the `file_manager` guide, then `hub_read_files` → `hub_list_files` with no arguments; the AI grouped the 69 root entries by kind (backups counted, the rest named) with the free space and download base, and named both folders.
 
 ### T57 — Discover hub_read_file (hub_read_files)
 
@@ -1178,7 +1178,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 ```
 
 **Expected v0.8.0**: Discovers `hub_read_files` → `hub_read_file` (also in `hub_manage_files`).
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123, 34 File Manager files and one folder) running commit 0005a112, driven by a fresh AI client given only the prompts: pass -- `hub_list_files`, then picked a small file from the numeric `size` fields and read it whole with `hub_read_file(fileName)` (`hasMore:false`). The client first passed `name` instead of `fileName`; the unknown-argument refusal named the valid arguments and the next call succeeded.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131, 67 File Manager files and two folders) running commit 00b2a32c, driven by a fresh AI client given only the prompts: pass -- `hub_list_files`, then read a small file whole with `hub_read_file(fileName)` (1,347 bytes, `hasMore:false`), with no errors or retries.
 
 ### T58 — Discover hub_write_file + hub_delete_file (hub_manage_files)
 
@@ -1190,7 +1190,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 ```
 
 **Expected v0.8.0**: Discovers `hub_manage_files` → `hub_write_file` (and `hub_delete_file` in teardown).
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123, 34 File Manager files and one folder) running commit 0005a112, driven by a fresh AI client given only the prompts: pass -- read the `file_manager` guide for the key, `hub_write_file(fileName:'bat-test.txt', content, confirm:true)` created the file, and `hub_delete_file(fileName, confirm:true)` deleted it after a backup copy (removed in teardown).
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131, 67 File Manager files and two folders) running commit 00b2a32c, driven by a fresh AI client given only the prompts: pass -- read the `file_manager` guide for the key, `hub_write_file(fileName:'bat-test.txt', content, confirm:true)` created the file, and `hub_delete_file(fileName, confirm:true)` deleted it after a backup copy (removed in teardown).
 
 ### T59 — Discover hub_delete_logs (hub_manage_logs)
 
@@ -2544,7 +2544,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 
 **Expected**: `hub_list_files`.
 **Equivalent to**: T56
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123, 34 File Manager files and one folder) running commit 0005a112, driven by a fresh AI client given only the prompts: pass -- `hub_list_files` for the root, then `hub_list_files(folder:'webcore')` for the one subfolder; the answer listed the root files by kind and the folder's four files with sizes.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131, 67 File Manager files and two folders) running commit 00b2a32c, driven by a fresh AI client given only the prompts: pass -- `hub_list_files` for the root, then `hub_list_files(folder:...)` for each of the two subfolders; the answer listed the root files by kind, one folder as empty and the other's four files with sizes.
 
 #### T291 — Read a file
 
@@ -2557,7 +2557,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 
 **Expected**: `hub_read_file`.
 **Equivalent to**: T57
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123, 34 File Manager files and one folder) running commit 0005a112, driven by a fresh AI client given only the prompts: pass -- `hub_list_files`, smallest file chosen from the numeric sizes (89 bytes), read whole with `hub_read_file` after the same `name`-for-`fileName` slip and recovery as T57.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131, 67 File Manager files and two folders) running commit 00b2a32c, driven by a fresh AI client given only the prompts: pass -- `hub_list_files`, smallest file chosen from the numeric sizes (89 bytes), read whole with `hub_read_file`. The client first passed `file_name`; the unknown-argument refusal named `fileName` and the next call succeeded.
 
 #### T292 — Save a note on the hub
 
@@ -2570,7 +2570,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 
 **Expected**: `hub_write_file` (and `hub_delete_file` in teardown).
 **Equivalent to**: T58
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123, 34 File Manager files and one folder) running commit 0005a112, driven by a fresh AI client given only the prompts: pass -- `hub_write_file(fileName:'bat-nl-note.txt', content, confirm:true)` then `hub_delete_file(fileName, confirm:true)`; its backup copy was removed in teardown.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131, 67 File Manager files and two folders) running commit 00b2a32c, driven by a fresh AI client given only the prompts: pass -- `hub_write_file(fileName:'bat-nl-note.txt', content, confirm:true)` then `hub_delete_file(fileName, confirm:true)`; the answer named the backup copy and its retention, which was removed in teardown.
 
 ---
 
