@@ -389,7 +389,7 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 | `hub_get_custom_rule` | Full custom-engine rule details (triggers, conditions, actions). Omit `ruleId` to list all custom-engine rules with status; pass `detailed=true` for comprehensive diagnostics on a specific rule. |
 | `hub_test_custom_rule` | Dry-run a custom-engine rule without executing actions |
 | `hub_list_rules` | List all Rule Machine rules with their live status via official `hubitat.helper.RMUtils` API |
-| `hub_get_rule` | Read one rule: its health (broken state and broken rows, paused/stopped, private boolean, disabled actions, block structure, page errors and live subscription/job counts) and, for a Rule Machine 5.1 rule, its actions, conditions, triggers, expressions, settings and local variables. Also reads a Visual Rule's or classic app's health. |
+| `hub_get_rule` | Read one rule: its health (broken state and broken rows, paused/stopped, private boolean, disabled actions, block structure, page errors and live subscription/job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables. Also reads a Visual Rule's or classic app's health. |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition + format (`classic` whenNodes/thenNodes/elseNodes or `graph` nodes/edges). |
 
 </details>
@@ -595,7 +595,7 @@ Write/delete require the Write master + confirm + a recent backup.
 | `hub_list_rules` | List all Rule Machine rules with their live status via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
 | `hub_call_rule` | Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (`ruleId` takes an id or an array; `action`: "actions" (default)/"stop"/"start"/"pause"/"resume"; a Visual Rule takes actions, pause and resume) |
 | `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
-| `hub_get_rule` | Read one rule: its health (broken state and broken rows, paused/stopped, private boolean, disabled actions, block structure, page errors and live subscription/job counts) and, for a Rule Machine 5.1 rule, its actions, conditions, triggers, expressions, settings and local variables. Also reads a Visual Rule's or classic app's health. (also in `hub_read_rules`) |
+| `hub_get_rule` | Read one rule: its health (broken state and broken rows, paused/stopped, private boolean, disabled actions, block structure, page errors and live subscription/job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables. Also reads a Visual Rule's or classic app's health. (also in `hub_read_rules`) |
 | `hub_delete_native_app` | Delete any classic native app incl. RM rules (auto-snapshot first; `force=true` for hard delete; also in `hub_manage_native_rules_and_apps`) |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition + format (also in `hub_read_rules`) |
 | `hub_set_visual_rule` | Create or update a Visual Rules Builder rule — VRB is the primary rule engine; one JSON write with if/then/else gating. Use native document tools for supported RM structures. |
@@ -620,7 +620,7 @@ Reads (`hub_list_rules`, `hub_get_rule`, `hub_get_visual_rule`) are gated by the
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint (deep: child apps + pause state copy; `stageDisabled` lands it disabled). Returns the new `appId`. |
 | `hub_export_native_app` | Export a classic SmartApp to JSON and persist it to File Manager (round-trippable with `hub_import_native_app`). |
 | `hub_import_native_app` | Import previously-exported app JSON into a new instance (lands ACTIVE; `stageDisabled` lands it disabled). Returns the new `appId`. |
-| `hub_get_rule` | Read one rule: its health (broken state and broken rows, paused/stopped, private boolean, disabled actions, block structure, page errors and live subscription/job counts) and, for a Rule Machine 5.1 rule, its actions, conditions, triggers, expressions, settings and local variables. Also reads a Visual Rule's or classic app's health. (also in `hub_read_rules`) |
+| `hub_get_rule` | Read one rule: its health (broken state and broken rows, paused/stopped, private boolean, disabled actions, block structure, page errors and live subscription/job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables. Also reads a Visual Rule's or classic app's health. (also in `hub_read_rules`) |
 
 Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default. Native editor operations use returned controls; unsupported app variants remain explicit capability gaps. `hub_set_native_app` covers every other classic app: create a built-in app type, update a page's fields, or run the same native form steps on any app. RM actions, triggers, expressions and local variables use `hub_set_rule` rather than generic shortcut fields.
 

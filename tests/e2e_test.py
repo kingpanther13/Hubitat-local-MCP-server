@@ -7852,6 +7852,13 @@ def updated() {}
             assert str(read.get("ruleId")) == str(app_id) and read.get("localVariables") == [], read
             assert [row["value"]["method"] for row in read.get("actions", [])] == ["getLogMsg"], read
             assert "variables" not in read and health.get("brokenRows") == [], read
+            # hub_get_app_config(includeStatus) returns the App Status lists the health counts come from. Its
+            # statusNote (a failed status read) cannot be forced on a live hub; the Spock suite covers it.
+            status = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeStatus": True})
+            assert status.get("success") is not False and "statusNote" not in status, status
+            assert all(isinstance(status.get(key), list) for key in ("appState", "eventSubscriptions", "scheduledJobs")), status
+            assert len(status["eventSubscriptions"]) == health.get("eventSubscriptionCount") \
+                and len(status["scheduledJobs"]) == health.get("scheduledJobCount"), (status, health)
             # The tool takes ruleId; a client still sending appId is told so.
             try:
                 stale = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "appId": int(app_id)})
@@ -7869,18 +7876,33 @@ def updated() {}
 
     @test("native_apps")
     def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
-        # Deleting a trigger's device leaves RM's compiled rule broken; health reports it from RM's own flag
-        # without the editor being opened first.
+        # Deleting a trigger's device leaves RM's compiled rule broken, but Rule Machine sets its broken flag
+        # only when the rule's page renders. Neither rule's page is opened after the delete: hub_get_rule and
+        # the hub_set_rule update each render it themselves, so each needs a rule nothing else has rendered.
         device_id, dni, _ = self._rm_disposable_switch("RHBrokenDev")
         app_id, _ = self._rm_rule("RHBroken", [self._rm_switch_trigger(device_id), native_log("dangling trigger")])
+        edit_id = None
         try:
+            edit_id, edit_doc = self._rm_rule("RHBrokenEdit", [self._rm_switch_trigger(device_id), native_log("dangling edit")])
             assert self._rm_health(app_id).get("broken") is False
             self._rm_delete_device(dni)
-            # Health renders the rule's page itself, which is when Rule Machine flips broken.
             health = self._rm_health(app_id)
             assert health.get("broken") is True and health.get("ok") is False and health.get("ruleFormat") == "rm", health
+            rows = health.get("brokenRows") or []
+            assert any(row.get("kind") == "trigger" for row in rows), health
+            # The update renders the page before its broken check, so it is refused before anything is written.
+            refused = self._rm_call({"operation": "update", "ruleId": int(edit_id),
+                                     "args": {"changes": [native_log("not written")]}, "confirm": True})
+            error = self._rm_refused(refused)
+            assert "already broken" in error and refused.get("partial") is False, refused
+            assert any(row.get("kind") == "trigger" for row in refused.get("brokenRows") or []), refused
+            after = self._native_rule_document(edit_id)
+            assert after.get("actions") == edit_doc.get("actions"), (edit_doc.get("actions"), after.get("actions"))
+            assert after.get("health", {}).get("broken") is True, after
         finally:
             self._delete_native(app_id)
+            if edit_id is not None:
+                self._delete_native(edit_id)
 
     @test("native_apps")
     def test_rule_health_ui_shaped_else_endif_rows(self) -> None:
@@ -8728,7 +8750,7 @@ def updated() {}
     @test("native_apps")
     def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
         # Running the rule's actions sets its local variable, which hub_get_rule reads back at once.
-        # Every refusal below (an action that no longer exists, the Rule Machine parent app, an id with
+        # Every refusal below (an action outside the enum, the Rule Machine parent app, an id with
         # no app, a batch holding one) runs nothing, so the variable keeps its value until the run.
         # Deleting a local variable an action still uses is applied (RM allows it) but reported as
         # leaving the rule broken, as the editor shows.
@@ -8750,7 +8772,7 @@ def updated() {}
             listed = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id)})
             assert len(listed.get("localVariables") or []) == 1 and listed["localVariables"][0]["type"] == "integer", listed
             assert local_value() == 0
-            # 'rule' (an RMUtils evaluate, which runs nothing on a current rule) is no longer an action.
+            # 'rule' is not an action: the RMUtils evaluate it named runs nothing on a current rule.
             gone_action = refused("hub_call_rule", {"ruleId": app_id, "action": "rule"})
             assert "Invalid action 'rule'" in str(gone_action.get("error")), gone_action
             # The Rule Machine parent app is not a rule: running its actions is refused, and reading it returns

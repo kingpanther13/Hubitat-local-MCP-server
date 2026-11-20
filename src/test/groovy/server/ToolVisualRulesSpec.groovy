@@ -1208,6 +1208,37 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.health.ok == false
     }
 
+    def "set attaches an ok health report for a graph rule the hub identifies, with no validation errors"() {
+        given: 'the hub names the app type, so health reads the Visual Rule without rendering a classic page'
+        enableWrite()
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Visual Rule Builder 2.0']] }
+        def graphState = [name: 'Hall light', rulePaused: false, ruleJson: '{"version":1,"nodes":[],"edges":[]}',
+                          validationErrors: []]
+        hubGet.register('/app/ruleBuilder20Json/9') { params -> json(graphState) }
+        hubGet.register('/app/ruleBuilderJson/9') { params -> json([graphAppState: true]) }
+        hubGet.register('/app/ruleBuilderPause/9/true') { params -> graphState.rulePaused = true; '{"success":true}' }
+        hubGet.register('/installedapp/statusJson/9') { params ->
+            json([appState: [[name: 'paused', value: true]], eventSubscriptions: [[name: 'switch']], scheduledJobs: []])
+        }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 9, paused: true, confirm: true])
+
+        then:
+        result.success == true
+        result.health.ruleFormat == 'vrb-graph'
+        result.health.broken == false
+        result.health.paused == true
+        result.health.label == 'Hall light'
+        result.health.eventSubscriptionCount == 1
+        result.health.scheduledJobCount == 0
+        result.health.issues == []
+        result.health.checkErrors == []
+        result.health.unreadable == false
+        result.health.ok == true
+        !hubGet.calls*.path.any { it.startsWith('/installedapp/configure/json') }
+    }
+
     def "an edit whose definition fails pre-flight throws isError validation result before any hub write"() {
         given:
         enableWrite()

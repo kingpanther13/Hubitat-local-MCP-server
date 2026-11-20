@@ -9996,7 +9996,7 @@ private Integer _rmCreateChildApp(Integer parentAppId, String namespace = "hubit
 /**
  * Click a button on an app's config page via /installedapp/btn. Used for
  * RM's page-transition buttons: updateRule, pausRule, runAction, editCond,
- * editAct, hasAll, etc. Stable across RM 5.0 and 5.1.
+ * editAct, hasAll, etc.
  *
  * Body format captured live from the Hubitat web UI's hasAll click on
  * firmware 2.5.0.123 (network panel):
@@ -10504,12 +10504,6 @@ private Map _ruleCompiledState(Integer appId) {
  * Repeat keeps the issue count flat but swaps "Repeat never closed" for
  * "END-IF closes a Repeat block — mismatched closer".)
  *
- * Asymmetric refusal at the call sites: openers (ifThen / repeat /
- * repeatWhile) added alone are allowed (normal multi-step build state).
- * Branch keywords (elseIf / else) and bare closers (endIf / endRepeat)
- * are refused if they would render orphaned, because they have no valid
- * follow-up step the caller would naturally do next.
- *
  * getEndRepeat (END-REP) closes a Repeat / Repeat-While block. getStopRepeat
  * ("Stop Repeating Actions") is a leaf that may sit anywhere, so the walk
  * must not treat it as a closer.
@@ -10682,7 +10676,8 @@ private Map _rmFetchSettingsByName(Integer appId) {
     (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
 }
 
-// Names what a classic app's health report inspected; only Rule Machine has a compiled broken flag.
+// Basic Rules and Button Controllers get their own ruleFormat so a caller can tell them from Rule Machine;
+// neither has a compiled broken flag.
 private String _classicAppFormat(String typeName) {
     def t = typeName?.toLowerCase() ?: ""
     if (t.contains("basic rule")) return "basic-rule"
@@ -12436,7 +12431,7 @@ Rule runtime control surface (hub_list_rules = Read master; hub_call_rule and th
   - **unknown**: when /hub2/appsList cannot be read, every rule is unknown, the list is unfiltered (deleted rules may linger) and the result carries **statusNote**; when one rule's entry lacks data, only that rule is unknown.
   - For one rule's state call hub_get_rule. For the disabled flag of other classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances').
 - **hub_call_rule** — run, stop, start, pause or resume one or more rules (ruleId takes an id or an array): Rule Machine rules and Button Rules, and Visual Rules for actions, pause and resume. Each rule is acted on in turn, with per-rule results and failedRuleIds/remainingRuleIds on a partial batch; see hub_call_rule below.
-- **hub_set_rule_private_boolean** — set the private boolean of one or more Rule Machine rules in one RMUtils dispatch (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only); hub_get_rule reads it back as health.privateBoolean. It is the one rule tool that still goes through RMUtils, so the hub's per-app load limiter can refuse it: a refusal changes nothing, and a reset of the app runtime statistics (hub_delete_logs(mode='appRuntimeStats', confirm=true), or the server's automatic reset) followed by a retry clears it.
+- **hub_set_rule_private_boolean** — set the private boolean of one or more Rule Machine rules in one RMUtils dispatch (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only); hub_get_rule reads it back as health.privateBoolean. It is the only rule tool that dispatches through RMUtils, so the hub's per-app load limiter can refuse it: a refusal changes nothing, and a reset of the app runtime statistics (hub_delete_logs(mode='appRuntimeStats', confirm=true), or the server's automatic reset) followed by a retry clears it.
 - Every id is checked before anything is dispatched: an id with no app, or an app that is not a rule (the Rule Machine parent app, a Basic Rule, any other app), refuses the whole call, a batch included; a lookup that fails refuses it too, with success:false.
 
 Native CRUD (also requires the Write master):

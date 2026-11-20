@@ -363,7 +363,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "action 'rule' is no longer an action and is refused before anything runs (useGateways=#useGateways)"() {
+    def "action 'rule' is not an action and is refused before anything runs (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 

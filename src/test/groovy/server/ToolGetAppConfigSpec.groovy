@@ -16,6 +16,8 @@ import support.ToolSpecBase
  *  - pageName arg: URL includes the page segment
  *  - includeSettings=false (default): settings key absent, settingsNote present
  *  - includeSettings=true: settings key populated
+ *  - includeStatus=true: appState, eventSubscriptions and scheduledJobs from the one App Status read,
+ *    credential-named appState values masked; a failed status read leaves the page read standing
  *  - summary=true: identity-only fast path via /installedapp/json (pass-through + namespace + error paths)
  *  - Empty hub response: returns success=false
  *  - Unknown appId (hub returns {app:null}): 'missing app' fingerprint, success=false
