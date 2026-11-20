@@ -8802,6 +8802,13 @@ def updated() {}
                 gone = refused(tool, args)
                 assert "No app with id 999999999 is installed" in str(gone.get("error")) \
                     and "Nothing was dispatched" in str(gone.get("error")), (tool, gone)
+            # An id past the int range is refused, not wrapped onto another rule: 2**32 + app_id would
+            # otherwise narrow to app_id and run this rule's actions.
+            wrapped = (1 << 32) + int(app_id)
+            for tool, args in (("hub_call_rule", {"ruleId": wrapped, "action": "actions"}),
+                               ("hub_set_rule_private_boolean", {"ruleId": [wrapped], "value": False})):
+                overflow = refused(tool, args)
+                assert "is not an integer-valued rule id" in str(overflow.get("error")), (tool, overflow)
             assert local_value() == 0, "a refused call changed the rule's local variable"
             assert self._rm_health(app_id).get("privateBoolean") is True, "a refused batch set the rule's private boolean"
             ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id})

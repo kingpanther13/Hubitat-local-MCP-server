@@ -92,13 +92,17 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
 
     def "a thrown native document error points at set_rule_reference (a DIFFERENT tool -> different section)"() {
         given:
-        script.metaClass.toolUpdateRuleDocument = { a -> throw new IllegalArgumentException("trigger is required") }
+        script.metaClass.toolUpdateRuleDocument = { Map a -> throw new IllegalArgumentException("trigger is required") }
+        stateMap.lastBackupTimestamp = script.now()
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', ruleId: 1, confirm: true, args: [changes: []]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', ruleId: 1, confirm: true,
+            args: [changes: [[part: 'required', value: [tokens: ['1']]]]]])
 
-        then:
+        then: "the call reached the update handler, whose own error carries the pointer"
         response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('trigger is required')
         mcpDriver.parseInner(response).error.contains('hub_get_tool_guide(section="set_rule_reference")')
     }
 

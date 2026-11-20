@@ -5,7 +5,7 @@ def _getAllToolDefinitions_partNativeRM() {
         // Native Rule Machine runtime and administrative tools.
         [
             name: "hub_list_rules",
-            description: "List all Rule Machine rules (deduplicated by id) with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. Status reflects Rule Machine's name decoration (refreshed after an MCP stop, start, pause or resume); a decorated rule's paused/stopped come from its own state, and a row marked statusSource:'name' fell back to the decoration because that state could not be read. A stop made outside MCP may show only after the rule's page is next opened. For ONE rule's state, call hub_get_rule(ruleId) instead of listing every rule — its health returns that rule's paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
+            description: "List all Rule Machine 5.x rules (deduplicated by id) with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. Status reflects Rule Machine's name decoration (refreshed after an MCP stop, start, pause or resume); a decorated rule's paused/stopped come from its own state, and a row marked statusSource:'name' fell back to the decoration because that state could not be read. A stop made outside MCP may show only after the rule's page is next opened. For ONE rule's state, call hub_get_rule(ruleId) instead of listing every rule — its health returns that rule's paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -399,6 +399,7 @@ private boolean _rmSettleRuleStatusFromState(Map entry, Map flags) {
         // A rule that was never paused or stopped has no entry for it.
         Map statePaused = _appStatusFlag(status, "paused")
         Map stateStopped = _appStatusFlag(status, "stopped")
+        if (statePaused.missing) throw new IllegalStateException("its status page carried no appState")
         [statePaused, stateStopped].each { if (it.present && it.value == null) fromState = false }
         if (statePaused.value != null || !statePaused.present) paused = statePaused.value == true
         if (stateStopped.value != null || !stateStopped.present) stopped = stateStopped.value == true
@@ -467,7 +468,7 @@ def toolRunRmRule(args) {
     }
     ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
     Map guard = _rmRequireRuleTargets(ruleIds, "hub_call_rule", true)
-    if (guard.failure) return guard.failure + [ruleIds: ruleIds]
+    if (guard.failure) return _rmRunGuardFailure(ruleIds, guard)
     List<Integer> visual = ruleIds.findAll { _rmIsVisualRuleType(guard.types.get(it) as String) }
     if (visual && action in ["stop", "start"]) {
         throw new IllegalArgumentException("Visual Rules have no stop or start; rule(s) ${visual.join(', ')} are Visual Rules. Use action:'pause' or 'resume' for them. Nothing was dispatched.")
@@ -515,18 +516,44 @@ def toolRunRmRule(args) {
             ? "${action} failed for EVERY rule in the batch (${failed.join(', ')}); per-rule detail in results[].".toString()
             : "${action} failed for rule(s) ${failed.join(', ')} -- the other ${actionedCount} rule(s) in the batch WERE actioned; per-rule detail in results[].".toString()
         out.note = runActions
-            ? "Re-issue for the failed ids only: a repeat of a succeeded id runs that rule's actions again."
+            ? _rmRunFailedNote(failed)
             : "Re-issue for the failed ids only. A repeat of a succeeded id is safe: the toggle no-ops rules already in the target state."
     }
     if (budgetPaused) {
         out.remainingRuleIds = remaining
         if (!out.error) out.error = "Response-budget checkpoint: rule(s) ${remaining.join(', ')} were not yet actioned."
-        // Failed ids and un-reached ids are DIFFERENT sets -- the re-issue
-        // guidance must carry both or a caller following it strands the failures.
-        def reissueIds = (failed + remaining).unique()
-        out.note = "Budget checkpoint -- re-issue with ruleId=[${reissueIds.join(', ')}] to finish${failed ? " (includes the ${failed.size()} failed id(s), not just the un-reached ones)" : ""}; ${runActions ? 'leave out the rules already run, or their actions run again' : 'already-actioned rules no-op safely'}.".toString()
+        if (runActions) {
+            // A failed run may have reached the hub, so only the un-reached rules are safe to send again.
+            out.note = ("Budget checkpoint -- re-issue with ruleId=[${remaining.join(', ')}] to run the rules not yet reached; leave out the rules already run, or their actions run again." +
+                (failed ? " ${_rmRunFailedNote(failed)}" : "")).toString()
+        } else {
+            // Failed ids and un-reached ids are DIFFERENT sets -- the re-issue
+            // guidance must carry both or a caller following it strands the failures.
+            def reissueIds = (remaining + failed).unique()
+            out.note = "Budget checkpoint -- re-issue with ruleId=[${reissueIds.join(', ')}] to finish${failed ? " (includes the ${failed.size()} failed id(s), not just the un-reached ones)" : ""}; already-actioned rules no-op safely.".toString()
+        }
     }
     return out
+}
+
+// A run whose answer was lost may still have run the rule, so a failed id is not simply re-sent.
+private String _rmRunFailedNote(List failed) {
+    "Rule(s) ${failed.join(', ')} failed: read each one's results[] note before running it again, because a run whose answer was lost may already have run the actions. A repeat of a succeeded id runs that rule's actions again.".toString()
+}
+
+// A batch the target guard refused carries one row per rule, so a refusal in a later continuation slice
+// still names each rule in the combined result instead of leaving only the earlier slices' rows.
+private Map _rmRunGuardFailure(List<Integer> ruleIds, Map guard) {
+    Map failure = guard.failure as Map
+    if (ruleIds.size() == 1) return [ruleId: ruleIds[0]] + failure + [ruleIds: ruleIds]
+    Map unreadable = guard.unreadable as Map
+    def rows = ruleIds.collect { id ->
+        unreadable.containsKey(id)
+            ? [success: false, ruleId: id, error: "The rule could not be looked up (${unreadable.get(id)}), so it was not run.".toString()]
+            : [success: false, ruleId: id, error: "Not run: another rule in the same call could not be looked up, so none of them was dispatched."]
+    }
+    [success: false, partial: false, ruleIds: ruleIds, results: rows, failedRuleIds: ruleIds, error: failure.error,
+     note: "No rule in this lookup was run; each one's results[] row says why. Retry them once; if the lookup fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
 }
 
 // The runtime tools act only on rules: RMUtils and the page buttons both report success on an id that is
@@ -560,7 +587,7 @@ private Map _rmRequireRuleTargets(List<Integer> ruleIds, String toolName, boolea
     }
     if (unreadable) {
         unreadable.each { id, why -> mcpLog("warn", "rm-interop", "${toolName}: app ${id} could not be identified (${why}); nothing dispatched") }
-        return [failure: _rmLookupFailure(unreadable)]
+        return [failure: _rmLookupFailure(unreadable), unreadable: unreadable]
     }
     return [types: types]
 }
@@ -582,6 +609,7 @@ private Map _rmRunActionsButton(Integer ruleId) {
 // cannot be read.
 private boolean _rmRuntimeFlag(Integer ruleId, String name) {
     Map flag = _appStatusFlag(_appStatusRead(ruleId), name)
+    if (flag.missing) throw new IllegalStateException("its status page carried no appState")
     if (flag.present && flag.value == null) throw new IllegalStateException("its ${name} state is neither true nor false")
     return flag.value == true
 }
@@ -646,6 +674,13 @@ private Map _vrbTogglePaused(Integer ruleId, String action) {
         sent = _vrbSetPaused(ruleId, target)
     } catch (Exception e) {
         sent = [success: false, error: "pause endpoint failed: ${e.message}"]
+    }
+    if (sent.success == true && sent.confirmed != true) {
+        // The endpoint gave no verdict, so the rule's own state decides whether the pause landed.
+        def after = _ruleCompiledState(ruleId)
+        if (after?.paused != target) {
+            sent = [success: false, error: "the pause endpoint gave no success verdict and the rule then read ${after?.paused == null ? 'no paused state' : 'paused=' + after.paused}".toString()]
+        }
     }
     if (sent.success != true) return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${sent.error}".toString(),
         note: "Re-issuing is safe: the Visual Rule's state is read first and a rule already ${target ? 'paused' : 'not paused'} is left alone. Confirm with hub_get_rule or hub_list_rules. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
@@ -792,13 +827,11 @@ private Map _collectLiveApps() {
 
 private Integer _rmCoerceRuleId(Object id) {
     try {
-        if (id instanceof Number) {
-            return (id.doubleValue() == id.longValue()) ? id.intValue() : null
-        }
         def s = id?.toString()?.trim()
         if (!s) return null
         def bd = new BigDecimal(s)   // throws on non-numeric -> caught -> null
-        return (bd.stripTrailingZeros().scale() <= 0) ? bd.intValue() : null
+        // intValueExact, not intValue: 4294967696 would wrap to 400 and act on that rule.
+        return (bd.stripTrailingZeros().scale() <= 0) ? bd.intValueExact() : null
     } catch (Exception ignored) { return null }
 }
 
@@ -950,7 +983,7 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
             // leftover closer can mask the imbalance this deletion creates -- a structural row
             // could be deleted past a check that never saw the real block structure. Refuse, as
             // moveAction and modifyAction do; a non-structural row (above) is unaffected.
-            throw new IllegalStateException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind} row and the rule's compiled action order (ruleBuilderJson actionList) is unavailable, so the deletion's effect on block balance cannot be verified -- the settings scan can be masked by leftover rows. Retry once ruleBuilderJson answers (hub_get_rule lists the read failure under health.checkErrors), or use replaceActions to rebuild the action list atomically. RM is not touched.")
+            throw new IllegalStateException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind} row and the rule's compiled action order (ruleBuilderJson actionList) is unavailable, so the deletion's effect on block balance cannot be verified -- the settings scan can be masked by leftover rows. Retry once ruleBuilderJson answers (hub_get_rule lists the read failure under health.checkErrors). RM is not touched.")
         }
         def currentIssues = _rmStructuralIssuesFromSequence(
             _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), orderedIndices))
@@ -958,7 +991,7 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
             _rmStructuralSequenceFromSettings(settingsByName, ([actionIdx] as Set), orderedIndices))
         def newIssues = projectedIssues - currentIssues
         if (newIssues) {
-            throw new IllegalArgumentException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind}; removing it would introduce a new structural-balance issue (${newIssues.first()}). Remove the matching opener/closer first, or use replaceActions to rebuild the action list atomically. RM is not touched.")
+            throw new IllegalArgumentException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind}; removing it would introduce a new structural-balance issue (${newIssues.first()}). Remove the matching opener/closer first. RM is not touched.")
         }
     }
     _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")

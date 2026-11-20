@@ -851,7 +851,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
                            [name: 'apiKey', value: 'secret-api-key'],
                            [name: 'allLocalVars', value: [counter: [type: 'integer', value: 3], doorCode: [type: 'string', value: '4321']]],
                            [name: 'lv_doorCode', value: [type: 'string', value: '4321']],
-                           [name: 'history', value: [[when: 1, alarmPin: '9999'], 'plain']]])
+                           [name: 'history', value: [[when: 1, alarmPin: '9999'], 'plain']],
+                           [name: 'batches', value: [[[apiKey: 'nested-api-key']], 'plain']]])
 
         when:
         def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
@@ -866,8 +867,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.appState.find { it.name == 'allLocalVars' }.value.doorCode == '***redacted (password)***'
         result.appState.find { it.name == 'lv_doorCode' }.value == '***redacted (password)***'
         result.appState.find { it.name == 'history' }.value == [[when: 1, alarmPin: '***redacted (password)***'], 'plain']
+        result.appState.find { it.name == 'batches' }.value == [[[apiKey: '***redacted (password)***']], 'plain']
         result.statusRedactionNote.contains('***redacted (password)***')
         !JsonOutput.toJson(result).contains('4321') && !JsonOutput.toJson(result).contains('secret-api-key')
+        !JsonOutput.toJson(result).contains('nested-api-key')
         hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
     }
 
@@ -1048,6 +1051,28 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         limit | subs | cut
         12000 | 3    | false
         12000 | 400  | true
+    }
+
+    def "includeStatus whose appState names alone are too large leaves appState out with its count"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass._responseSizeLimitBytes = { -> 12000 }
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                               appState: (1..2000).collect { [name: "key${it}x".toString(), value: it] }])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.success == true
+        result.statusTruncated == true
+        !result.containsKey('appState')
+        result.appStateTotal == 2000
+        result.statusTruncatedNote.contains('appState is omitted (2000 entries)')
+        script._appConfigResultBytes(result) <= 12000 - 1024
     }
 
     def "includeStatus within the size budget is returned whole"() {

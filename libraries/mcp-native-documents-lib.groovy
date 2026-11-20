@@ -139,8 +139,17 @@ Map toolGetRuleDocument(Map args) {
     try {
         // The health read renders the rule's page first, so the state read after it carries a fresh broken flag.
         def document = [ruleId: id, health: _rmCheckRuleHealth(id as Integer)]
-        Map nativeState = _nrState(id)
-        if (withLocals) document.localVariables = _ndLocalVariables(id)
+        // Health, settings and the locals do not come from native state, so a read of those alone survives its failure.
+        Map nativeState = sections.any { it in ['actions', 'conditions', 'triggers', 'expressions'] } ? _nrState(id) : null
+        if (withLocals) {
+            // The health is already read, so a failed locals read is reported beside it rather than losing it.
+            try { document.localVariables = _ndLocalVariables(id) }
+            catch (Exception localsFailure) {
+                mcpLog('warn', 'rm-native', "hub_get_rule: rule ${id}'s local variables could not be read (${localsFailure.message})")
+                document.localVariables = null
+                document.localVariablesError = (localsFailure.message ?: localsFailure.toString()).toString()
+            }
+        }
         if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
             [id: actionId.toString(), value: nativeState.actions instanceof Map ? _nmEntry(nativeState.actions, actionId.toString()) : null]
         }
@@ -181,7 +190,7 @@ Map toolGetRuleDocument(Map args) {
     } catch (Exception failure) {
         mcpLogError('rm-native', "${toolName} read failed for rule ${id}: ${failure.message}".toString(), failure)
         [success: false, ruleId: id, error: "Rule ${id} could not be read: ${failure.message ?: failure.toString()}".toString(),
-         note: "Nothing was changed. Retry once; if it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
+         note: "Retry once; the read writes nothing beyond rendering the rule's page, as opening it does. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
     }
 }
 
@@ -529,7 +538,14 @@ Map toolUpdateRuleDocument(Map args) {
         catch (Exception failure) { return [success: false, partial: false, ruleId: id, error: failure.message?.toString()] }
         // Rule Machine sets broken only when the rule's page renders, so the health read renders it before
         // the check: a rule that was already broken is refused here, not reported broken after the write.
-        Map beforeHealth = _rmCheckRuleHealth(id as Integer)
+        Map rendered = [:]
+        Map beforeHealth = _rmCheckRuleHealth(id as Integer, rendered)
+        // Without the render the compiled broken flag can be stale, so an unrendered rule is not assumed healthy.
+        if (rendered.page != true) {
+            return [success: false, partial: false, ruleId: id, checkErrors: beforeHealth.checkErrors,
+                error: "Rule ${id}'s page could not be rendered before the write, so whether it is already broken is unknown; no change was written.".toString(),
+                note: "Retry once; if it fails again, check that the hub answers with hub_get_info and open the rule with hub_get_rule. See hub_get_tool_guide(section='set_rule_reference')."]
+        }
         if (beforeHealth.broken == true) {
             String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { it.text ? "${it.kind} '${it.text}'" : "${it.kind} on line ${it.position} of its section" }.join('; ') : ''
             return [success: false, partial: false, ruleId: id, broken: true, brokenRows: beforeHealth.brokenRows,

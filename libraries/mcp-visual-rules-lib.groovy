@@ -402,7 +402,8 @@ private Map _vrbSetPaused(Integer appId, boolean paused) {
         if (parsed instanceof Map && parsed.success == false) {
             return [success: false, error: parsed.message ? "pause endpoint reported: ${parsed.message}" : "pause endpoint returned success=false"]
         }
-        return [success: true]
+        // An empty or verdict-less answer is not a refusal, but it does not confirm the change either.
+        return [success: true, confirmed: parsed instanceof Map && parsed.success == true]
     } catch (Exception e) {
         return [success: false, error: "pause endpoint returned a non-JSON response: ${text?.take(200)}"]
     }
@@ -429,9 +430,13 @@ private Map _vrbRunNow(Integer appId) {
         return [success: false, ruleId: appId, error: "hub_call_rule action=actions: /app/ruleBuilderRun returned a non-JSON response: ${text?.take(200)}".toString(),
                 note: _vrbRunUncertainNote()]
     }
-    if (parsed.success != true) {
+    if (parsed.success == false) {
         return [success: false, ruleId: appId, error: "The hub did not run Visual Rule ${appId}: ${parsed.message ?: 'its run endpoint answered success:false'}".toString(),
                 note: "Nothing else was tried. Read the rule with hub_get_visual_rule; a rule whose definition has validation errors does not run."]
+    }
+    if (parsed.success != true) {
+        return [success: false, ruleId: appId, error: "hub_call_rule action=actions: /app/ruleBuilderRun answered without a success verdict: ${text?.take(200)}".toString(),
+                note: _vrbRunUncertainNote()]
     }
     def out = [success: true, ruleId: appId, rmAction: "ruleBuilderRun"]
     if (parsed.message) out.message = parsed.message.toString()

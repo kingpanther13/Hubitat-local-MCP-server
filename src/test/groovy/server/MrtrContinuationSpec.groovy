@@ -407,6 +407,76 @@ class MrtrContinuationSpec extends ToolSpecBase {
         ranWith.size() == 2
     }
 
+    def "a call_rule continuation sends the un-reached rules ahead of the failed ones"() {
+        given: 'slice one fails 11 and pauses before 12'
+        settingsMap.enableWrite = true
+        def ranWith = []
+        script.metaClass.toolRunRmRule = { Map a ->
+            ranWith << new LinkedHashMap(a)
+            if (ranWith.size() == 1) {
+                return [success: false, partial: true, ruleIds: [11, 12], rmAction: 'stopRule toggle x1',
+                        results: [[success: false, ruleId: 11, error: 'state read timed out']],
+                        failedRuleIds: [11], remainingRuleIds: [12]]
+            }
+            return [success: true, partial: false, ruleIds: a.ruleId, rmAction: 'stopRule toggle x2',
+                    results: a.ruleId.collect { [success: true, ruleId: it] }]
+        }
+        def original = [ruleId: [11, 12], action: 'stop']
+
+        when:
+        def first = modernCall('hub_call_rule', original)
+        def second = modernCall('hub_call_rule', original, first.result.requestState)
+
+        then: 'a failed rule that eats the next slice too cannot keep 12 from running'
+        ranWith[1].ruleId == [12, 11]
+        mcpDriver.parseInner(second).success == true
+    }
+
+    def "a target refusal in a later call_rule slice keeps every rule in the terminal result"() {
+        given: 'slice one stops 11; in slice two 13 cannot be looked up, so 12 and 13 are refused unrun'
+        settingsMap.enableWrite = true
+        def ranWith = []
+        script.metaClass.toolRunRmRule = { Map a ->
+            ranWith << new LinkedHashMap(a)
+            if (ranWith.size() == 1) {
+                return [success: false, partial: true, ruleIds: [11, 12, 13], rmAction: 'stopRule toggle x1',
+                        results: [[success: true, ruleId: 11]], remainingRuleIds: [12, 13]]
+            }
+            return script._rmRunGuardFailure([12, 13], [failure: script._rmLookupFailure([13: 'hub busy']), unreadable: [13: 'hub busy']])
+        }
+        def original = [ruleId: [11, 12, 13], action: 'stop']
+
+        when:
+        def first = modernCall('hub_call_rule', original)
+        def terminal = modernCall('hub_call_rule', original, first.result.requestState)
+        def inner = mcpDriver.parseInner(terminal)
+
+        then:
+        terminal.result.isError == true
+        inner.success == false
+        inner.results*.ruleId == [11, 12, 13]
+        inner.results[0].success == true
+        inner.failedRuleIds as Set == [12, 13] as Set
+        inner.results.find { it.ruleId == 13 }.error.contains('hub busy')
+        inner.results.find { it.ruleId == 12 }.error.contains('Not run')
+        inner.error
+        !String.valueOf(inner.note).contains('Nothing was changed')
+    }
+
+    @spock.lang.Unroll
+    def "hub_call_rule action=#action on two rules #verdict continuation-eligible"() {
+        expect: 'a run whose answer was lost may have run, so actions never re-runs itself in a later slice'
+        script._mrtrEligibleCall('hub_call_rule', 'hub_call_rule', [ruleId: [1, 2], action: action]) == eligible
+
+        where:
+        action    | eligible
+        'actions' | false
+        'stop'    | true
+        'pause'   | true
+        'resume'  | true
+        verdict = eligible ? 'is' : 'is not'
+    }
+
     def "a continuation is not re-gated after its key rotates, while an initial call still is"() {
         given: 'the gate ON; one second before an hour boundary, a paused bulk write starts with the key of the PREVIOUS hour (still in grace)'
         settingsMap.enableWrite = true

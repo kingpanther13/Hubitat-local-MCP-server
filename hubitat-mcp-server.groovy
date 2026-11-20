@@ -4429,9 +4429,11 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
 
     if (leafTool == "hub_call_rule" && result.remainingRuleIds instanceof List
             && !result.remainingRuleIds.isEmpty()) {
+        // Un-reached rules go first: a failed rule that eats a slice's budget again must not starve them, and once
+        // only failed rules remain the next slice takes their final attempt.
         def retryIds = []
-        if (result.failedRuleIds instanceof List) retryIds.addAll(result.failedRuleIds)
         retryIds.addAll(result.remainingRuleIds)
+        if (result.failedRuleIds instanceof List) retryIds.addAll(result.failedRuleIds)
         nextLeaf.ruleId = retryIds.unique()
         kind = "call_rule"
     } else if (leafTool == "hub_create_driver" && result.status == "in_progress" &&
@@ -4646,6 +4648,8 @@ private def _mrtrAggregateTerminal(Map rec, result) {
                 out.remove("ruleId")
                 out.remove("rmAction")
                 out.remove("error")
+                // A one-rule last slice's note is about that rule alone, and its results[] row keeps it.
+                if (!(result.results instanceof List)) out.remove("note")
             }
             def failed = out.results.findAll { it instanceof Map && it.success != true }
             out.success = out.success == true && failed.isEmpty()
@@ -10376,7 +10380,8 @@ Boolean _appStateFlag(Object value) {
 
 /**
  * One read of an app's App Status page (/installedapp/statusJson/<id>): appState as [{name, value}],
- * eventSubscriptions and scheduledJobs, an absent section reading as an empty list. With Hide
+ * eventSubscriptions and scheduledJobs, an absent section reading as an empty list (appStateMissing marks an
+ * absent appState: a gone app answers {}, which must not read as a rule with no flags). With Hide
  * passwords and credentials on, an appState value whose name looks like a credential reads as the
  * same marker includeSettings uses; state nests (a rule's allLocalVars map), so map keys are tested
  * the same way at every level. Access tokens (an accessToken row, the clientTokens map) are masked
@@ -10395,7 +10400,7 @@ Map _appStatusRead(Integer appId) {
         if (value != null && !(value instanceof List)) throw new IllegalStateException("App ${appId}'s status page returned ${key} in an unexpected shape")
     }
     boolean maskTokens = _redactsAccessTokens()
-    [appState: appState.findAll { it instanceof Map }.collect { row ->
+    [appStateMissing: rawState == null, appState: appState.findAll { it instanceof Map }.collect { row ->
         String key = row.name?.toString()
         def value = _appStateMasked(key, row.value)
         // A state row is {name, value}, so the central token pass, which keys on the map key, never sees the
@@ -10409,12 +10414,14 @@ Map _appStatusRead(Integer appId) {
 private Object _appStateMasked(String name, Object value) {
     if (_appConfigMasksSetting(name, null, value)) return _appConfigRedactedMarker()
     if (value instanceof Map) return value.collectEntries { k, v -> [(k): _appStateMasked(k?.toString(), v)] }
-    if (value instanceof List) return value.collect { item -> item instanceof Map ? _appStateMasked(name, item) : item }
+    if (value instanceof List) return value.collect { item -> _appStateMasked(name, item) }
     value
 }
 
-// A flag from _appStatusRead's appState: [present, value], value null when the entry is not a flag.
+// A flag from _appStatusRead's appState: [present, value], value null when the entry is not a flag;
+// missing when the page carried no appState at all, so absence proves nothing.
 private Map _appStatusFlag(Map status, String name) {
+    if (status?.appStateMissing == true) return [present: false, value: null, missing: true]
     def entry = (status?.appState ?: []).find { it?.name?.toString() == name }
     [present: entry != null, value: entry == null ? null : _appStateFlag(entry.value)]
 }
@@ -10785,9 +10792,10 @@ private List _rmDisabledRowIds(Map compiled, String key, List checkErrors) {
  * and have no classic page. paused, stopped and privateBoolean come from the one App Status read that
  * also counts the app's live subscriptions and jobs. checkErrors records a read that failed without
  * being evidence about the rule: it leaves unreadable alone, but ok stays false because part of the
- * rule went unchecked. A value the hub does not return reads null.
+ * rule went unchecked. A value the hub does not return reads null. probe receives page:true when the
+ * classic page rendered, since only that render refreshes Rule Machine's broken flag.
  */
-Map _rmCheckRuleHealth(Integer appId) {
+Map _rmCheckRuleHealth(Integer appId, Map probe = null) {
     def issues = []
     def checkErrors = []
     def result = [ok: false, unreadable: true, broken: null, ruleFormat: null, label: null, disabled: null,
@@ -10816,6 +10824,7 @@ Map _rmCheckRuleHealth(Integer appId) {
         try {
             cfg = _rmFetchConfigJson(appId)
             read = true
+            if (probe != null) probe.page = true
             if (typeName == null) typeName = cfg.app?.appType?.name?.toString()
             def label = cfg.app?.label?.toString()
             if (cfg.app?.disabled != null) result.disabled = (cfg.app.disabled == true)
@@ -10881,9 +10890,9 @@ Map _rmCheckRuleHealth(Integer appId) {
             // A rule that was never paused or stopped has no entry for it.
             Map paused = _appStatusFlag(status, "paused")
             if (paused.value != null) result.paused = paused.value
-            else if (result.paused == null && ruleType && !paused.present) result.paused = false
+            else if (result.paused == null && ruleType && !paused.present && !paused.missing) result.paused = false
             Map stopped = _appStatusFlag(status, "stopped")
-            result.stopped = stopped.value != null ? stopped.value : (ruleType && !stopped.present ? false : null)
+            result.stopped = stopped.value != null ? stopped.value : (ruleType && !stopped.present && !stopped.missing ? false : null)
             if (ruleType) result.privateBoolean = _appStatusFlag(status, "private").value
         }
     } catch (Exception statusErr) {
@@ -12422,7 +12431,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - Each input is the field hub_set_native_app(operation='form') returns; a device picker adds `selected`, its devices with labels. `unsupported` lists page parts a form cannot drive, such as a community app's create button. When the page cannot be modelled, `formError` says why: inputs carry no values and there are no controls.
   - `appType.namespace` and `appType.name` name the type; `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
   - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs read as in the form tools: a password input carries no value and `redacted: true`; a credential-named input reads the marker. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
-  - `includeStatus=true` adds the app's App Status lists, for any app and also with `summary=true`: `appState` (the app's stored state as `[{name, value}]`; a community app's working data, a webCoRE piston's definition, logs and trace), `eventSubscriptions` and `scheduledJobs`. With Hide passwords and credentials on, a value whose name looks like a credential reads `***redacted (password)***`, also inside nested maps (a rule's local variables); `statusRedactionNote` says so. Access tokens (an `accessToken` entry, each per-client token in `clientTokens`) read `***redacted (access token)***` whenever Hide access tokens is on, and always for a per-client token; `statusRedactionNote` also says whether an app's stored token is shown. When the lists would push the response past the size cap (a webCoRE piston's state can), `appState` lists names only with its values omitted, `statusTruncated` is true and `statusTruncatedNote` says what was cut; if that is still too large, `eventSubscriptions` and `scheduledJobs` are cut too, with `eventSubscriptionsTotal` / `scheduledJobsTotal` giving their full counts. When the status page cannot be read the three lists are omitted and `statusNote` says why. hub_get_rule counts a rule's subscriptions and jobs from the same read.
+  - `includeStatus=true` adds the app's App Status lists, for any app and also with `summary=true`: `appState` (the app's stored state as `[{name, value}]`; a community app's working data, a webCoRE piston's definition, logs and trace), `eventSubscriptions` and `scheduledJobs`. With Hide passwords and credentials on, a value whose name looks like a credential reads `***redacted (password)***`, also inside nested maps (a rule's local variables); `statusRedactionNote` says so. Access tokens (an `accessToken` entry, each per-client token in `clientTokens`) read `***redacted (access token)***` whenever Hide access tokens is on, and always for a per-client token; `statusRedactionNote` also says whether an app's stored token is shown. When the lists would push the response past the size cap (a webCoRE piston's state can), `appState` lists names only with its values omitted, `statusTruncated` is true and `statusTruncatedNote` says what was cut; if that is still too large, `eventSubscriptions` and `scheduledJobs` are cut too, with `eventSubscriptionsTotal` / `scheduledJobsTotal` giving their full counts, and as a last resort `appState` is left out with `appStateTotal` giving its count. When the status page cannot be read the three lists are omitted and `statusNote` says why. hub_get_rule counts a rule's subscriptions and jobs from the same read.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
@@ -12455,7 +12464,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 Rule runtime control surface (hub_list_rules = Read master; hub_call_rule and the private boolean = Write master):
 (hub_list_rules, hub_call_rule, hub_set_rule_private_boolean and hub_get_rule are also in hub_manage_rule_machine, with hub_set_rule. The reads hub_list_rules and hub_get_rule are also in hub_read_rules.)
 
-- **hub_list_rules** — every Rule Machine rule (deduplicated by id) with a live **status** ("active" | "paused" | "stopped" | "disabled" | "unknown"), the **disabled** and **paused** booleans (omitted when unknown) and, only when detected, **requiredExpressionFalse: true**.
+- **hub_list_rules** — every Rule Machine 5.x rule (deduplicated by id; older rule types are not supported on current firmware and are not listed) with a live **status** ("active" | "paused" | "stopped" | "disabled" | "unknown"), the **disabled** and **paused** booleans (omitted when unknown) and, only when detected, **requiredExpressionFalse: true**.
   - **disabled** is the app's red-X flag from /hub2/appsList.
   - **paused** and **stopped** come from Rule Machine's name decoration. The appsList name and the RMUtils label are compared with markup stripped and entities decoded; the text the appsList name adds — "(Paused)", "(Stopped)", "(Required Expression false)" — sets the flag. A rule literally NAMED "... (Paused)" or "... (Stopped)" carries the suffix in both strings and is not flagged. A stopped rule's label and name come back without the decoration, in the encoding they already use.
   - The name shows one decoration at a time ("(Stopped)" hides "(Paused)"), so a decorated row also reads that rule's own paused/stopped state; undecorated rows make no extra read. If that read fails, the name decides and the row carries **statusSource: "name"**, with **statusSourceNote** listing those ids. Rule Machine refreshes the decoration when the rule's page renders: hub_call_rule(action="stop"/"start"/"pause"/"resume") renders it, so the list is current after an MCP stop, start, pause or resume, while a stop made elsewhere shows once the rule's page is next opened.
@@ -12510,14 +12519,15 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 - **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged; Rule Machine only).
 - **`pause`** / **`resume`**: pause or resume the rule; a paused rule does not fire on its triggers. A Rule Machine rule's Pause button (`pausRule`) is clicked; a Visual Rule is paused through its builder's pause endpoint.
 
-Every action on a Rule Machine rule drives the rule's own page buttons (`runAction`, `stopRule`, `pausRule`), one rule at a time, not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. `stop`, `start`, `pause` and `resume` read the rule's state first and leave a rule already in the target state alone (rmAction:"noop"), so they are safe to repeat; a repeated `actions` runs the actions again. After a stop, start, pause or resume the rule's page is rendered once, so hub_list_rules shows the new status at once. `stop` or `start` naming a Visual Rule, which has no stop, refuses the whole call before anything runs. An id with no app, or an app that is not a rule (the Rule Machine parent app, a Basic Rule, any other app), is refused for every action before anything is dispatched, as it is by hub_set_rule_private_boolean.
+Every action on a Rule Machine rule drives the rule's own page buttons (`runAction`, `stopRule`, `pausRule`), one rule at a time, not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. `stop`, `start`, `pause` and `resume` read the rule's state first and leave a rule already in the target state alone (rmAction:"noop"), so they are safe to repeat; a repeated `actions` runs the actions again. After a stop, start, pause or resume the rule's page is rendered once, so hub_list_rules shows the new status at once. `stop` or `start` naming a Visual Rule, which has no stop, refuses the whole call before anything runs. Send hub_call_rule calls one at a time: a toggle reads the rule's state and then clicks, so two overlapping calls on one rule can both click and undo each other; to act on several rules, name them all in one call's `ruleId` array. An id with no app, or an app that is not a rule (the Rule Machine parent app, a Basic Rule, any other app), is refused for every action before anything is dispatched, as it is by hub_set_rule_private_boolean.
 
 ### hub_get_rule
 
 `hub_get_rule(ruleId, sections?, cursor?, limit?)` reads one rule. It returns `ruleId`, `health`, `localVariables` and, for a Rule Machine 5.1 rule or Button Rule, the document hub_set_rule(operation='read') returns: `actions`, `conditions`, `triggers`, `expressions` and `settings`, all by default, or the ones named in `sections`; `sections: []` returns the health and local variables alone. A long rule's whole document can exceed the response size cap, so read its health with `sections: []` and its rows one section at a time. Page one section with `cursor` ("" first, then each `nextCursor`) and `limit` (1-100, default 50), exactly as the hub_set_rule read does (see set_rule_reference). A Visual Rule or a classic app returns `health`, `localVariables: null` and a `note` naming the tool that reads it.
 
 - `localVariables`: `[{name, type, value}]`, the rule's own list, including a value the running rule just set. `type` is Rule Machine's token (integer, bigdecimal, string, boolean, datetime), the value a hub_set_rule variable change takes. A credential-named variable's value is hidden (`redacted:true`) while credential hiding is on. Hub globals are read with hub_list_variables.
-- A read that fails returns `success:false` with `error` and `note`; nothing is changed, so retry it.
+- If the local variables alone cannot be read, `localVariables` is null and `localVariablesError` says why; the health and the requested sections still return.
+- A read that fails returns `success:false` with `error` and `note`. The read renders the app's page as opening it in the hub UI does and writes nothing else, so it can be retried.
 
 `health` has the same shape here, in hub_set_rule's read and in its write responses' documents:
 

@@ -334,6 +334,24 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "action=#action refuses to click when the rule's status page carries no appState"() {
+        given: 'a status page with no appState section, as a gone app answers {}'
+        hubGet.register('/installedapp/statusJson/119') { params -> '{}' }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 119, action: action])
+
+        then: 'an absent section is not read as a rule never paused or stopped'
+        result.success == false
+        result.error.contains('carried no appState')
+        result.note.contains('Nothing was clicked')
+        posts.isEmpty()
+
+        where:
+        action << ['resume', 'start', 'pause']
+    }
+
+    @spock.lang.Unroll
     def "hub_call_rule via dispatch keeps a landed #action successful with a note when the page re-render fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
@@ -472,7 +490,27 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         'a null element'       | [400, null]     | 'is not an integer-valued rule id'
         'JSON number 400.7'    | [400.7]         | 'is not an integer-valued rule id'
         'decimal string 400.7' | ['400.7']       | 'is not an integer-valued rule id'
+        'an id past int range' | [4294967696]    | 'is not an integer-valued rule id'
+        'that id as a string'  | ['4294967696']  | 'is not an integer-valued rule id'
         'an empty array'       | []              | 'must not be empty'
+    }
+
+    @spock.lang.Unroll
+    def "hub_call_rule via dispatch refuses an id past the int range instead of acting on the rule it wraps to (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        rule(400, false)
+
+        when:
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 4294967696L, action: 'actions'])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('is not an integer-valued rule id')
+        posts.isEmpty()
+
+        where:
+        useGateways << [true, false]
     }
 
     def "gateway dispatch via handleGateway routes to hub_call_rule"() {
@@ -667,15 +705,77 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.ruleIds == ids
         result.error.contains(detail)
         result.error.contains('nothing was run')
-        result.note.contains('Nothing was changed')
+        result.note.contains(note)
         posts.isEmpty()
         logged.any { it.level == 'warn' && it.msg.contains('hub_call_rule') }
 
         where:
-        label                       | ids         | detail
-        'a single id that throws'   | [160]       | 'app 160: hub busy'
-        'a batch with one throwing' | [101, 160]  | 'app 160: hub busy'
-        'an app with no type'       | [161]       | 'app 161: its app type could not be read'
+        label                       | ids         | detail                                     | note
+        'a single id that throws'   | [160]       | 'app 160: hub busy'                        | 'Nothing was changed'
+        'a batch with one throwing' | [101, 160]  | 'app 160: hub busy'                        | 'No rule in this lookup was run'
+        'an app with no type'       | [161]       | 'app 161: its app type could not be read'  | 'Nothing was changed'
+    }
+
+    def "a refused batch names every rule in its own row, so a later continuation slice keeps them"() {
+        given:
+        script.metaClass.getAppByAppId = { Long id ->
+            if (id == 160L) throw new RuntimeException('hub busy')
+            [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']]
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: [101, 160], action: 'pause'])
+
+        then: '160 could not be looked up and 101 was not attempted; neither ran'
+        result.failedRuleIds == [101, 160]
+        result.results*.ruleId == [101, 160]
+        result.results.every { it.success == false }
+        result.results[0].error.contains('Not run')
+        result.results[1].error.contains('hub busy')
+        !result.containsKey('remainingRuleIds')
+        posts.isEmpty()
+    }
+
+    def "a single refused id still carries its ruleId, so a one-rule continuation slice keeps a row"() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> throw new RuntimeException('hub busy') }
+
+        expect:
+        script.toolRunRmRule([ruleId: [160], action: 'stop']).ruleId == 160
+    }
+
+    def "a failed run in a budget-paused actions batch is not put back in the re-issue list"() {
+        given: "101's click fails (it may have run), then the budget pauses before 102"
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> throw new IllegalStateException('read timed out') }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> true }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: [101, 102], action: 'actions', __reqT0: 1L])
+
+        then:
+        result.failedRuleIds == [101]
+        result.remainingRuleIds == [102]
+        result.note.contains('ruleId=[102]')
+        !result.note.contains('ruleId=[101')
+        !result.note.contains('ruleId=[102, 101]')
+        result.note.contains("read each one's results[] note before running it again")
+    }
+
+    def "a failed run in an actions batch is not called safe to re-issue"() {
+        given:
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (body.id == '101') throw new IllegalStateException('read timed out')
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: [101, 102], action: 'actions'])
+
+        then:
+        result.failedRuleIds == [101]
+        result.note.contains('Rule(s) 101 failed')
+        result.note.contains('may already have run')
+        !result.note.contains('Re-issue for the failed ids only')
     }
 
     @spock.lang.Unroll
@@ -811,6 +911,47 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         label         | answer                                               | error
         'lost'        | { params -> throw new IOException('read timed out') } | '/app/ruleBuilderRun failed (read timed out)'
         'not JSON'    | { params -> '<html>Proxy error</html>' }              | 'non-JSON response'
+    }
+
+    def "a Visual Rule run answered without a success verdict is uncertain, not a refusal"() {
+        given:
+        visualRule(177, 'graph', false)
+        hubGet.register('/app/ruleBuilderRun/177') { params -> '{"message":"queued"}' }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 177, action: 'actions'])
+
+        then:
+        result.success == false
+        !result.error.contains('did not run')
+        result.error.contains('without a success verdict')
+        result.note.contains('may have reached the hub and run the rule')
+    }
+
+    @spock.lang.Unroll
+    def "a Visual Rule pause answered with #label is checked against the rule's state (#outcome)"() {
+        given: 'the rule reads not paused before the call and #after after it'
+        appTypes[178] = 'Visual Rule Builder 2.0'
+        int reads = 0
+        hubGet.register('/app/ruleBuilderJson/178') { params -> '{}' }
+        hubGet.register('/app/ruleBuilder20Json/178') { params ->
+            reads++
+            JsonOutput.toJson([name: 'Porch', rulePaused: reads > 1 ? after : false, ruleJson: '', validationErrors: []])
+        }
+        hubGet.register('/app/ruleBuilderPause/178/true') { params -> answer }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 178, action: 'pause'])
+
+        then:
+        result.success == ok
+        reads == 2
+        ok || result.error.contains('no success verdict')
+
+        where:
+        label           | answer | after | ok    | outcome
+        'an empty body' | ''     | true  | true  | 'landed'
+        '{}'            | '{}'   | false | false | 'did not land'
     }
 
     @spock.lang.Unroll

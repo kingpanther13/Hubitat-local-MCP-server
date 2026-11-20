@@ -266,15 +266,17 @@ class NativeDocumentsSpec extends ToolSpecBase {
         inner.localVariables*.name == ['counter']
     }
 
-    def 'hub_get_rule reports a failed local-variable read as a runtime failure, not as no locals'() {
+    def 'hub_get_rule reports a failed local-variable read beside the health it read, not as no locals'() {
         given:
         script.metaClass._nrHandle = { Long id -> new NativeDocumentChild(events, lifecycle, null, typedSettings) }
         when:
         def result = script.toolGetNativeRule([ruleId: 42, sections: ['actions']])
         then:
-        result.success == false
-        result.error.contains("Rule 42's local variables could not be read")
-        result.note.contains("hub_get_tool_guide(section='builtin_app_tools_rules')")
+        result.success == null
+        result.containsKey('localVariables') && result.localVariables == null
+        result.localVariablesError.contains("Rule 42's local variables could not be read")
+        result.health.ok == true
+        result.actions*.id == ['3', '1']
     }
 
     def 'hub_get_rule reports an unexpected local-variable shape instead of an empty list'() {
@@ -283,8 +285,59 @@ class NativeDocumentsSpec extends ToolSpecBase {
         when:
         def result = script.toolGetNativeRule([ruleId: 42, sections: ['actions']])
         then:
+        result.localVariables == null
+        result.localVariablesError.contains('unexpected shape')
+        result.health != null
+    }
+
+    def 'health does not read a status page with no appState as a rule never paused or stopped'() {
+        given:
+        hubGet.register('/installedapp/statusJson/42') { q -> '{}' }
+        when:
+        def health = script.toolGetNativeRule([ruleId: 42, sections: []]).health
+        then:
+        health.stopped == null
+        health.privateBoolean == null
+    }
+
+    def 'hub_get_rule(sections: []) reads health and locals without the native state'() {
+        given:
+        script.metaClass._nrState = { Long id -> throw new IllegalStateException('Native state is unavailable') }
+        when:
+        def result = script.toolGetNativeRule([ruleId: 42, sections: []])
+        then:
+        result.success == null
+        result.health.ok == true
+        result.localVariables*.name == ['counter']
+    }
+
+    def 'hub_get_rule still fails when a section it was asked for needs the native state'() {
+        given:
+        script.metaClass._nrState = { Long id -> throw new IllegalStateException('Native state is unavailable') }
+        when:
+        def result = script.toolGetNativeRule([ruleId: 42, sections: ['triggers']])
+        then:
         result.success == false
-        result.error.contains('unexpected shape')
+        result.error.contains('Native state is unavailable')
+        !result.note.contains('Nothing was changed')
+    }
+
+    def 'an update is refused before its backup and write when the rule page cannot be rendered'() {
+        given: 'the compiled state says not broken, but the page render that refreshes that flag fails'
+        hubGet.register('/installedapp/configure/json/42') { q -> throw new IllegalStateException('page timed out') }
+        settingsMap.backupBeforeRuleEdits = true
+        def backups = []
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean force -> backups << id; [backupKey: 'k'] }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [logChange()]])
+        then:
+        result.success == false
+        result.partial == false
+        result.error.contains('could not be rendered before the write')
+        result.error.contains('no change was written')
+        result.checkErrors.any { it.contains('page timed out') }
+        backups.isEmpty()
+        !events.contains('action')
     }
 
     def 'hub_get_rule lists a rule with no locals as an empty list'() {

@@ -610,7 +610,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         where:
         what                                  | appState                                    | expected  | source
         'has no stopped entry'                | [[name: 'paused', value: false]]            | 'active'  | null
-        'has no state at all'                 | 'absent'                                    | 'active'  | null
+        'has no appState section (a gone app answers {})' | 'absent'                        | 'stopped' | 'name'
         'arrives as a map'                    | [stopped: false]                            | 'active'  | null
         'has a malformed stopped entry'       | [[name: 'stopped', value: 'maybe']]         | 'stopped' | 'name'
         'is in an unexpected shape'           | 'garbage'                                   | 'stopped' | 'name'

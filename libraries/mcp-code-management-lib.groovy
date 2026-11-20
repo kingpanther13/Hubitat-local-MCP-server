@@ -729,7 +729,7 @@ private void _appConfigAttachStatus(Map result, Integer appId) {
 
 // A large appState (a webCoRE piston) can push the whole read past the tools/call size cap, which would lose all
 // of it. Over budget, appState keeps its names only; still over, the subscription and job lists are cut in half
-// until it fits, each with its full count.
+// until it fits, each with its full count; still over, the names go too, leaving appState's count.
 private void _appConfigFitStatus(Map result) {
     int budget = _responseSizeLimitBytes() - 1024
     if (_appConfigResultBytes(result) <= budget) return
@@ -748,7 +748,13 @@ private void _appConfigFitStatus(Map result) {
             cut << "${key} lists the first ${keep} of ${full.size()}".toString()
         }
     }
-    result.statusTruncatedNote = ("The status lists were too large for one response, so appState lists names only, its values omitted" +
+    String stateText = "appState lists names only, its values omitted"
+    if (_appConfigResultBytes(result) > budget) {
+        result.appStateTotal = result.appState.size()
+        result.remove('appState')
+        stateText = "appState is omitted (${result.appStateTotal} entries)".toString()
+    }
+    result.statusTruncatedNote = ("The status lists were too large for one response, so ${stateText}" +
         (cut ? "; ${cut.join('; ')}" : "") + ". The app's App Status page in the Hubitat UI shows the values. " +
         "See hub_get_tool_guide(section='builtin_app_tools_apps').").toString()
 }
