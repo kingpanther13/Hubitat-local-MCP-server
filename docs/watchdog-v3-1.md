@@ -29,6 +29,11 @@ it unchanged except what is listed here.
   against it. This tool, the version bump and the code-protection check covering both names are
   what 3.2 changed from 3.1.
 
+## Manual file tools
+
+- The watchdog's `hub_write_file` takes no backup copy and overwrites a file it cannot read, unlike the
+  server's, so a repair upload is never blocked.
+
 ## Wiring
 
 - E2E, `install_main`, the probe, the fixture setup workflow, and `watchdog_update` maintenance use

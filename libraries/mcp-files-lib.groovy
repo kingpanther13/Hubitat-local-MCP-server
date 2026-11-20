@@ -71,13 +71,18 @@ private int _filesIntArg(Map args, String key, int defaultValue, int min, int ma
     def v = args?.get(key)
     if (v == null) return defaultValue
     String t = (v instanceof Number || v instanceof CharSequence) ? v.toString().trim() : ""
+    String outOfRange = "${key} must be an integer from ${min} to ${max}; got ${v}."
     // JSON clients may send 3 as 3.0; a number with no fractional part is still that integer.
     if (v instanceof Number && !t.isLong() && t.isBigDecimal()) {
         BigDecimal d = new BigDecimal(t)
+        // Range first: toBigInteger() on an exponent such as 1E+1000000000 builds the whole number.
+        if (d.compareTo(new BigDecimal(min)) < 0 || d.compareTo(new BigDecimal(max)) > 0) {
+            throw new IllegalArgumentException(outOfRange)
+        }
         if (d.signum() == 0 || d.stripTrailingZeros().scale() <= 0) t = d.toBigInteger().toString()
     }
     if (!t.isLong() || t.toLong() < min || t.toLong() > max) {
-        throw new IllegalArgumentException("${key} must be an integer from ${min} to ${max}; got ${v}.")
+        throw new IllegalArgumentException(outOfRange)
     }
     return t.toInteger()
 }
@@ -262,11 +267,12 @@ def toolWriteFile(args) {
             mcpLog("warn", "file-manager", "Write of '${fileName}' refused: its current content could not be read (${downloadError})")
             String cause = kind == FILES_KIND_UNKNOWN
                 ? "The File Manager listing also failed, so whether '${fileName}' exists is unknown."
-                : "'${fileName}' exists but its content could not be downloaded (${downloadError})."
+                : "'${fileName}' exists but its content could not be downloaded."
+            // The download's own message goes in error, where the load-limiter retry looks for it.
             return [
                 success: false,
                 fileName: fileName,
-                error: "Could not read the current '${fileName}' to take its backup copy; nothing was written.".toString(),
+                error: "Could not read the current '${fileName}' to take its backup copy (${downloadError}); nothing was written.".toString(),
                 note: "${cause} Retry in a moment, write the content under a new name, or download the current file from directDownload first. ${FILES_GUIDE_POINTER}".toString(),
                 directDownload: _filesDownloadUrl(fileName)
             ]
@@ -334,7 +340,7 @@ def toolWriteFile(args) {
             error: "Failed to write file '${fileName}': ${e.message}",
             note: backupFileName
                 ? "Its previous content is kept in the backup copy '${backupFileName}'. Read '${fileName}' to see what it holds now before retrying. ${FILES_GUIDE_POINTER}".toString()
-                : "Nothing was written. Retry once File Manager accepts writes. ${FILES_GUIDE_POINTER}".toString()
+                : "The hub reported the upload failed; check with hub_list_files whether '${fileName}' now exists before retrying. ${FILES_GUIDE_POINTER}".toString()
         ]
     }
 }
@@ -409,7 +415,7 @@ def toolDeleteFile(args) {
         if (backupFileName) {
             result.backupFile = backupFileName
             result.backupDownload = _filesDownloadUrl(backupFileName)
-            result.undoHint = "To recover: use 'hub_read_file' on '${backupFileName}' to view contents, or 'hub_write_file' to recreate '${fileName}' from the backup."
+            result.undoHint = "To recover a text file, read '${backupFileName}' with hub_read_file (every chunk, following nextOffset) and recreate '${fileName}' with hub_write_file. For a binary file, download backupDownload and upload it in Settings > File Manager."
             // Pruned only after the delete landed, so a failed delete keeps every older copy.
             _filesReportCopyRetention(result, fileName, _filesPruneBackupCopies(fileName, backupFileName))
         }
@@ -430,6 +436,11 @@ def toolDeleteFile(args) {
         return result
     } catch (Exception e) {
         mcpLogError("file-manager", "Failed to delete file '${fileName}'", e)
+        // The index load runs before the hub delete, so a refusal here means nothing was deleted.
+        if (!backupFileName) {
+            Map unavailable = _itemBackupIndexUnavailableResult(e)
+            if (unavailable != null) return unavailable + [fileName: fileName]
+        }
         return [
             success: false,
             fileName: fileName,
@@ -484,7 +495,7 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_delete_file",
-            description: "⚠️ Permanently delete a file from the hub's File Manager. A backup copy is taken first (backupFile/undoHint in the result). Requires confirm=true and a hub backup from the last 24 hours — get user approval first.",
+            description: "⚠️ Permanently delete a file from the hub's File Manager. A backup copy is taken first when possible (backupFile/undoHint in the result); a file that is itself a backup gets none, and if no copy can be taken (unreadable content or a failed upload) the delete still runs with a warning. Requires confirm=true and a hub backup from the last 24 hours — get user approval first.",
             inputSchema: [
                 type: "object",
                 properties: [

@@ -2832,13 +2832,18 @@ private int adminFileIntArg(Map args, String key, int defaultValue, int min, int
     def v = args?.get(key)
     if (v == null) return defaultValue
     String t = (v instanceof Number || v instanceof CharSequence) ? v.toString().trim() : ""
+    String outOfRange = "${key} must be an integer from ${min} to ${max}; got ${v}."
     // JSON clients may send 3 as 3.0; a number with no fractional part is still that integer.
     if (v instanceof Number && !t.isLong() && t.isBigDecimal()) {
         BigDecimal d = new BigDecimal(t)
+        // Range first: toBigInteger() on an exponent such as 1E+1000000000 builds the whole number.
+        if (d.compareTo(new BigDecimal(min)) < 0 || d.compareTo(new BigDecimal(max)) > 0) {
+            throw new IllegalArgumentException(outOfRange)
+        }
         if (d.signum() == 0 || d.stripTrailingZeros().scale() <= 0) t = d.toBigInteger().toString()
     }
     if (!t.isLong() || t.toLong() < min || t.toLong() > max) {
-        throw new IllegalArgumentException("${key} must be an integer from ${min} to ${max}; got ${v}.")
+        throw new IllegalArgumentException(outOfRange)
     }
     return t.toInteger()
 }

@@ -7398,9 +7398,14 @@ def updated() {}
         return call("hub_restore_backup", {"scope": "source", "backupKey": key, "confirm": True, **options})
 
     def _rm_read_file(self, file_name: str) -> str:
-        chunks, offset = [], 0
+        chunks, offset, length = [], 0, 60000
         while True:
-            page = self.client.call_tool("hub_read_file", {"fileName": file_name, "offset": offset, "length": 60000})
+            page = self.client.call_tool("hub_read_file", {"fileName": file_name, "offset": offset, "length": length})
+            # JSON quotes cost several bytes each once escaped, so a full chunk can exceed the
+            # response cap; repeat at the same offset with a smaller length, as the guide says.
+            if page.get("response_too_large") and length > 10000:
+                length //= 2
+                continue
             assert page.get("success") is True and page.get("offset") == offset, page
             chunks.append(page["content"])
             if not page.get("hasMore"):
@@ -13084,6 +13089,9 @@ def updated() {}
                         f"list download base: {sorted(listed)}"
                     self._expect_tool_refusal("hub_read_file", {"fileName": name, "offset": -1},
                                               "offset must be an integer")
+                    # An exponent arrives as a decimal; it is range-checked before any integer is built.
+                    self._expect_tool_refusal("hub_read_file", {"fileName": name, "offset": 1e20},
+                                              "offset must be an integer")
                     # A missing file is a runtime refusal reached after the hub answered, not a validation one.
                     missing_read = self.client.call_tool_failure("hub_read_file", {"fileName": missing})
                     assert "does not exist in File Manager" in str(missing_read.get("error")), \
@@ -13134,6 +13142,30 @@ def updated() {}
                     decimal = self.client.call_tool("hub_read_file", {"fileName": name, "length": 3.0})
                     assert decimal.get("success") is True and decimal.get("content") == "ver", \
                         f"a whole-number length sent as 3.0 was not accepted: {decimal}"
+                    # Backslashes double once JSON-escaped, so a 60000-character chunk of them is too
+                    # large to send; the suggestion names a smaller length, which then fits.
+                    escaped = f"{PREFIX}561_escaped_{int(time.time())}.txt"
+                    escaped_stem = escaped[:-len(".txt")] + "_backup_"
+                    try:
+                        wr = self.client.call_tool("hub_write_file", {"fileName": escaped, "content": "\\" * 30000, "confirm": True})
+                        assert wr.get("success") is True, f"could not write the backslash fixture: {wr}"
+                        big = self.client.call_tool("hub_read_file", {"fileName": escaped, "length": 60000})
+                        assert big.get("response_too_large") is True and "length" in str(big.get("suggestion")), \
+                            f"a 60000-character chunk of backslashes was not refused as too large with a length hint: {big}"
+                        small = self.client.call_tool("hub_read_file", {"fileName": escaped, "length": 10000})
+                        assert small.get("success") is True and small.get("chunkLength") == 10000, \
+                            f"a 10000-character chunk of backslashes did not fit: {({k: small.get(k) for k in ('success', 'chunkLength', 'response_too_large')})}"
+                    finally:
+                        try:
+                            self.client.call_tool("hub_delete_file", {"fileName": escaped, "confirm": True})
+                        except Exception as exc:
+                            print(f"    [WARN] could not delete {escaped}: {exc}")
+                        leftovers, _ = self._list_all_file_names(escaped_stem)
+                        for nm in [n for n in leftovers if isinstance(n, str) and n.startswith(escaped_stem)]:
+                            try:
+                                self.client.call_tool("hub_delete_file", {"fileName": nm, "confirm": True})
+                            except Exception as exc:
+                                print(f"    [WARN] could not delete {nm}: {exc}")
                     folder, cursor = None, ""
                     for _ in range(100):
                         root = self.client.call_tool("hub_read_files", {"tool": "hub_list_files", "args": {"cursor": cursor}})

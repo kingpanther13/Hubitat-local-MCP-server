@@ -570,6 +570,9 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         [offset: -1]                  | 'offset must be an integer from 0 to'
         [length: 60001]               | 'length must be an integer from 1 to 60000'
         [length: 1.5]                 | 'length must be an integer from 1 to 60000'
+        [offset: new BigDecimal('1E+1000000000')] | 'offset must be an integer from 0 to'
+        [length: new BigDecimal('1E+400')]        | 'length must be an integer from 1 to 60000'
+        [offset: new BigDecimal('1E-1000000000')] | 'offset must be an integer from 0 to'
         [fileName: 'webcore/x.js']    | "'webcore/x.js' names a file in a subfolder; hub_read_file acts on root files only. Open the 'webcore' folder in Hubitat > Settings > File Manager."
         [fileName: 'my.dir/x.js']     | "'my.dir/x.js' names a file in a subfolder; hub_read_file acts on root files only."
         [fileName: 'my file.txt']     | "Invalid file name 'my file.txt'"

@@ -510,6 +510,43 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         resets() == 1
     }
 
+    def 'a write whose backup-copy download the limiter refused is recognised, reset and repeated'() {
+        given: 'the listing shows the file, so the refused download refuses the write'
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = NOW
+        hubGet.register(RESET) { p -> 'ok' }
+        int downloads = 0
+        def uploads = []
+        script.metaClass.downloadHubFile = { String name ->
+            if (name != 'notes.txt') return null
+            if (++downloads == 1) throw new RuntimeException('App 1 generates excessive hub load')
+            'old'.getBytes('UTF-8')
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+        script.metaClass.getHubFiles = { -> [new Expando(name: 'notes.txt', type: 'file', size: '3', date: '1')] }
+
+        when: 'the first attempt alone'
+        def refused = script.toolWriteFile([fileName: 'notes.txt', content: 'new', confirm: true])
+
+        then: 'the refusal sits in error, where the limiter retry looks'
+        refused.success == false
+        refused.error.contains('excessive hub load')
+        script._loadLimiterRefusedResult(refused)
+
+        when: 'through executeTool'
+        downloads = 0
+        uploads.clear()
+        def result = script.executeTool('hub_write_file', [fileName: 'notes.txt', content: 'new', confirm: true])
+
+        then:
+        result.success == true
+        downloads == 2
+        resets() == 1
+        uploads.size() == 2
+        uploads[0].startsWith('notes_backup_')
+        uploads[1] == 'notes.txt'
+    }
+
     def 'a read refused through its gateway is reset and repeated once'() {
         given:
         settingsMap.useGateways = true

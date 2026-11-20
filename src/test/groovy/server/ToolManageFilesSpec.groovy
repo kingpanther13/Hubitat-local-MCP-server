@@ -469,6 +469,30 @@ class ToolManageFilesSpec extends ToolSpecBase {
         [length: 'x3.0']  | 'length must be an integer from 1 to 60000'
         [length: 0]       | 'length must be an integer from 1 to 60000'
         [length: 60001]   | 'length must be an integer from 1 to 60000'
+        [offset: new BigDecimal('1E+1000000000')] | 'offset must be an integer from 0 to'
+        [length: new BigDecimal('1E+400')]        | 'length must be an integer from 1 to 60000'
+        [offset: new BigDecimal('1E-1000000000')] | 'offset must be an integer from 0 to'
+    }
+
+    @spock.lang.Unroll
+    def "hub_read_file refuses a huge exponent #args quickly, without building the integer"() {
+        given:
+        script.metaClass.downloadHubFile = { String name -> throw new AssertionError('must not read') }
+        long started = System.nanoTime()
+
+        when:
+        script.toolReadFile([fileName: 'notes.txt'] + args)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == message
+        (System.nanoTime() - started) < 2_000_000_000L
+
+        where:
+        args                                      | message
+        [offset: new BigDecimal('1E+1000000000')] | 'offset must be an integer from 0 to 2147483647; got 1E+1000000000.'
+        [length: new BigDecimal('1E+400')]        | 'length must be an integer from 1 to 60000; got 1E+400.'
+        [offset: new BigDecimal('1E-1000000000')] | 'offset must be an integer from 0 to 2147483647; got 1E-1000000000.'
     }
 
     @spock.lang.Unroll
@@ -854,7 +878,8 @@ class ToolManageFilesSpec extends ToolSpecBase {
         uploads.isEmpty()
         result.success == false
         result.fileName == 'x.txt'
-        result.error == "Could not read the current 'x.txt' to take its backup copy; nothing was written."
+        result.error == "Could not read the current 'x.txt' to take its backup copy (File Manager API transient error); nothing was written."
+        result.note.count('File Manager API transient error') == 0
         result.note.contains(noteNeedle)
         result.note.contains('write the content under a new name, or download the current file from directDownload first')
         result.note.endsWith("See hub_get_tool_guide(section='file_manager').")
@@ -863,7 +888,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
         where:
         why                         | setupListing                                                                                       | noteNeedle
-        'the file is listed'        | { -> listing([fileEntry('x.txt')]) }                                                               | 'File Manager API transient error'
+        'the file is listed'        | { -> listing([fileEntry('x.txt')]) }                                                               | "'x.txt' exists but its content could not be downloaded."
         'the listing fails too'     | { -> hubFilesFail() }                                                                              | 'whether \'x.txt\' exists is unknown'
     }
 
@@ -947,7 +972,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.success == false
         result.fileName == 'x.txt'
         result.error.contains('hub storage full')
-        result.note == "Nothing was written. Retry once File Manager accepts writes. See hub_get_tool_guide(section='file_manager')."
+        result.note == "The hub reported the upload failed; check with hub_list_files whether 'x.txt' now exists before retrying. See hub_get_tool_guide(section='file_manager')."
     }
 
     def "a write whose upload fails after the backup copy names that copy in its note"() {
@@ -1225,6 +1250,8 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.backupFile.startsWith('notes_backup_')
         result.backupDownload.contains('/local/notes_backup_')
         result.undoHint.contains('hub_read_file')
+        result.undoHint.contains('nextOffset')
+        result.undoHint.contains('backupDownload')
     }
 
     @spock.lang.Unroll
@@ -1553,14 +1580,98 @@ class ToolManageFilesSpec extends ToolSpecBase {
             ['hub_read_file', [fileName: 'webcore'], false, "'webcore' is a folder, not a file.", 1],
             ['hub_write_file', [fileName: 'webcore', content: 'x', confirm: true], false, "'webcore' is a folder, not a file.", 1],
             ['hub_delete_file', [fileName: 'webcore', confirm: true], false, "'webcore' is a folder, not a file.", 1],
-            ['hub_write_file', [fileName: 'listed.txt', content: 'x', confirm: true], false, "Could not read the current 'listed.txt'", 1],
+            ['hub_write_file', [fileName: 'listed.txt', content: 'x', confirm: true], false, "Could not read the current 'listed.txt' to take its backup copy (listed.txt: Exception occured while reading file); nothing was written.", 1],
             ['hub_write_file', [fileName: 'notes.txt', content: 'x', confirm: true], true, "Could not read the current 'notes.txt'", 1],
             ['hub_list_files', [folder: 'a b'], false, 'folder must be a relative File Manager folder path', 0],
             ['hub_list_files', [folder: 'a.b'], false, 'folder must be a relative File Manager folder path', 0],
             ['hub_read_file', [fileName: 'my.dir/x.txt'], false, "'my.dir/x.txt' names a file in a subfolder; hub_read_file acts on root files only.", 0],
             ['hub_delete_file', [fileName: 'my.dir/x.txt', confirm: true], false, "'my.dir/x.txt' names a file in a subfolder; hub_delete_file acts on root files only.", 0],
             ['hub_read_file', [fileName: 'notes.txt', length: 1.5], false, 'length must be an integer from 1 to 60000', 0],
+            ['hub_read_file', [fileName: 'notes.txt', offset: new BigDecimal('1E+1000000000')], false, 'offset must be an integer from 0 to 2147483647; got 1E+1000000000.', 0],
         ].collectMany { row -> [true, false].collect { mode -> row + [mode] } }
+    }
+
+    def "a delete whose existence check fails is refused, deleting nothing, while the backup index is not loaded"() {
+        given: 'the listing fails, the download fails, and the index cache is cold'
+        enableWrite()
+        def deleted = []
+        script.metaClass.downloadHubFile = { String name -> throw fileSystemError(name) }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> throw new AssertionError('no copy without content') }
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        hubFilesFail()
+        backupIndexStore.readError = new IllegalStateException('listing failed')
+
+        when:
+        def result = script.toolDeleteFile([fileName: 'notes.txt', confirm: true])
+
+        then:
+        result.success == false
+        result.fileName == 'notes.txt'
+        result.error.startsWith('Backup index unavailable')
+        result.note.startsWith('Nothing was changed')
+        deleted.isEmpty()
+    }
+
+    @spock.lang.Unroll
+    def "a delete refused for an unloaded backup index reaches the client as isError (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        def deleted = []
+        script.metaClass.downloadHubFile = { String name -> throw fileSystemError(name) }
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        hubFilesFail()
+        backupIndexStore.readError = new IllegalStateException('listing failed')
+
+        when:
+        def response = mcpDriver.callTool('hub_delete_file', [fileName: 'notes.txt', confirm: true])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.fileName == 'notes.txt'
+        inner.error.startsWith('Backup index unavailable')
+        inner.note.startsWith('Nothing was changed')
+        deleted.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "an oversized hub_read_file result names a smaller length"() {
+        expect:
+        script._responseTooLargeSuggestion('hub_read_file') ==
+            'This chunk is too large once JSON-escaped: quotes, backslashes, newlines and non-ASCII characters take several bytes each. Call again at the same offset with a smaller length, e.g. 10000.'
+    }
+
+    @spock.lang.Unroll
+    def "a chunk of 30000 backslashes at length 60000 is too large once escaped, and the suggestion names length (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        script.metaClass.downloadHubFile = { String name -> ('\\' * 30000).getBytes('UTF-8') }
+
+        when:
+        def response = mcpDriver.callTool('hub_read_file', [fileName: 'slashes.txt', length: 60000])
+
+        then:
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.response_too_large == true
+        inner.tool == 'hub_read_file'
+        inner.suggestion == script._responseTooLargeSuggestion('hub_read_file')
+
+        when: 'the same offset with a smaller length fits'
+        def smaller = mcpDriver.parseInner(mcpDriver.callTool('hub_read_file', [fileName: 'slashes.txt', length: 10000]))
+
+        then:
+        smaller.success == true
+        smaller.chunkLength == 10000
+        smaller.nextOffset == 10000
+
+        where:
+        useGateways << [true, false]
     }
 
     def "write, read and delete results carry the hub's real download URL"() {
