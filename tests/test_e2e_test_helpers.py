@@ -3138,18 +3138,19 @@ def test_list_all_file_names_response_too_large_is_non_authoritative():
     assert names == ["a.txt"]  # partial names kept: presence evidence stays usable
 
 
-def test_list_all_file_names_degraded_blind_empty_page_is_non_authoritative():
-    """A blind empty page with a message/error marker (File Manager degraded under
-    load) is non-authoritative."""
+def test_list_all_file_names_failed_listing_is_non_authoritative():
+    """A listing the hub could not serve arrives as an isError result: partial names are kept,
+    authority is dropped."""
     (names, authoritative), _ = _list_files_via([
-        {"files": [], "message": "File Manager unavailable"},
+        {"files": [{"name": "a.txt"}], "nextCursor": "1"},
+        et.McpToolError("hub_read_files", "Could not list File Manager: status code: 500"),
     ])
     assert authoritative is False
-    assert names == []
+    assert names == ["a.txt"]
 
 
 def test_list_all_file_names_clean_empty_listing_is_authoritative():
-    """A marker-free empty page is a real (authoritative) empty File Manager."""
+    """A clean empty page is a real (authoritative) empty File Manager."""
     (names, authoritative), _ = _list_files_via([{"files": []}])
     assert authoritative is True
     assert names == []

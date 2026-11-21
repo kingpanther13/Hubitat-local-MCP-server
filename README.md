@@ -580,7 +580,7 @@ Non-destructive radio operations. Destructive radio ops (reset/wipe, firmware up
 | `hub_list_files` | List files in File Manager (optional `filter` name substring; also in `hub_read_files`) |
 | `hub_read_file` | Read a file's contents (also in `hub_read_files`) |
 | `hub_write_file` | Create or update a file (auto-backs up existing) |
-| `hub_delete_file` | Delete a file (auto-backs up first) |
+| `hub_delete_file` | Delete a file (takes a backup copy first when possible) |
 
 Write/delete require the Write master + confirm + a recent backup.
 
@@ -1669,6 +1669,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v5.2.1** - docs: change the watchdog only when CI or repair needs it; feat: rebuild the File Manager tools on the hub's own listing. PRs: [#597](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/597), [#586](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/586)
 - **v5.2.0** - feat: five dashboard tools instead of six (copy via hub_create_dashboard). PRs: [#581](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/581)
 - **v5.1.13** - feat: fold hub_get_device_attribute into hub_get_device and hub_list_devices (waitFor, deviceIds). PRs: [#592](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/592)
 - **v5.1.12** - fix: hub_list_drivers(include='all') pages by default so the catalog fits through the cloud. PRs: [#590](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/590)

@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 5.2.0 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 5.2.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -5526,8 +5526,10 @@ def _responseTooLargeSuggestion(String toolName) {
             return "For scope='instances': set includeHidden=false (the default), narrow via filter (builtin / user / disabled / parents / children), or pass cursor to page through the apps list."
         case "hub_get_app_config":
             return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, read one page at a time with pageName, chosen from the page.hrefs a page returns. If you only need identity, pass summary=true."
+        case "hub_read_file":
+            return "This chunk is too large once JSON-escaped: quotes, backslashes, newlines and non-ASCII characters take several bytes each. Call again at the same offset with a smaller length, e.g. 10000."
         case "hub_list_files":
-            return "Pagination here is OPT-IN: with no cursor the tool returns the WHOLE listing, so a large File Manager has no natural page break. Re-issue with cursor='0' to page through it, or narrow with filter='<substring of the name>'."
+            return "Pagination here is OPT-IN: with no cursor the tool returns the WHOLE listing, so a large File Manager has no natural page break. Re-issue with cursor='' to page through it, or narrow with filter='<substring of the name>'."
         case "hub_get_device_health":
             return "Set includeHealthy=false (the default), narrow staleHours, or pass cursor to page through staleDevices."
         case "hub_get_memory_history":
@@ -5884,10 +5886,10 @@ def getGatewayConfig() {
             description: "Manage hub File Manager: list, read, write, and delete files stored on the hub.",
             tools: ["hub_list_files", "hub_read_file", "hub_write_file", "hub_delete_file"],
             summaries: [
-                hub_list_files: "List files and subfolders in File Manager (names, sizes, URLs, free space). Args: filter, folder, cursor",
+                hub_list_files: "List files and subfolders in File Manager (names, sizes, download base, free space). Args: filter, folder, cursor",
                 hub_read_file: "Read file content. Args: fileName, offset, length",
                 hub_write_file: "Write file to File Manager. Args: fileName, content, confirm=true",
-                hub_delete_file: "Delete file from File Manager (auto-backs up first to <name>_backup_<ts>, unless it's already a backup). Args: fileName, confirm=true"
+                hub_delete_file: "Delete file from File Manager (takes a backup copy to <name>_backup_<ts> first when possible; none for a file that is itself a backup). Args: fileName, confirm=true"
             ],
             searchHints: [
                 hub_list_files: "show uploaded stored csv json text data filter search name substring backup",
@@ -6012,7 +6014,7 @@ def getGatewayConfig() {
             description: "Read-only hub File Manager access: list files and read file content. All operations are read-only; write/delete live in hub_manage_files.",
             tools: ["hub_list_files", "hub_read_file"],
             summaries: [
-                hub_list_files: "List files and subfolders in File Manager (names, sizes, URLs, free space). Args: filter, folder, cursor",
+                hub_list_files: "List files and subfolders in File Manager (names, sizes, download base, free space). Args: filter, folder, cursor",
                 hub_read_file: "Read file content. Args: fileName, offset, length"
             ],
             searchHints: [
@@ -9159,24 +9161,54 @@ private Map _rebuildItemBackupIndex() {
     return rebuilt
 }
 
-// Root File Manager files as [name, size, date] (size in bytes, date in epoch ms; null when
-// the firmware omits them or sends a non-number). Accepts the shapes hub_list_files does.
-// Throws when the listing is unavailable or unrecognised.
-List _fileManagerRootFiles() {
-    String text = hubInternalGet("/hub/fileManager/json")?.toString()
+// size and date stay null, not 0, when the hub omits them or sends a non-number, so an unknown
+// value never reads as an empty file or the epoch.
+Map _fileManagerListing(String folder = null) {
+    String text = hubInternalGet("/hub/fileManager/json", folder ? [folder: folder] : null)?.toString()
     if (!text) throw new IllegalStateException("/hub/fileManager/json returned no data")
     def parsed = new groovy.json.JsonSlurper().parseText(text)
     def files = null
     if (parsed instanceof List) {
         files = parsed
     } else if (parsed instanceof Map) {
+        // An empty folder answers files:[]; only a shape without the key falls back to its values.
         files = parsed.containsKey("files") ? parsed.files : parsed.values()?.flatten()
     }
     if (!(files instanceof List)) throw new IllegalStateException("/hub/fileManager/json returned an unrecognised shape")
-    Closure asLong = { v -> v != null && v.toString().isLong() ? v.toString().toLong() : null }
-    return (files as List).findAll { !(it instanceof Map) || it.type != "dir" }.collect { f ->
-        f instanceof Map ? [name: f.name?.toString(), size: asLong(f.size), date: asLong(f.date)] : [name: f.toString(), size: null, date: null]
+    List entries = (files as List).collect { f ->
+        f instanceof Map
+            ? [name: f.name?.toString(), type: f.type?.toString(), size: _fileManagerLong(f.size), date: _fileManagerLong(f.date),
+               backupIncluded: f.backupIncluded instanceof Boolean ? f.backupIncluded : null]
+            : [name: f?.toString(), type: null, size: null, date: null, backupIncluded: null]
     }.findAll { it.name }
+    // A non-empty answer without a files list that yields nothing is almost always a firmware
+    // shape change, which would otherwise read as an empty File Manager.
+    if (entries.isEmpty() && parsed && !(parsed instanceof Map && parsed.containsKey("files"))) {
+        String shapeHint = (parsed instanceof Map) ? "Map with keys=${parsed.keySet()?.take(10)?.toList()}" :
+                           (parsed instanceof List) ? "List of ${parsed.size()} unnamed entries" : _typeName(parsed)
+        mcpLog("warn", "file-manager", "File Manager listing yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [shape: shapeHint]])
+    }
+    Map selection = (parsed instanceof Map && parsed.backupSelection instanceof Map) ? parsed.backupSelection : null
+    return [files: entries,
+            freeSpace: parsed instanceof Map ? _fileManagerLong(parsed.freeSpace) : null,
+            excludedFiles: selection?.excludedFiles]
+}
+
+private Long _fileManagerLong(v) {
+    return v != null && v.toString().isLong() ? v.toString().toLong() : null
+}
+
+// In-process, so it skips the /hub/fileManager/json round trip; it has no backup or free-space
+// fields.
+List _fileManagerRootEntries() {
+    def files = getHubFiles()
+    if (!(files instanceof Collection)) throw new IllegalStateException("getHubFiles() returned no file list")
+    return files.collect { f -> [name: f?.name?.toString(), type: f?.type?.toString(), size: _fileManagerLong(f?.size), date: _fileManagerLong(f?.date)] }
+        .findAll { it.name }
+}
+
+List _fileManagerRootFiles() {
+    return _fileManagerRootEntries().findAll { it.type != "dir" }.collect { [name: it.name, size: it.size, date: it.date] }
 }
 
 private void _commitItemBackupManifest(Map manifest) {
@@ -9399,9 +9431,6 @@ private Map _deleteHubFileAndUnlinkBackups(String fileName) {
         return [:]
     }
 }
-
-// ==================== FILE MANAGER TOOLS ====================
-
 
 /**
  * Formats an epoch timestamp into a human-readable age string (e.g., "5 minutes ago").
@@ -11311,7 +11340,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "5.2.0"
+    return "5.2.1"
 }
 
 
@@ -12258,30 +12287,31 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 
         file_manager: '''## File Manager
 
-Files stored at http://<HUB_IP>/local/<filename>
+Files download from http://<hub IP>/local/<filename> (`downloadUrlBase` in hub_list_files, `directDownload` in hub_read_file and hub_write_file results, `backupDownload` for the backup copy hub_write_file or hub_delete_file takes).
 
 **File name rules:**
-- Must match ^[A-Za-z0-9][A-Za-z0-9._-]*$
-- No spaces, no leading period
-- Valid: my-config.json, backup_2024.txt
-- Invalid: .hidden, my file.txt
+- Must match ^[A-Za-z0-9_-][A-Za-z0-9._-]*$ (the characters the hub's own upload accepts)
+- Letters, numbers, hyphens, underscores and periods only; no spaces or other characters, no leading period
+- Valid: my-config.json, backup_2024.txt, _notes.txt, -draft.txt
+- Invalid: .hidden, my file.txt, notes(1).txt, webcore/x.js
+- hub_read_file, hub_write_file and hub_delete_file act on root files only: a name with `/` is refused, and a folder name is refused as a folder ("is a folder, not a file").
 
 **Chunked reading:**
-- Use offset and length for files >60KB
-- Each chunk must be <60KB
-- Follow `nextOffset` while `hasMore` is true to read the next chunk
+- `offset` (character offset, 0 or more) and `length` (1-60000, default 30000); follow `nextOffset` while `hasMore` is true. Whole numbers sent as decimals (3.0) are accepted. Each chunk downloads the whole file on the hub, so a larger `length` means fewer downloads, but quotes, backslashes, newlines and non-ASCII characters cost several bytes each on the wire once JSON-escaped. On `response_too_large`, call again at the same `offset` with a smaller `length`.
 
-**Backup copies:** hub_write_file (when it overwrites different content) and hub_delete_file first copy the file to `<name>_backup_<yyyyMMdd-HHmmss-SSS><ext>` (older copies use `<yyyyMMdd-HHmmss>`). If that copy cannot be written, hub_write_file writes nothing and returns `success: false`; hub_delete_file deletes anyway with a `warning`. After the write or delete succeeds, the newest 5 copies of each file name are kept; older copies of that same name are deleted and listed in `removedOldBackups`. A failed listing or delete leaves them and adds `pruneWarning`.
+**Errors and retries:** every failure is an error result (`isError: true`, `success: false`). A successful result that is too large to send is not a failure: it comes back as a `response_too_large` envelope with a `suggestion` and no `isError` (an oversized error result keeps `isError: true`); for hub_read_file, follow Chunked reading above (same `offset`, smaller `length`). Reading or deleting a root file that does not exist says "does not exist in File Manager" and changes nothing. Writing a file's current content again writes nothing (`unchanged: true`), so a retried write is safe. A delete retried after a dropped response reports "does not exist" when the first call already deleted it, so check its backup copy with hub_list_files(filter: '<base>_backup_'). A write whose current content cannot be read is refused rather than overwritten, since its backup copy could not be taken. Retry once the read recovers, write under a new name, or save the current content from `directDownload`, then upload the new content over the file in Settings > File Manager (downloading the file does not make a retried write succeed). A delete of a listed file whose content cannot be read (unless the load limiter refused the download, which refuses the delete) still goes ahead with no backup copy and a `warning`: refusing would leave no way to remove a corrupt file, while a write has a new name as its workaround. If the listing also fails while a delete checks a file it could not download, the delete goes ahead with a `warning` that existence could not be checked and the file may not have existed (the hub's delete does not fail on a missing name). If the listing fails and the backup index is not loaded yet, the delete is refused before anything changes; retry once File Manager answers. Send writes and deletes of the same file one at a time.
+
+**Backup copies:** hub_write_file (when it overwrites different content) and hub_delete_file first copy the file to `<name>_backup_<yyyyMMdd-HHmmss-SSS><ext>` (older copies use `<yyyyMMdd-HHmmss>`). hub_delete_file takes none for a file that is itself a backup (a name containing `_backup_` or starting `mcp-backup-`, `mcp-rm-backup-` or `mcp-prerestore-`). If that copy cannot be written, hub_write_file writes nothing and returns `success: false`; hub_delete_file deletes anyway with a `warning`. After the write or delete succeeds, the newest 5 copies of each file name are kept; older copies of that same name are deleted and listed in `removedOldBackups`. A failed listing or delete leaves them and adds `pruneWarning`. To recover a text file, read its copy with hub_read_file (every chunk, following `nextOffset`) and write it back with hub_write_file; for a binary file, download `backupDownload` and upload it in Settings > File Manager.
 
 ### hub_list_files
 
-Use to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. **`filter`:** case-insensitive substring match on the file name -- pass `filter: "backup"` to find backups instead of paging the whole listing and matching client-side. **Cursor pagination:** page size 100 -- omit the cursor for an unbounded list; pass "" for the first page and iterate `nextCursor`.
+Use to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Each file carries `size` (bytes) and `lastModified` (epoch ms) when the hub reports them. **`filter`:** case-insensitive substring match on the file name -- pass `filter: "backup"` to find backups instead of paging the whole listing and matching client-side. **Cursor pagination:** page size 100 -- omit the cursor for an unbounded list; pass "" for the first page and iterate `nextCursor`.
 
-**Folders (firmware 2.5.2+):** the root listing includes subfolders as entries with `type: "dir"` (no size or download URL); list one with `folder: "<name>"` (nested as `a/b`). Files carry `type: "file"`, and `backupIncluded: false` marks a file a full local backup leaves out (past its 100 MiB File Manager limit). The response adds `freeSpaceBytes` and `filesExcludedFromFullBackup`. A folder that is empty or does not exist lists no files. hub_read_file, hub_write_file and hub_delete_file act on root files only (the hub rejects a `/` in their names); a file in a subfolder is read through its `directDownload` URL.
+**Folders:** the root listing includes subfolders as entries with `type: "dir"` (no size); list one with `folder: "<name>"` (nested as `a/b`; letters, digits, underscore and hyphen; no spaces or dots -- the hub can neither create nor list a folder with either). Files carry `type: "file"`, and `backupIncluded: false` marks a file a full local backup leaves out (past its 100 MiB File Manager limit). The response adds `freeSpaceBytes` and `filesExcludedFromFullBackup` (a count) when the hub reports them. A folder that is empty or does not exist lists no files. A file in a subfolder downloads from that listing's `downloadUrlBase` + its name.
 
 ### hub_read_file
 
-Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV). For files >60KB use the chunked-reading loop above.''',
+Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV). For a file longer than one chunk (default 30000 characters) use the chunked-reading loop above.''',
 
         performance: '''## Performance Tips
 

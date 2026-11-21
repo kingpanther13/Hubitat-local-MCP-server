@@ -22,6 +22,23 @@ class BackupRetentionSpec extends ToolSpecBase {
          timestamp: timestamp, sourceLength: sizeBytes, sizeBytes: sizeBytes]
     }
 
+    private int hubFilesCalls = 0
+
+    // The root lookups read getHubFiles(), not /hub/fileManager/json. Live hubs answer
+    // FileManagerEntry objects (see hubFileEntry); the maps here carry the same properties.
+    private void listFiles(List files) {
+        script.metaClass.getHubFiles = { ->
+            hubFilesCalls++
+            files
+        }
+    }
+
+    // A live FileManagerEntry: size is a String byte count, date String epoch milliseconds; a
+    // folder has type "dir", size "0" and a null date.
+    private static Expando hubFileEntry(String name, String type, String size, String date) {
+        return new Expando(name: name, type: type, size: size, date: date)
+    }
+
     private List deletedFiles() {
         List deleted = []
         script.metaClass.deleteHubFile = { String name -> deleted << name }
@@ -42,7 +59,8 @@ class BackupRetentionSpec extends ToolSpecBase {
         view.keySet() == ['app_1'] as Set
         !atomicStateMap.containsKey('itemBackupManifest')
         backupIndex == [app_1: app('1', 5L, 10L)]
-        hubGet.calls.empty // no listing rebuild when an older index exists
+        hubFilesCalls == 0 // no listing rebuild when an older index exists
+        hubGet.calls.empty
     }
 
     def 'a failed index-file write keeps the app-state index until the next write succeeds'() {
@@ -86,12 +104,6 @@ class BackupRetentionSpec extends ToolSpecBase {
     }
 
     // ---------- rebuild from the File Manager listing ----------
-
-    private void listFiles(List files) {
-        hubGet.register('/hub/fileManager/json') { params ->
-            JsonOutput.toJson([files: files, freeSpace: 1000])
-        }
-    }
 
     def 'a missing index is rebuilt from the listing and adopts backup files from older versions'() {
         given:
@@ -211,9 +223,9 @@ class BackupRetentionSpec extends ToolSpecBase {
         given:
         backupIndex = null
         boolean listingDown = true
-        hubGet.register('/hub/fileManager/json') { params ->
+        script.metaClass.getHubFiles = { ->
             if (listingDown) throw new RuntimeException('listing unavailable')
-            JsonOutput.toJson([files: [[name: 'mcp-backup-app-7.groovy', type: 'file', size: '9', date: '70']]])
+            [[name: 'mcp-backup-app-7.groovy', type: 'file', size: '9', date: '70']]
         }
         List deleted = deletedFiles()
 
@@ -480,19 +492,49 @@ class BackupRetentionSpec extends ToolSpecBase {
 
     // ---------- File Manager listing shapes ----------
 
-    def 'the File Manager listing is read from every shape hub_list_files accepts'() {
+    def 'every listing shape _fileManagerListing accepts yields its files'() {
         given:
         hubGet.register('/hub/fileManager/json') { params -> JsonOutput.toJson(body) }
 
         expect:
-        script._fileManagerRootFiles() == expected
+        script._fileManagerListing().files.collect { it.subMap(['name', 'type', 'size', 'date']) } == expected
 
         where:
         body                                                                  | expected
-        [[name: 'a.txt', size: '3', date: '4']]                               | [[name: 'a.txt', size: 3L, date: 4L]]
-        ['a.txt', 'b.txt']                                                    | [[name: 'a.txt', size: null, date: null], [name: 'b.txt', size: null, date: null]]
-        [files: [[name: 'a.txt', size: 'big', date: 'today'], [name: 'd', type: 'dir']]] | [[name: 'a.txt', size: null, date: null]]
-        [rootFiles: [[name: 'a.txt', size: 5]]]                               | [[name: 'a.txt', size: 5L, date: null]]
+        [[name: 'a.txt', size: '3', date: '4']]                               | [[name: 'a.txt', type: null, size: 3L, date: 4L]]
+        ['a.txt', 'b.txt']                                                    | [[name: 'a.txt', type: null, size: null, date: null], [name: 'b.txt', type: null, size: null, date: null]]
+        [files: [[name: 'a.txt', size: 'big', date: 'today'], [name: 'd', type: 'dir']]] | [[name: 'a.txt', type: null, size: null, date: null], [name: 'd', type: 'dir', size: null, date: null]]
+        [rootFiles: [[name: 'a.txt', size: 5]]]                               | [[name: 'a.txt', type: null, size: 5L, date: null]]
+    }
+
+    def 'the root file list comes from getHubFiles, without folders or an HTTP listing'() {
+        given:
+        listFiles(entries)
+
+        expect:
+        script._fileManagerRootFiles() == expected
+        hubGet.calls.isEmpty()
+
+        where:
+        entries                                                                    | expected
+        [[name: 'a.txt', type: 'file', size: '3', date: '4']]                      | [[name: 'a.txt', size: 3L, date: 4L]]
+        [[name: 'a.txt', type: 'file', size: 3L, date: 4L]]                        | [[name: 'a.txt', size: 3L, date: 4L]]
+        [[name: 'a.txt', type: 'file', size: 'big', date: 'today'], [name: 'd', type: 'dir', size: '0']] | [[name: 'a.txt', size: null, date: null]]
+        [[name: null, type: 'file'], [name: 'b.txt', type: 'file']]                 | [[name: 'b.txt', size: null, date: null]]
+        [hubFileEntry('a.txt', 'file', '21', '1795156449220'), hubFileEntry('d', 'dir', '0', null)] | [[name: 'a.txt', size: 21L, date: 1795156449220L]]
+        []                                                                         | []
+    }
+
+    def 'a getHubFiles answer that is not a list fails the root lookup'() {
+        given:
+        script.metaClass.getHubFiles = { -> null }
+
+        when:
+        script._fileManagerRootFiles()
+
+        then:
+        def e = thrown(IllegalStateException)
+        e.message.contains('getHubFiles')
     }
 
     def 'adopted files with no listed date are the oldest, so the budget evicts them first'() {
