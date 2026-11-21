@@ -9199,8 +9199,8 @@ private Long _fileManagerLong(v) {
     return v != null && v.toString().isLong() ? v.toString().toLong() : null
 }
 
-// In-process, so it skips the /hub/fileManager/json round trip; it lacks the backup and free-space
-// fields, which name and type lookups do not need.
+// In-process, so it skips the /hub/fileManager/json round trip; it has no backup or free-space
+// fields.
 List _fileManagerRootEntries() {
     def files = getHubFiles()
     if (!(files instanceof Collection)) throw new IllegalStateException("getHubFiles() returned no file list")

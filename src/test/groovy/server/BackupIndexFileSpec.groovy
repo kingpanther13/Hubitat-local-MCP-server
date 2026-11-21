@@ -8,7 +8,7 @@ import support.ToolSpecBase
  * The backup index's real File Manager calls (issues #506 / #517): every other spec swaps the
  * index file for the harness store, so this one runs the production read/write through
  * downloadHubFile / uploadHubFile. The root lookups read getHubFiles(), stubbed on
- * script.metaClass in the shape the JSON listing sends (string size and date).
+ * script.metaClass in the shape getHubFiles() answers (string size and date).
  */
 class BackupIndexFileSpec extends ToolSpecBase {
     @Override

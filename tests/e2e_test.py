@@ -13188,8 +13188,7 @@ def updated() {}
                     else:
                         # The write leg is safe because the folder holds files: the hub refuses to
                         # overwrite a folder only then, and replaces an empty one with the file.
-                        # The delete leg is safe for the same reason: the chosen folder holds files,
-                        # and the hub refuses to replace a non-empty folder.
+                        # The delete leg is safe on any folder: the hub's delete ignores a folder name.
                         for tool, extra in (("hub_read_file", {}), ("hub_write_file", {"content": "x", "confirm": True}),
                                             ("hub_delete_file", {"confirm": True})):
                             refused = self.client.call_tool_failure(tool, {"fileName": folder, **extra})

@@ -22,9 +22,11 @@ import support.ToolSpecBase
  *                                              it on script.metaClass with the same entries and
  *                                              records each call in hubFilesCalls
  *   - downloadHubFile / uploadHubFile /
- *     deleteHubFile                         -> stubbed per-test on script.metaClass; a missing
- *                                              name throws NoSuchFileException and a folder
- *                                              FileSystemException, as on a live hub
+ *     deleteHubFile                         -> stubbed per-test on script.metaClass. As on a live
+ *                                              hub, downloadHubFile throws NoSuchFileException for
+ *                                              a missing name and FileSystemException for a folder;
+ *                                              deleteHubFile does not fail for a missing name or a
+ *                                              folder
  *
  * hub_write_file + hub_delete_file are gated centrally by the Write master at the
  * executeTool chokepoint (enableWrite, default ON; only an explicit ==false blocks),
@@ -1675,6 +1677,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.fileName == 'notes.txt'
         result.error.startsWith('Backup index unavailable')
         result.note.startsWith('Nothing was changed')
+        result.note.endsWith("See hub_get_tool_guide(section='file_manager').")
         deleted.isEmpty()
     }
 
@@ -1700,6 +1703,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         inner.fileName == 'notes.txt'
         inner.error.startsWith('Backup index unavailable')
         inner.note.startsWith('Nothing was changed')
+        inner.note.endsWith("See hub_get_tool_guide(section='file_manager').")
         deleted.isEmpty()
 
         where:
