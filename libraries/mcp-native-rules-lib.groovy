@@ -683,7 +683,7 @@ private Map _vrbTogglePaused(Integer ruleId, String action) {
         }
     }
     if (sent.success != true) return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${sent.error}".toString(),
-        note: "Re-issuing is safe: the Visual Rule's state is read first and a rule already ${target ? 'paused' : 'not paused'} is left alone. Confirm with hub_get_rule or hub_list_rules. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
+        note: "Re-issuing is safe: the Visual Rule's state is read first and a rule already ${target ? 'paused' : 'not paused'} is left alone. Confirm with hub_get_rule (Visual Rules are not in hub_list_rules). See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
     return [success: true, ruleId: ruleId, rmAction: "ruleBuilderPause -> ${target}".toString()]
 }
 
