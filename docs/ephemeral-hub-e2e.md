@@ -18,7 +18,7 @@ The PR consumer and trusted requester get independent GitHub events. Each runs a
 `Fast CI prerequisites` job that polls the fast workflow results every 30 seconds
 (`.github/scripts/ephemeral_fast_ci.rb`) and starts its hub jobs once every
 applicable check is green on the current revision, about five minutes after a
-push. If a check fails, or the checks have not finished after 15 minutes, the hub
+push. If a check fails, or the checks have not finished after 20 minutes, the hub
 jobs are skipped, the gate job names the failed or unfinished workflows, and on a
 PR both `Ephemeral e2e verdict` statuses stay pending. After a failed fast check
 passes on a re-run, re-run the `Fast CI prerequisites` job in both the test run and

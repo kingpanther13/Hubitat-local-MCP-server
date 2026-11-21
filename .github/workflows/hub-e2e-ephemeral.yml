@@ -30,14 +30,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Polls until this revision's fast CI finishes (about five minutes), up to 15 minutes.
+  # Polls until this revision's fast CI finishes (about five minutes), up to 20 minutes.
   fast-ci:
     name: Fast CI prerequisites
     outputs:
       result: ${{ steps.fast.outputs.result }}
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       actions: read
       contents: read

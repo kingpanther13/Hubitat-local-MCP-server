@@ -10,7 +10,7 @@ module EphemeralFastCI
   FILTERED = %w[groovy24-parse sandbox-lint python-tests ruff self-deploy-recovery
                 lane-gate-test lease-scripts-test dependency-updates-check].freeze
   # Fast CI takes about five minutes; the gate polls so no second workflow has to wake it.
-  WAIT_SECONDS = 15 * 60
+  WAIT_SECONDS = 20 * 60
   POLL_SECONDS = 30
 
   def self.api(path, *options)

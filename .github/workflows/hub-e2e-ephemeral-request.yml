@@ -76,7 +76,7 @@ jobs:
           retention-days: 1
           overwrite: true
 
-  # Polls until this revision's fast CI finishes (about five minutes), up to 15 minutes.
+  # Polls until this revision's fast CI finishes (about five minutes), up to 20 minutes.
   fast-ci:
     name: Fast CI prerequisites
     outputs:
@@ -84,7 +84,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       actions: read
       contents: read
