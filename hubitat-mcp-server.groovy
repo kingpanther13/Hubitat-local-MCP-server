@@ -5685,7 +5685,7 @@ def getGatewayConfig() {
             tools: ["hub_list_variables", "hub_get_variable", "hub_set_variable", "hub_create_variable", "hub_delete_variable", "hub_create_connector", "hub_delete_connector"],
             summaries: [
                 hub_list_variables: "List all hub variables (with type, connector and Hub Mesh sharing) and rule-engine variables. Args: type, cursor",
-                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable plus its connector and Hub Mesh details. Args: name, includeDependents?",
+                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable plus its connector and Hub Mesh details. Change history: hub_get_logs(mode='locationEvents'). Args: name, includeDependents?",
                 hub_set_variable: "Set an existing variable's value, or add to a Number/Decimal hub variable atomically. Falls back to rule_engine namespace when no hub var matches. meshShared shares a hub variable over Hub Mesh. Args: name, value | increment, meshShared?",
                 hub_create_variable: "Create a new hub variable, or several at once. Single: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true. Bulk: variables=[{name,type,value},...], confirm=true (mutually exclusive with the single form)",
                 hub_delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if apps or rules use it]",
@@ -6017,7 +6017,7 @@ def getGatewayConfig() {
             tools: ["hub_list_variables", "hub_get_variable"],
             summaries: [
                 hub_list_variables: "List all hub variables (with type, connector and Hub Mesh sharing) and rule-engine variables. Args: type, cursor",
-                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable plus its connector and Hub Mesh details. Args: name, includeDependents?"
+                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable plus its connector and Hub Mesh details. Change history: hub_get_logs(mode='locationEvents'). Args: name, includeDependents?"
             ],
             searchHints: [
                 hub_list_variables: "show all global state connector variables",
@@ -12762,6 +12762,10 @@ The returned `source` field says which one matched (the hub-variable namespace i
 - **Empty vs unknown:** `appsUsing:[]`, `count:0` means no app currently references the hub variable. `includeDependents` applies only to hub variables; it is ignored for a rule-engine variable (no hub in-use registry), so no `appsUsing` field appears. If the registry cannot be read, the response carries `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
 - **Coverage caveat:** only apps that register Hub Variable use with the hub appear (Rule Machine, Room Lighting, Thermostat Scheduler, and other registering apps — what the page shows in orange). Apps that never register their use, such as webCoRE pistons, are not covered; `coverageNote` says so.
 
+### When a hub variable changed
+
+The hub records each hub-variable change as a location event named `variable:<name>`. Read them with `hub_get_logs(mode='locationEvents', pattern='^variable:<name>$')`. The pattern is a case-insensitive regex found anywhere in each row's name, description or value, so anchor it as shown and escape regex characters in the name (for example `\\Q<name>\\E`); otherwise `variable:temp` also matches `variable:temperature`. Rows come newest first, with `since` (strictly after) and `until`, and a cursor for paging. Rows carry the hub's event time, a renamed variable's earlier rows keep its old name, and retention is the hub's own location-event history.
+
 ### hub_set_variable: value
 
 For an existing hub variable the value must fit its declared type, and is refused before anything is written otherwise: Number takes a whole number in the 64-bit (Java Long) range (`42`, `"3000000000"`), Decimal a number (`1.5`), Boolean `true`/`false`, String any text. A DateTime keeps its kind (see "DateTime kinds"), hub-local with offsets ignored and seconds dropped: a date-and-time variable takes `2026-03-05T08:15` or `{date, time}`, a date-only one `2026-03-05` or `{date}` (stored as `2026-03-05T99:99:99.999-9999`), a time-only one `08:15` or `{time}` (stored as `9999-99-99T08:15:00.000` plus the hub zone's current offset). Each also takes its own stored form, so a value read with `hub_get_variable` can be written back unchanged. A value of another kind is refused rather than changing the kind. The result's `value` is what was stored. If the hub does not take a valid value (for example a variable linked from another hub over Hub Mesh, which is changed on its source hub), the result is `success:false` and nothing is written elsewhere. A name that is not a hub variable is stored as a rule-engine variable.
@@ -12834,10 +12838,6 @@ DESTRUCTIVE, no undo; requires `confirm=true` plus a backup <24h. Detects whethe
 Apps that never register their use, such as webCoRE pistons, cannot be seen by any of these checks; the response's `coverageNote` says so and `platformInUse` reports what the registry said. Pass `force=true` to proceed anyway after acknowledging the breakage.
 
 Deleting a Hub Mesh **linked mirror** (a local copy of a peer's shared variable) is an UNLINK — see the "Hub Mesh: sharing and linking hub variables" subsection below. There the generic in-use refusal is relaxed (a clean mirror unlinks without `force`); `force=true` is needed when a real local app uses the mirror OR when that use can't be confirmed (`inUseByApps` true or unreadable), not when `inUseByApps` is confirmed false.
-
-### When a hub variable changed
-
-The hub records each hub-variable change as a location event named `variable:<name>`. Read them with `hub_get_logs(mode='locationEvents', pattern='^variable:<name>$')`. The pattern is a case-insensitive regex found anywhere in each row's name, description or value, so anchor it as shown and escape regex characters in the name (for example `\\Q<name>\\E`); otherwise `variable:temp` also matches `variable:temperature`. Rows come newest first, with `since` (strictly after) and `until`, and a cursor for paging. Rows carry the hub's event time, a renamed variable's earlier rows keep its old name, and retention is the hub's own location-event history.
 
 ### hub_create_connector
 
