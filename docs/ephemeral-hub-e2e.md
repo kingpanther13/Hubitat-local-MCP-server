@@ -7,6 +7,27 @@ included, on pushes to `main`, and on manual dispatch of a branch. It has no app
 and no label gate of its own. `e2e:skip` holds only the physical-hub lane. Docs-only PRs and
 verified dependency-only bot PRs skip it.
 
+## Fast CI prerequisites
+
+On a PR, both OS and JVM wait for Unit Tests, PR Guard,
+Groovy 2.5 Spock, and the other fast workflows selected by the PR's changed paths.
+On a push to `main`, Unit Tests is the prerequisite. Manual stable and beta
+dispatches can run immediately.
+
+The PR consumer and trusted requester get independent GitHub events. Each checks
+the fast workflow results before starting its hub jobs. If checks are pending or
+red, Actions initially shows the hub jobs as skipped, the gate job lists the
+waiting or failed workflows, and on a PR both `Ephemeral e2e verdict` statuses
+stay pending. Each successful fast
+workflow completion wakes a coordinator on the default branch. When every
+applicable check is green on the current revision, the coordinator re-runs each
+deferred gate job and its dependents. This can show up as a second run attempt
+on the PR. Re-running a failed fast check successfully uses the same path, and a
+gate job that failed (for example on a GitHub API outage) is re-evaluated the same
+way. On a PR the coordinator resumes the trusted requester before the consumer.
+The coordinator never approves a fork deployment or re-runs a hub that already
+started. The physical hub's label gate is independent.
+
 ## Two hub kinds
 
 Every run tests two kinds of hub side by side, one matrix job per kind:
@@ -67,7 +88,8 @@ These steps describe hold mode, where the test run drives the hub. The default
 
 There is no teardown call: the hub ends with the test run. To retry one kind on a pull request,
 re-run that kind's `e2e (ephemeral hub, <kind>)` job in the test run, then right away re-run
-`Request ephemeral hub (<kind>)` in the request run. The request job pairs with the test run still
+`Request ephemeral hub (<kind>)` in the request run, or its `Fast CI prerequisites` job if that
+run deferred the hubs. The request job pairs with the test run still
 in progress and the public key of its new attempt, so a hub boots for that attempt. Re-running only
 the test run gets no hub: it fails once it sees the request run stay finished. Pushing a commit or
 closing and reopening the PR also restarts both workflows. To retry a push or dispatch, use
@@ -127,13 +149,13 @@ run, but `pull_request_target` runs regardless of it, so the request workflow ga
 `MEMBER`, `COLLABORATOR` or `CONTRIBUTOR` (a change already merged here), and the
 reviewer-protected `e2e-approval` environment otherwise. No hub boots and none of the PR's code
 runs until a maintainer approves both: **Approve workflows to run** on the PR, then **Review
-deployments** on the request run. The request side waits 10 minutes for the test run to start and
-the test run 35 minutes for results, so approve the two together; after a timeout, re-run both
-jobs as described above. A rejected deployment fails `e2e`.
+deployments** on the request run, which appears only once fast CI has passed and the request
+run's gate has resumed. The test run waits 35 minutes for results, so review the deployment soon
+after it appears; after a timeout, re-run both jobs as described above. A rejected deployment fails `e2e`.
 
-The hub is disposable and serves only the test run that requested it. The job that runs PR code
-holds no secrets. Its token can only read this repository's contents and Actions artifacts and
-run status. The two secrets reach only `request-hub`, which never executes PR code. Never add a
+The hub is disposable and serves only the test run that requested it. The jobs that run PR code
+(`fast-ci` and `e2e` in the test workflow) hold no secrets. Their tokens can only read this
+repository's contents, pull requests, Actions artifacts and run status. The two secrets reach only `request-hub`, which never executes PR code. Never add a
 secret, a write permission or a cache to the `e2e` job, and never check out or run PR code in the
 request workflow.
 
@@ -145,7 +167,8 @@ request workflow and the copy of the shared script it runs come from `main`. A d
 its copy of the shared script and the provider contract through the push/dispatch request job;
 it never runs `hub-e2e-ephemeral-request.yml`, whose only trigger is `pull_request_target`,
 which always runs `main`'s copy. A change to that file is therefore proven only after it is on `main`, by the
-next PR's run.
+next PR's run. The same holds for `ephemeral-fast-ci-completed.yml` and `resume_ephemeral_ci.rb`,
+which `workflow_run` runs from `main`, and a dispatch skips the fast-CI gate.
 
 ## Repository secrets
 
