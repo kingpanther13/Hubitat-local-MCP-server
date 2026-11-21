@@ -17,9 +17,9 @@ private void _nrRequireEditableRule(target, Long ruleId) {
 
 // An installed app hub_set_rule cannot edit, in hub_get_rule's wording; a rule of another type is named as one.
 private String _rmNotEditableText(id, namespace, String typeName) {
-    if (_rmIsVisualRuleType(namespace, typeName)) return "App ${id} is a ${typeName} rule: Visual Rules are read with hub_get_visual_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here".toString()
-    if (_rmIsRuleAppType(namespace, typeName)) return "App ${id} is a ${typeName} rule: rules of that type are read with hub_get_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here".toString()
-    return "${_rmNotRuleText([(id): typeName ?: 'unknown type'])}; only Rule Machine 5.1 rules and Button Rules can be edited here".toString()
+    if (_rmIsVisualRuleType(namespace, typeName)) return "App ${id} is a ${typeName} rule: Visual Rules are read with hub_get_visual_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here.".toString()
+    if (_rmIsRuleAppType(namespace, typeName)) return "App ${id} is a ${typeName} rule: rules of that type are read with hub_get_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here.".toString()
+    return "${_rmNotRuleText([(id): typeName ?: 'unknown type'])}; only Rule Machine 5.1 rules and Button Rules can be edited here.".toString()
 }
 
 def _nrHandle(Long ruleId) {

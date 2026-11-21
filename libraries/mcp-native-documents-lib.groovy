@@ -8,7 +8,7 @@ library(name: "McpNativeDocumentsLib", namespace: "mcp", author: "kingpanther13"
 
 private Long _ndId(Object id) {
     Integer exact = _exactIntId(id)
-    if (exact == null) throw new IllegalArgumentException('A positive native application ID is required')
+    if (exact == null) throw new IllegalArgumentException("A positive native application ID is required, got: ${id}.".toString())
     exact as Long
 }
 

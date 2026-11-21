@@ -416,6 +416,7 @@ private boolean _rmSettleRuleStatusFromState(Map entry, Map flags) {
 private void _rmApplyRuleStatus(Map entry, boolean disabled, boolean paused, boolean stopped) {
     entry.disabled = disabled
     entry.paused = paused
+    entry.stopped = stopped
     entry.status = disabled ? "disabled" : (stopped ? "stopped" : (paused ? "paused" : "active"))
 }
 
@@ -2674,7 +2675,7 @@ def toolGetNativeRule(args) {
     if (_rmIsEditableRuleType(namespace, typeName)) return toolGetRuleDocument(docArgs)
     boolean basicRule = namespace == 'hubitat' && _classicAppFormat(typeName) == 'basic-rule'
     // A Basic Rule's settings are short and come back whole, so there is nothing to page.
-    if (basicRule && read.paged) throw new IllegalArgumentException("A Basic Rule's settings are returned whole; omit cursor and limit")
+    if (basicRule && read.paged) throw new IllegalArgumentException("A Basic Rule's settings are returned whole; omit cursor and limit.")
     Map result = [ruleId: id, health: _rmCheckRuleHealth(id as Integer), localVariables: null]
     if (basicRule) {
         if ('settings' in read.sections) {

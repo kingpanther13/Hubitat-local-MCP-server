@@ -101,7 +101,7 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         script.toolSetRule([operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']]], confirm: true])
         then:
         def refused = thrown(IllegalArgumentException)
-        refused.message == 'App 42 is a Motion Lighting app; only Rule Machine 5.1 rules and Button Rules can be edited here'
+        refused.message == 'App 42 is a Motion Lighting app; only Rule Machine 5.1 rules and Button Rules can be edited here.'
     }
 
     def 'form results spell their keys in camelCase while values and input names stay as the hub sends them'() {
@@ -174,7 +174,7 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         script.toolSetRule([operation: operation, ruleId: ruleId, confirm: true, args: args])
         then:
         def refused = thrown(IllegalArgumentException)
-        refused.message == 'A positive native application ID is required'
+        refused.message.startsWith('A positive native application ID is required, got: ')
         lookups == 0
         where:
         operation | ruleId        | args

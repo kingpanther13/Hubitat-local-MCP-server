@@ -530,6 +530,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then: 'channel A fires and the decoration is stripped from the reported name'
         def r470 = result.rules.find { it.id == 470 }
         r470.status == 'stopped'
+        r470.stopped == true
         r470.label == 'Porch timer'
     }
 
