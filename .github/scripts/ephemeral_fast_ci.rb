@@ -14,9 +14,18 @@ module EphemeralFastCI
   DEFERRED_STEP = 'Defer hubs until fast CI passes'
 
   def self.api(path, *options)
-    stdout, status = Open3.capture2('gh', 'api', *options, "repos/#{ENV.fetch('GITHUB_REPOSITORY')}/#{path}")
-    raise "GitHub API request failed for #{path.split('?').first}" unless status.success?
-    stdout.empty? ? nil : JSON.parse(stdout)
+    # A transient API read must not strand a green revision. A POST may have
+    # taken effect even when its response was lost, so issue it only once.
+    attempts = options.include?('POST') ? 1 : 3
+    attempts.times do |attempt|
+      stdout, stderr, status = Open3.capture3('gh', 'api', *options, "repos/#{ENV.fetch('GITHUB_REPOSITORY')}/#{path}")
+      return stdout.empty? ? nil : JSON.parse(stdout) if status.success?
+      warn stderr
+      transient = stderr.match?(/HTTP (?:429|5\d\d)|timeout|timed out|connection reset|unexpected EOF/i)
+      break unless transient && attempt + 1 < attempts
+      sleep 2**(attempt + 1)
+    end
+    raise "GitHub API request failed for #{path.split('?').first}"
   end
 
   def self.pages(path)

@@ -41,6 +41,11 @@ import json, os, sys
 from pathlib import Path
 root = Path(os.environ["FAKE_GITHUB"])
 path = sys.argv[-1].removeprefix("repos/base/server/")
+fault = root / "fail-once"
+if fault.exists() and fault.read_text() == path:
+    fault.unlink()
+    print("gh: Server Error (HTTP 502)", file=sys.stderr)
+    sys.exit(1)
 if "POST" in sys.argv:
     with (root / "posts").open("a") as out:
         print(path, file=out)
@@ -115,6 +120,12 @@ def test_fast_completion_resumes_only_deferred_jobs(github, case, expected):
     if case == "superseded":
         api["pulls?state=open&head=fork%3Afeature&per_page=100"] = [[]]
     assert execute("resume_ephemeral_ci", {"workflow_run": rows[0]}) == [f"actions/jobs/{i}/rerun" for i in expected]
+
+
+def test_transient_workflow_lookup_on_a_green_revision(github, tmp_path):
+    _, _, execute = github
+    (tmp_path / "fail-once").write_text(endpoint("pull_request"))
+    assert execute("ephemeral_fast_ci", {"pull_request": PR}) == "result=ready"
 
 
 def test_main_push_uses_its_own_unit_run(github):
