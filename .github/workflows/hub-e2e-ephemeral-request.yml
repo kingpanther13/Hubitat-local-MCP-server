@@ -76,6 +76,7 @@ jobs:
           retention-days: 1
           overwrite: true
 
+  # resume_ephemeral_ci.rb finds this job and its "Defer hubs..." step by name (tests pin both).
   fast-ci:
     name: Fast CI prerequisites
     outputs:
@@ -88,6 +89,7 @@ jobs:
       actions: read
       contents: read
       pull-requests: read
+      statuses: write   # keeps the verdicts pending while deferred
     steps:
       - uses: actions/checkout@v7
         with:
@@ -99,7 +101,16 @@ jobs:
         run: ruby .github/scripts/ephemeral_fast_ci.rb
       - name: Defer hubs until fast CI passes
         if: steps.fast.outputs.result == 'deferred'
-        run: echo "Ephemeral hubs skipped until all applicable fast checks pass." >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          echo "Ephemeral hubs skipped until all applicable fast checks pass." >> "$GITHUB_STEP_SUMMARY"
+          # A deferral that never resumes stays visible as pending, not as a skipped job.
+          for kind in os jvm; do
+            gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PUBLIC_SHA" -f state=pending \
+              -f context="Ephemeral e2e verdict ($kind)" -f description="Waiting for fast CI to pass" >/dev/null
+          done
 
   # pull_request_target runs whatever the fork-approval setting says, so a first-time contributor's
   # hub waits here until a maintainer approves the e2e-approval deployment.

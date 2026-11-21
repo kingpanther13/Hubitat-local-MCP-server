@@ -1,4 +1,6 @@
 name: Resume ephemeral E2E when fast CI passes
+# Runs from the default branch only. Keep workflows: equal to EphemeralFastCI::REQUIRED + FILTERED
+# (tests/test_ephemeral_fast_ci.py checks it).
 
 on:
   workflow_run:

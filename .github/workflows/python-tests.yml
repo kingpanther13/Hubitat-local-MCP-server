@@ -22,6 +22,17 @@ on:
       - '.github/workflows/hub-e2e-ephemeral-beta.yml'
       - '.github/workflows/hub-e2e-ephemeral-request.yml'
       - '.github/workflows/ephemeral-fast-ci-completed.yml'
+      # The ephemeral fast-CI gate reads these workflows' names and path filters.
+      - '.github/workflows/unit-tests.yml'
+      - '.github/workflows/pr-guard.yml'
+      - '.github/workflows/groovy2x-spock.yml'
+      - '.github/workflows/groovy24-parse.yml'
+      - '.github/workflows/sandbox-lint.yml'
+      - '.github/workflows/ruff.yml'
+      - '.github/workflows/self-deploy-recovery.yml'
+      - '.github/workflows/lane-gate-test.yml'
+      - '.github/workflows/lease-scripts-test.yml'
+      - '.github/workflows/dependency-updates-check.yml'
       - '.github/scripts/request_ephemeral_hub.sh'
       - '.github/workflows/release.yml'
 

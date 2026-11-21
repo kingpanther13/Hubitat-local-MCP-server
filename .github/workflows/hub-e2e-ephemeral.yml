@@ -30,6 +30,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # resume_ephemeral_ci.rb finds this job and its "Defer hubs..." step by name (tests pin both).
   fast-ci:
     name: Fast CI prerequisites
     outputs:
@@ -215,7 +216,7 @@ jobs:
                   echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
                 fi
                 grace=$((grace + 1))
-                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without results or a session for this attempt. Re-run this job, then right away Request ephemeral hub ($KIND) in the request run (or push a commit or close and reopen the PR); for push or dispatch use Re-run all jobs."; exit 1; }
+                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without results or a session for this attempt. Re-run this job, then right away Request ephemeral hub ($KIND) in the request run, or its Fast CI prerequisites job if that run deferred the hubs (or push a commit or close and reopen the PR); for push or dispatch use Re-run all jobs."; exit 1; }
               fi
             fi
             [ "$SECONDS" -lt "$deadline" ] || { echo "::error::No hub results or session within $((wait / 60)) minutes."; exit 1; }

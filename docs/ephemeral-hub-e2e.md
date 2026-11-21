@@ -9,18 +9,22 @@ verified dependency-only bot PRs skip it.
 
 ## Fast CI prerequisites
 
-On a PR, both OS and JVM wait for Unit Tests (all four matrix entries), PR Guard,
+On a PR, both OS and JVM wait for Unit Tests, PR Guard,
 Groovy 2.5 Spock, and the other fast workflows selected by the PR's changed paths.
 On a push to `main`, Unit Tests is the prerequisite. Manual stable and beta
 dispatches can run immediately.
 
 The PR consumer and trusted requester get independent GitHub events. Each checks
 the fast workflow results before starting its hub jobs. If checks are pending or
-red, Actions initially shows the hub jobs as skipped. Each successful fast
+red, Actions initially shows the hub jobs as skipped, the gate job lists the
+waiting or failed workflows, and on a PR both `Ephemeral e2e verdict` statuses
+stay pending. Each successful fast
 workflow completion wakes a coordinator on the default branch. When every
 applicable check is green on the current revision, the coordinator re-runs each
 deferred gate job and its dependents. This can show up as a second run attempt
-on the PR. Re-running a failed fast check successfully uses the same path.
+on the PR. Re-running a failed fast check successfully uses the same path, and a
+gate job that failed (for example on a GitHub API outage) is re-evaluated the same
+way. On a PR the coordinator resumes the trusted requester before the consumer.
 The coordinator never approves a fork deployment or re-runs a hub that already
 started. The physical hub's label gate is independent.
 

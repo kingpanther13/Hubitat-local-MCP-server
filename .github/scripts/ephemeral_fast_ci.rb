@@ -11,6 +11,8 @@ module EphemeralFastCI
                 lane-gate-test lease-scripts-test dependency-updates-check].freeze
   CONSUMER = 'hub-e2e-ephemeral'
   REQUESTER = 'hub-e2e-ephemeral-request'
+  # Both workflows name their gate job and step this way; the coordinator finds them by name.
+  GATE_JOB = 'Fast CI prerequisites'
   DEFERRED_STEP = 'Defer hubs until fast CI passes'
 
   def self.api(path, *options)
@@ -37,12 +39,24 @@ module EphemeralFastCI
   end
 
   # The fast workflows use literals, *, ** and **/. A new pattern syntax must be
-  # supported explicitly, otherwise a missing required workflow could look optional.
+  # supported explicitly, otherwise an applicable path-filtered workflow that has
+  # not started yet could be treated as not applicable.
   def self.match_path?(glob, file)
     raise "Unsupported CI path filter: #{glob}" if glob.match?(/[!?+\[\]\\]/)
     parts = glob.scan(%r{\*\*/|\*\*|\*|[^*]+})
     tokens = { '**/' => '(?:.*/)?', '**' => '.*', '*' => '[^/]*' }
     Regexp.new("\\A" + parts.map { |part| tokens.fetch(part) { Regexp.escape(part) } }.join + "\\z").match?(file)
+  end
+
+  # The workflow's pull_request path globs (['**'] when unfiltered), or nil without
+  # that trigger. Raises on any filter the gate cannot evaluate.
+  def self.pull_request_paths(yaml, path)
+    config = YAML.safe_load(yaml)
+    triggers = config.fetch('on') { config.fetch(true) }
+    return unless triggers.key?('pull_request')
+    filter = triggers['pull_request'] || {}
+    raise "Unsupported pull_request filter in #{path}" unless (filter.keys - %w[paths]).empty?
+    filter.fetch('paths', ['**']).each { |glob| match_path?(glob, '') }
   end
 
   def self.expected(pr, files)
@@ -60,12 +74,8 @@ module EphemeralFastCI
              else
                File.read(path)
              end
-      config = YAML.safe_load(yaml)
-      triggers = config.fetch('on') { config.fetch(true) }
-      next false unless triggers.key?('pull_request')
-      filter = triggers['pull_request'] || {}
-      raise "Unsupported pull_request filter in #{path}" unless (filter.keys - %w[paths]).empty?
-      !filter.key?('paths') || filter.fetch('paths').any? { |glob| paths.any? { |file| match_path?(glob, file) } }
+      globs = pull_request_paths(yaml, path)
+      globs&.any? { |glob| paths.any? { |file| match_path?(glob, file) } }
     end + REQUIRED
   end
 
@@ -99,29 +109,40 @@ module EphemeralFastCI
     [pending, failed]
   end
 
-  def self.current?(head, pr_number)
+  # The PR as it is now (true for main) when head is still current, otherwise nil.
+  def self.current(head, pr_number)
     repo = ENV.fetch('GITHUB_REPOSITORY')
-    return api('git/ref/heads/main').dig('object', 'sha') == head.fetch('sha') unless pr_number
+    return api('git/ref/heads/main').dig('object', 'sha') == head.fetch('sha') || nil unless pr_number
     pr = api("pulls/#{Integer(pr_number)}")
-    pr['state'] == 'open' && pr.dig('base', 'repo', 'full_name') == repo &&
-      pr.dig('head', 'sha') == head.fetch('sha') && pr.dig('head', 'repo', 'full_name') == head.dig('repo', 'full_name')
+    pr if pr['state'] == 'open' && pr.dig('base', 'repo', 'full_name') == repo &&
+          pr.dig('head', 'sha') == head.fetch('sha') && pr.dig('head', 'repo', 'full_name') == head.dig('repo', 'full_name')
+  end
+
+  def self.report(title, detail)
+    puts "::notice title=#{title}::#{detail}"
+    summary = ENV['GITHUB_STEP_SUMMARY']
+    File.open(summary, 'a') { |out| out.puts "#{title}: #{detail}" } if summary
   end
 
   def self.decision(pr, head, initial_runs = nil)
     number = pr&.fetch('number')
-    return 'superseded' unless current?(head, number)
+    fresh = current(head, number)
+    return 'superseded' unless fresh
     expected_names = ['unit-tests']
     if pr
+      # A re-run gate replays the original event, so read changed_files from the PR as it is now.
+      pr = fresh
       files = pages("pulls/#{Integer(number)}/files?per_page=100").flatten(1)
+      # The PR files API lists at most 3000 files.
       raise 'Incomplete PR file list' unless files.size == [pr.fetch('changed_files'), 3000].min
       expected_names = expected(pr, files)
     end
     latest = initial_runs || runs(head.fetch('sha'), pr ? 'pull_request' : 'push', head, number)
     pending, failed = state(expected_names, latest)
-    puts "Waiting for #{pending.join(', ')}" unless pending.empty?
-    puts "Fast CI did not pass: #{failed.join(', ')}" unless failed.empty?
+    report('Ephemeral hubs deferred', "waiting for #{pending.join(', ')}") unless pending.empty?
+    report('Ephemeral hubs deferred', "fast CI did not pass: #{failed.join(', ')}") unless failed.empty?
     return 'deferred' unless pending.empty? && failed.empty?
-    current?(head, number) ? 'ready' : 'superseded'
+    current(head, number) ? 'ready' : 'superseded'
   end
 end
 
