@@ -95,9 +95,8 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         then:
         result.success
         result.backup.backupKey == 'rm-rule_42_fixture'
-        // The page render ('open') of the broken pre-check comes after preflight and before the snapshot;
-        // the read-back document renders it again after the edit.
-        events == ['preflight', 'open', 'snapshot', 'apply', 'open']
+        // Neither the broken pre-check nor the read-back document renders the rule's page.
+        events == ['preflight', 'snapshot', 'apply']
     }
 
     def 'disabled backups preserve explicit opt out without affecting the edit'() {
@@ -107,7 +106,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         def result = script.toolUpdateRuleDocument(update())
         then:
         result.success
-        events == ['preflight', 'open', 'apply', 'open']
+        events == ['preflight', 'apply']
     }
 
     def 'failed snapshot prevents document mutation'() {
@@ -118,7 +117,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         then:
         !result.success
         !result.partial
-        events == ['preflight', 'open', 'snapshot']
+        events == ['preflight', 'snapshot']
     }
 
     def 'partial document changes retain their pre-edit recovery handle'() {

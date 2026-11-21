@@ -15,11 +15,13 @@ class NativeDocumentsSpec extends ToolSpecBase {
     Map pageBody
     Map nativeState
     boolean failAction
-    boolean broken
+    Boolean broken
     Map lifecycle
     Map typedSettings
+    List statusSettings
 
     void setup() {
+        statusSettings = []
         events = []
         renders = []
         pageBody = null
@@ -36,9 +38,13 @@ class NativeDocumentsSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L
         script.metaClass.getAppByAppId = { Long id -> id == 28L ? [id: 28L, appType: [namespace: 'hubitat', name: 'Rule Machine']] : [id: 42L, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Rule-5.1'], installed: true] }
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean retry = false -> events << 'create'; [status: 302, location: '/installedapp/configure/42'] }
+        def spec = this
         script.metaClass._nrHandle = { Long id ->
             if (id != 42L) throw new IllegalArgumentException('missing rule')
-            new NativeDocumentChild(events, lifecycle, nativeState.allLocalVars, typedSettings)
+            def child = new NativeDocumentChild(events, lifecycle, nativeState.allLocalVars, typedSettings)
+            // The rule's own broken() check, which health reads in place of the compiled flag.
+            child.brokenCheck = { -> spec.broken }
+            child
         }
         script.metaClass._nrState = { Long id -> [:] + nativeState }
         script.metaClass._nmUpsertAction = { Long id, Map value -> events << 'action'; [success: !failAction, partial: failAction, id: '6'] }
@@ -52,7 +58,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
         // /app/ruleBuilderJson serializes the rule's whole state, and statusJson lists the same state as appState rows.
         hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(nativeState + [broken: broken] + lifecycle) }
         hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: lifecycle.stopped ? [] : [[name: 'switch']], scheduledJobs: [],
-            appState: (nativeState + lifecycle).collect { k, v -> [name: k, value: v] }]) }
+            installedApp: [id: 42, label: 'Doc rule', disabled: false, installed: true, appType: [name: 'Rule-5.1', namespace: 'hubitat']],
+            appSettings: statusSettings + (typedSettings.useST == true ? [[name: 'useST', type: 'bool', value: 'true', deviceIdsForDeviceList: [], deviceList: null]] : []), appState: (nativeState + lifecycle).collect { k, v -> [name: k, value: v] }]) }
         hubGet.register('/installedapp/configure/json/42') { q -> renders << 'mainPage'; pageJson() }
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean retry = false -> events << [path: path, body: body]; lifecycle.stopped = false; lifecycle.paused = false; [status: 200] }
     }
@@ -198,7 +205,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
-    def 'read document returns native stable order typed values and locals, rendering only the main page'() {
+    def 'read document returns native stable order typed values and locals, rendering no page'() {
         when:
         def result = script.executeTool('hub_set_rule', [operation: 'read', ruleId: 42, args: [:]])
         then:
@@ -207,7 +214,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.health.ok == true
         result.health.ruleFormat == 'rm'
         !result.containsKey('validation') && !result.containsKey('nativeHealth')
-        renders == ['mainPage']
+        renders == []
         result.actions*.id == ['3', '1']
         result.settings.find { it.name == 'flag' }.value == false
         result.settings.find { it.name == 'count' }.value == 0
@@ -324,22 +331,32 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !result.note.contains('Nothing was changed')
     }
 
-    def 'an update is refused before its backup and write when the rule page cannot be rendered'() {
-        given: 'the compiled state says not broken, but the page render that refreshes that flag fails'
-        hubGet.register('/installedapp/configure/json/42') { q -> throw new IllegalStateException('page timed out') }
+    // Pre-write refusals run with pre-edit backups on, so a check moved below the backup fails here.
+    private List backupsOn() {
         settingsMap.backupBeforeRuleEdits = true
         def backups = []
         script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean force -> backups << id; [backupKey: 'k'] }
+        backups
+    }
+
+    def 'an update whose broken check fails is refused before its backup and any write, with a note that does not say retry'() {
+        given: "the compiled flag says not broken, but the rule's own check, the one health reads, fails"
+        def backups = backupsOn()
+        broken = null
         when:
         def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [logChange()]])
         then:
         result.success == false
         result.partial == false
-        result.error.contains('could not be rendered before the write')
+        result.broken == null
+        result.error.contains('broken flag could not be read before the write')
         result.error.contains('no change was written')
-        result.checkErrors.any { it.contains('page timed out') }
+        result.checkErrors == ["the rule's broken() check returned null, not true or false"]
+        result.note.contains('hub_get_rule') && result.note.contains("operation:'form'")
+        !result.note.toLowerCase().contains('retry')
         backups.isEmpty()
-        !events.contains('action')
+        events.empty
+        renders.isEmpty()
     }
 
     def 'hub_get_rule lists a rule with no locals as an empty list'() {
@@ -663,88 +680,100 @@ class NativeDocumentsSpec extends ToolSpecBase {
         brokenEditor << [false, true]
     }
 
-    def 'a rule that is already broken is refused before any change, naming its broken rows'() {
-        given:
+    def 'a rule that is already broken is refused before its backup and any change, naming each broken row by kind and native id'() {
+        given: "two triggers whose devices were deleted; the compiled flag still reads false, the rule's own check true"
+        def backups = backupsOn()
         broken = true
-        pageBody = [element: 'href', title: 'Select Trigger Events', description: 'Porch switch turns on **Broken Trigger**']
+        nativeState.capabstrue = ['5': 'Porch switch turns on', '6': 'Hall switch turns on']
+        statusSettings = [[name: 'tDev5', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null],
+                          [name: 'tDev6', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null],
+                          [name: 'reltDevice6', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(nativeState + [broken: false] + lifecycle) }
         when:
         def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
         !result.partial
         result.broken
-        result.brokenRows == [[kind: 'trigger', text: 'Porch switch turns on', position: 1]]
-        result.error.contains("already broken: trigger 'Porch switch turns on'")
+        result.brokenRows == [[kind: 'trigger', id: '5', setting: 'tDev5', text: 'Porch switch turns on'],
+                              [kind: 'trigger', id: '6', setting: 'reltDevice6', text: 'Hall switch turns on'],
+                              [kind: 'trigger', id: '6', setting: 'tDev6', text: 'Hall switch turns on']]
+        result.error == "Rule 42 is already broken: trigger 5 ('Porch switch turns on'); trigger 6 ('Hall switch turns on'); no change was written."
         result.note.contains("operation:'form'")
+        backups.isEmpty()
         events.empty
+        renders.isEmpty()
         nativeState.actionList == ['3', '1']
     }
 
-    def 'a refused update names a row the hub replaced with the bare marker by its line'() {
+    def 'an update whose compiled state cannot be read is refused before its backup and any write, though its broken check answers'() {
         given:
-        broken = true
-        pageBody = [element: 'href', title: 'Select Trigger Events', description: '**Broken Trigger**']
-        when:
-        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
-        then:
-        !result.success
-        result.brokenRows == [[kind: 'trigger', text: null, position: 1]]
-        result.error.contains('already broken: trigger on line 1 of its section')
-        !result.error.contains("''")
-        events.empty
-    }
-
-    def 'an update whose compiled broken flag cannot be read after the render is refused before any write'() {
-        given: "the page renders, then Rule Machine's compiled state read fails"
+        def backups = backupsOn()
         hubGet.register('/app/ruleBuilderJson/42') { q -> throw new RuntimeException('read timed out') }
         when:
         def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
         !result.partial
-        result.error.contains('broken flag could not be read')
+        result.broken == false
+        result.error.contains('compiled state could not be read before the write')
+        result.checkErrors.any { it.contains('compiled-state read failed') && it.contains('read timed out') }
+        !result.note.toLowerCase().contains('retry')
+        backups.isEmpty()
         events.empty
     }
 
-    def 'an update whose pre-write page reports an error is refused before the backup and any write'() {
-        given: "the page renders but reports an error, so it did not render the rule"
-        hubGet.register('/installedapp/configure/json/42') { q -> renders << 'mainPage'; JsonOutput.toJson([app: [id: 42, label: 'Rule', appType: [name: 'Rule-5.1', namespace: 'hubitat']], configPage: [name: 'mainPage', error: 'Cannot get property on null object', sections: []], settings: [:]]) }
-        when:
-        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
-        then:
-        !result.success
-        !result.partial
-        result.error.contains('page reports an error')
-        result.error.contains('no change was written')
-        events.empty
-    }
-
-    def 'the update renders the page before its broken check, so a broken flag that only rendering sets refuses the write'() {
-        given: "Rule Machine sets broken when the page renders, as after a trigger device is deleted"
-        hubGet.register('/installedapp/configure/json/42') { q -> renders << 'mainPage'; broken = true; pageJson() }
-        when:
-        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
-        def paths = hubGet.calls*.path
-        then:
-        paths.indexOf('/installedapp/configure/json/42') < paths.indexOf('/app/ruleBuilderJson/42')
-        !result.success
-        !result.partial
-        result.error.contains('already broken')
-        events.empty
-    }
-
-    def 'the document read renders the page before reading health, so a render-time broken flag is reported'() {
+    def 'the document read reports broken from the rule\'s own check without rendering, while the compiled flag still reads false'() {
         given:
-        hubGet.register('/installedapp/configure/json/42') { q -> renders << 'mainPage'; broken = true; pageJson() }
-        pageBody = [element: 'paragraph', description: 'Log hello **Broken Action**']
+        broken = true
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(nativeState + [broken: false] + lifecycle) }
         when:
         def document = script.toolGetRuleDocument([ruleId: 42, sections: ['actions']])
-        def paths = hubGet.calls*.path
         then:
-        paths.indexOf('/installedapp/configure/json/42') < paths.indexOf('/app/ruleBuilderJson/42')
         document.health.broken == true
         document.health.ok == false
+        renders.isEmpty()
         events.empty
+    }
+
+    def 'the hub_set_rule read keeps its health when the local variables cannot be read'() {
+        given:
+        nativeState.allLocalVars = null
+        when:
+        def document = script.toolSetRule([operation: 'read', ruleId: 42, args: [sections: ['variables', 'actions']]])
+        then:
+        document.success == null
+        document.health.ok == true
+        document.containsKey('variables') && document.variables == null
+        document.localVariablesError.contains('could not be read')
+        document.actions*.id == ['3', '1']
+    }
+
+    def 'a paged hub_set_rule read of the variables section reports a failed locals read instead of paging it'() {
+        given:
+        nativeState.allLocalVars = null
+        when:
+        def document = script.toolSetRule([operation: 'read', ruleId: 42, args: [sections: ['variables'], cursor: '']])
+        then:
+        document.health.ok == true
+        document.variables == null
+        document.localVariablesError
+        !document.containsKey('page')
+    }
+
+    def 'a verified write whose document read-back fails says so in its own key, not as a nested document'() {
+        given:
+        def reads = 0
+        def realRead = script.&toolGetRuleDocument
+        script.metaClass.toolGetRuleDocument = { Map args -> reads++; [success: false, ruleId: 42L, error: 'Rule 42 could not be read: boom', note: 'retrying once is safe'] }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == true
+        reads == 1
+        !result.containsKey('document')
+        result.documentReadError == 'Rule 42 could not be read: boom'
+        result.note.contains('written and verified') && result.note.contains('Do not send them again')
     }
 
     def 'a broken health result does not fail the document read'() {
@@ -1557,14 +1586,35 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'missing native health refuses the update before anything is written'() {
         given:
+        def backups = backupsOn()
         hubGet.register('/app/ruleBuilderJson/42') { q -> '{}' }
         when:
         def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
         !result.partial
-        result.error.contains('broken flag could not be read')
+        result.error.contains('compiled state could not be read')
+        result.checkErrors.any { it.contains('compiled-state read failed') }
+        backups.isEmpty()
         !events.any { it instanceof Map }
+    }
+
+    def 'a rule whose stored broken flag is missing and whose broken check fails reads not ok, and the update refuses it the same way'() {
+        given: "Rule Machine state without its broken key, and no answer from the rule's own check"
+        def backups = backupsOn()
+        broken = null
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(nativeState + lifecycle) }
+        when:
+        def health = script.toolGetRuleDocument([ruleId: 42, sections: []]).health
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        health.broken == null
+        health.ok == false
+        health.checkErrors == result.checkErrors
+        !result.success
+        result.error.contains('broken flag could not be read')
+        backups.isEmpty()
+        events.empty
     }
 
     def 'explicit null activation collections are empty only for the verified installed rule'() {
@@ -1715,8 +1765,10 @@ class NativeDocumentChild {
     Map locals
     Map typedSettings
     NativeDocumentChild(List events, Map lifecycle, Map locals = [:], Map typedSettings = [:]) { this.events = events; this.lifecycle = lifecycle; this.locals = locals; this.typedSettings = typedSettings }
+    Closure brokenCheck = { -> false }
     Object getSetting(String name) { typedSettings.get(name) }
     Map getAllLocalVars() { locals }
+    Object broken() { brokenCheck() }
     void appButtonHandler(String name) {
         events << name
         if (name == 'stopRule') lifecycle.stopped = !lifecycle.stopped

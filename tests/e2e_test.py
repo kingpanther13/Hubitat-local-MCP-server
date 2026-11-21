@@ -6409,14 +6409,14 @@ class TestRunner:
             cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
             assert (cfg.get("app") or {}).get("name") == "Basic Rule-1.0", f"unexpected Basic Rule config: {cfg}"
 
-            # HEALTH on a classic app (issue #254): hub_get_rule covers Basic Rule via the
-            # generic configPage checks and names it in ruleFormat (broken is null -- no compiled
-            # boolean for non-RM classic apps).
-            bh = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})["health"]
+            # hub_get_rule reads a Basic Rule: its health (broken is null -- a Basic Rule has no broken flag;
+            # a new one was never paused) and its settings, with no note sending the caller elsewhere.
+            br = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})
+            bh = br["health"]
             assert bh.get("ruleFormat") == "basic-rule", \
                 f"hub_get_rule should classify a Basic Rule as basic-rule: {bh}"
-            assert bh.get("broken") is None, f"a classic app has no compiled broken boolean: {bh}"
+            assert bh.get("broken") is None and bh.get("paused") is False, f"a new Basic Rule: no broken flag, not paused: {bh}"
+            assert isinstance(br.get("settings"), list) and "note" not in br, br
 
             # EDIT: write the Notes field, then read the app back: the note must have landed and the
             # read must carry no configPageError (the old wizard poisoned the page with "For input
@@ -7876,26 +7876,39 @@ def updated() {}
 
     @test("native_apps")
     def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
-        # Deleting a trigger's device leaves RM's compiled rule broken, but Rule Machine sets its broken flag
-        # only when the rule's page renders. Neither rule's page is opened after the delete: hub_get_rule and
-        # the hub_set_rule update each render it themselves, so each needs a rule nothing else has rendered.
+        # Deleting a trigger's device leaves the rule broken while its compiled flag still reads false until its
+        # page renders. Nothing renders it here: hub_get_rule and the hub_set_rule update ask the rule's own
+        # broken() check, and name each broken row by its native id from the device settings. The two-trigger
+        # rule's page joins its triggers with an OR line, which must not shift the ids.
         device_id, dni, _ = self._rm_disposable_switch("RHBrokenDev")
-        app_id, _ = self._rm_rule("RHBroken", [self._rm_switch_trigger(device_id), native_log("dangling trigger")])
+        second_id, second_dni, _ = self._rm_disposable_switch("RHBrokenDev2")
+        app_id, _ = self._rm_rule("RHBroken", [self._rm_switch_trigger(device_id), self._rm_switch_trigger(second_id),
+                                               native_log("dangling trigger")])
         edit_id = None
         try:
             edit_id, edit_doc = self._rm_rule("RHBrokenEdit", [self._rm_switch_trigger(device_id), native_log("dangling edit")])
+            assert sorted(edit_doc.get("triggers") or {}) == ["1"], edit_doc
             assert self._rm_health(app_id).get("broken") is False
             self._rm_delete_device(dni)
+            self._rm_delete_device(second_dni)
             health = self._rm_health(app_id)
             assert health.get("broken") is True and health.get("ok") is False and health.get("ruleFormat") == "rm", health
             rows = health.get("brokenRows") or []
-            assert any(row.get("kind") == "trigger" and isinstance(row.get("position"), int) for row in rows), health
-            # The update renders the page before its broken check, so it is refused before anything is written.
+            assert [(row.get("kind"), row.get("id"), row.get("setting")) for row in rows] == \
+                [("trigger", "1", "tDev1"), ("trigger", "2", "tDev2")], health
+            assert all(str(row.get("text") or "").endswith("turns on") for row in rows), health
+            # The read wrote nothing: the rule's actions are as created.
+            read = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": ["actions", "triggers"]})
+            assert sorted(read.get("triggers") or {}) == ["1", "2"], read
+            # The update asks the same check before any backup or write, and names the row by kind and id.
+            backups_before = self._rm_backup_keys(edit_id)
             refused = self._rm_call({"operation": "update", "ruleId": int(edit_id),
                                      "args": {"changes": [native_log("not written")]}, "confirm": True})
             error = self._rm_refused(refused)
-            assert "already broken" in error and refused.get("partial") is False, refused
-            assert any(row.get("kind") == "trigger" for row in refused.get("brokenRows") or []), refused
+            assert "already broken: trigger 1 (" in error and refused.get("partial") is False, refused
+            assert [(row.get("kind"), row.get("id")) for row in refused.get("brokenRows") or []] == [("trigger", "1")], refused
+            assert "operation:'form'" in str(refused.get("note")), refused
+            assert self._rm_backup_keys(edit_id) == backups_before, "a refused update took a backup"
             after = self._native_rule_document(edit_id)
             assert after.get("actions") == edit_doc.get("actions"), (edit_doc.get("actions"), after.get("actions"))
             assert after.get("health", {}).get("broken") is True, after
@@ -8773,7 +8786,7 @@ def updated() {}
             listed = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id)})
             assert len(listed.get("localVariables") or []) == 1 and listed["localVariables"][0]["type"] == "integer", listed
             assert local_value() == 0
-            # 'rule' is not an action: the RMUtils evaluate it named runs nothing on a current rule.
+            # 'rule' is no longer an action (the RMUtils evaluate it sent ran nothing on a current rule), so it is refused.
             gone_action = refused("hub_call_rule", {"ruleId": app_id, "action": "rule"})
             assert "Invalid action 'rule'" in str(gone_action.get("error")), gone_action
             # The Rule Machine parent app is not a rule: running its actions is refused, and reading it returns
@@ -8784,7 +8797,7 @@ def updated() {}
                 and "Nothing was dispatched" in str(parent_run.get("error")), parent_run
             parent_read = self.client.call_tool("hub_get_rule", {"ruleId": int(parent_id)})
             assert parent_read.get("localVariables") is None and "actions" not in parent_read \
-                and "not a Rule Machine rule" in str(parent_read.get("note")), parent_read
+                and "hub_get_app_config(includeStatus: true)" in str(parent_read.get("note")), parent_read
             # An id with no app is refused rather than read as a rule with no locals.
             missing = refused("hub_get_rule", {"ruleId": 999999999})
             assert "No app with id 999999999 is installed" in str(missing.get("error")), missing

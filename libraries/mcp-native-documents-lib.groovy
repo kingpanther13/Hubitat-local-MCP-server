@@ -137,16 +137,18 @@ Map toolGetRuleDocument(Map args) {
     def limit = read.limit
     _nrHandle(id)
     try {
-        // The health read renders the rule's page first, so the state read after it carries a fresh broken flag.
         def document = [ruleId: id, health: _rmCheckRuleHealth(id as Integer)]
-        // Health, settings and the locals do not come from native state, so a read of those alone survives its failure.
+        // Only these sections come from native state, so a read of health, settings or the locals alone never reads it.
         Map nativeState = sections.any { it in ['actions', 'conditions', 'triggers', 'expressions'] } ? _nrState(id) : null
-        if (withLocals) {
+        if (withLocals || 'variables' in sections) {
             // The health is already read, so a failed locals read is reported beside it rather than losing it.
-            try { document.localVariables = _ndLocalVariables(id) }
-            catch (Exception localsFailure) {
-                mcpLog('warn', 'rm-native', "hub_get_rule: rule ${id}'s local variables could not be read (${localsFailure.message})")
-                document.localVariables = null
+            String key = withLocals ? 'localVariables' : 'variables'
+            try {
+                List locals = _ndLocalVariables(id)
+                document.put(key, withLocals ? locals : locals.collectEntries { row -> [(row.name): row.findAll { k, v -> k != 'name' }] })
+            } catch (Exception localsFailure) {
+                mcpLog('warn', 'rm-native', "${toolName}: rule ${id}'s local variables could not be read (${localsFailure.message})")
+                document.put(key, null)
                 document.localVariablesError = (localsFailure.message ?: localsFailure.toString()).toString()
             }
         }
@@ -156,13 +158,9 @@ Map toolGetRuleDocument(Map args) {
         if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
         if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
         if ('expressions' in sections) document.expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
-        if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars().collectEntries { name, row ->
-            Map shown = _rmPublicLocalVariable(name.toString(), row instanceof Map ? row : [value: row])
-            shown.remove('name')
-            [(name): row instanceof Map ? row + shown : shown]
-        }
         if ('settings' in sections) document.settings = _ndSettings(id)
-        if (read.paged) {
+        // A section whose read failed (the locals) is reported by its error, so there is nothing to page.
+        if (read.paged && document.get(sections[0]) != null) {
             String section = sections[0]
             def complete = document.get(section)
             List rows = complete instanceof Map ? complete.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() } :
@@ -180,7 +178,7 @@ Map toolGetRuleDocument(Map args) {
                 document.nextCursor = end < total ? end.toString() : null
                 def envelope = jsonRpcResult(0, [content: [[type: 'text', text: groovy.json.JsonOutput.toJson(document)]]])
                 if (groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length <= budget) break
-                if (end - start <= 1) throw new IllegalArgumentException('A native document row or its validation metadata exceeds the response size limit; it cannot be returned without truncation')
+                if (end - start <= 1) throw new IllegalArgumentException('A native document row or its health exceeds the response size limit; it cannot be returned without truncation')
                 end = start + (end - start).intdiv(2)
             }
         }
@@ -190,7 +188,7 @@ Map toolGetRuleDocument(Map args) {
     } catch (Exception failure) {
         mcpLogError('rm-native', "${toolName} read failed for rule ${id}: ${failure.message}".toString(), failure)
         [success: false, ruleId: id, error: "Rule ${id} could not be read: ${failure.message ?: failure.toString()}".toString(),
-         note: "The read rendered the rule's page, as opening it does, and wrote nothing else; a Rule Machine rule's page only shows its settings, so retrying once is safe, though a render drops an edit still open and not yet compiled in Rule Machine's own editor. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
+         note: "The read writes nothing and does not open the rule's page, so retrying once is safe. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
     }
 }
 
@@ -508,8 +506,15 @@ private Map _ndApply(Long id, List changes, boolean created) {
             persistedState.stPrimed == false
         if (actualTriggers && !stopped && !paused && !suppressed && subscriptions.empty && jobs.empty) throw new IllegalStateException('Native triggers have no active subscriptions or scheduled jobs')
         if (created && getAppByAppId(id)?.installed != true) throw new IllegalStateException('Native rule is not installed after Done')
-        [success: true, ruleId: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([ruleId: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])] +
-            (suppressed ? [subscriptionSettle: 'SUPPRESSED: Required Expression is false'] : [:])
+        Map written = [success: true, ruleId: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.']
+        if (suppressed) written.subscriptionSettle = 'SUPPRESSED: Required Expression is false'
+        Map document = toolGetRuleDocument([ruleId: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])
+        // The write is verified by now, so a failed read-back must not read as a failed write that a caller would re-send.
+        if (document.success == false) {
+            written.documentReadError = document.error
+            written.note = "The changes were written and verified; only reading the rule back failed. Do not send them again: read the rule with hub_set_rule(operation:'read') or hub_get_rule. See hub_get_tool_guide(section='set_rule_reference')."
+        } else written.document = document
+        written
     } catch (Exception failure) {
         mcpLogError('rm-native', "hub_set_rule ${created ? 'create' : 'update'} failed for rule ${id}: ${failure.message}".toString(), failure)
         [success: false, partial: started, ruleId: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()), error: failure.message?.toString(), note: _ndFailureNote(started, created)]
@@ -536,29 +541,19 @@ Map toolUpdateRuleDocument(Map args) {
         if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
         try { _ndPreflight(id, changes) }
         catch (Exception failure) { return [success: false, partial: false, ruleId: id, error: failure.message?.toString()] }
-        // Rule Machine sets broken only when the rule's page renders, so the health read renders it before
-        // the check: a rule that was already broken is refused here, not reported broken after the write.
-        Map rendered = [:]
-        Map beforeHealth = _rmCheckRuleHealth(id as Integer, rendered)
-        // Without the render the compiled broken flag can be stale, so an unrendered rule is not assumed healthy.
-        if (rendered.pageError) {
-            return [success: false, partial: false, ruleId: id, issues: beforeHealth.issues,
-                error: "Rule ${id}'s page reports an error (${rendered.pageError}), so whether it is already broken is unknown; no change was written.".toString(),
-                note: "Open the rule with hub_get_rule to see the page's error and repair it with hub_set_rule(operation:'form') or in the Hubitat UI before editing. See hub_get_tool_guide(section='set_rule_reference')."]
-        }
-        if (rendered.page != true) {
-            return [success: false, partial: false, ruleId: id, checkErrors: beforeHealth.checkErrors,
-                error: "Rule ${id}'s page could not be rendered before the write, so whether it is already broken is unknown; no change was written.".toString(),
-                note: "Retry once; if it fails again, check that the hub answers with hub_get_info and open the rule with hub_get_rule. See hub_get_tool_guide(section='set_rule_reference')."]
-        }
-        // The page rendered but Rule Machine's compiled flag went unread, so the rule may already be broken.
-        if (beforeHealth.broken == null) {
-            return [success: false, partial: false, ruleId: id, checkErrors: beforeHealth.checkErrors,
-                error: "Rule ${id}'s broken flag could not be read before the write, so whether it is already broken is unknown; no change was written.".toString(),
-                note: "Retry once; if it fails again, check that the hub answers with hub_get_info and read the rule with hub_get_rule. See hub_get_tool_guide(section='set_rule_reference')."]
+        // A rule that is already broken is refused here, not reported broken after the write; hub_get_rule reports the
+        // same health, so the read and the refusal agree.
+        Map beforeHealth = _rmCheckRuleHealth(id as Integer)
+        // disabledActions stays null only when the rule's compiled state went unread or is malformed; the writes below
+        // verify against that same state, so a rule whose state cannot be read is not edited either.
+        if (beforeHealth.broken == null || beforeHealth.disabledActions == null) {
+            return [success: false, partial: false, ruleId: id, broken: beforeHealth.broken, checkErrors: beforeHealth.checkErrors,
+                error: (beforeHealth.broken == null ? "Rule ${id}'s broken flag could not be read before the write, so whether it is already broken is unknown; no change was written." :
+                    "Rule ${id}'s compiled state could not be read before the write, so it is not known to be intact; no change was written.").toString(),
+                note: "checkErrors says why. Check that the hub answers with hub_get_info, then read the rule with hub_get_rule: send the update once its health reads broken:false and lists disabledActions. If it stays unreadable, check the rule in the Hubitat UI or with hub_set_rule(operation:'form') before editing it. See hub_get_tool_guide(section='set_rule_reference')."]
         }
         if (beforeHealth.broken == true) {
-            String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { it.text ? "${it.kind} '${it.text}'" : "${it.kind} on line ${it.position} of its section" }.join('; ') : ''
+            String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { "${it.kind} ${it.id}" + (it.text ? " ('${it.text}')" : '') }.unique().join('; ') : ''
             return [success: false, partial: false, ruleId: id, broken: true, brokenRows: beforeHealth.brokenRows,
                 error: "Rule ${id} is already broken${rows}; no change was written.".toString(),
                 note: "Repair the broken rows first: open the rule with hub_set_rule(operation:'form') or in the Hubitat UI and replace or remove what refers to the missing device or variable, then retry. hub_get_rule lists the broken rows; see hub_get_tool_guide(section='set_rule_reference').".toString()]
@@ -715,11 +710,11 @@ String _ndGuide() {
 
 Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level ruleId identifies the target; args cannot override it or confirm. When mandatory guide acknowledgment is enabled, pass its key as top-level bestPracticeKey alongside operation, ruleId, args and confirm.
 
-Read hub_set_rule(operation:"read",ruleId,args:{sections:[...]}) before editing an existing native rule; hub_get_rule returns the same document from the read-only tools. A read renders the rule's main page once, because Rule Machine updates its broken flag only then, and returns the result as health, the same report hub_get_rule returns (broken, brokenRows, paused, stopped, privateBoolean, structuralIssues; see builtin_app_tools_rules). The sections come from native state and typed settings. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
+Read hub_set_rule(operation:"read",ruleId,args:{sections:[...]}) before editing an existing native rule; hub_get_rule returns the same document from the read-only tools, with the local variables as a localVariables list in place of the variables section. A read does not open the rule's page: it returns health, the same report hub_get_rule returns (broken from the rule's own check, brokenRows, paused, stopped, privateBoolean, structuralIssues; see builtin_app_tools_rules). The sections come from native state and typed settings. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 
 For large rules, read one section with args:{sections:["settings"],cursor:"",limit:50}. Paging requires exactly one section; limit is 1..100 (default 50). The section keeps its usual map or list shape. Pass the returned top-level nextCursor into args.cursor until nextCursor is null. page returns offset, limit, total and revision, a hash of the complete section; restart if revision changes. Pages may contain fewer than limit rows to fit the response size cap; an individual oversized row is refused explicitly without truncation. Actions retain native order, settings sort by name, and map sections sort by string key. Omit cursor and limit for an unpaged read.
 
-Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",ruleId,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parentId,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine; parentId is the installed Rule Machine app's id, which hub_list_apps(scope:"instances") lists. A failed creation can leave a native child: inspect returned ruleId and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting. An update first renders the rule's page and refuses a rule that is already broken, naming its broken rows, before anything is written: repair those rows with operation:"form" or in the Hubitat UI.
+Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",ruleId,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parentId,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine; parentId is the installed Rule Machine app's id, which hub_list_apps(scope:"instances") lists. A failed creation can leave a native child: inspect returned ruleId and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting. An update first reads the same health and, before any backup or write, refuses a rule that is already broken, naming each broken row by kind and native id (trigger 2), or a rule whose broken flag or compiled state cannot be read, with checkErrors saying why: repair broken rows with operation:"form" or in the Hubitat UI.
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.
@@ -734,7 +729,7 @@ Each change is {part,value}. Supported parts:
 
 Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; not every capability-specific variant is supported. Discover native options through operation:"form" when a document contract is unavailable. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback, native editor diagnostics, expression-reference checks and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
 
-Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state; a document read renders only the main page.
+Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state; a document read renders none of them.
 
 ## Native Rule Forms
 

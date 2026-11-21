@@ -45,11 +45,11 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_get_rule",
-            description: """Read one rule: its health and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables. Also reads the health of a Visual Rule or a built-in classic app (Basic Rule, Button Controller).[[FLAT_TRIM]] The rule's page is rendered once first (Rule Machine updates its broken flag only then). health carries broken, brokenRows (the rows the page marks broken), paused, stopped, privateBoolean, disabledActions, disabledTriggers, structuralIssues, the red-X disabled flag and the live eventSubscriptionCount and scheduledJobCount; the raw subscription and job lists come from hub_get_app_config(includeStatus: true).[[/FLAT_TRIM]] health.ok=false with unreadable=false means issues names a problem or checkErrors names a failed read; unreadable=true means nothing could be read, which is not evidence of breakage. Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the full health reference.""",
+            description: """Read one Rule Machine rule, Button Rule or Basic Rule: its health and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; for a Basic Rule, its settings. Any other installed app returns its health alone.[[FLAT_TRIM]] Nothing is written and the rule's page is not opened: broken comes from the rule's own check. health carries broken, brokenRows (each row whose device is gone, by kind and native id), paused, stopped, privateBoolean, disabledActions, disabledTriggers, structuralIssues, the red-X disabled flag and the live eventSubscriptionCount and scheduledJobCount; the raw subscription and job lists come from hub_get_app_config(includeStatus: true).[[/FLAT_TRIM]] health.ok=false with unreadable=false means issues names a problem or checkErrors names a failed read; unreadable=true means nothing could be read, which is not evidence of breakage. Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the full health reference.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "integer", minimum: 1, description: "The rule's installed-app id, from hub_list_rules (a Visual Rule's from hub_get_visual_rule)."],
+                    ruleId: [type: "integer", minimum: 1, description: "The rule's installed-app id, from hub_list_rules (a Button Rule's or Basic Rule's from hub_list_apps(scope:'instances'))."],
                     sections: [type: "array", items: [type: "string", enum: ["actions", "conditions", "triggers", "expressions", "settings"]], description: "Document sections to return; default all. localVariables and health are always returned, so [] returns them alone; a long rule's whole document can exceed the response cap."],
                     cursor: [type: "string", description: "Page one section: pass \"\" for the first page, then each nextCursor. Requires exactly one section."],
                     limit: [type: "integer", minimum: 1, maximum: 100, description: "Rows per page when paging (default 50)."]
@@ -2628,7 +2628,7 @@ def toolDeleteNativeApp(args) {
 }
 
 // hub_get_rule. A Rule Machine 5.1 rule or Button Rule returns the document hub_set_rule reads, with its
-// local variables; any other rule or classic app returns its health alone.
+// local variables, and a Basic Rule its settings; any other app returns its health alone.
 def toolGetNativeRule(args) {
     def raw = args?.ruleId
     if (raw == null) throw new IllegalArgumentException("ruleId is required")
@@ -2636,7 +2636,7 @@ def toolGetNativeRule(args) {
     Long id = raw.toString().toLong()
     Map docArgs = [ruleId: id, localVariables: true]
     ['sections', 'cursor', 'limit'].each { key -> if (args.containsKey(key)) docArgs.put(key, args.get(key)) }
-    _ndDocumentArgs(docArgs, ['actions', 'conditions', 'triggers', 'expressions', 'settings'], 'hub_get_rule')
+    Map read = _ndDocumentArgs(docArgs, ['actions', 'conditions', 'triggers', 'expressions', 'settings'], 'hub_get_rule')
     def target
     try { target = getAppByAppId(id) }
     catch (Exception lookup) {
@@ -2646,10 +2646,21 @@ def toolGetNativeRule(args) {
     if (target == null) throw new IllegalArgumentException(_rmMissingAppText(id))
     String typeName = target.appType?.name?.toString()
     if (_rmIsEditableRuleType(typeName, target.appType?.namespace)) return toolGetRuleDocument(docArgs)
-    String note = _rmIsVisualRuleType(typeName) ? "A Visual Rule's definition is read with hub_get_visual_rule." :
+    boolean basicRule = target.appType?.namespace == 'hubitat' && _classicAppFormat(typeName) == 'basic-rule'
+    // A Basic Rule's settings are short and come back whole, so there is nothing to page.
+    if (basicRule && read.paged) throw new IllegalArgumentException("A Basic Rule's settings are returned whole; omit cursor and limit")
+    Map result = [ruleId: id, health: _rmCheckRuleHealth(id as Integer), localVariables: null]
+    if (basicRule) {
+        if ('settings' in read.sections) {
+            try { result.settings = _ndSettings(id) }
+            catch (Exception settingsFailure) { result.settings = null; result.settingsError = (settingsFailure.message ?: settingsFailure.toString()).toString() }
+        }
+        return result
+    }
+    result.note = _rmIsVisualRuleType(typeName) ? "A Visual Rule's definition is read with hub_get_visual_rule." :
         (_rmIsRuleAppType(typeName) ? "Only a Rule Machine 5.1 rule or Button Rule has a document; this rule returns its health alone." :
-            "This app is not a Rule Machine rule; read its configuration with hub_get_app_config.")
-    [ruleId: id, health: _rmCheckRuleHealth(id as Integer), localVariables: null, note: note]
+            "hub_get_rule reads Rule Machine rules, Button Rules and Basic Rules; for this app it returns its health alone. Read its configuration and App Status with hub_get_app_config(includeStatus: true).")
+    result
 }
 
 // A local variable named like a credential (doorCode, alarmPin) reads with its value hidden, as settings do.

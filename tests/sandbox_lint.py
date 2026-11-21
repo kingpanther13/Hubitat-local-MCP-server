@@ -1944,7 +1944,7 @@ def check_tool_guide_generated() -> list[dict]:
         ],
         "set_rule_reference": [
             "hub_set_rule", "changes in order",
-            "A read renders the rule's main page once, because Rule Machine updates its broken flag only then",
+            "A read does not open the rule's page",
             "refuses a rule that is already broken",
             "A partial update can leave preceding changes committed", "not every capability-specific variant is supported",
             "expectPage", "Even open renders execute app code",
