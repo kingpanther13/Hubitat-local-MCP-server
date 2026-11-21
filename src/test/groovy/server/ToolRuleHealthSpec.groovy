@@ -169,6 +169,75 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         script._rmCheckRuleHealth(100).brokenRows == [[kind: 'trigger', id: '2', setting: 'tDev2', text: 'B turns on']]
     }
 
+    def "an action setting whose base name holds digits or underscores is an action, and an unknown name is no trigger"() {
+        given: "action ids 3 and 4 and trigger 2 are held; notify2 and switches_2 name no known trigger or condition prefix"
+        ruleBroken = true
+        seed(100, [capabstrue: ['2': 'B turns on'], capabsfalse: ['2': 'C is on'], actionList: ['3', '4'],
+                   actions: ['3': [method: 'getOnOffSwitch'], '4': [method: 'getOnOffSwitch']]], [:],
+             [setting('foo2.3', 'capability.switch', []), setting('a_b.4', 'capability.switch', []),
+              setting('notify2', 'capability.notification', []), setting('switches_2', 'capability.switch', []),
+              setting('relDevice_2', 'capability.switch', [])])
+
+        expect:
+        script._rmCheckRuleHealth(100).brokenRows == [[kind: 'condition', id: '2', setting: 'relDevice_2', text: 'C is on'],
+                                                      [kind: 'action', id: '3', setting: 'foo2.3'],
+                                                      [kind: 'action', id: '4', setting: 'a_b.4']]
+    }
+
+    def "a malformed appSettings reads as no settings: paused, stopped and the counts still come back"() {
+        given:
+        ruleBroken = brokenNow
+        Map state = ruleState(capabstrue: ['1': 'A turns on'])
+        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson(state) }
+        hubGet.register('/installedapp/statusJson/100') {
+            JsonOutput.toJson([installedApp: [label: 'BAT-RH-test', disabled: false, appType: [name: 'Rule-5.1', namespace: 'hubitat']],
+                               appSettings: [tDev1: null], eventSubscriptions: [[name: 'switch']], scheduledJobs: [],
+                               appState: [[name: 'paused', value: true]]])
+        }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.paused == true
+        h.stopped == false
+        h.eventSubscriptionCount == 1
+        h.scheduledJobCount == 0
+        h.brokenRows == []
+        h.checkErrors.any { it.contains('appSettings') } == brokenNow
+        !h.checkErrors.any { it.startsWith('statusJson') }
+
+        where:
+        brokenNow << [false, true]
+    }
+
+    def "a broken rule whose compiled state went unread still carries the broken issue, and says why brokenRows is empty"() {
+        given:
+        ruleBroken = true
+        hubGet.register('/app/ruleBuilderJson/100') { throw new IOException('down') }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100, [:], [:], [setting('tDev1', 'capability.switch', [])]) }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.broken == true
+        h.disabledActions == null
+        h.brokenRows == []
+        h.issues.any { it.contains('marks this rule broken') }
+        h.checkErrors.any { it.contains('brokenRows was not listed') }
+    }
+
+    def "a status page without an installedApp block takes the red-X flag from the app itself"() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> [id: id, label: 'BAT-RH-test', disabled: true, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
+        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson(ruleState()) }
+        hubGet.register('/installedapp/statusJson/100') { JsonOutput.toJson([appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: []]) }
+
+        expect:
+        script._rmCheckRuleHealth(100).disabled == true
+    }
+
     def "a row with two dead pickers is listed once per setting, and the list is deduplicated on the whole row"() {
         given:
         ruleBroken = true

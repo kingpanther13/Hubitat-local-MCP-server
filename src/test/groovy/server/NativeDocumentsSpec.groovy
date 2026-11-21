@@ -723,6 +723,23 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
+    def 'a broken rule whose compiled state cannot be read is refused as already broken, before its backup and any write'() {
+        given:
+        def backups = backupsOn()
+        broken = true
+        hubGet.register('/app/ruleBuilderJson/42') { q -> throw new RuntimeException('read timed out') }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        result.broken == true
+        result.error == 'Rule 42 is already broken; no change was written.'
+        result.checkErrors.any { it.contains('brokenRows was not listed') }
+        result.note.contains("operation:'form'")
+        backups.isEmpty()
+        events.empty
+    }
+
     def 'the document read reports broken from the rule\'s own check without rendering, while the compiled flag still reads false'() {
         given:
         broken = true

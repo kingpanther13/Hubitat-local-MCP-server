@@ -5661,7 +5661,7 @@ class TestRunner:
         self._expect_tool_refusal("hub_manage_dashboards", {
             "tool": "hub_update_dashboard",
             "args": {"id": dash_id, "name": f"{dash_name} Bare", "deviceIds": upd_devices}},
-            "Missing required parameter for hub_update_dashboard: dashboardId")
+            "Unknown hub_update_dashboard argument: id")
         assert (self._read_dashboard(dash_id) or {}).get("name") == dash_name, \
             "hub_update_dashboard(id=...) was refused but the dashboard was renamed anyway"
 
@@ -6417,6 +6417,15 @@ class TestRunner:
                 f"hub_get_rule should classify a Basic Rule as basic-rule: {bh}"
             assert bh.get("broken") is None and bh.get("paused") is False, f"a new Basic Rule: no broken flag, not paused: {bh}"
             assert isinstance(br.get("settings"), list) and "note" not in br, br
+            # A Basic Rule's settings come back whole, so a paged read is refused by name.
+            try:
+                paged = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule",
+                                                                 "args": {"ruleId": int(app_id), "sections": ["settings"],
+                                                                          "cursor": ""}})
+            except (McpError, McpToolError) as exc:
+                assert "returned whole; omit cursor and limit" in str(exc), str(exc)
+            else:
+                raise AssertionError(f"a paged Basic Rule read was accepted: {paged}")
 
             # EDIT: write the Notes field, then read the app back: the note must have landed and the
             # read must carry no configPageError (the old wizard poisoned the page with "For input
@@ -8174,8 +8183,11 @@ def updated() {}
                 if not any(row.get("name") == name for row in form["controls"]):
                     form = self._rm_open(app_id, "doActPage")
                 form = self._rm_submit(app_id, form, control=self._rm_control(form, name=name))
-            # The native editor compiles the added event on a following doActPage render. That render comes
-            # before any document read: a read renders the rule's main page, which drops an event not yet compiled.
+            # Both reads come while the added event is still an open, uncompiled edit: they must not render the
+            # rule's page, whose code would drop it. The native editor compiles it on a following doActPage render.
+            pending = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})
+            assert str(pending.get("ruleId")) == str(app_id) and isinstance(pending.get("health"), dict), pending
+            self._native_rule_document(app_id)
             for _ in range(3):
                 self._rm_open(app_id, "doActPage")
                 doc = self._native_rule_document(app_id)
@@ -15143,6 +15155,8 @@ def updated() {}
         self._expect_tool_refusal("hub_delete_bundle", {"bundleId": "4", "id": "4", "confirm": True},
                                   "Unknown hub_delete_bundle argument: id")
         self._expect_tool_refusal("hub_delete_bundle", {"id": "4", "confirm": True},
+                                  "Unknown hub_delete_bundle argument: id")
+        self._expect_tool_refusal("hub_delete_bundle", {"confirm": True},
                                   "Missing required parameter for hub_delete_bundle: bundleId")
         self._expect_tool_refusal("hub_delete_bundle", {"bundleId": "4", "deleteCode": "true", "confirm": True},
                                   "deleteCode must be true or false")
@@ -15582,6 +15596,25 @@ def updated() {}
                 assert "operation" in reference and "create" in reference, f"the read-only guide lacks hub_set_native_app's reference: {reference[:300]}"
             finally:
                 manage({"action": "revoke", "clientId": readonly["clientId"]})
+            # A client token always reads credentials and access tokens redacted, so includeStatus says so
+            # instead of pointing it at the MCP app's settings.
+            other = next((r for r in self._installed_app_rows() if str(r.get("id")) != str(self.client.app_id)), None)
+            if other is None:
+                print("    per-client includeStatus: no other installed app to read; statusRedactionNote leg skipped")
+            else:
+                reader = manage({"action": "create", "label": label + "_st", "access": {"tools": ["hub_get_app_config"]}})
+                assert reader.get("success") is True, reader.get("error")
+                _ephemeral_literals.add(reader["token"])
+                try:
+                    st = HubitatMcpClient(self.client.hub_url, self.client.app_id, reader["token"])
+                    st.session.trust_env = False
+                    cfg = st.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+                                                              "args": {"appId": int(other["id"]), "includeStatus": True}})
+                    note = cfg.get("statusRedactionNote") or ""
+                    assert "always reads credential-named appState values and access tokens as redacted" in note, \
+                        {k: cfg.get(k) for k in ("statusRedactionNote", "statusNote")}
+                finally:
+                    manage({"action": "revoke", "clientId": reader["clientId"]})
             try:
                 client.call_tool("hub_get_info", {})
                 raise AssertionError("a client token without hub_get_info was allowed to call it")

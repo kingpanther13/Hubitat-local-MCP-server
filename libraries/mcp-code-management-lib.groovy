@@ -151,12 +151,12 @@ def _projectAppType(Map t, boolean builtIn, Map enrich) {
     return out
 }
 
-private List _nameFiltered(List rows, filter) {
-    // Rows whose name or app type contains the filter, ignoring case and the hub's HTML (a list's own names). A
+private List _nameFiltered(List rows, filter, boolean matchType = false) {
+    // Rows whose name (and, for app instances, app type) contains the filter, ignoring case and the hub's HTML. A
     // Button Rule is named after its button, so only its type ("Button Rule-5.1") finds it.
     String f = filter?.toString()?.trim()?.toLowerCase()
     if (!f) return rows
-    return rows.findAll { row -> row instanceof Map && [row.name, row.type].any { (stripAppConfigHtml(it) ?: "").toLowerCase().contains(f) } }
+    return rows.findAll { row -> row instanceof Map && (matchType ? [row.name, row.type] : [row.name]).any { (stripAppConfigHtml(it) ?: "").toLowerCase().contains(f) } }
 }
 
 def toolListHubDrivers(args) {
@@ -2567,7 +2567,7 @@ def toolListInstalledApps(args) {
             }
         }
 
-        if (args?.nameFilter) filtered = _nameFiltered(filtered, args.nameFilter)
+        if (args?.nameFilter) filtered = _nameFiltered(filtered, args.nameFilter, true)
         def paged = _paginateList(filtered, cursor, 50, "hub_list_apps")
         def result = [
             apps: paged.page,
@@ -2732,7 +2732,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 properties: [
                     scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared).", default: "instances"],
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
-                    nameFilter: [type: "string", description: "Name or app type contains (case-insensitive), e.g. 'Button Rule' finds Button Rules, which are named after their button."],
+                    nameFilter: [type: "string", description: "Name contains (case-insensitive); for scope='instances' the app type too, so 'Button Rule' finds Button Rules, which are named after their button."],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]

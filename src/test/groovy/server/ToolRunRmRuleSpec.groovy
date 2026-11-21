@@ -935,6 +935,32 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         'a mixed batch' | [101, 174, 173]  | true
     }
 
+    @spock.lang.Unroll
+    def "action=actions on a Visual Rule typed '#type' is #outcome by its type name or, unversioned, its classic shape"() {
+        given:
+        visualRule(175, classicShape ? 'classic' : 'graph', false)
+        appTypes[175] = type
+        hubGet.register('/app/ruleBuilderRun/175') { params -> '{"success":true}' }
+
+        when:
+        def result
+        def thrown = null
+        try { result = script.toolRunRmRule([ruleId: 175, action: 'actions']) } catch (IllegalArgumentException e) { thrown = e }
+
+        then:
+        (thrown != null) == refused
+        if (refused) assert thrown.message.contains('have no run button')
+        else assert result.success == true
+        hubGet.calls*.path.count { it == '/app/ruleBuilderRun/175' } == (refused ? 0 : 1)
+
+        where:
+        type                      | classicShape || refused | outcome
+        'Visual Rule Builder 1.1' | false        || true    | 'refused'
+        'Visual Rule Builder'     | true         || true    | 'refused'
+        'Visual Rule Builder'     | false        || false   | 'run'
+        'Visual Rule Builder 2.1' | false        || false   | 'run'
+    }
+
     def "a Visual Rule the hub does not run comes back as a runtime failure with the hub's message"() {
         given:
         visualRule(171, 'graph', false)

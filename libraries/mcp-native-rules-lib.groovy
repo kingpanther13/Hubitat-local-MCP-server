@@ -473,8 +473,12 @@ def toolRunRmRule(args) {
         throw new IllegalArgumentException("Visual Rules have no stop or start; rule(s) ${visual.join(', ')} are Visual Rules. Use action:'pause' or 'resume' for them. Nothing was dispatched.")
     }
     // The classic builder has no run button: only the 2.0 builder calls /app/ruleBuilderRun, and a 1.0 rule fails on it.
-    List<Integer> classic = visual.findAll { guard.types.get(it) == "Visual Rule Builder 1.0" }
-    if (classic && action == "actions") {
+    // A 1.x type name is classic; a type name without a version is read once for the classic shape.
+    List<Integer> classic = action != "actions" ? [] : visual.findAll { Integer id ->
+        String type = guard.types.get(id)?.toString()
+        type ==~ /.*\s1(\.\d+)*/ || (!(type ==~ /.*\s\d+(\.\d+)*/) && _ruleCompiledState(id)?.ruleFormat == "vrb-classic")
+    }
+    if (classic) {
         throw new IllegalArgumentException("Visual Rule Builder 1.0 rules have no run button, so their actions cannot be run; rule(s) ${classic.join(', ')} are 1.0 rules. Pause and resume work on them. Nothing was dispatched.")
     }
     boolean runActions = (action == "actions")

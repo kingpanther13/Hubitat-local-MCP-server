@@ -545,6 +545,13 @@ Map toolUpdateRuleDocument(Map args) {
         // A rule that is already broken is refused here, not reported broken after the write; hub_get_rule reports the
         // same health, so the read and the refusal agree.
         Map beforeHealth = _rmCheckRuleHealth(id as Integer)
+        // Broken is refused first: broken() answers even when the compiled state went unread.
+        if (beforeHealth.broken == true) {
+            String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { "${it.kind} ${it.id}" + (it.text ? " ('${it.text}')" : '') }.unique().join('; ') : ''
+            return [success: false, partial: false, ruleId: id, broken: true, brokenRows: beforeHealth.brokenRows, checkErrors: beforeHealth.checkErrors,
+                error: "Rule ${id} is already broken${rows}; no change was written.".toString(),
+                note: "Repair the broken rows first: open the rule with hub_set_rule(operation:'form') or in the Hubitat UI and replace or remove what refers to the missing device or variable, then retry. hub_get_rule lists the broken rows; see hub_get_tool_guide(section='set_rule_reference').".toString()]
+        }
         // disabledActions stays null only when the rule's compiled state went unread or is malformed; the writes below
         // verify against that same state, so a rule whose state cannot be read is not edited either.
         if (beforeHealth.broken == null || beforeHealth.disabledActions == null) {
@@ -552,12 +559,6 @@ Map toolUpdateRuleDocument(Map args) {
                 error: (beforeHealth.broken == null ? "Rule ${id}'s broken flag could not be read before the write, so whether it is already broken is unknown; no change was written." :
                     "Rule ${id}'s compiled state could not be read before the write, so it is not known to be intact; no change was written.").toString(),
                 note: "checkErrors says why. Check that the hub answers with hub_get_info, then read the rule with hub_get_rule: send the update once its health reads broken:false and lists disabledActions. If it stays unreadable, check the rule in the Hubitat UI or with hub_set_rule(operation:'form') before editing it. See hub_get_tool_guide(section='set_rule_reference')."]
-        }
-        if (beforeHealth.broken == true) {
-            String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { "${it.kind} ${it.id}" + (it.text ? " ('${it.text}')" : '') }.unique().join('; ') : ''
-            return [success: false, partial: false, ruleId: id, broken: true, brokenRows: beforeHealth.brokenRows,
-                error: "Rule ${id} is already broken${rows}; no change was written.".toString(),
-                note: "Repair the broken rows first: open the rule with hub_set_rule(operation:'form') or in the Hubitat UI and replace or remove what refers to the missing device or variable, then retry. hub_get_rule lists the broken rows; see hub_get_tool_guide(section='set_rule_reference').".toString()]
         }
         Map backup
         try { backup = _ndEditBackup(id, 'pre-document-update') }
