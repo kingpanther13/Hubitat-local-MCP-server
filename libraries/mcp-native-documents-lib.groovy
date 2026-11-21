@@ -551,6 +551,12 @@ Map toolUpdateRuleDocument(Map args) {
                 error: "Rule ${id}'s page could not be rendered before the write, so whether it is already broken is unknown; no change was written.".toString(),
                 note: "Retry once; if it fails again, check that the hub answers with hub_get_info and open the rule with hub_get_rule. See hub_get_tool_guide(section='set_rule_reference')."]
         }
+        // The page rendered but Rule Machine's compiled flag went unread, so the rule may already be broken.
+        if (beforeHealth.broken == null) {
+            return [success: false, partial: false, ruleId: id, checkErrors: beforeHealth.checkErrors,
+                error: "Rule ${id}'s broken flag could not be read before the write, so whether it is already broken is unknown; no change was written.".toString(),
+                note: "Retry once; if it fails again, check that the hub answers with hub_get_info and read the rule with hub_get_rule. See hub_get_tool_guide(section='set_rule_reference')."]
+        }
         if (beforeHealth.broken == true) {
             String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { it.text ? "${it.kind} '${it.text}'" : "${it.kind} on line ${it.position} of its section" }.join('; ') : ''
             return [success: false, partial: false, ruleId: id, broken: true, brokenRows: beforeHealth.brokenRows,

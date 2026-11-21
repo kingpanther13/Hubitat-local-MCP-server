@@ -694,6 +694,18 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
+    def 'an update whose compiled broken flag cannot be read after the render is refused before any write'() {
+        given: "the page renders, then Rule Machine's compiled state read fails"
+        hubGet.register('/app/ruleBuilderJson/42') { q -> throw new RuntimeException('read timed out') }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.error.contains('broken flag could not be read')
+        events.empty
+    }
+
     def 'an update whose pre-write page reports an error is refused before the backup and any write'() {
         given: "the page renders but reports an error, so it did not render the rule"
         hubGet.register('/installedapp/configure/json/42') { q -> renders << 'mainPage'; JsonOutput.toJson([app: [id: 42, label: 'Rule', appType: [name: 'Rule-5.1', namespace: 'hubitat']], configPage: [name: 'mainPage', error: 'Cannot get property on null object', sections: []], settings: [:]]) }
@@ -1543,7 +1555,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.any { it instanceof Map && it.body.contains('_action_update=Done') }
     }
 
-    def 'missing native health is unavailable and cannot finalize'() {
+    def 'missing native health refuses the update before anything is written'() {
         given:
         hubGet.register('/app/ruleBuilderJson/42') { q -> '{}' }
         when:
@@ -1551,7 +1563,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         then:
         !result.success
         !result.partial
-        result.error.contains('unavailable')
+        result.error.contains('broken flag could not be read')
         !events.any { it instanceof Map }
     }
 
