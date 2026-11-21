@@ -11,7 +11,7 @@ module EphemeralFastCI
                 lane-gate-test lease-scripts-test dependency-updates-check].freeze
   CONSUMER = 'hub-e2e-ephemeral'
   REQUESTER = 'hub-e2e-ephemeral-request'
-  # Both workflows name their gate job and step this way; the coordinator finds them by name.
+  # The gate job and step names in both ephemeral workflows; resuming matches them by name.
   GATE_JOB = 'Fast CI prerequisites'
   DEFERRED_STEP = 'Defer hubs until fast CI passes'
 

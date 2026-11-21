@@ -76,7 +76,7 @@ jobs:
           retention-days: 1
           overwrite: true
 
-  # resume_ephemeral_ci.rb finds this job and its "Defer hubs..." step by name (tests pin both).
+  # Renaming this job or its Defer step stops deferred runs from resuming; tests pin both names.
   fast-ci:
     name: Fast CI prerequisites
     outputs:
