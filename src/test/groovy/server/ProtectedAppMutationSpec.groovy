@@ -93,6 +93,29 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
     }
 
     @Unroll
+    def 'delete refuses appId #appId, which is not a whole int, before any read or write'() {
+        when: "4294967317 would wrap to app 21 and 21.7 truncate to it"
+        script.toolDeleteNativeApp([appId: appId, force: true, confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('must be an integer')
+        writes.empty
+        hubGet.calls.isEmpty()
+
+        where:
+        appId << [4294967317L, 21.7, '4294967317', 'abc']
+    }
+
+    def 'normalizeRuleId keeps whole ids within int range'() {
+        expect:
+        script.normalizeRuleId(21) == 21
+        script.normalizeRuleId(21.0) == 21
+        script.normalizeRuleId(' 21 ') == 21
+        script.normalizeRuleId(2147483647L) == 2147483647
+    }
+
+    @Unroll
     def 'delete refuses a protected descendant before taking a backup (force #force)'() {
         given:
         hubGet.register('/hub2/appsList') {

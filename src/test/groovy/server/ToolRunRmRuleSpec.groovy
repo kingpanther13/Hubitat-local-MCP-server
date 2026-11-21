@@ -473,8 +473,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     @spock.lang.Unroll
     def "#kind in the ruleId is rejected before anything runs"() {
-        // The list arg coerces through _rmCoerceRuleId, not normalizeRuleId: a JSON number
-        // 400.7 would silently truncate to rule 400 via toInteger() and act on the wrong rule.
+        // A JSON number 400.7 or 4294967696 would act on rule 400 if coerced with toInteger().
         when:
         script.toolRunRmRule([ruleId: badId, action: 'pause'])
 

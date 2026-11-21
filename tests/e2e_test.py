@@ -8809,6 +8809,11 @@ def updated() {}
                                ("hub_set_rule_private_boolean", {"ruleId": [wrapped], "value": False})):
                 overflow = refused(tool, args)
                 assert "is not an integer-valued rule id" in str(overflow.get("error")), (tool, overflow)
+            # The delete tool shares the check: the wrapped id must not back up and delete this rule.
+            kept = refused("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app",
+                "args": {"appId": wrapped, "force": True, "confirm": True}})
+            assert "must be an integer" in str(kept.get("error")), kept
+            assert self._rm_health(app_id).get("ruleFormat") == "rm", "a refused delete removed the rule"
             assert local_value() == 0, "a refused call changed the rule's local variable"
             assert self._rm_health(app_id).get("privateBoolean") is True, "a refused batch set the rule's private boolean"
             ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id})

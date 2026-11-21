@@ -826,13 +826,7 @@ private Map _collectLiveApps() {
 }
 
 private Integer _rmCoerceRuleId(Object id) {
-    try {
-        def s = id?.toString()?.trim()
-        if (!s) return null
-        def bd = new BigDecimal(s)   // throws on non-numeric -> caught -> null
-        // intValueExact, not intValue: 4294967696 would wrap to 400 and act on that rule.
-        return (bd.stripTrailingZeros().scale() <= 0) ? bd.intValueExact() : null
-    } catch (Exception ignored) { return null }
+    return _exactIntId(id)
 }
 
 private List _rmCollectTriggerIndices(Integer appId) {

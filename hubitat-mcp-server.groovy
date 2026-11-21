@@ -9812,12 +9812,20 @@ def _exceptionStack(Throwable e) {
  * should propagate rather than be rewrapped as an IllegalArgumentException.
  */
 private Integer normalizeRuleId(def ruleId) {
-    if (ruleId instanceof Number) return ruleId.toInteger()
+    Integer exact = _exactIntId(ruleId)
+    if (exact == null) throw new IllegalArgumentException("ruleId must be an integer, got: ${ruleId}")
+    return exact
+}
+
+// An id that is a whole number within int range, else null. toInteger() would wrap 4294967696 to 400 and
+// truncate 400.7 to 400, so a destructive tool would act on app 400.
+Integer _exactIntId(Object id) {
     try {
-        return ruleId.toString().trim() as Integer
-    } catch (NumberFormatException e) {
-        throw new IllegalArgumentException("ruleId must be an integer, got: ${ruleId}")
-    }
+        def s = id?.toString()?.trim()
+        if (!s) return null
+        def bd = new BigDecimal(s)
+        return (bd.stripTrailingZeros().scale() <= 0) ? bd.intValueExact() : null
+    } catch (Exception ignored) { return null }
 }
 
 // ============ SHARED CLASSIC-DYNAMICPAGE WIZARD PRIMITIVES ============
