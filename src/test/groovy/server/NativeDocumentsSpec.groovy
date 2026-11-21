@@ -694,6 +694,19 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
+    def 'an update whose pre-write page reports an error is refused before the backup and any write'() {
+        given: "the page renders but reports an error, so it did not render the rule"
+        hubGet.register('/installedapp/configure/json/42') { q -> renders << 'mainPage'; JsonOutput.toJson([app: [id: 42, label: 'Rule', appType: [name: 'Rule-5.1', namespace: 'hubitat']], configPage: [name: 'mainPage', error: 'Cannot get property on null object', sections: []], settings: [:]]) }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.error.contains('page reports an error')
+        result.error.contains('no change was written')
+        events.empty
+    }
+
     def 'the update renders the page before its broken check, so a broken flag that only rendering sets refuses the write'() {
         given: "Rule Machine sets broken when the page renders, as after a trigger device is deleted"
         hubGet.register('/installedapp/configure/json/42') { q -> renders << 'mainPage'; broken = true; pageJson() }

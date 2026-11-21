@@ -259,6 +259,13 @@ class ClientAccessGrantSpec extends ToolSpecBase {
         script._clientToolDenial('hub_set_rule', [operation: 'form', ruleId: 7, confirm: true, args: [steps: [[kind: 'open']]]]) != null
         script._clientToolDenial('hub_get_app_config', [appId: 12]) == null
 
+        and: 'every spelling a tool parses to the same id: padded, decimal, as a long'
+        script._clientToolDenial('hub_get_app_config', [appId: ' 7']) != null
+        script._clientToolDenial('hub_get_app_config', [appId: '7.0']) != null
+        script._clientToolDenial('hub_get_app_config', [appId: 7L]) != null
+        script._clientToolDenial('hub_call_rule', [ruleId: [' 7'], action: 'stop']) != null
+        script._clientToolDenial('hub_get_app_config', [appId: ' 12']) == null
+
         and: 'through the aliases too: the cloner sourceAppId and the rule tools ruleId'
         script._clientToolDenial('hub_export_native_app', [sourceAppId: 7]) != null
         script._clientToolDenial('hub_clone_native_app', [sourceAppId: '7']) != null

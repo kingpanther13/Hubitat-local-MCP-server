@@ -679,7 +679,8 @@ private boolean _targetsThisApp(Map args) {
     return ["appId", "app_id", "sourceAppId", "ruleId", "parentId"].any { key ->
         def target = args.get(key)
         def ids = (target instanceof Collection) ? target : [target]
-        ids.any { it?.toString() == self }
+        // Compare canonical ids: " 7" or "7.0" names the same app as 7 once a tool parses it.
+        ids.any { it != null && (it.toString() == self || _exactIntId(it)?.toString() == self) }
     }
 }
 
@@ -10835,7 +10836,8 @@ Map _rmCheckRuleHealth(Integer appId, Map probe = null) {
         try {
             cfg = _rmFetchConfigJson(appId)
             read = true
-            if (probe != null) probe.page = true
+            // A page that reports an error did not render the rule, so it does not count as the render.
+            if (probe != null) { if (cfg.configPage?.error) probe.pageError = cfg.configPage.error.toString(); else probe.page = true }
             if (typeName == null) typeName = cfg.app?.appType?.name?.toString()
             def label = cfg.app?.label?.toString()
             if (cfg.app?.disabled != null) result.disabled = (cfg.app.disabled == true)
@@ -12540,7 +12542,7 @@ Every action on a Rule Machine rule drives the rule's own page buttons (`runActi
 
 - `localVariables`: `[{name, type, value}]`, the rule's own list, including a value the running rule just set. `type` is Rule Machine's token (integer, bigdecimal, string, boolean, datetime), the value a hub_set_rule variable change takes. A credential-named variable's value is hidden (`redacted:true`) while credential hiding is on. Hub globals are read with hub_list_variables.
 - If the local variables alone cannot be read, `localVariables` is null and `localVariablesError` says why; the health and the requested sections still return.
-- A read that fails returns `success:false` with `error` and `note`. The read renders the app's page as opening it in the hub UI does. Retrying is safe for a Rule Machine rule, whose page only shows its settings; another app's page runs that app's own code (rendering a Swap Device instance swaps its devices again), so check such an app with hub_get_app_config before reading it again.
+- A read that fails returns `success:false` with `error` and `note`. The read renders the app's page as opening it in the hub UI does. For a Rule Machine rule that only re-shows its settings, so a retry is safe, except that a render drops an edit still open, and not yet compiled, in Rule Machine's own editor. Another app's page runs that app's own code (rendering a Swap Device instance swaps its devices again), and so does hub_get_app_config without summary=true; check such an app with hub_get_app_config(summary=true), which does not render it, and inspect its devices with hub_get_device before reading it again.
 
 `health` has the same shape here, in hub_set_rule's read and in its write responses' documents:
 

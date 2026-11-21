@@ -190,7 +190,7 @@ Map toolGetRuleDocument(Map args) {
     } catch (Exception failure) {
         mcpLogError('rm-native', "${toolName} read failed for rule ${id}: ${failure.message}".toString(), failure)
         [success: false, ruleId: id, error: "Rule ${id} could not be read: ${failure.message ?: failure.toString()}".toString(),
-         note: "The read rendered the rule's page, as opening it does, and wrote nothing else; a Rule Machine rule's page only shows its settings, so retrying once is safe. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
+         note: "The read rendered the rule's page, as opening it does, and wrote nothing else; a Rule Machine rule's page only shows its settings, so retrying once is safe, though a render drops an edit still open and not yet compiled in Rule Machine's own editor. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
     }
 }
 
@@ -541,6 +541,11 @@ Map toolUpdateRuleDocument(Map args) {
         Map rendered = [:]
         Map beforeHealth = _rmCheckRuleHealth(id as Integer, rendered)
         // Without the render the compiled broken flag can be stale, so an unrendered rule is not assumed healthy.
+        if (rendered.pageError) {
+            return [success: false, partial: false, ruleId: id, issues: beforeHealth.issues,
+                error: "Rule ${id}'s page reports an error (${rendered.pageError}), so whether it is already broken is unknown; no change was written.".toString(),
+                note: "Open the rule with hub_get_rule to see the page's error and repair it with hub_set_rule(operation:'form') or in the Hubitat UI before editing. See hub_get_tool_guide(section='set_rule_reference')."]
+        }
         if (rendered.page != true) {
             return [success: false, partial: false, ruleId: id, checkErrors: beforeHealth.checkErrors,
                 error: "Rule ${id}'s page could not be rendered before the write, so whether it is already broken is unknown; no change was written.".toString(),
