@@ -12339,8 +12339,11 @@ def updated() {}
             made_dec = self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_create_variable", "args": {"name": dec_name, "type": "Decimal", "value": 1.5, "confirm": True}})
             assert made_dec.get("success") is True, f"Decimal fixture create failed: {made_dec}"
-            bool_name = self._ensure_perm_variables("sv_bool")["sv_bool"]
-            for target, wrong, needle in ((dec_name, "abc", "must be a number"), (bool_name, "maybe", "true or false")):
+            perm = self._ensure_perm_variables("sv_bool", "sv_string")
+            bool_name, str_name = perm["sv_bool"], perm["sv_string"]
+            # A null value on a String hub variable is refused too, rather than stored as empty or "null".
+            for target, wrong, needle in ((dec_name, "abc", "must be a number"), (bool_name, "maybe", "true or false"),
+                                          (str_name, None, "is a String: value must be text, got: null")):
                 before_wrong = self.client.call_tool("hub_manage_variables", {
                     "tool": "hub_get_variable", "args": {"name": target}}).get("value")
                 self._expect_tool_refusal("hub_set_variable", {"name": target, "value": wrong}, needle)
@@ -12394,6 +12397,11 @@ def updated() {}
             else:
                 raise AssertionError(f"malformed DateTime was not refused with isError: {bad_dt}")
             assert not self._hub_variable_visible_in_bulk(bad_dt_name), "invalid DateTime created a variable"
+            # A misspelt key in the {date, time} map is named, not dropped into a different kind.
+            self._expect_tool_refusal("hub_create_variable", {
+                "name": bad_dt_name, "type": "DateTime", "value": {"date": "2026-01-01", "tim": "12:30"},
+                "confirm": True}, "DateTime value accepts only the keys date and time; unknown: tim")
+            assert not self._hub_variable_visible_in_bulk(bad_dt_name), "a DateTime map with an unknown key created a variable"
         finally:
             self._delete_variable_safe(bad_dt_name)
 
@@ -12441,6 +12449,11 @@ def updated() {}
             kept_dt = str(self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_get_variable", "args": {"name": dt_name}}).get("value"))
             assert kept_dt == reread, f"a refused time-only value changed the date-and-time variable: {reread} -> {kept_dt}"
+            self._expect_tool_refusal("hub_set_variable", {"name": dt_name, "value": {"date": "2026-04-01", "tim": "10:00"}},
+                                      "DateTime value accepts only the keys date and time; unknown: tim")
+            kept_key = str(self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": dt_name}}).get("value"))
+            assert kept_key == reread, f"a refused unknown-key map changed the date-and-time variable: {reread} -> {kept_key}"
             # The guide points change history at the hub's location events, named variable:<name>.
             deadline = time.time() + 10.0
             changes: list = []

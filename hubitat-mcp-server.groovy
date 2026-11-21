@@ -5686,7 +5686,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_list_variables: "List all hub variables (with type, connector and Hub Mesh sharing) and rule-engine variables. Args: type, cursor",
                 hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable plus its connector and Hub Mesh details. Args: name, includeDependents?",
-                hub_set_variable: "Set an existing variable's value, or add to a Number/Decimal hub variable atomically. Falls back to rule_engine namespace when no hub var matches. Args: name, value | increment",
+                hub_set_variable: "Set an existing variable's value, or add to a Number/Decimal hub variable atomically. Falls back to rule_engine namespace when no hub var matches. meshShared shares a hub variable over Hub Mesh. Args: name, value | increment, meshShared?",
                 hub_create_variable: "Create a new hub variable, or several at once. Single: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true. Bulk: variables=[{name,type,value},...], confirm=true (mutually exclusive with the single form)",
                 hub_delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if apps or rules use it]",
                 hub_create_connector: "Create a virtual-device connector for an existing hub variable. connectorType picks a device type the hub offers for it (Number/Decimal: Dimmer|Variable|Volume|ColorTemp|Humidity|Illuminance; default Variable). Args: name, connectorType?, confirm=true",
@@ -12800,6 +12800,8 @@ A DateTime variable is one of three kinds, set by the initial value (hub-local; 
 - date and time: `yyyy-MM-ddTHH:mm` (or a space for the T, or `{date, time}`);
 - date only: `yyyy-MM-dd` (or `{date}`);
 - time only: `HH:mm` (or `{time}`).
+
+A map takes only the keys `date` and `time`; any other key is refused before anything is written (`hub_set_variable` does the same).
 
 The read-back must show the requested kind. "DateTime kinds" above shows how the hub stores each one.
 

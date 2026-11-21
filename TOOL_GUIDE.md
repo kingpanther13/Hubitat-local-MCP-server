@@ -1457,6 +1457,8 @@ A DateTime variable is one of three kinds, set by the initial value (hub-local; 
 - date only: `yyyy-MM-dd` (or `{date}`);
 - time only: `HH:mm` (or `{time}`).
 
+A map takes only the keys `date` and `time`; any other key is refused before anything is written (`hub_set_variable` does the same).
+
 The read-back must show the requested kind. "DateTime kinds" above shows how the hub stores each one.
 
 **Bulk form:**

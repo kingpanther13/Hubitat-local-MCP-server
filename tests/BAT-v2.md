@@ -556,7 +556,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_set_variable` with `name: "vacationMode"` and `meshShared: true` (no `value` needed — meshShared may stand alone), reports `meshShared: true` and, when the read-back is readable, `meshShareConfirmed: true` (the variable now appears in `hub_get_hub_mesh` `sharedHubVariables`). Then `meshShared: false` to stop. `meshShared` applies to HUB variables only — a rule-only name is rejected by validation before any hub call (`isError`), as is a call with neither `value` nor `meshShared`. Sharing/unsharing is reversible (no `confirm`). Distinct from per-DEVICE sharing (`hub_update_device` `meshEnabled`).
 
-**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- `hub_set_variable(mesh_shared:true)` on a throwaway `vacationMode`, `meshShared:true` and `meshShareConfirmed:true` (the hub then lists its Hub Mesh app as using the variable), then `mesh_shared:false`, confirmed, and `hub_get_hub_mesh` showed no shared variables.
+**Last live run**: 2026-11-16, a C-7 test hub (firmware 2.5.3.123) running commit 1c5d069b, driven by a fresh AI client given only the prompts: pass -- `hub_set_variable(mesh_shared:true)` (now `meshShared`) on a throwaway `vacationMode`, `meshShared:true` and `meshShareConfirmed:true` (the hub then lists its Hub Mesh app as using the variable), then `mesh_shared:false`, confirmed, and `hub_get_hub_mesh` showed no shared variables.
 
 ### T14l — link a device or variable a peer hub shares (hub_create_device / hub_create_variable mesh link)
 

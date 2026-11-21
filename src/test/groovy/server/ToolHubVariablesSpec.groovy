@@ -103,8 +103,8 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         given: 'hub exposes two variables — one connector-backed, one not'
         script.metaClass.getAllGlobalVars = { ->
             [
-                'temp_setpoint': [name: 'temp_setpoint', type: 'Number',  value: 72,    deviceId: 305, attribute: 'variable'],
-                'vacation_mode': [name: 'vacation_mode', type: 'Boolean', value: false, deviceId: null, attribute: null]
+                'temp_setpoint': [name: 'temp_setpoint', type: 'integer', value: 72,    deviceId: 305, attribute: 'variable'],
+                'vacation_mode': [name: 'vacation_mode', type: 'boolean', value: false, deviceId: null, attribute: null]
             ]
         }
 
@@ -123,7 +123,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.hubVariables.size() == 2
         def temp = result.hubVariables.find { it.name == 'temp_setpoint' }
         temp.value == 72
-        temp.type == 'Number'
+        temp.type == 'integer'
         temp.source == 'hub'
         temp.deviceId == 305
         temp.attribute == 'variable'
@@ -209,7 +209,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_list_variables cursor pages hubVariables while ruleVariables stays in full (#174)"() {
         given: '150 hub vars + 5 rule vars'
-        def allVars = (0..<150).collectEntries { i -> ["var_${String.format('%03d', i)}".toString(), [name: "var_${i}".toString(), type: 'Number', value: i, deviceId: null, attribute: null]] }
+        def allVars = (0..<150).collectEntries { i -> ["var_${String.format('%03d', i)}".toString(), [name: "var_${i}".toString(), type: 'integer', value: i, deviceId: null, attribute: null]] }
         script.metaClass.getAllGlobalVars = { -> allVars }
         stateMap.ruleVariables = [a: 1, b: 2, c: 3, d: 4, e: 5]
 
@@ -258,10 +258,10 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         script.metaClass.getGlobalVar = { String name -> throw new RuntimeException('platform lookup failed') }
 
         when:
-        script.toolGetVariable([name: 'outdoor_temp'])
+        def result = script.toolGetVariable([name: 'outdoor_temp'])
 
-        then: 'the lookup failure falls through to not-found'
-        thrown(IllegalArgumentException)
+        then: 'the lookup failure is a read failure, not not-found'
+        result.success == false
 
         and: 'its diagnostic reaches the MCP history under hub-vars'
         script.log.messages.any {
@@ -292,7 +292,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     def "hub_get_variable returns hub var without connector linkage when no connector exists"() {
         given: 'a Boolean var without a connector — deviceId/attribute null'
         script.metaClass.getGlobalVar = { String name ->
-            [name: 'vacation_mode', type: 'Boolean', value: true, deviceId: null, attribute: null]
+            [name: 'vacation_mode', type: 'boolean', value: true, deviceId: null, attribute: null]
         }
 
         when:
@@ -301,7 +301,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then:
         result.name == 'vacation_mode'
         result.value == true
-        result.type == 'Boolean'
+        result.type == 'boolean'
         result.deviceId == null
         result.attribute == null
         result.source == 'hub'
@@ -321,6 +321,36 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.name == 'porch_light_pref'
         result.value == 'bright'
         result.source == 'rule_engine'
+    }
+
+    def "hub_get_variable reports a throwing hub read as a read failure, not as not found"() {
+        given:
+        script.metaClass.getGlobalVar = { String name -> throw new RuntimeException('excessive hub load') }
+        stateMap.ruleVariables = [:]
+
+        when:
+        def result = script.toolGetVariable([name: 'outdoor_temp'])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error == "hub_get_variable: could not read hub variable 'outdoor_temp': excessive hub load"
+        result.note.startsWith('The read failed, so whether the variable exists is unknown; retry.')
+    }
+
+    def "via dispatch: a throwing hub read on hub_get_variable is a tool error"() {
+        given:
+        script.metaClass.getGlobalVar = { String name -> throw new RuntimeException('excessive hub load') }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_variable', [name: 'outdoor_temp'])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error.contains('could not read hub variable')
     }
 
     def "hub_get_variable throws when variable exists in neither source"() {
@@ -702,6 +732,21 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         'time'     | '9999-99-99T08:15:00.000-0500'  | '25:00'                | 'is a time-only DateTime'
         'datetime' | '2026-03-05T08:15:00.000-0500'  | '2026-04-01'           | 'is a DateTime with date and time'
         'datetime' | '2026-03-05T08:15:00.000-0500'  | '9999-99-99T08:15:00.000-0500' | 'is a DateTime with date and time'
+    }
+
+    def "hub_set_variable refuses a DateTime map with an unknown key before any write"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'datetime', value: '2026-03-05T08:15:00.000-0500'] }
+        def writes = []
+        script.metaClass.setGlobalVar = { String n, Object v -> writes << v; true }
+
+        when:
+        script.toolSetVariable([name: 'when', value: [date: '2026-04-01', time: '10:00', zone: 'UTC']])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message == 'DateTime value accepts only the keys date and time; unknown: zone'
+        writes.isEmpty()
     }
 
     def "hub_set_variable reports a throwing setGlobalVar on a hub variable as a failure, not a rule_engine write"() {
@@ -1145,7 +1190,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then: 'nothing local second-guesses the hub, and its rules reach the caller'
         result.success == false
         result.error == 'hub_create_variable: Hub Variables create failed: Use a name of 1-255 characters without leading/trailing spaces, control characters, or quotes, backslashes, ~, [, ], :, <, >.'
-        result.note.startsWith('Nothing was changed')
+        result.note.startsWith('Nothing was changed: the hub refused the request. Correct what the error names, then retry.')
     }
 
     def "hub_create_variable refuses a blank name before any request"() {
@@ -1233,6 +1278,24 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('set_variable')
     }
 
+    @spock.lang.Unroll
+    def "#tool with null args is refused by the confirm gate, not a NullPointerException"() {
+        given:
+        enableWrite()
+
+        when:
+        script."${method}"(null)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('confirm')
+
+        where:
+        tool                   | method
+        'hub_create_variable'  | 'toolCreateVariable'
+        'hub_create_connector' | 'toolCreateConnector'
+    }
+
     def "hub_create_variable requires confirm"() {
         when:
         script.toolCreateVariable([name: 'goodName', type: 'String', value: 'x'])
@@ -1260,7 +1323,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         given:
         enableWrite()
         script.metaClass.getGlobalVar = { String n ->
-            [name: 'has_conn', type: 'Boolean', value: true, deviceId: 305, attribute: 'switch']
+            [name: 'has_conn', type: 'boolean', value: true, deviceId: 305, attribute: 'switch']
         }
 
         when:
@@ -1402,6 +1465,41 @@ class ToolHubVariablesSpec extends ToolSpecBase {
                   '2026-02-30', '2026-1-5', '24:00', '7:05', [date: '2026-02-30'], [time: '12:61'], [:], 'garbage']
     }
 
+    def "hub_create_variable DateTime refuses a map with an unknown key before any POST"() {
+        given:
+        enableWrite()
+        def rec = stubDateTimeCreate([:])
+
+        when:
+        script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: [date: '2026-01-01', tim: '12:30'], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message == 'DateTime value accepts only the keys date and time; unknown: tim'
+        varPosts.isEmpty()
+        rec.sets.isEmpty()
+    }
+
+    def "hub_create_variable bulk form: a DateTime map with an unknown key fails only its own item, before its POST"() {
+        given:
+        enableWrite()
+        stubBulkCreate()
+
+        when:
+        def result = script.toolCreateVariable([confirm: true, variables: [
+            [name: 'goodOne', type: 'Number', value: 1],
+            [name: 'badWhen', type: 'DateTime', value: [date: '2026-01-01', tim: '12:30']]
+        ]])
+
+        then:
+        result.success == false
+        result.createdCount == 1
+        result.results[1].name == 'badWhen'
+        result.results[1].error == 'DateTime value accepts only the keys date and time; unknown: tim'
+        !result.results[1].containsKey('note')
+        varPosts*.body.name == ['goodOne']
+    }
+
     @spock.lang.Unroll
     def "hub_create_variable DateTime sends #expected in hub zone #zoneId for #input"() {
         given:
@@ -1451,8 +1549,8 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
         where:
         label          | status | data                                                                 | note
-        'JSON text'    | 400    | '{"message":"The name already exists or the value is invalid."}'      | 'Nothing was changed'
-        'parsed map'   | 400    | [message: 'The name already exists or the value is invalid.']         | 'Nothing was changed'
+        'JSON text'    | 400    | '{"message":"The name already exists or the value is invalid."}'      | 'Nothing was changed: the hub refused the request.'
+        'parsed map'   | 400    | [message: 'The name already exists or the value is invalid.']         | 'Nothing was changed: the hub refused the request.'
         'server error' | 500    | '{"message":"The name already exists or the value is invalid."}'      | 'The hub may have applied'
     }
 
@@ -1564,6 +1662,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.results[1].name == 'bad[name]'
         result.results[1].success == false
         result.results[1].error.endsWith('Use a name of 1-255 characters without leading/trailing spaces, control characters, or quotes, backslashes, ~, [, ], :, <, >.')
+        result.results[1].note == 'Nothing was changed: the hub refused the request. Correct what the error names, then retry.'
         result.results[2].success == true
         varPosts*.body.name == ['goodOne', 'bad[name]', 'goodTwo']
     }
@@ -1641,6 +1740,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.results[1].name == 'timesOut'
         result.results[1].success == false
         result.results[1].error.contains('not visible via getGlobalVar')
+        result.results[1].note == 'The hub may have applied part of the change; check with hub_get_variable before retrying.'
         result.results[2].success == true
     }
 
@@ -2490,7 +2590,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         script.metaClass.getAllGlobalVars = { ->
-            ['temp_setpoint': [name: 'temp_setpoint', type: 'Number', value: 72, deviceId: 305, attribute: 'variable']]
+            ['temp_setpoint': [name: 'temp_setpoint', type: 'integer', value: 72, deviceId: 305, attribute: 'variable']]
         }
         stateMap.ruleVariables = [last_motion: '2026-04-21T10:00:00']
 

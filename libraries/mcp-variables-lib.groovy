@@ -126,10 +126,12 @@ def toolGetVariable(args) {
     boolean includeDependents = args?.includeDependents == true
 
     def found = null
+    String hubReadError = null
     try {
         def hubVar = getGlobalVar(name)
         if (hubVar != null) found = _hubVarRow(name, hubVar)
     } catch (Exception e) {
+        hubReadError = e.message ?: e.class.simpleName
         mcpLog("debug", "hub-vars", "Hub variable '${name}' lookup threw ${e.class.simpleName}: ${e.message}")
     }
 
@@ -138,6 +140,12 @@ def toolGetVariable(args) {
         if (ruleVar != null) found = [name: name, value: ruleVar, source: "rule_engine"]
     }
 
+    // A failed hub read is not an absent variable: "not found" would send the caller to create one that exists.
+    if (found == null && hubReadError != null) {
+        return [success: false, isError: true, name: name,
+                error: "hub_get_variable: could not read hub variable '${name}': ${hubReadError}",
+                note: "The read failed, so whether the variable exists is unknown; retry. See hub_get_tool_guide(section='variables')."]
+    }
     if (found == null) throw new IllegalArgumentException("Variable not found: ${name}")
 
     // Only includeDependents reads the Hub Variables page: a plain get is a hot path (lock checks,
@@ -270,12 +278,22 @@ private String _hubVarsConsumerText(List apps) {
 }
 
 // A runtime failure in the structured error contract; validation still throws.
-private Map _hubVarsNativeFailure(String tool, String error, boolean nothingChanged = false) {
+// A refusal (the hub answered 4xx) repeats on an unchanged retry, so its note asks for a correction first.
+private Map _hubVarsNativeFailure(String tool, String error, boolean nothingChanged = false, boolean refused = false) {
     String text = error.startsWith(tool) ? error : "${tool}: ${error}"
     mcpLog("warn", "hub-vars", text)
-    String note = nothingChanged ? "Nothing was changed; retry." :
+    String note = refused ? _hubVarsRefusedNote() : nothingChanged ? "Nothing was changed; retry." :
         "The hub may have applied part of the change; check the variable with hub_get_variable before retrying."
     return [success: false, isError: true, error: text, note: note + " See hub_get_tool_guide(section='variables')."]
+}
+
+private String _hubVarsRefusedNote() {
+    return "Nothing was changed: the hub refused the request. Correct what the error names, then retry."
+}
+
+// A failed write POST: a refusal changed nothing, any other failure may have applied part of it.
+private Map _hubVarsPostFailure(String tool, Exception e) {
+    return _hubVarsNativeFailure(tool, e.message ?: e.class.simpleName, false, _hubVarsRefused(e))
 }
 
 private String _hubVarsModelError(Exception e) {
@@ -318,12 +336,12 @@ private boolean _hubVarsRefused(Exception e) {
 }
 
 def toolCreateVariable(args) {
-    requireDestructiveConfirm(args.confirm)
     args = args ?: [:]
+    requireDestructiveConfirm(args.confirm)
 
     // Hub Mesh LINK form: create a local variable linked to one a peer hub shares. Mutually exclusive
     // with every create form (single and bulk). Validation before any hub call. "Wants to link" is a
-    // NON-BLANK source value, not key presence -- a mesh_source_*:null on a normal create must not be
+    // NON-BLANK source value, not key presence -- a meshSourceHubId/meshSourceName:null on a normal create must not be
     // pushed onto the link path.
     String meshHubId = args.meshSourceHubId?.toString()?.trim()
     String meshName = args.meshSourceName?.toString()?.trim()
@@ -371,7 +389,7 @@ def toolCreateVariable(args) {
 
     try { return _createOneVariable(name, type, value) }
     catch (IllegalArgumentException e) { throw e }
-    catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", e.message ?: e.class.simpleName, _hubVarsRefused(e)) }
+    catch (Exception e) { return _hubVarsPostFailure("hub_create_variable", e) }
 }
 
 // Hub Mesh: create a LOCAL linked variable from one a peer hub shares (GET
@@ -571,7 +589,13 @@ private Map _createVariablesBulk(variables) {
             // every failed entry is traceable to its request position. Guard the
             // .name read behind the Map check -- a non-Map item has no name property.
             def rawName = (item instanceof Map) ? item.name : null
-            results << [name: (itemName ?: rawName ?: "variables[${idx}]"), success: false, error: e.message ?: e.toString()]
+            Map failed = [name: (itemName ?: rawName ?: "variables[${idx}]"), success: false, error: e.message ?: e.toString()]
+            // A validation refusal is fixed from its error alone; a hub failure needs to say what may have landed.
+            if (!(e instanceof IllegalArgumentException)) {
+                failed.note = _hubVarsRefused(e) ? _hubVarsRefusedNote() :
+                    "The hub may have applied part of the change; check with hub_get_variable before retrying."
+            }
+            results << failed
             failedCount++
         }
     }
@@ -606,6 +630,7 @@ private String _dateTimeKind(value) {
 // A DateTime input as [kind, date, time, stored], stored being the hub's string for that kind. Input is
 // hub-local, like the hub's own pickers: an offset is ignored and seconds are dropped.
 private Map _dateTimeInput(String name, value) {
+    _refuseUnknownDateTimeKeys(value)
     String dateStr = null
     String timeStr = null
     if (value instanceof Map) {
@@ -642,6 +667,15 @@ private Map _dateTimeInput(String name, value) {
     if (dateStr != null && hm != null) return [kind: "datetime", date: dateStr, time: hm, stored: when.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ", zone)]
     if (dateStr != null) return [kind: "date", date: dateStr, time: null, stored: "${dateStr}T99:99:99.999-9999".toString()]
     return [kind: "time", date: null, time: hm, stored: "9999-99-99T${hm}:00.000${new Date().format('Z', zone)}".toString()]
+}
+
+// A misspelt key would otherwise be dropped and the value read as a different kind.
+private void _refuseUnknownDateTimeKeys(value) {
+    if (!(value instanceof Map)) return
+    def unknown = value.keySet().collect { it?.toString() } - ["date", "time"]
+    if (unknown) {
+        throw new IllegalArgumentException("DateTime value accepts only the keys date and time; unknown: ${unknown.join(', ')}")
+    }
 }
 
 // One create POST, then one read-back that must match the requested type, value and DateTime kind.
@@ -702,6 +736,7 @@ private Map _createOneVariable(String name, String type, value) {
 }
 
 def toolCreateConnector(args) {
+    args = args ?: [:]
     requireDestructiveConfirm(args.confirm)
     def name = args.name?.toString()?.trim()
     if (!name) throw new IllegalArgumentException("Variable name is required")
@@ -738,7 +773,7 @@ def toolCreateConnector(args) {
         throw new IllegalArgumentException("Unsupported connector type '${chosenType}' for '${name}'. The hub offers: ${row.connectorOptions.join(', ')}. See hub_get_tool_guide(section='variables').")
     }
     try { _hubVarsNativePost("createConnector", [name: name, connectorType: chosenType]) }
-    catch (Exception e) { return _hubVarsNativeFailure("hub_create_connector", e.message ?: e.class.simpleName, _hubVarsRefused(e)) }
+    catch (Exception e) { return _hubVarsPostFailure("hub_create_connector", e) }
 
     def after = null
     try { after = getGlobalVar(name) } catch (Exception e) {
@@ -798,7 +833,7 @@ def toolRemoveConnector(args) {
         throw new IllegalArgumentException("The connector for '${name}' is in use by ${_hubVarsConsumerText(connectorApps)}. Deleting it breaks those apps. Update or remove them first, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables').")
     }
     try { _hubVarsNativePost("removeConnector", [name: name, acknowledgeUse: force]) }
-    catch (Exception e) { return _hubVarsNativeFailure("hub_delete_connector", e.message ?: e.class.simpleName, _hubVarsRefused(e)) }
+    catch (Exception e) { return _hubVarsPostFailure("hub_delete_connector", e) }
 
     // A removal the hub accepted but did not apply must never report success.
     def after
@@ -1045,6 +1080,8 @@ private _hubVariableValueFor(String name, String type, value, current = null) {
             throw new IllegalArgumentException("Hub variable '${name}' is a Boolean: value must be true or false, got: ${value}")
         case "datetime":
             String kind = _dateTimeKind(current) ?: "datetime"
+            // Ahead of the kind check, which would otherwise hide the misspelt key behind a kind refusal.
+            _refuseUnknownDateTimeKeys(value)
             Map dt = null
             try { dt = (value == null) ? null : _dateTimeInput(name, value) } catch (IllegalArgumentException ignored) { }
             if (dt?.kind != kind) throw new IllegalArgumentException("Hub variable '${name}' is ${_dateTimeKindRule(kind)}, got: ${value}")
@@ -1209,7 +1246,7 @@ def toolDeleteHubVariable(args) {
         // A mesh mirror acknowledges use because the hub counts the mesh link itself as one;
         // inUseByApps gated it above.
         try { _hubVarsNativePost("remove", [name: varName, acknowledgeUse: force || linkedMirrorRow != null]) }
-        catch (Exception e) { return _hubVarsNativeFailure("hub_delete_variable", e.message ?: e.class.simpleName, _hubVarsRefused(e)) }
+        catch (Exception e) { return _hubVarsPostFailure("hub_delete_variable", e) }
         def stillThere
         try { stillThere = getGlobalVar(varName) }
         catch (Exception e) { return _hubVarsNativeFailure("hub_delete_variable", "could not verify whether '${varName}' was deleted: ${e.message}") }
@@ -1328,7 +1365,7 @@ def _getAllToolDefinitions_partVariables() {
                 properties: [
                     name: [type: "string", description: "New variable name, e.g. \"vacationMode\".[[FLAT_TRIM]] Omit when using variables or the Hub Mesh link form.[[/FLAT_TRIM]]"],
                     type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
-                    value: [description: "Initial value, must match the type.[[FLAT_TRIM]] DateTime is hub-local: 2026-02-04T14:00 makes a date-and-time variable, 2026-02-04 a date-only one, 14:00 a time-only one; {date,time} takes either or both. Offsets are ignored and seconds dropped. Omit when using variables.[[/FLAT_TRIM]]"],
+                    value: [description: "Initial value, must match the type.[[FLAT_TRIM]] DateTime is hub-local: 2026-02-04T14:00 makes a date-and-time variable, 2026-02-04 a date-only one, 14:00 a time-only one; {date,time} takes either or both and no other key. Offsets are ignored and seconds dropped. Omit when using variables.[[/FLAT_TRIM]]"],
                     meshSourceHubId: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with meshSourceName, not name/type/value.[[/FLAT_TRIM]]"],
                     meshSourceName: [type: "string", description: "Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"],
                     variables: [type: "array", description: "Bulk form: several variables in one call.", items: [

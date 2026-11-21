@@ -153,8 +153,9 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         def result = script.toolCreateVariable([confirm: true, name: 'Missing', type: 'Number', value: 3])
         then:
         !result.success
-        result.error.contains('the hub accepted the create')
-        result.note.contains('hub_get_variable')
+        result.error == "hub_create_variable: the hub accepted the create, but 'Missing' is not visible via getGlobalVar."
+        result.isError == true
+        result.note.startsWith('The hub may have applied part of the change; check the variable with hub_get_variable before retrying.')
         posts().size() == 1
         !variables.containsKey('Missing')
     }
@@ -217,6 +218,22 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         result.error.contains("hub_create_connector: the hub accepted the 'Variable' connector create")
         variables.Counter.sdk.deviceId == null
         posts().size() == 1
+    }
+
+    def 'connector removal the hub accepts but does not apply is a failure'() {
+        given:
+        seed('Counter')
+        seedConnector('Counter')
+        persistWrites = false
+        when:
+        def result = script.toolRemoveConnector([confirm: true, name: 'Counter'])
+        then:
+        !result.success
+        result.isError == true
+        result.error == "hub_delete_connector: the hub accepted the connector removal, but variable 'Counter' still has deviceId=905"
+        result.note.startsWith('The hub may have applied part of the change')
+        variables.Counter.sdk.deviceId == 905
+        posts() == [[method: 'POST', path: '/hub2/variables/removeConnector', body: [name: 'Counter', acknowledgeUse: false]]]
     }
 
     def 'native dependents list direct and connector users once each'() {
@@ -345,7 +362,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         then:
         !result.success
         result.error.contains("did not offer connector types for 'Counter'")
-        result.note.startsWith('Nothing was changed')
+        result.note.startsWith('Nothing was changed; retry.')
         posts().isEmpty()
     }
 
@@ -473,6 +490,8 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         result.results*.name == ['First', 'Bad', 'Last']
         result.results*.success == [true, false, true]
         result.results[1].error == 'Hub Variables create failed: Use a name of 1-255 characters without leading/trailing spaces, control characters, or quotes, backslashes, ~, [, ], :, <, >.'
+        result.results[1].note == 'Nothing was changed: the hub refused the request. Correct what the error names, then retry.'
+        !result.results[0].containsKey('note')
         posts()*.body*.name == ['First', 'Bad', 'Last']
         variables.keySet() == ['First', 'Last'] as Set
     }
@@ -486,7 +505,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         then:
         !result.success
         result.error == 'hub_create_connector: Could not read the Hub Variables model: Hub Variables returned an empty response'
-        result.note.startsWith('Nothing was changed')
+        result.note.startsWith('Nothing was changed; retry.')
         posts().isEmpty()
 
         where:
