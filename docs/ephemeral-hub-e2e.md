@@ -7,6 +7,23 @@ included, on pushes to `main`, and on manual dispatch of a branch. It has no app
 and no label gate of its own. `e2e:skip` holds only the physical-hub lane. Docs-only PRs and
 verified dependency-only bot PRs skip it.
 
+## Fast CI prerequisites
+
+On a PR, both OS and JVM wait for Unit Tests (all four matrix entries), PR Guard,
+Groovy 2.5 Spock, and the other fast workflows selected by the PR's changed paths.
+On a push to `main`, Unit Tests is the prerequisite. Manual stable and beta
+dispatches can run immediately.
+
+The PR consumer and trusted requester get independent GitHub events. Each checks
+the fast workflow results before starting its hub jobs. If checks are pending or
+red, Actions initially shows the hub jobs as skipped. Each successful fast
+workflow completion wakes a coordinator on the default branch. When every
+applicable check is green on the current revision, the coordinator re-runs each
+deferred gate job and its dependents. This can show up as a second run attempt
+on the PR. Re-running a failed fast check successfully uses the same path.
+The coordinator never approves a fork deployment or re-runs a hub that already
+started. The physical hub's label gate is independent.
+
 ## Two hub kinds
 
 Every run tests two kinds of hub side by side, one matrix job per kind:

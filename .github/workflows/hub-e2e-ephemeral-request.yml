@@ -76,12 +76,37 @@ jobs:
           retention-days: 1
           overwrite: true
 
+  fast-ci:
+    name: Fast CI prerequisites
+    outputs:
+      result: ${{ steps.fast.outputs.result }}
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check fast CI on this revision
+        id: fast
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ruby .github/scripts/ephemeral_fast_ci.rb
+      - name: Defer hubs until fast CI passes
+        if: steps.fast.outputs.result == 'deferred'
+        run: echo "Ephemeral hubs skipped until all applicable fast checks pass." >> "$GITHUB_STEP_SUMMARY"
+
   # pull_request_target runs whatever the fork-approval setting says, so a first-time contributor's
   # hub waits here until a maintainer approves the e2e-approval deployment.
   approve:
     name: Ephemeral lane approval
-    needs: gate
-    if: needs.gate.outputs.run == 'true'
+    needs: [gate, fast-ci]
+    if: needs.fast-ci.outputs.result == 'ready'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

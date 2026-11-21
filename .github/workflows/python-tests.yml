@@ -21,6 +21,7 @@ on:
       - '.github/workflows/hub-e2e-ephemeral.yml'
       - '.github/workflows/hub-e2e-ephemeral-beta.yml'
       - '.github/workflows/hub-e2e-ephemeral-request.yml'
+      - '.github/workflows/ephemeral-fast-ci-completed.yml'
       - '.github/scripts/request_ephemeral_hub.sh'
       - '.github/workflows/release.yml'
 

@@ -30,10 +30,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  fast-ci:
+    name: Fast CI prerequisites
+    outputs:
+      result: ${{ steps.fast.outputs.result }}
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check fast CI on this revision
+        id: fast
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ruby .github/scripts/ephemeral_fast_ci.rb
+      - name: Defer hubs until fast CI passes
+        if: steps.fast.outputs.result == 'deferred'
+        run: echo "Ephemeral hubs skipped until all applicable fast checks pass." >> "$GITHUB_STEP_SUMMARY"
+
   request-hub:
     name: Request ephemeral hub (${{ matrix.kind }})
     # Trusted refs only; PR runs get their hub from hub-e2e-ephemeral-request.yml.
-    if: github.event_name != 'pull_request'
+    needs: fast-ci
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && (needs.fast-ci.outputs.result == 'ready' || github.event_name == 'workflow_dispatch') }}
     strategy:
       fail-fast: false
       matrix:
@@ -103,6 +128,8 @@ jobs:
           overwrite: true
 
   e2e:
+    needs: fast-ci
+    if: ${{ !cancelled() && (needs.fast-ci.outputs.result == 'ready' || github.event_name == 'workflow_dispatch') }}
     name: e2e (ephemeral hub, ${{ matrix.kind }})
     strategy:
       fail-fast: false

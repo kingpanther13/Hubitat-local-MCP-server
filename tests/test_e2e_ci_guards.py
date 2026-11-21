@@ -400,10 +400,13 @@ def test_ephemeral_pr_code_runs_only_under_pull_request():
     assert "\npermissions:\n  contents: read\n" in head
     triggers = head.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
     assert "  pull_request:\n    types: [opened, synchronize, reopened]" in triggers and "pull_request_target" not in triggers
-    assert set(jobs) == {"request-hub", "e2e"}
+    assert set(jobs) == {"fast-ci", "request-hub", "e2e"}
     request, e2e = jobs["request-hub"], jobs["e2e"]
-    assert "if: github.event_name != 'pull_request'" in request and "contents: write" not in EPHEMERAL
+    assert "github.event_name != 'pull_request'" in request and "contents: write" not in EPHEMERAL
     assert "secrets." not in e2e and "environment:" not in EPHEMERAL and "allow-unsafe-pr-checkout" not in EPHEMERAL
+    for gated in [request, e2e]:
+        assert "    needs: fast-ci\n" in gated
+        assert "needs.fast-ci.outputs.result == 'ready' || github.event_name == 'workflow_dispatch'" in gated
     assert "permissions:\n      contents: read\n      actions: read" in e2e
     assert e2e.index("ephemeral-hub-public-key-") < e2e.index("ephemeral-hub-session-") < e2e.index("actions/checkout")
     assert e2e.index("Mask hub identity") < e2e.index("actions/checkout")
@@ -450,7 +453,9 @@ def test_ephemeral_request_workflow_never_runs_pr_code():
     head, jobs = _jobs(REQUEST)
     assert "on:\n  pull_request_target:\n    types: [opened, synchronize, reopened]\n\npermissions:" in head
     assert "\npermissions:\n  contents: read\n" in head
-    assert set(jobs) == {"gate", "approve", "publish", "request-hub"}
+    assert set(jobs) == {"gate", "fast-ci", "approve", "publish", "request-hub"}
+    assert "    needs: gate\n" in jobs["fast-ci"] and "needs.gate.outputs.run == 'true'" in jobs["fast-ci"]
+    assert "    needs: [gate, fast-ci]\n" in jobs["approve"] and "needs.fast-ci.outputs.result == 'ready'" in jobs["approve"]
     # Only contributors with a merged change skip the reviewer-gated environment, and no hub is
     # requested before that job succeeds.
     trusted = """contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.pull_request.author_association)"""
