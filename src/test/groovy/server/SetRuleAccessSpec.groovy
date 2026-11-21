@@ -82,7 +82,7 @@ class SetRuleAccessSpec extends ToolSpecBase {
         when:
         def help = script.executeTool('hub_set_rule', update(false))
         then:
-        help.confirm_required
+        help.confirmRequired
         writes.empty
         when:
         script.executeTool('hub_set_rule', update() + [confirm: 'true'])

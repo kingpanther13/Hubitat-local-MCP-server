@@ -1753,7 +1753,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         def probe = script.executeTool('hub_set_rule', [operation: 'update', ruleId: 42, confirm: false, args: [changes: [logChange()]]])
         then:
-        probe.confirm_required
+        probe.confirmRequired
         probe.operation == 'update'
         events.empty
     }

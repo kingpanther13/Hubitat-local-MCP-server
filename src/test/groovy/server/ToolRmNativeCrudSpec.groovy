@@ -3013,7 +3013,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule', [operation: 'create', args: [parentId: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
         response.result.isError != true
-        mcpDriver.parseInner(response).confirm_required == true
+        mcpDriver.parseInner(response).confirmRequired == true
         where:
         useGateways << [true, false]
     }
@@ -3083,7 +3083,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', ruleId: 100, args: [changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
         response.result.isError != true
-        mcpDriver.parseInner(response).confirm_required == true
+        mcpDriver.parseInner(response).confirmRequired == true
         where:
         useGateways << [true, false]
     }

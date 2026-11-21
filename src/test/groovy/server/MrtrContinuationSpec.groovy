@@ -255,7 +255,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def response = modernCall(leaf, args)
         then:
         response.result.isError != true
-        mcpDriver.parseInner(response).confirm_required == true
+        mcpDriver.parseInner(response).get(leaf == 'hub_set_rule' ? 'confirmRequired' : 'confirm_required') == true
         !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
         runInMillisCalls.empty
         where:

@@ -395,7 +395,7 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
     Map body = [:] + context.envelope
     supplied.each { name, value ->
         Map field = context.get('fields').get(name)
-        if (!field && context.controls.values().any { it.kind == 'button' && it.name == name }) throw new IllegalArgumentException("${name} is a button on the current native page, not a field; activate its control_id instead")
+        if (!field && context.controls.values().any { it.kind == 'button' && it.name == name }) throw new IllegalArgumentException("${name} is a button on the current native page, not a field; activate its ${_nfKeyNames(toolName).control} instead")
         if (!field) throw new IllegalArgumentException("Field is not present on the current native page: ${name}")
         body.putAll(_nfWire(field, _nfValue(field, value)))
     }
@@ -422,7 +422,7 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
     String reloadPath = null
     if (activate) {
         control = context.controls[activate]
-        if (!control) throw new IllegalArgumentException('Choose one exact returned native control_id')
+        if (!control) throw new IllegalArgumentException("Choose one exact returned native ${_nfKeyNames(toolName).control}".toString())
         if (control.disabled) throw new IllegalArgumentException('The native control is disabled')
         if (control.kind == 'local_app' && supplied) throw new IllegalArgumentException('Submit fields separately before opening another native app form')
         if (control.kind == 'create_child' && supplied) throw new IllegalArgumentException('Submit parent fields separately before creating a child')
@@ -533,9 +533,9 @@ private void _nfForget(Long id) {
     if (NATIVE_FORM_CONTEXTS[key]?.app_id == id) NATIVE_FORM_CONTEXTS.remove(key)
 }
 
-// hub_set_rule spells its keys in camelCase; hub_set_native_app keeps its snake_case names.
+// hub_set_rule spells its keys in camelCase (its results are renamed by _ndCamelForm); hub_set_native_app keeps its snake_case names.
 private Map _nfKeyNames(String toolName) {
-    toolName == 'hub_set_rule' ? [id: 'ruleId', expect: 'expectPage', options: 'optionsFor'] : [id: 'app_id', expect: 'expect_page', options: 'options_for']
+    toolName == 'hub_set_rule' ? [id: 'ruleId', expect: 'expectPage', options: 'optionsFor', control: 'controlId'] : [id: 'app_id', expect: 'expect_page', options: 'options_for', control: 'control_id']
 }
 
 Map toolCallAppForm(Map args, String toolName = 'hub_set_native_app') {
@@ -555,7 +555,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_native_app') {
         if (step.kind == 'open' && step.page != null && (!(step.page instanceof String) || !(step.page ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('A registered native page name is required')
         if (step.kind == 'open' && step.from != null && (step.page == null || !(step.from instanceof String) || !(step.from ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('from names the parent page of the opened page and requires page')
         if (step.kind == 'submit' && (!(step.get(expectKey) instanceof String) || (step.get('fields') != null && !(step.get('fields') instanceof Map)))) throw new IllegalArgumentException("Submit requires ${expectKey} and an optional fields object".toString())
-        if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned control_id string')
+        if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException("activate requires a returned ${names.control} string".toString())
         def marked = step.get('fields') instanceof Map ? step.get('fields').find { k, v -> _isRedactionMarker(v) } : null
         if (marked) throw new IllegalArgumentException("${marked.key} is the redaction marker, not a value; omit the field to keep the stored one")
     }

@@ -17,7 +17,7 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         script.toolSetRule([:]).operations == ['read', 'create', 'update', 'form']
         ['create', 'update', 'form'].every { op ->
             def result = script.toolSetRule([operation: op])
-            result.operation == op && result.inputSchema.properties.bestPracticeKey.type == 'string' && result.confirm_required == true
+            result.operation == op && result.inputSchema.properties.bestPracticeKey.type == 'string' && result.confirmRequired == true
         }
     }
 
@@ -102,6 +102,41 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         then:
         def refused = thrown(IllegalArgumentException)
         refused.message == 'App 42 is a Motion Lighting app; only Rule Machine 5.1 rules and Button Rules can be edited here'
+    }
+
+    def 'form results spell their keys in camelCase while values and input names stay as the hub sends them'() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
+        script.metaClass.toolCallAppForm = { Map args, String toolName ->
+            [success: false, ruleId: 42, reopen_required: true, remaining_steps: 1, navigated_app_id: 43, navigated_page: 'mainPage',
+             created_app_id: 44, defaults_posted: ['use_st'], label_restored: true, fields_not_landed: ['label'],
+             completed: [[kind: 'submit', navigation_ended: true]],
+             fields: [[name: 'act_type.1', submit_on_change: true, value_source: 'stored', has_value: true, options_available: true, value: [some_key: 'x']]],
+             controls: [[control_id: 'N||doAct', kind: 'create_child', submit_on_change: false]]]
+        }
+        when:
+        def result = script.toolSetRule([operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']]], confirm: true])
+        then:
+        result.keySet() == ['success', 'ruleId', 'reopenRequired', 'remainingSteps', 'navigatedAppId', 'navigatedPage', 'createdAppId',
+                            'defaultsPosted', 'labelRestored', 'fieldsNotLanded', 'completed', 'fields', 'controls'] as Set
+        result.defaultsPosted == ['use_st']
+        result.completed == [[kind: 'submit', navigationEnded: true]]
+        result.fields == [[name: 'act_type.1', submitOnChange: true, valueSource: 'stored', hasValue: true, optionsAvailable: true, value: [some_key: 'x']]]
+        result.controls == [[controlId: 'N||doAct', kind: 'create_child', submitOnChange: false]]
+    }
+
+    def 'form names the control id key of the tool that was called'() {
+        given:
+        Map context = [envelope: [:], fields: [:], controls: [:]]
+        when:
+        script._nfPrepare(42L, context, [:], 'missing', toolName)
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message == "Choose one exact returned native ${key}".toString()
+        where:
+        toolName             | key
+        'hub_set_rule'       | 'controlId'
+        'hub_set_native_app' | 'control_id'
     }
 
     def 'form opens the Rule Machine parent app'() {

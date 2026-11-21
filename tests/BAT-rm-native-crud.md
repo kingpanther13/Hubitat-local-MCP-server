@@ -1855,7 +1855,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_get_rule` renders the rule's page first, which is when Rule Machine updates its broken flag, so it returns `health.broken: true`, `health.ok: false`, `health.brokenRows` naming the trigger row (`kind: "trigger"`) and an `issues` entry naming the broken state. The `hub_set_rule(operation='update')` that adds the Log action is refused before anything is written, with the error naming the broken rows; a following read shows the rule's actions unchanged. SAFETY: only BAT-prefixed devices/rules are touched.
+**Expected**: `hub_get_rule` asks the rule's own broken() check without opening its page, so it returns `health.broken: true`, `health.ok: false`, `health.brokenRows` naming the trigger row by native id (`kind: "trigger"`, `id`, `setting: "tDev<id>"`) and an `issues` entry naming the broken state. The `hub_set_rule(operation='update')` that adds the Log action is refused before anything is written, with the error naming the broken rows; a following read shows the rule's actions unchanged. SAFETY: only BAT-prefixed devices/rules are touched.
 **Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: not run as written: the AI client's own permission layer refused to create the deliberately broken rule. The same check passed the same day in a scripted run on that hub at commit b8256a01 (`hub_get_rule` read `broken:true` with a trigger row in `brokenRows`; the update was refused with the rule's actions unchanged) and in `test_rule_health_broken_true_on_dangling_trigger`.
 
 ### T458 — hub_get_rule reads a Visual Rules Builder rule's health (issue #254)

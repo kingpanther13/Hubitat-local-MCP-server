@@ -75,7 +75,7 @@ class NativeFormsDispatchSpec extends ToolSpecBase {
         def probe = script.executeTool('hub_set_rule', openArgs() + [confirm: false])
         then:
         probe.operation == 'form'
-        probe.confirm_required
+        probe.confirmRequired
         when:
         stateMap.remove('lastBackupTimestamp')
         script.executeTool('hub_set_rule', openArgs())

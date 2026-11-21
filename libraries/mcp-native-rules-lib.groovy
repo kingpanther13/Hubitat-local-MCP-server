@@ -199,7 +199,7 @@ private Map _rmCollectFilteredRmRules() {
     return [combined: combined, ghostIds: ghostIds, rmError: rmError, treeReadable: treeReadable, liveApps: liveApps]
 }
 
-// List all Rule Machine rules via RMUtils, with deleted rules whose ids RM's rule-list variables still
+// List the Rule Machine 5.x rules via RMUtils, with deleted rules whose ids RM's rule-list variables still
 // carry dropped by a /hub2/appsList cross-check (_rmCollectFilteredRmRules); this tool formats,
 // paginates, and classifies the result.
 def toolListRmRules(args) {
@@ -2680,7 +2680,7 @@ def toolGetNativeRule(args) {
         return result
     }
     result.note = _rmIsVisualRuleType(namespace, typeName) ? "A Visual Rule's definition is read with hub_get_visual_rule." :
-        (_rmIsRuleAppType(namespace, typeName) ? "Only a Rule Machine 5.1 rule or Button Rule has a document; this rule returns its health alone." :
+        (_rmIsRuleAppType(namespace, typeName) ? "Only a Rule Machine 5.1 rule or Button Rule has a document; this rule returns its health alone. Read its configuration with hub_get_app_config(includeStatus: true)." :
             "hub_get_rule reads Rule Machine rules, Button Rules and Basic Rules; for this app it returns its health alone. Read its configuration and App Status with hub_get_app_config(includeStatus: true).")
     result
 }
@@ -3295,7 +3295,7 @@ def _readOnlyToolNames_partNativeRM() {
     // Read-only classification for this library's tools (issue #209: per-tool metadata lives
     // with the tool), contributed to the app's getReadOnlyToolNames() aggregator.
     return [
-        // Native rules (read) -- hub_get_rule renders the rule's page and reads its state.
+        // Native rules (read) -- hub_get_rule reads the rule's state without rendering its page.
         // (hub_export_native_app -- in McpAppClonerLib -- instantiates a cloner app + persists, so it stays write.)
         "hub_list_rules", "hub_get_rule"
     ]
@@ -3314,7 +3314,7 @@ def _toolDisplayMeta_partNativeRM() {
     // Human-facing title/summary per tool -- merged into the app's getToolDisplayMeta() aggregator.
     return [
         // Native Rule Machine + classic apps
-        hub_list_rules: [title: "List Rule Machine Rules", summary: "List all Rule Machine rules."],
+        hub_list_rules: [title: "List Rule Machine Rules", summary: "List the Rule Machine 5.x rules with their status."],
         hub_call_rule: [title: "Run or Control Rule", summary: "Run the actions of one or more rules, or stop, start, pause or resume them."],
         hub_set_rule_private_boolean: [title: "Set Rule Private Boolean", summary: "Set the private boolean of one or more Rule Machine rules."],
         hub_get_rule: [title: "Get Rule", summary: "Read a rule's health, actions, conditions, triggers, settings and local variables."],

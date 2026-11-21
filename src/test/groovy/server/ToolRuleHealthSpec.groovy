@@ -823,7 +823,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         inner.health.paused == false
         inner.localVariables == null
         inner.settings*.name == ['trigCapab', 'switchDev']
-        inner.settings[1].device_ids == ['9']
+        inner.settings[1].deviceIds == ['9']
         !inner.containsKey('note')
         count('/installedapp/configure/json/100') == 0
 

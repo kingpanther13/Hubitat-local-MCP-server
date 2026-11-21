@@ -7208,7 +7208,7 @@ def updated() {}
         for name, row in self._rm_settings(app_id).items():
             value = row.get("value")
             if str(row.get("type", "")).startswith("capability"):
-                value = row.get("device_ids") or []
+                value = row.get("deviceIds") or []
             elif row.get("multiple") and isinstance(value, str):
                 try:
                     value = json.loads(value)
@@ -7271,7 +7271,8 @@ def updated() {}
         if fields is not None:
             step["fields"] = fields
         if control is not None:
-            step["activate"] = control["control_id"]
+            # hub_set_rule returns camelCase keys, hub_set_native_app snake_case.
+            step["activate"] = control["controlId" if expect_key == "expectPage" else "control_id"]
         return step
 
     def _native_app_step(self, form: dict, fields: dict | None = None, control: dict | None = None) -> dict:
@@ -7292,7 +7293,7 @@ def updated() {}
     def _rm_new_action_editor(self, app_id: Any) -> tuple[dict, str]:
         """Open a new action row in the native editor; returns the form and the row's allocated id."""
         form = self._rm_open(app_id, "selectActions")
-        form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="button", control_id="N||doAct"))
+        form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="button", controlId="N||doAct"))
         form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="href", page="doActPage"))
         names = [row["name"] for row in form["fields"] if row["name"].startswith("actType.")]
         assert len(names) == 1, form
@@ -7301,7 +7302,7 @@ def updated() {}
     def _rm_new_trigger_editor(self, app_id: Any) -> tuple[dict, str]:
         form = self._rm_open(app_id, "selectTriggers")
         if not any(row["name"].startswith("tCapab") for row in form["fields"]):
-            form = self._rm_submit(app_id, form, control=self._rm_control(form, control_id="true||moreCond"))
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, controlId="true||moreCond"))
         names = [row["name"] for row in form["fields"] if row["name"].startswith("tCapab")]
         assert len(names) == 1, form
         return form, names[0].removeprefix("tCapab")
@@ -7480,7 +7481,7 @@ def updated() {}
         try:
             probe = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
                 "operation": "update", "ruleId": app_id, "args": {"changes": [native_log("unconfirmed")]}}})
-            assert probe.get("confirm_required") is True, probe
+            assert probe.get("confirmRequired") is True, probe
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
                 "operation": "update", "ruleId": app_id, "confirm": True,
                 "args": {"changes": [native_log("via-envelope"), native_log("wrapped-list")]}}})
@@ -8156,7 +8157,7 @@ def updated() {}
             action_id = str(original["id"])
             form = self._rm_open(app_id, "selectActions")
             edit = [row for row in form["controls"] if row.get("kind") == "button"
-                    and row.get("name", "").split(".")[0] == action_id and row.get("control_id", "").endswith("||doAct")]
+                    and row.get("name", "").split(".")[0] == action_id and row.get("controlId", "").endswith("||doAct")]
             assert len(edit) == 1, form
             form = self._rm_submit(app_id, form, control=edit[0])
             form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="href", page="doActPage"))
@@ -8530,7 +8531,7 @@ def updated() {}
             after = self._rm_settings(app_id)
             changed = {n for n in set(before) | set(after) if before.get(n) != after.get(n)}
             assert all(n.endswith("." + str(row_id)) for n in changed), changed
-            self._rm_assert_stored({n: r.get("device_ids") if str(r.get("type", "")).startswith("capability") else r.get("value")
+            self._rm_assert_stored({n: r.get("deviceIds") if str(r.get("type", "")).startswith("capability") else r.get("value")
                                     for n, r in after.items()}, row_id, expected)
             return result
 
@@ -9737,7 +9738,7 @@ def updated() {}
         assert len(controls) == 1, opened
         result = self.client.call_tool("hub_set_rule", {"operation": "form", "ruleId": int(app_id),
             "args": {"steps": [{"kind": "submit", "expectPage": opened["page"]["name"],
-                                  "activate": controls[0]["control_id"]}]}, "confirm": True})
+                                  "activate": controls[0]["controlId"]}]}, "confirm": True})
         assert result.get("success") is True, result
         return result
 

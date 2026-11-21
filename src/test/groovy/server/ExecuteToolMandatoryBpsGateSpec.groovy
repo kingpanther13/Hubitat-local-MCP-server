@@ -323,7 +323,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         def probe = script.executeTool('hub_set_rule', [operation: 'update', args: [:]])
         then:
         probe.operation == 'update'
-        probe.confirm_required
+        probe.confirmRequired
         probe.inputSchema
     }
 
