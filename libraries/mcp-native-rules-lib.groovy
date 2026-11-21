@@ -5,7 +5,7 @@ def _getAllToolDefinitions_partNativeRM() {
         // Native Rule Machine runtime and administrative tools.
         [
             name: "hub_list_rules",
-            description: "List all Rule Machine 5.x rules (deduplicated by id) with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. Status reflects Rule Machine's name decoration (refreshed after an MCP stop, start, pause or resume); a decorated rule's paused/stopped come from its own state, and a row marked statusSource:'name' fell back to the decoration because that state could not be read. A stop made outside MCP may show only after the rule's page is next opened. For ONE rule's state, call hub_get_rule(ruleId) instead of listing every rule — its health returns that rule's paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
+            description: "List the Rule Machine 5.x rules, with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. Status reflects Rule Machine's name decoration (refreshed after an MCP stop, start, pause or resume); a decorated rule's paused/stopped come from its own state, and a row marked statusSource:'name' fell back to the decoration because that state could not be read. A stop made outside MCP may show only after the rule's page is next opened. For ONE rule's state, call hub_get_rule(ruleId) instead of listing every rule — its health returns that rule's paused/disabled/stopped/broken directly. Button Rules, Basic Rules and other classic apps (Room Lighting, Notifier, Button Controllers) are not listed here: `hub_list_apps` (scope='instances') lists them with their enabled/disabled state (nameFilter:'Button Rule' finds Button Rules), and hub_get_visual_rule lists Visual Rules. Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -16,11 +16,11 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_call_rule",
-            description: "Run the actions of one or more rules, or stop, start, pause or resume them: Rule Machine rules and Button Rules, and Visual Rules (actions, pause, resume).[[FLAT_TRIM]] Requires the Write master. Each rule is acted on through its own page button (a Visual Rule through its builder's endpoint), one at a time, with per-rule results on a batch. stop/start/pause/resume leave a rule already in that state alone; a repeated actions runs the actions again.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for action semantics.",
+            description: "Run the actions of one or more rules, or stop, start, pause or resume them: Rule Machine rules and Button Rules, and Visual Rules (pause, resume, and actions on a Visual Rule Builder 2.0 rule).[[FLAT_TRIM]] Requires the Write master. Each rule is acted on through its own page button (a Visual Rule through its builder's endpoint), one at a time, with per-rule results on a batch. stop/start/pause/resume leave a rule already in that state alone; a repeated actions runs the actions again.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for action semantics.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules (a Visual Rule's from hub_get_visual_rule), or an array of rule IDs to act on in one call"],
+                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules (a Button Rule's from hub_list_apps(nameFilter:'Button Rule'), a Visual Rule's from hub_get_visual_rule), or an array of rule IDs to act on in one call"],
                     action: [type: "string", enum: ["actions", "stop", "start", "pause", "resume"], description: "actions (the default) runs the rule's actions; stop/start stop or restart a Rule Machine rule; pause/resume pause or resume the rule."],
                 ],
                 required: ["ruleId"]
@@ -32,7 +32,7 @@ def _getAllToolDefinitions_partNativeRM() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to set together"],
+                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules (a Button Rule's from hub_list_apps(nameFilter:'Button Rule')), or an array of rule IDs to set together"],
                     value: [type: "boolean", description: "Target value for the rule's Private Boolean."]
                 ],
                 required: ["ruleId", "value"]
@@ -49,7 +49,7 @@ def _getAllToolDefinitions_partNativeRM() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "integer", minimum: 1, description: "The rule's installed-app id, from hub_list_rules (a Button Rule's or Basic Rule's from hub_list_apps(scope:'instances'))."],
+                    ruleId: [type: "integer", minimum: 1, description: "The rule's installed-app id, from hub_list_rules (a Button Rule's or Basic Rule's from hub_list_apps(scope:'instances'), a Visual Rule's from hub_get_visual_rule)."],
                     sections: [type: "array", items: [type: "string", enum: ["actions", "conditions", "triggers", "expressions", "settings"]], description: "Document sections to return; default all. localVariables and health are always returned, so [] returns them alone; a long rule's whole document can exceed the response cap."],
                     cursor: [type: "string", description: "Page one section: pass \"\" for the first page, then each nextCursor. Requires exactly one section."],
                     limit: [type: "integer", minimum: 1, maximum: 100, description: "Rows per page when paging (default 50)."]
@@ -439,9 +439,7 @@ private List<Integer> _rmRuleIdListArg(Object raw) {
     if (rawList.isEmpty()) throw new IllegalArgumentException("ruleId array must not be empty")
     List<Integer> ids = []
     rawList.each { id ->
-        // _rmCoerceRuleId, not normalizeRuleId: a JSON-number 400.7 would silently TRUNCATE to rule 400
-        // via toInteger(), and the target check would then act on the wrong rule.
-        def n = _rmCoerceRuleId(id)
+        def n = _exactIntId(id)
         if (n == null) {
             throw new IllegalArgumentException("ruleId '${id}' is not a valid rule id (a positive whole number). Use hub_list_rules to find valid ids.")
         }
@@ -469,9 +467,15 @@ def toolRunRmRule(args) {
     ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
     Map guard = _rmRequireRuleTargets(ruleIds, "hub_call_rule", true)
     if (guard.failure) return _rmRunGuardFailure(ruleIds, guard)
-    List<Integer> visual = ruleIds.findAll { _rmIsVisualRuleType(guard.types.get(it) as String) }
+    // The guard admits only built-in types, so every type it returns is in the hubitat namespace.
+    List<Integer> visual = ruleIds.findAll { _rmIsVisualRuleType('hubitat', guard.types.get(it)) }
     if (visual && action in ["stop", "start"]) {
         throw new IllegalArgumentException("Visual Rules have no stop or start; rule(s) ${visual.join(', ')} are Visual Rules. Use action:'pause' or 'resume' for them. Nothing was dispatched.")
+    }
+    // The classic builder has no run button: only the 2.0 builder calls /app/ruleBuilderRun, and a 1.0 rule fails on it.
+    List<Integer> classic = visual.findAll { guard.types.get(it) == "Visual Rule Builder 1.0" }
+    if (classic && action == "actions") {
+        throw new IllegalArgumentException("Visual Rule Builder 1.0 rules have no run button, so their actions cannot be run; rule(s) ${classic.join(', ')} are 1.0 rules. Pause and resume work on them. Nothing was dispatched.")
     }
     boolean runActions = (action == "actions")
     def perRule = { Integer id ->
@@ -565,31 +569,41 @@ private Map _rmRequireRuleTargets(List<Integer> ruleIds, String toolName, boolea
     Map<Integer, String> types = [:]
     List<Integer> missing = []
     Map<Integer, String> unreadable = [:]
+    Map<Integer, String> notRules = [:]
     ruleIds.each { id ->
         try {
             def app = getAppByAppId(id as Long)
             if (app == null) missing << id
             else {
                 def typeName = app.appType?.name?.toString()
-                if (typeName) types.put(id, typeName)
-                else unreadable.put(id, "its app type could not be read")
+                def namespace = app.appType?.namespace
+                if (!typeName) unreadable.put(id, "its app type could not be read")
+                else if (_rmIsRuleAppType(namespace, typeName) || (visualRules && _rmIsVisualRuleType(namespace, typeName))) types.put(id, typeName)
+                else notRules.put(id, typeName)
             }
         } catch (Exception e) {
             unreadable.put(id, (e.message ?: e.toString()).toString())
         }
     }
+    String accepts = visualRules ? "Rule Machine rules, Button Rules and Visual Rules" : "Rule Machine rules and Button Rules"
     if (missing) {
-        throw new IllegalArgumentException("${_rmNoAppText(missing)}; ${toolName} only acts on rules. Find rule ids with hub_list_rules. Nothing was dispatched.")
+        throw new IllegalArgumentException("${_rmNoAppText(missing)}; ${toolName} acts only on ${accepts}. Find rule ids with hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules). Nothing was dispatched.")
     }
-    def notRules = types.findAll { id, typeName -> !_rmIsRuleAppType(typeName) && !(visualRules && _rmIsVisualRuleType(typeName)) }
     if (notRules) {
-        throw new IllegalArgumentException("${_rmNotRuleText(notRules)}; ${toolName} only acts on rules. Find rule ids with hub_list_rules. Nothing was dispatched.")
+        throw new IllegalArgumentException("${_rmNotRuleText(notRules)}; ${toolName} acts only on ${accepts}. Find rule ids with hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules). Nothing was dispatched.")
     }
     if (unreadable) {
         unreadable.each { id, why -> mcpLog("warn", "rm-interop", "${toolName}: app ${id} could not be identified (${why}); nothing dispatched") }
         return [failure: _rmLookupFailure(unreadable), unreadable: unreadable]
     }
     return [types: types]
+}
+
+// A rule-tool target whose lookup failed: nothing was run, since the target was never confirmed.
+private Map _rmLookupFailure(Map reasonsById) {
+    def detail = reasonsById.collect { id, why -> "app ${id}: ${why}" }.join('; ')
+    return [success: false, error: "The target app could not be looked up (${detail}), so nothing was run.".toString(),
+            note: "Nothing was changed. Retry once; if it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
 }
 
 // Click the rule's Run Actions button (runAction on the main page): runs the action list
@@ -648,11 +662,21 @@ private Map _rmToggleButton(Integer ruleId, String action, String flag, String b
     def out = [success: true, ruleId: ruleId, rmAction: clicked]
     // The click alone leaves the rule's "(Stopped)"/"(Paused)" name decoration stale until its page is next
     // rendered; render it once, as the hub UI does after the click, so hub_list_rules is current.
+    String renderError = null
     try {
         _rmFetchConfigJson(ruleId)
     } catch (Exception e) {
-        out.note = "The rule's ${flag} state changed, but re-rendering its page failed (${e.message}), so hub_list_rules may show the old status until the rule's page is next opened. hub_get_rule reads the rule's own state.".toString()
+        renderError = e.message ?: e.toString()
     }
+    // The hub accepts a click that changes nothing, and two toggles sent at once cancel out, so the flag is read again.
+    def seen
+    try { seen = _rmRuntimeFlag(ruleId, flag) }
+    catch (Exception e) { seen = e.message ?: e.toString() }
+    if (seen != target) {
+        return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: the ${button} click was accepted, but the rule's ${flag} state then read ${seen}, not ${target}".toString(),
+                note: "Another change to the rule may have run at the same time. Read it with hub_get_rule, then send the action again if it is still needed: a rule already in the target state is left alone. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+    }
+    if (renderError != null) out.note = "The rule's ${flag} state changed, but re-rendering its page failed (${renderError}), so hub_list_rules may show the old status until the rule's page is next opened. hub_get_rule reads the rule's own state.".toString()
     return out
 }
 
@@ -825,9 +849,6 @@ private Map _collectLiveApps() {
     return complete ? apps : null
 }
 
-private Integer _rmCoerceRuleId(Object id) {
-    return _exactIntId(id)
-}
 
 private List _rmCollectTriggerIndices(Integer appId) {
     def status = _rmFetchStatusJson(appId)
@@ -1649,7 +1670,7 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
     def payload = new groovy.json.JsonSlurper().parseText(raw)
     def identity = payload instanceof Map && payload.appReplacements instanceof Map ? payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }?.value : null
     def data = payload instanceof Map && payload.appData instanceof Map ? payload.appData.find { key, value -> key.toString() == ruleId.toString() }?.value : null
-    if (!(identity instanceof Map) || !_rmIsEditableRuleType(identity.appTypeName, identity.appTypeNamespace) ||
+    if (!(identity instanceof Map) || !_rmIsEditableRuleType(identity.appTypeNamespace, identity.appTypeName) ||
         !identity.parentAppInstalledAppId?.toString()?.isLong() || identity.parentAppInstalledAppId.toString().toLong() <= 0L ||
         !(payload.deviceReplacements instanceof Map) || !(data instanceof Map) || !(data.state instanceof Map) ||
         ['actions', 'capabstrue', 'capabsfalse', 'eval'].any { data.state.get(it) != null && !(data.state.get(it) instanceof Map) } ||
@@ -2632,8 +2653,7 @@ def toolDeleteNativeApp(args) {
 def toolGetNativeRule(args) {
     def raw = args?.ruleId
     if (raw == null) throw new IllegalArgumentException("ruleId is required")
-    if (!(raw instanceof Number) || !raw.toString().isLong() || raw.toString().toLong() <= 0L) throw new IllegalArgumentException("ruleId must be a positive integer")
-    Long id = raw.toString().toLong()
+    Long id = normalizeRuleId(raw) as Long
     Map docArgs = [ruleId: id, localVariables: true]
     ['sections', 'cursor', 'limit'].each { key -> if (args.containsKey(key)) docArgs.put(key, args.get(key)) }
     Map read = _ndDocumentArgs(docArgs, ['actions', 'conditions', 'triggers', 'expressions', 'settings'], 'hub_get_rule')
@@ -2641,12 +2661,14 @@ def toolGetNativeRule(args) {
     try { target = getAppByAppId(id) }
     catch (Exception lookup) {
         mcpLogError("rm-native", "hub_get_rule lookup failed for app ${id}", lookup)
-        return [ruleId: id] + _rmLookupFailure([(id): (lookup.message ?: lookup.toString()).toString()])
+        return [success: false, ruleId: id, error: "Rule ${id} could not be read: ${lookup.message ?: lookup.toString()}".toString(),
+                note: "The read writes nothing and does not open the rule's page, so retrying once is safe. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
     }
     if (target == null) throw new IllegalArgumentException(_rmMissingAppText(id))
     String typeName = target.appType?.name?.toString()
-    if (_rmIsEditableRuleType(typeName, target.appType?.namespace)) return toolGetRuleDocument(docArgs)
-    boolean basicRule = target.appType?.namespace == 'hubitat' && _classicAppFormat(typeName) == 'basic-rule'
+    def namespace = target.appType?.namespace
+    if (_rmIsEditableRuleType(namespace, typeName)) return toolGetRuleDocument(docArgs)
+    boolean basicRule = namespace == 'hubitat' && _classicAppFormat(typeName) == 'basic-rule'
     // A Basic Rule's settings are short and come back whole, so there is nothing to page.
     if (basicRule && read.paged) throw new IllegalArgumentException("A Basic Rule's settings are returned whole; omit cursor and limit")
     Map result = [ruleId: id, health: _rmCheckRuleHealth(id as Integer), localVariables: null]
@@ -2657,8 +2679,8 @@ def toolGetNativeRule(args) {
         }
         return result
     }
-    result.note = _rmIsVisualRuleType(typeName) ? "A Visual Rule's definition is read with hub_get_visual_rule." :
-        (_rmIsRuleAppType(typeName) ? "Only a Rule Machine 5.1 rule or Button Rule has a document; this rule returns its health alone." :
+    result.note = _rmIsVisualRuleType(namespace, typeName) ? "A Visual Rule's definition is read with hub_get_visual_rule." :
+        (_rmIsRuleAppType(namespace, typeName) ? "Only a Rule Machine 5.1 rule or Button Rule has a document; this rule returns its health alone." :
             "hub_get_rule reads Rule Machine rules, Button Rules and Basic Rules; for this app it returns its health alone. Read its configuration and App Status with hub_get_app_config(includeStatus: true).")
     result
 }

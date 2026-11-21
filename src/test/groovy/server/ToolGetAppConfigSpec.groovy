@@ -909,6 +909,46 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         false        | 'are shown, because Hide access tokens is off'
     }
 
+    def "for a per-client token, statusRedactionNote says both are always hidden and offers no settings advice"() {
+        given: 'both settings are off, which a client token overrides'
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        settingsMap.redactAccessTokens = false
+        script.callerClient = [id: 'c1']
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'accessToken', value: 'tok-123'], [name: 'apiKey', value: 'secret-api-key']])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.statusRedactionNote == "This client's token always reads credential-named appState values and access tokens as redacted, whatever the MCP app's settings say."
+        !JsonOutput.toJson(result).contains('tok-123') && !JsonOutput.toJson(result).contains('secret-api-key')
+
+        cleanup:
+        script.callerClient = null
+    }
+
+    def "a status page with no app state is marked appStateMissing, unlike an app whose state is empty"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: []] + (empty ? [appState: []] : [:]))
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState == []
+        result.containsKey('appStateMissing') == !empty
+        if (!empty) assert result.appStateMissing == true
+
+        where:
+        empty << [true, false]
+    }
+
     def "without includeStatus no status lists are returned and the status page is not read"() {
         given:
         settingsMap.enableRead = true
@@ -2998,20 +3038,22 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "_rmIsRuleAppType('#name') == #expected"() {
+    def "_rmIsRuleAppType('#namespace', '#name') == #expected"() {
         expect:
-        script._rmIsRuleAppType(name) == expected
+        script._rmIsRuleAppType(namespace, name) == expected
 
         where:
-        name               | expected
-        'Rule-5.1'         | true
-        'Button Rule-5.1'  | true
-        'Rule-6.0'         | true
-        'Rule Machine'     | false
-        'Room Lights'      | false
-        'My Rule-5.1'      | false
-        'rule-5.1'         | false
-        null               | false
+        namespace | name               | expected
+        'hubitat' | 'Rule-5.1'         | true
+        'hubitat' | 'Button Rule-5.1'  | true
+        'hubitat' | 'Rule-6.0'         | true
+        'hubitat' | 'Rule Machine'     | false
+        'hubitat' | 'Room Lights'      | false
+        'hubitat' | 'My Rule-5.1'      | false
+        'hubitat' | 'rule-5.1'         | false
+        'hubitat' | null               | false
+        'acme'    | 'Rule-5.1'         | false
+        null      | 'Rule-5.1'         | false
     }
 
     @spock.lang.Unroll

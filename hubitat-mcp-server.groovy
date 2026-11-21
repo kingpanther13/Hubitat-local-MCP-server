@@ -4641,7 +4641,7 @@ private def _mrtrAggregateTerminal(Map rec, result) {
             out.ruleIds = terminalBank.ruleIds
             // out started as a copy of the LAST slice's envelope, so every field the leaf
             // scopes to that slice describes only its share of the batch: ruleId names the
-            // tail rule, rmAction counts that slice's rules ("stopRule toggle x2" for a batch
+            // tail rule, rmAction counts that slice's rules ("stop x2" for a batch
             // of four), and the leaf's error sentence counts them too ("the other 1 rule(s)
             // WERE actioned" when three were). Drop all three BEFORE the verdict below, so the
             // rebuilt error and the per-rule rows are what carry the batch-wide truth.
@@ -5923,7 +5923,7 @@ def getGatewayConfig() {
 
                 hub_get_custom_rule: "List MCP custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
                 hub_test_custom_rule: "Dry-run an MCP custom rule without executing actions. Args: ruleId",
-                hub_list_rules: "List all native Rule Machine rules with IDs, labels and status",
+                hub_list_rules: "List the Rule Machine 5.x rules with IDs, labels and status. Button Rules are listed by hub_list_apps and Visual Rules by hub_get_visual_rule",
                 hub_get_rule: "Read one Rule Machine rule, Button Rule or Basic Rule without opening its page: its health (broken, broken rows by native id, paused, stopped, private boolean, disabled rows, block structure, live subscription and job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; a Basic Rule's settings. Any other app returns its health alone. Args: ruleId, sections?, cursor?, limit?",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?"
             ],
@@ -5942,9 +5942,9 @@ def getGatewayConfig() {
             summaries: [
                 hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, ruleId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
 
-                hub_list_rules: "List all Rule Machine rules with IDs, labels and status (uses RMUtils — RM only)",
-                hub_call_rule: "Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (a Visual Rule: actions, pause, resume). Args: ruleId (id or array of ids), action (actions/stop/start/pause/resume, default actions)",
-                hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules (RMUtils). Args: ruleId (id or array of ids), value (bool)",
+                hub_list_rules: "List the Rule Machine 5.x rules with IDs, labels and status. Button Rules are listed by hub_list_apps and Visual Rules by hub_get_visual_rule",
+                hub_call_rule: "Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (a Visual Rule: pause, resume, and actions on a 2.0 rule). Args: ruleId (id or array of ids), action (actions/stop/start/pause/resume, default actions)",
+                hub_set_rule_private_boolean: "Set the private boolean of one or more Rule Machine rules or Button Rules. Args: ruleId (id or array of ids), value (bool)",
                 hub_set_native_app: "Create, update or drive the native forms of classic apps (Room Lighting, Button Controller and Button Rule, Basic Rule, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, user and community apps). Args: operation?, app_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas. Rule Machine rules use hub_set_rule.",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
                 hub_set_app_disabled: "Enable or disable any installed app without deleting it (reversible red-X). Args: appId, disabled (bool). Read-back verified. For RM rules prefer hub_call_rule pause/resume.",
@@ -6067,9 +6067,9 @@ def getGatewayConfig() {
             tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_private_boolean", "hub_get_rule", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
             summaries: [
                 hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, ruleId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
-                hub_list_rules: "List all Rule Machine rules with IDs, labels and status (RMUtils — RM only)",
-                hub_call_rule: "Run the actions of one or more rules, or stop, start, pause or resume them (a Visual Rule: actions, pause, resume). Args: ruleId (id or array of ids), action (actions/stop/start/pause/resume, default actions)",
-                hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules. Args: ruleId (id or array of ids), value (bool)",
+                hub_list_rules: "List the Rule Machine 5.x rules with IDs, labels and status. Button Rules are listed by hub_list_apps and Visual Rules by hub_get_visual_rule",
+                hub_call_rule: "Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (a Visual Rule: pause, resume, and actions on a 2.0 rule). Args: ruleId (id or array of ids), action (actions/stop/start/pause/resume, default actions)",
+                hub_set_rule_private_boolean: "Set the private boolean of one or more Rule Machine rules or Button Rules. Args: ruleId (id or array of ids), value (bool)",
                 hub_get_rule: "Read one Rule Machine rule, Button Rule or Basic Rule without opening its page: its health (broken, broken rows by native id, paused, stopped, private boolean, disabled rows, block structure, live subscription and job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; a Basic Rule's settings. Any other app returns its health alone. Args: ruleId, sections?, cursor?, limit?",
                 hub_delete_native_app: "Delete any classic native app incl. RM rules (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm.",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?",
@@ -6556,6 +6556,8 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChec
         // through getHiddenToolNames(); this closes the dispatch surface too) and
         // wrongly imply the tool is callable once the params are supplied.
         if (missing && !getHiddenToolNames().contains(toolName)) {
+            // An unknown key is often a renamed parameter (rule_id for ruleId), so it is named before what is missing.
+            _rejectUnknownArgs(toolName, safeArgs)
             // Missing-param hint only (rare path): rebuild the full catalog here so
             // param descriptions are available. Strip [[FLAT_TRIM]] marker tokens --
             // this error is a client-visible surface where markers would leak.
@@ -9806,12 +9808,7 @@ def _exceptionStack(Throwable e) {
 // ==================== HPM PACKAGE STATE TOOL IMPLEMENTATIONS ====================
 
 
-/**
- * Coerce a ruleId argument to Integer. Accepts Number or numeric String.
- * Narrow the catch to NumberFormatException only — it's the sole expected
- * failure shape for `String as Integer`; anything else is a real bug and
- * should propagate rather than be rewrapped as an IllegalArgumentException.
- */
+// Coerce an app id argument (Number or numeric String) to Integer through _exactIntId, refusing anything else.
 private Integer normalizeRuleId(def ruleId) {
     Integer exact = _exactIntId(ruleId)
     if (exact == null) throw new IllegalArgumentException("The app id must be a positive whole number within the hub's id range, got: ${ruleId}. Find app ids with hub_list_apps or hub_list_rules.")
@@ -10729,14 +10726,14 @@ private String _classicAppFormat(String typeName) {
 }
 
 // A Rule Machine rule's app type, of any version ("Rule-5.1", "Button Rule-5.1", older ones); the
-// Rule Machine parent app is not a rule.
-private boolean _rmIsRuleAppType(String name) {
-    return name != null && name ==~ /(Button )?Rule-\d.*/
+// Rule Machine parent app is not a rule, and neither is a community app whose type has a rule-like name.
+private boolean _rmIsRuleAppType(namespace, name) {
+    return namespace?.toString() == 'hubitat' && name?.toString() ==~ /(Button )?Rule-\d.*/
 }
 
 // A Visual Rules Builder rule's app type ("Visual Rule Builder 1.0" / "2.0"); the parent app is "Visual Rules Builder".
-private boolean _rmIsVisualRuleType(String name) {
-    return name?.startsWith("Visual Rule Builder") == true
+private boolean _rmIsVisualRuleType(namespace, name) {
+    return namespace?.toString() == 'hubitat' && name?.toString()?.startsWith("Visual Rule Builder") == true
 }
 
 // The rule tools' one wording for an id with no installed app and for an app that is not a rule.
@@ -10744,32 +10741,19 @@ String _rmNoAppText(Collection ids) {
     return "No app with id ${ids.join(', ')} is installed".toString()
 }
 
+// Names the type only: each caller says which types it accepts, since a Visual Rule is a rule to hub_call_rule.
 String _rmNotRuleText(Map typesById) {
-    if (typesById.size() == 1) return typesById.collect { id, typeName -> "App ${id} is a ${typeName} app, not a rule" }[0].toString()
-    return "Apps ${typesById.collect { id, typeName -> "${id} (${typeName})" }.join(', ')} are not rules".toString()
+    if (typesById.size() == 1) return typesById.collect { id, typeName -> "App ${id} is a ${typeName} app" }[0].toString()
+    return "Apps ${typesById.collect { id, typeName -> "${id} (${typeName})" }.join(', ')} are other app types".toString()
 }
 
 String _rmMissingAppText(id) {
-    return "${_rmNoAppText([id])}; find rule ids with hub_list_rules, or any app's id with hub_list_apps.".toString()
+    return "${_rmNoAppText([id])}. Find rule ids with hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules).".toString()
 }
 
 // The rule types whose native model hub_set_rule reads and edits.
-boolean _rmIsEditableRuleType(name, namespace = 'hubitat') {
+boolean _rmIsEditableRuleType(namespace, name) {
     return namespace?.toString() == 'hubitat' && name?.toString() in ['Rule-5.1', 'Button Rule-5.1']
-}
-
-// An installed app hub_set_rule cannot edit, in hub_get_rule's wording; a rule of another type is named as one.
-String _rmNotEditableText(id, String typeName) {
-    if (_rmIsVisualRuleType(typeName)) return "App ${id} is a ${typeName} rule: Visual Rules are read with hub_get_visual_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here".toString()
-    if (_rmIsRuleAppType(typeName)) return "App ${id} is a ${typeName} rule: rules of that type are read with hub_get_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here".toString()
-    return _rmNotRuleText([(id): typeName ?: 'unknown type'])
-}
-
-// A rule-tool target whose lookup failed: nothing was run, since the target was never confirmed.
-Map _rmLookupFailure(Map reasonsById) {
-    def detail = reasonsById.collect { id, why -> "app ${id}: ${why}" }.join('; ')
-    return [success: false, error: "The target app could not be looked up (${detail}), so nothing was run.".toString(),
-            note: "Nothing was changed. Retry once; if it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
 }
 
 // The rows a broken Rule Machine rule can no longer resolve, read from its settings rather than its page: a
@@ -10840,8 +10824,8 @@ Map _rmCheckRuleHealth(Integer appId) {
     catch (Exception statusErr) { checkErrors << "statusJson: ${statusErr.message ?: statusErr.toString()}".toString() }
     String typeName = installed != null ? installed.appType?.name?.toString() : status?.installedApp?.typeName
     def namespace = installed != null ? installed.appType?.namespace : status?.installedApp?.namespace
-    boolean visual = _rmIsVisualRuleType(typeName)
-    boolean ruleType = _rmIsRuleAppType(typeName)
+    boolean visual = _rmIsVisualRuleType(namespace, typeName)
+    boolean ruleType = _rmIsRuleAppType(namespace, typeName)
     boolean read = !visual && status != null
     def disabled = status != null ? status.installedApp.disabled : installed?.disabled
     if (disabled != null) result.disabled = (disabled == true)
@@ -10879,7 +10863,7 @@ Map _rmCheckRuleHealth(Integer appId) {
             if (cs.ruleFormat == "rm") compiled = cs.state
         } else if (cs?.readError) {
             checkErrors << "compiled-state read failed: ${cs.readError}".toString()
-        } else if (_rmIsEditableRuleType(typeName, namespace)) {
+        } else if (_rmIsEditableRuleType(namespace, typeName)) {
             // The read answered, but not with Rule Machine state: that is a failed read, not a rule with no flags.
             checkErrors << "the rule's compiled state was read but is not Rule Machine state, so its disabled rows were not checked".toString()
         }
@@ -10887,7 +10871,7 @@ Map _rmCheckRuleHealth(Integer appId) {
     boolean brokenNoted = false
     // The compiled flag stays false after a trigger device is deleted until the page next renders; the rule's own
     // check does not wait for that, and runs without the page.
-    if (_rmIsEditableRuleType(typeName, namespace)) {
+    if (_rmIsEditableRuleType(namespace, typeName)) {
         result.broken = null
         try {
             def flag = _nrHandle(appId as Long).broken()
@@ -12462,7 +12446,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - Each input is the field hub_set_native_app(operation='form') returns; a device picker adds `selected`, its devices with labels. `unsupported` lists page parts a form cannot drive, such as a community app's create button. When the page cannot be modelled, `formError` says why: inputs carry no values and there are no controls.
   - `appType.namespace` and `appType.name` name the type; `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
   - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs read as in the form tools: a password input carries no value and `redacted: true`; a credential-named input reads the marker. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
-  - `includeStatus=true` adds the app's App Status lists, for any app and also with `summary=true`: `appState` (the app's stored state as `[{name, value}]`; a community app's working data, a webCoRE piston's definition, logs and trace), `eventSubscriptions` and `scheduledJobs`. With Hide passwords and credentials on, a value whose name looks like a credential reads `***redacted (password)***`, also inside nested maps (a rule's local variables); `statusRedactionNote` says so. Access tokens (an `accessToken` entry, each per-client token in `clientTokens`) read `***redacted (access token)***` whenever Hide access tokens is on, and always for a per-client token; `statusRedactionNote` also says whether an app's stored token is shown. When the lists would push the response past the size cap (a webCoRE piston's state can), `appState` lists names only with its values omitted, `statusTruncated` is true and `statusTruncatedNote` says what was cut; if that is still too large, `eventSubscriptions` and `scheduledJobs` are cut too, with `eventSubscriptionsTotal` / `scheduledJobsTotal` giving their full counts, and as a last resort `appState` is left out with `appStateTotal` giving its count. When the status page cannot be read the three lists are omitted and `statusNote` says why. hub_get_rule counts a rule's subscriptions and jobs from the same read.
+  - `includeStatus=true` adds the app's App Status lists, for any app and also with `summary=true`: `appState` (the app's stored state as `[{name, value}]`; a community app's working data, a webCoRE piston's definition, logs and trace), `eventSubscriptions` and `scheduledJobs`. With Hide passwords and credentials on, a value whose name looks like a credential reads `***redacted (password)***`, also inside nested maps (a rule's local variables); `statusRedactionNote` says so. Access tokens (an `accessToken` entry, each per-client token in `clientTokens`) read `***redacted (access token)***` whenever Hide access tokens is on, and always for a per-client token; `statusRedactionNote` also says whether an app's stored token is shown; for a per-client token it says both are always hidden. A status page that carried no app state reads `appState: []` with `appStateMissing: true`, unlike an app whose state is empty. When the lists would push the response past the size cap (a webCoRE piston's state can), `appState` lists names only with its values omitted, `statusTruncated` is true and `statusTruncatedNote` says what was cut; if that is still too large, `eventSubscriptions` and `scheduledJobs` are cut too, with `eventSubscriptionsTotal` / `scheduledJobsTotal` giving their full counts, and as a last resort `appState` is left out with `appStateTotal` giving its count. When the status page cannot be read the three lists are omitted and `statusNote` says why. hub_get_rule counts a rule's subscriptions and jobs from the same read.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
@@ -12495,16 +12479,16 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 Rule runtime control surface (hub_list_rules = Read master; hub_call_rule and the private boolean = Write master):
 (hub_list_rules, hub_call_rule, hub_set_rule_private_boolean and hub_get_rule are also in hub_manage_rule_machine, with hub_set_rule. The reads hub_list_rules and hub_get_rule are also in hub_read_rules.)
 
-- **hub_list_rules** — every Rule Machine 5.x rule (deduplicated by id; older rule types are not supported on current firmware and are not listed) with a live **status** ("active" | "paused" | "stopped" | "disabled" | "unknown"), the **disabled** and **paused** booleans (omitted when unknown) and, only when detected, **requiredExpressionFalse: true**.
+- **hub_list_rules** — lists Rule Machine 5.x rules, each with a live **status** ("active" | "paused" | "stopped" | "disabled" | "unknown"), the **disabled** and **paused** booleans (omitted when unknown) and, only when detected, **requiredExpressionFalse: true**.
   - **disabled** is the app's red-X flag from /hub2/appsList.
   - **paused** and **stopped** come from Rule Machine's name decoration. The appsList name and the RMUtils label are compared with markup stripped and entities decoded; the text the appsList name adds — "(Paused)", "(Stopped)", "(Required Expression false)" — sets the flag. A rule literally NAMED "... (Paused)" or "... (Stopped)" carries the suffix in both strings and is not flagged. A stopped rule's label and name come back without the decoration, in the encoding they already use.
   - The name shows one decoration at a time ("(Stopped)" hides "(Paused)"), so a decorated row also reads that rule's own paused/stopped state; undecorated rows make no extra read. If that read fails, the name decides and the row carries **statusSource: "name"**, with **statusSourceNote** listing those ids. Rule Machine refreshes the decoration when the rule's page renders: hub_call_rule(action="stop"/"start"/"pause"/"resume") renders it, so the list is current after an MCP stop, start, pause or resume, while a stop made elsewhere shows once the rule's page is next opened.
   - **status** precedence is disabled > stopped > paused > active; the booleans stay independent (a paused rule disabled later reads disabled:true, paused:true, status:"disabled").
   - **unknown**: when /hub2/appsList cannot be read, every rule is unknown, the list is unfiltered (deleted rules may linger) and the result carries **statusNote**; when one rule's entry lacks data, only that rule is unknown.
-  - For one rule's state call hub_get_rule. For the disabled flag of other classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances').
-- **hub_call_rule** — run, stop, start, pause or resume one or more rules (ruleId takes an id or an array): Rule Machine rules and Button Rules, and Visual Rules for actions, pause and resume. Each rule is acted on in turn, with per-rule results and failedRuleIds/remainingRuleIds on a partial batch; see hub_call_rule below.
+  - For one rule's state call hub_get_rule. Button Rules, Basic Rules and other classic apps (Room Lighting, Notifier, Button Controllers) are listed, with their disabled flag, by hub_list_apps (scope='instances'; nameFilter matches the app type too, so 'Button Rule' finds Button Rules), and Visual Rules by hub_get_visual_rule.
+- **hub_call_rule** — run, stop, start, pause or resume one or more rules (ruleId takes an id or an array): Rule Machine rules and Button Rules, and Visual Rules for pause, resume and (Visual Rule Builder 2.0 only) actions. Each rule is acted on in turn, with per-rule results and failedRuleIds/remainingRuleIds on a partial batch; see hub_call_rule below.
 - **hub_set_rule_private_boolean** — set the private boolean of one or more Rule Machine rules in one RMUtils dispatch (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only); hub_get_rule reads it back as health.privateBoolean. It is the only rule tool that dispatches through RMUtils, so the hub's per-app load limiter can refuse it: a refusal changes nothing, and a reset of the app runtime statistics (hub_delete_logs(mode='appRuntimeStats', confirm=true), or the server's automatic reset) followed by a retry clears it.
-- Every id is checked before anything is dispatched: an id with no app, or an app that is not a rule (the Rule Machine parent app, a Basic Rule, any other app), refuses the whole call, a batch included; a lookup that fails refuses it too, with success:false.
+- Every id is checked before anything is dispatched: an id with no app, or an app that is not a rule (the Rule Machine parent app, a Basic Rule, any other app), refuses the whole call, a batch included; a lookup that fails refuses it too, with success:false. The refusal names the tools that list each kind of rule id.
 
 Native CRUD (also requires the Write master):
 - **hub_set_native_app** — create, update or drive the forms of every classic app other than Rule Machine rules (see set_native_app_reference). Rule Machine rules use hub_set_rule.
@@ -12545,12 +12529,12 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 `action` selects what to do (default `actions`):
 
-- **`actions`**: run the rule's actions directly, skipping condition evaluation. A Rule Machine rule's Run Actions button (`runAction`) is clicked; a Visual Rule runs through its builder's run endpoint, whose conditions still pick the branch. A Visual Rule the hub does not run comes back as success:false with the hub's own message.
+- **`actions`**: run the rule's actions directly, skipping condition evaluation. A Rule Machine rule's Run Actions button (`runAction`) is clicked; a Visual Rule Builder 2.0 rule runs through its builder's run endpoint, whose conditions still pick the branch, and a run the hub declines comes back as success:false with the hub's own message. A Visual Rule Builder 1.0 rule has no run button, so `actions` naming one refuses the whole call before anything runs; pause and resume work on it.
 - **`stop`**: halt the rule's in-progress actions (Rule Machine only).
 - **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged; Rule Machine only).
 - **`pause`** / **`resume`**: pause or resume the rule; a paused rule does not fire on its triggers. A Rule Machine rule's Pause button (`pausRule`) is clicked; a Visual Rule is paused through its builder's pause endpoint.
 
-Every action on a Rule Machine rule drives the rule's own page buttons (`runAction`, `stopRule`, `pausRule`), one rule at a time, not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. `stop`, `start`, `pause` and `resume` read the rule's state first and leave a rule already in the target state alone (rmAction:"noop"), so they are safe to repeat; a repeated `actions` runs the actions again. After a stop, start, pause or resume the rule's page is rendered once, so hub_list_rules shows the new status at once. `stop` or `start` naming a Visual Rule, which has no stop, refuses the whole call before anything runs. Send hub_call_rule calls one at a time: a toggle reads the rule's state and then clicks, so two overlapping calls on one rule can both click and undo each other; to act on several rules, name them all in one call's `ruleId` array. An id with no app, or an app that is not a rule (the Rule Machine parent app, a Basic Rule, any other app), is refused for every action before anything is dispatched, as it is by hub_set_rule_private_boolean.
+Every action on a Rule Machine rule drives the rule's own page buttons (`runAction`, `stopRule`, `pausRule`), one rule at a time, not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. `stop`, `start`, `pause` and `resume` read the rule's state first and leave a rule already in the target state alone (rmAction:"noop"), so they are safe to repeat; a repeated `actions` runs the actions again. After a stop, start, pause or resume click the rule's page is rendered once, so hub_list_rules shows the new status at once, and the flag is read again: the hub accepts a click that changes nothing, so a flag still not in the target state returns success:false, and hub_get_rule shows where the rule ended up. `stop` or `start` naming a Visual Rule, which has no stop, refuses the whole call before anything runs. Send hub_call_rule calls one at a time: a toggle reads the rule's state and then clicks, so two overlapping calls on one rule can both click and undo each other (the read after the click reports it as success:false); to act on several rules, name them all in one call's `ruleId` array. An id with no app, or an app that is not a rule (the Rule Machine parent app, a Basic Rule, any other app), is refused for every action before anything is dispatched, as it is by hub_set_rule_private_boolean, which acts only on Rule Machine rules and Button Rules.
 
 ### hub_get_rule
 

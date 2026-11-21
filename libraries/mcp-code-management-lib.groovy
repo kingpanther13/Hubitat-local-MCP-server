@@ -152,10 +152,11 @@ def _projectAppType(Map t, boolean builtIn, Map enrich) {
 }
 
 private List _nameFiltered(List rows, filter) {
-    // Rows whose name contains the filter, ignoring case and the hub's HTML (a list's own names).
+    // Rows whose name or app type contains the filter, ignoring case and the hub's HTML (a list's own names). A
+    // Button Rule is named after its button, so only its type ("Button Rule-5.1") finds it.
     String f = filter?.toString()?.trim()?.toLowerCase()
     if (!f) return rows
-    return rows.findAll { it instanceof Map && (stripAppConfigHtml(it.name) ?: "").toLowerCase().contains(f) }
+    return rows.findAll { row -> row instanceof Map && [row.name, row.type].any { (stripAppConfigHtml(it) ?: "").toLowerCase().contains(f) } }
 }
 
 def toolListHubDrivers(args) {
@@ -551,12 +552,14 @@ def toolGetAppConfig(args) {
         installed: parsed.app.installed == true
     ]
 
-    boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
-        _rmIsRuleAppType(parsed.app.name?.toString())
+    // The type's namespace is required, so a community app with a rule-like type name is not a rule.
+    def appTypeNamespace = appTypeRaw instanceof Map ? appTypeRaw.namespace : null
+    List typeNames = [appTypeRaw instanceof Map ? appTypeRaw.name : null, parsed.app.name]
+    boolean isRmRule = typeNames.any { _rmIsRuleAppType(appTypeNamespace, it) }
     // RM keeps which rows are disabled in its state; the page only italicises them. Other rule versions, or unreadable
     // state, leave the page as the only marker.
     boolean rmHasDisabled = isRmRule
-    if (isRmRule && [appTypeRaw instanceof Map ? appTypeRaw.name : null, parsed.app.name].any { _rmIsEditableRuleType(it) }) {
+    if (isRmRule && typeNames.any { _rmIsEditableRuleType(appTypeNamespace, it) }) {
         try {
             Map rmState = _nrState(appIdStr as Long)
             rmHasDisabled = [rmState.disabledActions, rmState.disabledTriggers].any { it instanceof Collection && !it.isEmpty() }
@@ -714,10 +717,14 @@ private void _appConfigAttachStatus(Map result, Integer appId) {
         result.appState = status.appState
         result.eventSubscriptions = status.eventSubscriptions
         result.scheduledJobs = status.scheduledJobs
+        // A status page with no app state is not an app with empty state.
+        if (status.appStateMissing) result.appStateMissing = true
         List redaction = []
-        if (_redactsCredentials()) redaction << "appState values whose names look like credentials, at any depth, read ${_appConfigRedactedMarker()}, as settings do; turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
+        // A client token hides both whatever the settings say, so the settings advice below would mislead it.
+        if (callerClient != null) redaction << "This client's token always reads credential-named appState values and access tokens as redacted, whatever the MCP app's settings say."
+        else if (_redactsCredentials()) redaction << "appState values whose names look like credentials, at any depth, read ${_appConfigRedactedMarker()}, as settings do; turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
         // Access tokens follow their own setting, so say which way it went when the app stores one.
-        if (status.appState.any { it.name?.toString() in ['accessToken', 'clientTokens'] })
+        if (callerClient == null && status.appState.any { it.name?.toString() in ['accessToken', 'clientTokens'] })
             redaction << (_redactsAccessTokens() ? "The app's access tokens read as redacted (Hide access tokens is on)." : "The app's access tokens are shown, because Hide access tokens is off in the MCP app's settings.")
         if (redaction) result.statusRedactionNote = redaction.join(' ')
         _appConfigFitStatus(result)
@@ -2725,7 +2732,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 properties: [
                     scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared).", default: "instances"],
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
-                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
+                    nameFilter: [type: "string", description: "Name or app type contains (case-insensitive), e.g. 'Button Rule' finds Button Rules, which are named after their button."],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]

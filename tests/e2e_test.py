@@ -7120,6 +7120,12 @@ def updated() {}
             page = self.client.call_tool("hub_get_app_config", {
                 "appId": rule_id, "pageName": "selectActions"})
             assert page.get("success") is True and "E2E button rule" in json.dumps(page), page
+            # A Button Rule is named after its button, so hub_list_apps finds it by its type; hub_list_rules
+            # lists Rule Machine's own rules only.
+            by_type = self.client.call_tool("hub_list_apps", {"scope": "instances", "nameFilter": "Button Rule"})
+            assert str(rule_id) in {str(r.get("id")) for r in by_type.get("apps") or []}, by_type
+            listed_rules = self.client.call_tool("hub_list_rules", {})
+            assert str(rule_id) not in {str(r.get("id")) for r in listed_rules.get("rules") or []}, listed_rules
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
                 raise
@@ -8786,26 +8792,30 @@ def updated() {}
             listed = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id)})
             assert len(listed.get("localVariables") or []) == 1 and listed["localVariables"][0]["type"] == "integer", listed
             assert local_value() == 0
-            # 'rule' is no longer an action (the RMUtils evaluate it sent ran nothing on a current rule), so it is refused.
+            # 'rule' is no longer an action, so it is refused.
             gone_action = refused("hub_call_rule", {"ruleId": app_id, "action": "rule"})
             assert "Invalid action 'rule'" in str(gone_action.get("error")), gone_action
             # The Rule Machine parent app is not a rule: running its actions is refused, and reading it returns
             # its health with no local variables.
             parent_id = self._native_rule_parent_id()
             parent_run = refused("hub_call_rule", {"ruleId": parent_id, "action": "actions"})
-            assert f"App {parent_id} is a Rule Machine app, not a rule" in str(parent_run.get("error")) \
+            # The refusal says which apps the tool takes and where each kind of rule id is listed.
+            assert f"App {parent_id} is a Rule Machine app; hub_call_rule acts only on Rule Machine rules, Button Rules and Visual Rules" \
+                in str(parent_run.get("error")) and "hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules)" in str(parent_run.get("error")) \
                 and "Nothing was dispatched" in str(parent_run.get("error")), parent_run
             parent_read = self.client.call_tool("hub_get_rule", {"ruleId": int(parent_id)})
             assert parent_read.get("localVariables") is None and "actions" not in parent_read \
                 and "hub_get_app_config(includeStatus: true)" in str(parent_read.get("note")), parent_read
             # An id with no app is refused rather than read as a rule with no locals.
             missing = refused("hub_get_rule", {"ruleId": 999999999})
-            assert "No app with id 999999999 is installed" in str(missing.get("error")), missing
+            assert "No app with id 999999999 is installed" in str(missing.get("error")) \
+                and "hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules)" in str(missing.get("error")), missing
             # hub_set_rule words both refusals as hub_get_rule does.
             set_missing = self._rm_call({"operation": "read", "ruleId": 999999999})
             assert "No app with id 999999999 is installed" in str(set_missing.get("error")), set_missing
             set_parent = self._rm_call({"operation": "read", "ruleId": int(parent_id)})
-            assert f"App {parent_id} is a Rule Machine app, not a rule" in str(set_parent.get("error")), set_parent
+            assert f"App {parent_id} is a Rule Machine app; only Rule Machine 5.1 rules and Button Rules can be edited here" \
+                in str(set_parent.get("error")), set_parent
             # The runtime tools refuse an id with no app, alone or in a batch with a real rule, before
             # anything is dispatched: the batch's real rule does not run either.
             for tool, args in (("hub_call_rule", {"ruleId": 999999999}),
@@ -8823,6 +8833,19 @@ def updated() {}
                                ("hub_call_rule", {"ruleId": 0, "action": "actions"})):
                 overflow = refused(tool, args)
                 assert "is not a valid rule id" in str(overflow.get("error")), (tool, overflow)
+            # The reads share the check: a wrapped id is refused before any lookup, and a numeric string names the rule.
+            for tool, args, text in (("hub_get_rule", {"ruleId": wrapped}, "within the hub's id range"),
+                                     ("hub_set_rule", {"operation": "read", "ruleId": wrapped}, "A positive native application ID is required")):
+                overflow = refused(tool, args)
+                assert text in str(overflow.get("error")), (tool, overflow)
+            by_string = self.client.call_tool("hub_get_rule", {"ruleId": str(app_id), "sections": []})
+            assert str(by_string.get("ruleId")) == str(app_id) and len(by_string.get("localVariables") or []) == 1, by_string
+            set_by_string = self._rm_call({"operation": "read", "ruleId": str(app_id), "args": {"sections": []}})
+            assert str(set_by_string.get("ruleId")) == str(app_id) and set_by_string.get("health", {}).get("ruleFormat") == "rm", set_by_string
+            # Through a gateway a renamed key (rule_id for ruleId) is named as unknown, not reported as a missing ruleId.
+            stale = refused("hub_read_rules", {"tool": "hub_get_rule", "args": {"rule_id": int(app_id)}})
+            assert "Unknown hub_get_rule argument: rule_id" in str(stale.get("error")) \
+                and "Missing required parameter" not in str(stale.get("error")), stale
             # The delete tool shares the check: the wrapped id must not back up and delete this rule.
             kept = refused("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app",
                 "args": {"appId": wrapped, "force": True, "confirm": True}})
@@ -10392,14 +10415,24 @@ def updated() {}
                 expected = "noop" if before is paused else f"ruleBuilderPause -> {str(paused).lower()}"
                 assert toggled.get("success") is True and toggled.get("rmAction") == expected, (action, toggled)
                 assert self._get_visual_rule(app_id).get("rulePaused") is paused, f"hub_call_rule {action} did not land"
-            # Its actions run through the builder's run endpoint (the action re-asserts the switch's own state).
-            # A Visual Rule Builder 2.0 rule runs; a 1.0 rule's answer is returned as the hub gives it.
-            ran = self.client.call_tool_result("hub_call_rule", {"ruleId": int(app_id), "action": "actions"})
+            # A Visual Rule Builder 2.0 rule's actions run through the builder's run endpoint. Its action turns the
+            # switch off, so the switch is turned on first: a run that did nothing would leave it on.
             if fmt == "graph":
+                self.client.call_tool("hub_call_device_command", {"deviceId": str(switch_id), "command": "on"})
+                lit = self._wait_attribute(switch_id, "switch", "on", timeoutMs=4000)
+                assert lit.get("converged") is True, f"the test switch did not turn on before the run: {lit}"
+                ran = self.client.call_tool_result("hub_call_rule", {"ruleId": int(app_id), "action": "actions"})
                 assert ran.get("success") is True and ran.get("rmAction") == "ruleBuilderRun", ran
+                dark = self._wait_attribute(switch_id, "switch", "off", timeoutMs=8000)
+                assert dark.get("converged") is True, f"the Visual Rule's actions did not turn the switch off: {dark}"
             else:
-                assert ran.get("success") is True or "did not run Visual Rule" in str(ran.get("error")), ran
-                print(f"    hub_call_rule actions on a 1.0 Visual Rule: {ran}")
+                # The classic builder has no run button, so the run is refused before anything is sent.
+                try:
+                    ran = self.client.call_tool("hub_call_rule", {"ruleId": int(app_id), "action": "actions"})
+                except McpToolError as exc:
+                    ran = _tool_error_payload(exc)
+                assert "Visual Rule Builder 1.0 rules have no run button" in str(ran.get("error")) \
+                    and "Nothing was dispatched" in str(ran.get("error")), ran
 
             # LIST: no-args mode must include the new rule.
             listed = self._get_visual_rule()
@@ -15473,7 +15506,7 @@ def updated() {}
                 assert "protected" in message.lower() and app_id in message, \
                     f"expected protected-app refusal, got: {message}"
             else:
-                assert f"App {app_id} is a" in message and "not a rule" in message, \
+                assert f"App {app_id} is a" in message and "only Rule Machine 5.1 rules and Button Rules can be edited here" in message, \
                     f"RM form must refuse the non-RM MCP app before accessing its editor: {message}"
             assert read_settings() == before, "refused generic edit changed persisted settings"
 

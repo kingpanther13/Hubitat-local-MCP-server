@@ -363,7 +363,7 @@ private Map _nfPublic(Map context, List optionsFor) {
 private Map _nfBackup(Long id, def nativeApp, String page) {
     boolean builtIn = nativeApp?.appType?.namespace == 'hubitat'
     if (builtIn && nativeApp.appType.name == 'Rule Machine') return [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow']
-    if (_rmIsEditableRuleType(nativeApp?.appType?.name, nativeApp?.appType?.namespace)) return _ndEditBackup(id, 'pre-native-form')
+    if (_rmIsEditableRuleType(nativeApp?.appType?.namespace, nativeApp?.appType?.name)) return _ndEditBackup(id, 'pre-native-form')
     if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
     _rmBackupBeforeEdit(id.toInteger(), 'pre-native-form', page)
 }
@@ -543,7 +543,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_native_app') {
     String idKey = names.id
     String expectKey = names.expect
     def rawId = args.get(idKey)
-    if (args.keySet().any { !(it in [idKey, 'steps', names.options, 'confirm', 'bestPracticeKey']) } || !rawId?.toString()?.isLong() || rawId.toString().toLong() < 1) throw new IllegalArgumentException("A positive ${idKey} is required".toString())
+    if (args.keySet().any { !(it in [idKey, 'steps', names.options, 'confirm', 'bestPracticeKey']) } || _exactIntId(rawId) == null) throw new IllegalArgumentException("A positive ${idKey} is required".toString())
     if (!(args.steps instanceof List) || args.steps.size() < 1 || args.steps.size() > 16) throw new IllegalArgumentException('Provide 1 through 16 open/submit steps')
     List optionsFor = args.get(names.options) ?: []
     if (!(optionsFor instanceof List) || optionsFor.size() > 32 || optionsFor.any { !(it instanceof String) }) throw new IllegalArgumentException("${names.options} must contain at most 32 field names".toString())
@@ -560,7 +560,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_native_app') {
         if (marked) throw new IllegalArgumentException("${marked.key} is the redaction marker, not a value; omit the field to keep the stored one")
     }
     requireDestructiveConfirm(args.confirm)
-    Long id = rawId.toString().toLong()
+    Long id = _exactIntId(rawId) as Long
     _requireUnprotectedAppMutation(id, 'edit native form')
     def nativeApp = getAppByAppId(id)
     if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException("${idKey} must identify an installed app".toString())

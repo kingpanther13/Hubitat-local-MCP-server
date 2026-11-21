@@ -396,7 +396,8 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains(message)
-        ex.message.contains('hub_set_rule_private_boolean only acts on rules')
+        ex.message.contains('hub_set_rule_private_boolean acts only on Rule Machine rules and Button Rules')
+        ex.message.contains('hub_list_apps (Button Rules and Basic Rules)')
         ex.message.contains('Nothing was dispatched')
         rmUtils.calls.isEmpty()
 
@@ -404,8 +405,8 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         label                                 | ids          | types                              | message
         'an id with no app'                   | 999999       | [999999: null]                     | 'No app with id 999999 is installed'
         'a batch holding an id with no app'   | [900, 10]    | [10: null]                         | 'No app with id 10 is installed'
-        'the Rule Machine parent'             | 20           | [20: 'Rule Machine']               | 'App 20 is a Rule Machine app, not a rule'
-        'a Visual Rule'                       | 21           | [21: 'Visual Rule Builder 2.0']    | 'App 21 is a Visual Rule Builder 2.0 app, not a rule'
+        'the Rule Machine parent'             | 20           | [20: 'Rule Machine']               | 'App 20 is a Rule Machine app;'
+        'a Visual Rule'                       | 21           | [21: 'Visual Rule Builder 2.0']    | 'App 21 is a Visual Rule Builder 2.0 app;'
     }
 
     @spock.lang.Unroll

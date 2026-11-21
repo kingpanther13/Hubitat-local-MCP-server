@@ -880,18 +880,53 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         hubGet.calls.isEmpty()
     }
 
-    def "a failed app lookup is a runtime failure with a recovery note"() {
+    def "a failed app lookup is a runtime failure with a read's recovery note"() {
         given:
         script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
 
         when:
         def result = script.toolGetNativeRule([ruleId: 100])
 
-        then:
+        then: 'a read is told it changed nothing and may retry, not that nothing was run'
         result.success == false
-        result.error.contains('lookup failed')
+        result.error == 'Rule 100 could not be read: lookup failed'
+        result.note.contains('retrying once is safe')
+        !result.note.contains('Nothing was changed')
+        !result.error.contains('nothing was run')
         result.note.contains("hub_get_tool_guide(section='builtin_app_tools_rules')")
         hubGet.calls.isEmpty()
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_rule takes ruleId #ruleId as hub_call_rule does"() {
+        given:
+        appType('Basic Rule-1.0')
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100, [:], [typeName: 'Basic Rule-1.0']) }
+
+        when:
+        def result = script.toolGetNativeRule([ruleId: ruleId, sections: []])
+
+        then:
+        result.ruleId == 100L
+        result.health.ruleFormat == 'basic-rule'
+
+        where:
+        ruleId << [100, '100', ' 100 ', 100.0]
+    }
+
+    def "a community app whose type is named like a rule is read as an app, not a rule"() {
+        given:
+        appType('Rule-5.1', 'acme')
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100, [:], [typeName: 'Rule-5.1', namespace: 'acme']) }
+
+        when:
+        def result = script.toolGetNativeRule([ruleId: 100, sections: []])
+
+        then: 'no document is read and its own broken() is never called'
+        result.health.ruleFormat == 'classic-app'
+        result.note.contains('hub_get_app_config')
+        handles.isEmpty()
+        count('/app/ruleBuilderJson/100') == 0
     }
 
     @spock.lang.Unroll
@@ -907,8 +942,10 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         where:
         args                                                       | message
         [:]                                                        | 'ruleId is required'
-        [ruleId: 0]                                                | 'positive integer'
-        [ruleId: '100']                                            | 'positive integer'
+        [ruleId: 0]                                                | 'positive whole number'
+        [ruleId: 4294967396L]                                      | 'positive whole number'
+        [ruleId: '4294967396']                                     | 'positive whole number'
+        [ruleId: 100.5]                                            | 'positive whole number'
         [ruleId: 100, sections: ['variables']]                     | 'Unknown document section'
         [ruleId: 100, sections: ['actions', 'triggers'], limit: 5] | 'exactly one section'
     }
@@ -928,5 +965,54 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "a stale rule_id is named as unknown before ruleId is reported missing (#mode)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = useGateways ? mcpDriver.callTool('hub_read_rules', [tool: 'hub_get_rule', args: [rule_id: 2735]])
+                                   : mcpDriver.callTool('hub_get_rule', [rule_id: 2735])
+        def error = mcpDriver.parseInner(response).error
+
+        then:
+        response.result.isError == true
+        error.contains('Unknown hub_get_rule argument: rule_id')
+        error.contains('Valid arguments: ruleId')
+        !error.contains('Missing required parameter')
+        hubGet.calls.isEmpty()
+
+        where:
+        mode      | useGateways
+        'gateway' | true
+        'flat'    | false
+    }
+
+    def "through a gateway, a hidden tool called with a stale key still gets its own refusal, not its schema"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.disabled_tools = ['hub_get_rule']
+
+        when:
+        def error = mcpDriver.parseInner(mcpDriver.callTool('hub_read_rules', [tool: 'hub_get_rule', args: [rule_id: 2735]])).error
+
+        then:
+        error.contains('disabled in Advanced settings')
+        !error.contains('Valid arguments')
+        !error.contains('rule_id')
+    }
+
+    def "through a gateway, a call with only known keys still lists the missing parameter with every parameter"() {
+        given:
+        settingsMap.useGateways = true
+
+        when:
+        def error = mcpDriver.parseInner(mcpDriver.callTool('hub_read_rules', [tool: 'hub_get_rule', args: [sections: []]])).error
+
+        then:
+        error.contains('Missing required parameter for hub_get_rule: ruleId')
+        error.contains('sections (array, optional)')
     }
 }

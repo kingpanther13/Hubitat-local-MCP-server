@@ -1120,6 +1120,18 @@ class NativeFormsSpec extends ToolSpecBase {
                  [kind: 'submit', expect_page: 'edit', fields: [text: '***redacted (password)***']]]
     }
 
+    @Unroll
+    def 'app_id #appId is refused before rendering, through the id check every rule tool shares'() {
+        when:
+        script.toolCallAppForm([app_id: appId, confirm: true, steps: [[kind: 'open']]])
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message == 'A positive app_id is required'
+        calls.empty
+        where:
+        appId << [4294967338L, '4294967338', 42.5, 0]
+    }
+
     def 'sequential explicit opens reuse one caller workflow beyond eight apps'() {
         given:
         List outcomes = []

@@ -7,8 +7,9 @@ library(name: "McpNativeDocumentsLib", namespace: "mcp", author: "kingpanther13"
     variable: ['operation', 'name', 'type', 'value'], required: ['tokens'], delete: ['part', 'id'], order: ['ids'], terminator: ['subtype']]
 
 private Long _ndId(Object id) {
-    if (id == null || !id.toString().isLong() || id.toString().toLong() <= 0L) throw new IllegalArgumentException('A positive native application ID is required')
-    id.toString().toLong()
+    Integer exact = _exactIntId(id)
+    if (exact == null) throw new IllegalArgumentException('A positive native application ID is required')
+    exact as Long
 }
 
 private Object _ndJson(Object value) {
@@ -662,7 +663,8 @@ private void _ndValidateSchema(Object value, Map schema, String path, boolean co
 
 Map toolSetRule(Map request) {
     if (request.containsKey('confirm') && !(request.confirm instanceof Boolean)) throw new IllegalArgumentException('confirm must be boolean')
-    if (request.containsKey('ruleId')) _ndValidateSchema(request.ruleId, [type: 'integer', minimum: 1], 'ruleId', true)
+    // The rule tools share one id check, so a numeric string or an id past the int range reads as it does in hub_call_rule.
+    if (request.containsKey('ruleId')) _ndId(request.ruleId)
     if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
     if (!request.containsKey('operation')) {
         if (request.args) throw new IllegalArgumentException('Choose an operation before supplying args')

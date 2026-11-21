@@ -21,6 +21,8 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     // App type per id for the getAppByAppId stub; an id mapped to null has no app, an absent id is a Rule-5.1 rule.
     Map<Integer, String> appTypes = [:]
     List<Map> posts = []
+    // Each rule's stopped/paused flags as its App Status page reads them; a stopRule/pausRule click flips one, as on a hub.
+    Map<String, Map> flags = [:]
 
     def setup() {
         rmUtils = new RMUtilsMock()
@@ -32,8 +34,15 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
+            toggle(path, body)
             [status: 200, location: null, data: '{"status":"success"}']
         }
+    }
+
+    private void toggle(String path, Map body) {
+        String flag = [stopRule: 'stopped', pausRule: 'paused'][body?.name]
+        Map state = flags[body?.id?.toString()]
+        if (path == '/installedapp/btn' && flag && state != null) state[flag] = state[flag] != true
     }
 
     def cleanup() {
@@ -50,7 +59,8 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     private void rule(int id, Boolean stopped, Boolean paused = null) {
-        hubGet.register("/installedapp/statusJson/${id}") { params -> statusJson(id, stopped, paused) }
+        flags[id.toString()] = [stopped: stopped, paused: paused]
+        hubGet.register("/installedapp/statusJson/${id}") { params -> statusJson(id, flags[id.toString()].stopped, flags[id.toString()].paused) }
         hubGet.register("/installedapp/configure/json/${id}") { params ->
             JsonOutput.toJson([app: [id: id, version: 3], configPage: [name: 'mainPage', sections: []]])
         }
@@ -233,6 +243,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             events << "post ${path} ${body?.name}".toString()
+            toggle(path, body)
             [status: 200, location: null, data: '{"status":"success"}']
         }
 
@@ -377,6 +388,70 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         'start'  | true
         'pause'  | true
         'resume' | false
+    }
+
+    @spock.lang.Unroll
+    def "action=#action whose #button click the hub accepts without changing the flag is a failure with a recovery note"() {
+        given: 'the click lands, but the rule state does not move'
+        rule(160, action == 'start', action == 'resume')
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 160, action: action])
+
+        then:
+        result.success == false
+        result.error.contains("the ${button} click was accepted, but the rule's ${flag} state then read ${!target}, not ${target}")
+        result.note.contains('hub_get_rule')
+        result.note.contains('left alone')
+        clicks(button).size() == 1
+
+        where:
+        action   | button     | flag      | target
+        'stop'   | 'stopRule' | 'stopped' | true
+        'start'  | 'stopRule' | 'stopped' | false
+        'pause'  | 'pausRule' | 'paused'  | true
+        'resume' | 'pausRule' | 'paused'  | false
+    }
+
+    def "a concurrent toggle that cancels this one out is detected, not reported as landed"() {
+        given: "another pause on the same rule clicks between this call's read and its click, so the two toggles cancel out"
+        rule(161, false, false)
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            toggle(path, body)
+            toggle(path, body)
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 161, action: 'pause'])
+
+        then:
+        result.success == false
+        result.error.contains("the rule's paused state then read false, not true")
+        result.note.contains('Another change to the rule may have run at the same time')
+    }
+
+    def "a flag that cannot be read after the click is a failure naming why"() {
+        given:
+        rule(162, false)
+        int reads = 0
+        hubGet.register('/installedapp/statusJson/162') { params ->
+            if (reads++ > 0) throw new IllegalStateException('status timed out')
+            statusJson(162, false)
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 162, action: 'stop'])
+
+        then:
+        result.success == false
+        result.error.contains('status timed out')
+        clicks('stopRule').size() == 1
     }
 
     def "a re-render failure inside a stop batch keeps every rule's result and names the stale status on that rule"() {
@@ -635,9 +710,8 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('App 20 is a Rule Machine app, not a rule')
-        ex.message.contains('hub_call_rule only acts on rules')
-        ex.message.contains('hub_list_rules')
+        ex.message.contains('App 20 is a Rule Machine app; hub_call_rule acts only on Rule Machine rules, Button Rules and Visual Rules')
+        ex.message.contains('hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules)')
         ex.message.contains('Nothing was dispatched')
         rmUtils.calls.isEmpty()
         posts.isEmpty()
@@ -658,7 +732,8 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('No app with id 999999 is installed')
-        ex.message.contains('hub_call_rule only acts on rules')
+        ex.message.contains('hub_call_rule acts only on Rule Machine rules, Button Rules and Visual Rules')
+        ex.message.contains('hub_get_visual_rule (Visual Rules)')
         ex.message.contains('Nothing was dispatched')
         posts.isEmpty()
 
@@ -680,7 +755,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
         then:
         response.result.isError == true
-        inner.error.contains('Apps 20 (Rule Machine), 30 (Basic Rule-1.0) are not rules')
+        inner.error.contains('Apps 20 (Rule Machine), 30 (Basic Rule-1.0) are other app types; hub_call_rule acts only on')
         posts.isEmpty()
         rmUtils.calls.isEmpty()
 
@@ -817,10 +892,9 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         }
     }
 
-    @spock.lang.Unroll
-    def "action=actions on a #format Visual Rule runs it through /app/ruleBuilderRun"() {
+    def "action=actions on a graph Visual Rule runs it through /app/ruleBuilderRun"() {
         given:
-        visualRule(170, format, false)
+        visualRule(170, 'graph', false)
         hubGet.register('/app/ruleBuilderRun/170') { params -> '{"success":true}' }
 
         when:
@@ -833,14 +907,37 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         hubGet.calls*.path.count { it == '/app/ruleBuilderRun/170' } == 1
         posts.isEmpty()
         rmUtils.calls.isEmpty()
+    }
+
+    @spock.lang.Unroll
+    def "action=actions naming a classic (1.0) Visual Rule is refused before anything runs (#label, useGateways=#useGateways)"() {
+        given: 'the classic builder has no run button; only the 2.0 builder calls /app/ruleBuilderRun'
+        settingsMap.useGateways = useGateways
+        visualRule(173, 'classic', false)
+        visualRule(174, 'graph', false)
+
+        when:
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: ruleId, action: 'actions'])
+        def inner = mcpDriver.parseInner(response)
+
+        then: "nothing is dispatched, the batch's other rules included"
+        response.result.isError == true
+        inner.error.contains('Visual Rule Builder 1.0 rules have no run button')
+        inner.error.contains('rule(s) 173 are 1.0 rules')
+        inner.error.contains('Nothing was dispatched')
+        hubGet.calls*.path.every { !it.startsWith('/app/ruleBuilderRun') }
+        posts.isEmpty()
 
         where:
-        format << ['graph', 'classic']
+        label           | ruleId           | useGateways
+        'a single rule' | 173              | true
+        'a single rule' | 173              | false
+        'a mixed batch' | [101, 174, 173]  | true
     }
 
     def "a Visual Rule the hub does not run comes back as a runtime failure with the hub's message"() {
         given:
-        visualRule(171, 'classic', false)
+        visualRule(171, 'graph', false)
         hubGet.register('/app/ruleBuilderRun/171') { params -> '{"success":false,"message":"rule is not a 2.0 rule"}' }
 
         when:
@@ -1000,7 +1097,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('App 176 is a Visual Rules Builder app, not a rule')
+        ex.message.contains('App 176 is a Visual Rules Builder app; hub_call_rule acts only on')
         hubGet.calls.isEmpty()
     }
 }

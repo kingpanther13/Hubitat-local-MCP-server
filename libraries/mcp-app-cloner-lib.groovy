@@ -1311,7 +1311,7 @@ private Map _rmLegacyNativeRecovery(Map snapshot) {
     def status = snapshot.statusJson
     def app = config instanceof Map ? config.app : null
     if (!(app instanceof Map) || !(app.appType instanceof Map) ||
-        !_rmIsEditableRuleType(app.appType.name)) return null
+        !_rmIsEditableRuleType(app.appType.namespace, app.appType.name)) return null
     if (!(status instanceof Map) || !status.containsKey('appState') || !status.containsKey('appSettings') ||
         !(status.containsKey('eventSubscriptions') || status.containsKey('appSubscriptions'))) return null
     Long id = _ndId(snapshot.ruleId)

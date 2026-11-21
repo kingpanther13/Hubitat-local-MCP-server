@@ -382,12 +382,12 @@ private String findRuleAppRedirect(ruleId, String verb) {
                 "Use `hub_manage_native_rules_and_apps -> hub_delete_native_app(appId=${idStr}, confirm=true)` to delete it programmatically " +
                 "(requires the Write master)."
         } else if (verb == "test") {
-            // Point non-RM rule-likes at hub_get_app_config instead of hub_call_rule.
+            // Rule Machine has no dry run: hub_get_rule inspects the rule, and hub_call_rule really runs its actions.
             if (isRmRule) {
                 return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
-                    "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
-                    "`hub_test_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
-                    "Use `hub_manage_native_rules_and_apps -> hub_call_rule(ruleId=${idStr})` to trigger it " +
+                    "Use `hub_read_rules -> hub_get_rule(ruleId=${idStr})` for read-only inspection. " +
+                    "`hub_test_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps, and Rule Machine has no dry run: " +
+                    "`hub_call_rule(ruleId=${idStr})` runs every one of the rule's actions at once, skipping its conditions " +
                     "(requires the Write master)."
             } else {
                 return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +

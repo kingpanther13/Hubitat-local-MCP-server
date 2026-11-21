@@ -101,7 +101,7 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         script.toolSetRule([operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']]], confirm: true])
         then:
         def refused = thrown(IllegalArgumentException)
-        refused.message == 'App 42 is a Motion Lighting app, not a rule'
+        refused.message == 'App 42 is a Motion Lighting app; only Rule Machine 5.1 rules and Button Rules can be edited here'
     }
 
     def 'form opens the Rule Machine parent app'() {
@@ -123,16 +123,51 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         refused.message.startsWith(expected)
         where:
         label                       | request                                                                         | app                        | namespace || expected
-        'read, no app'              | [operation: 'read']                                                             | null                       | 'hubitat' || "No app with id 42 is installed; find rule ids with hub_list_rules"
+        'read, no app'              | [operation: 'read']                                                             | null                       | 'hubitat' || "No app with id 42 is installed. Find rule ids with hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules)"
         'form, no app'              | [operation: 'form', confirm: true, args: [steps: [[kind: 'open']]]]             | null                       | 'hubitat' || "No app with id 42 is installed"
-        'read, a non-rule app'      | [operation: 'read']                                                             | 'Motion Lighting'          | 'hubitat' || 'App 42 is a Motion Lighting app, not a rule'
+        'read, a non-rule app'      | [operation: 'read']                                                             | 'Motion Lighting'          | 'hubitat' || 'App 42 is a Motion Lighting app; only Rule Machine 5.1 rules and Button Rules can be edited here'
         'read, a Visual Rule'       | [operation: 'read']                                                             | 'Visual Rule Builder 2.0'  | 'hubitat' || 'App 42 is a Visual Rule Builder 2.0 rule: Visual Rules are read with hub_get_visual_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here'
         'form, another rule type'   | [operation: 'form', confirm: true, args: [steps: [[kind: 'open']]]]             | 'Rule-6.0'                 | 'hubitat' || 'App 42 is a Rule-6.0 rule: rules of that type are read with hub_get_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here'
+        'read, a community Rule-5.1'| [operation: 'read']                                                             | 'Rule-5.1'                 | 'acme'    || 'App 42 is a Rule-5.1 app'+"; only Rule Machine 5.1 rules and Button Rules can be edited here"
+    }
+
+    def 'hub_set_rule refuses ruleId #ruleId (#operation) before any lookup, as hub_call_rule does'() {
+        given:
+        int lookups = 0
+        script.metaClass.getAppByAppId = { Long id -> lookups++; null }
+        when:
+        script.toolSetRule([operation: operation, ruleId: ruleId, confirm: true, args: args])
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message == 'A positive native application ID is required'
+        lookups == 0
+        where:
+        operation | ruleId        | args
+        'read'    | 4294967338L   | [:]
+        'read'    | '4294967338'  | [:]
+        'read'    | 42.5          | [:]
+        'read'    | 0             | [:]
+        'update'  | 4294967338L   | [changes: [[delete: [part: 'action', id: '1']]]]
+        'form'    | 4294967338L   | [steps: [[kind: 'open']]]
+    }
+
+    def 'hub_set_rule takes ruleId #ruleId as the id it names'() {
+        given:
+        List looked = []
+        script.metaClass.getAppByAppId = { Long id -> looked << id; null }
+        when:
+        script.toolSetRule([operation: 'read', ruleId: ruleId])
+        then: 'the lookup is for rule 42, which has no app here'
+        def refused = thrown(IllegalArgumentException)
+        refused.message.startsWith('No app with id 42 is installed')
+        looked == [42L]
+        where:
+        ruleId << [42, '42', 42.0]
     }
 
     def '_rmIsEditableRuleType names the Rule Machine 5.1 rule and Button Rule types in the hubitat namespace'() {
         expect:
-        script._rmIsEditableRuleType(name, namespace) == expected
+        script._rmIsEditableRuleType(namespace, name) == expected
         where:
         name              | namespace || expected
         'Rule-5.1'        | 'hubitat' || true
@@ -140,5 +175,19 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         'Rule Machine'    | 'hubitat' || false
         'Rule-5.1'        | 'acme'    || false
         null              | 'hubitat' || false
+        'Rule-5.1'        | null      || false
+    }
+
+    def 'the rule-type predicates need the hubitat namespace: a community type named like a rule is no rule'() {
+        expect:
+        script._rmIsRuleAppType(namespace, name) == rule
+        script._rmIsVisualRuleType(namespace, name) == visual
+        where:
+        name                      | namespace || rule  | visual
+        'Rule-5.1'                | 'hubitat' || true  | false
+        'Rule-5.1'                | 'acme'    || false | false
+        'Rule-5.1'                | null      || false | false
+        'Visual Rule Builder 2.0' | 'hubitat' || false | true
+        'Visual Rule Builder 2.0' | 'acme'    || false | false
     }
 }
