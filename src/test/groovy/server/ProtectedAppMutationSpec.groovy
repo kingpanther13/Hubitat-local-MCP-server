@@ -99,7 +99,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
         then:
         def e = thrown(IllegalArgumentException)
-        e.message.contains('must be an integer')
+        e.message.contains("within the hub's id range")
         writes.empty
         hubGet.calls.isEmpty()
 

@@ -9813,7 +9813,7 @@ def _exceptionStack(Throwable e) {
  */
 private Integer normalizeRuleId(def ruleId) {
     Integer exact = _exactIntId(ruleId)
-    if (exact == null) throw new IllegalArgumentException("ruleId must be an integer, got: ${ruleId}")
+    if (exact == null) throw new IllegalArgumentException("The app id must be a whole number within the hub's id range, got: ${ruleId}. Find app ids with hub_list_apps or hub_list_rules.")
     return exact
 }
 
