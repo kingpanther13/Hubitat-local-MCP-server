@@ -726,7 +726,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
     }
 
     def 'the document read reports a deleted condition device as broken although the rule\'s own check says false'() {
-        given:
+        given: "condition 4 is in use through the Required Expression"
+        typedSettings.useST = true
         statusSettings = [[name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
         when:
         def health = script.toolGetRuleDocument([ruleId: 42, sections: []]).health
@@ -737,6 +738,36 @@ class NativeDocumentsSpec extends ToolSpecBase {
         health.issues.any { it.contains('1 row(s) whose device was deleted') && it.contains("Rule Machine's own check does not flag") }
         !health.issues.any { it.contains('marks this rule broken') }
         renders.isEmpty()
+    }
+
+    @spock.lang.Unroll
+    def 'an empty picker on a row that is not in use is not broken (#label)'() {
+        given: "the Required Expression is off, so condition 4 is in use only when an action references it"
+        nativeState.actions = ['3': [method: 'getLogMsg'], '1': [method: 'getLogMsg'], '8': [method: 'getLogMsg', cond: '4']]
+        statusSettings = [[name: setting, type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        when:
+        def health = script.toolGetRuleDocument([ruleId: 42, sections: []]).health
+        then:
+        health.brokenRows == []
+        health.broken == false
+        health.ok == true
+        where:
+        label                                              | setting
+        'a condition no action or expression uses'         | 'rDev_4'
+        'a trigger picker for a row not yet added'         | 'tDev9'
+        'an action row outside the action list'            | 'onOffSwitch.8'
+    }
+
+    def 'a condition an action uses through an expression is in use, and a null device list reads as no devices'() {
+        given:
+        nativeState.actions = ['3': [method: 'getIfThen', rule: '2'], '1': [method: 'getLogMsg']]
+        nativeState.eval = ['0': [], '2': ['NOT', '4']]
+        statusSettings = [[name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: null, deviceList: null]]
+        when:
+        def health = script.toolGetRuleDocument([ruleId: 42, sections: []]).health
+        then:
+        health.broken == true
+        health.brokenRows == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
     }
 
     def 'an update whose compiled state cannot be read is refused before its backup and any write, though its broken check answers'() {

@@ -6488,6 +6488,18 @@ class TestRunner:
             assert not (rb.get("settings") or {}).get("trigger"), \
                 f"the Basic Rule still carries the trigger set after its backup: {rb.get('settings')}"
 
+            # Rule Machine's Pause/Resume Rules action pauses a Basic Rule by setting its paused state ("Pause or
+            # Resume?" off pauses). Run through hub_call_rule, it leaves hub_get_rule reading the Basic Rule paused.
+            pauser, _ = self._rm_rule("BasicPauser", [self._rm_action("rulesActs", "getPauseResumeRules", [
+                ("pR", "bool", False), ("pauseRuleType", "enum", "Basic Rule"), ("pauseRule", "enum", [str(app_id)])])])
+            try:
+                ran = self.client.call_tool("hub_call_rule", {"ruleId": pauser, "action": "actions"})
+                assert ran.get("success") is True and ran.get("rmAction") == "runAction button", ran
+                self._rm_wait(lambda: self._rm_health(app_id).get("paused") is True, what="Basic Rule paused")
+                assert self._rm_health(app_id).get("ruleFormat") == "basic-rule"
+            finally:
+                self._delete_native(pauser)
+
             # A deleted Basic Rule restores as a new app finished with Done, never updateRule.
             dele = self.client.call_tool("hub_manage_native_rules_and_apps", {
                 "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True}})
@@ -7549,6 +7561,39 @@ def updated() {}
                 # The pause re-renders the rule's page, so the list shows it at once.
                 assert self._rm_listed(app_id).get("paused") is paused
                 assert self._rm_health(app_id).get("label") == label
+            # Two pauses sent at once on the unpaused rule: each reads the flag, clicks the toggle and reads the flag
+            # again, so when both click, the second click unpauses the rule. The read-back then reports the mismatch
+            # instead of a success; a call that reports success saw the rule paused.
+            race: list[Any] = [None, None]
+            gate = threading.Barrier(2)
+
+            def fire_pause(slot: int) -> None:
+                client = self._thread_client()
+                try:
+                    gate.wait(timeout=30)
+                    race[slot] = client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "pause"})
+                except McpToolError as exc:
+                    race[slot] = _plain_failure_payload(exc) or exc
+                except Exception as exc:      # reported by the assertion below
+                    race[slot] = exc
+
+            racers = [threading.Thread(target=fire_pause, args=(slot,), daemon=True) for slot in (0, 1)]
+            for racer in racers:
+                racer.start()
+            for racer in racers:
+                racer.join(timeout=300)
+            assert all(isinstance(r, dict) for r in race), f"a concurrent pause call raised: {race}"
+            mismatched = [r for r in race if r.get("success") is False
+                          and "click was accepted, but the rule's paused state then read" in str(r.get("error"))]
+            assert all(r.get("success") is True or r in mismatched for r in race), race
+            final_paused = self._rm_health(app_id).get("paused")
+            print(f"    concurrent pause: results={[r.get('rmAction') or r.get('error') for r in race]} final paused={final_paused}")
+            # With no mismatch reported, every call said paused, and the rule is paused.
+            assert mismatched or final_paused is True, (race, final_paused)
+            if final_paused:
+                undo = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "resume"})
+                assert undo.get("success") is True, undo
+            self._rm_wait(lambda: self._rm_health(app_id).get("paused") is False, what="paused=False after the race")
             # A new rule's private boolean starts true, and health reads back each value set.
             assert self._rm_health(app_id).get("privateBoolean") is True
             for value in (False, True):
@@ -7906,12 +7951,34 @@ def updated() {}
         app_id, _ = self._rm_rule("RHBroken", [self._rm_switch_trigger(device_id), self._rm_switch_trigger(second_id),
                                                native_log("dangling trigger")])
         edit_id = None
+        cond_id = None
         try:
             edit_id, edit_doc = self._rm_rule("RHBrokenEdit", [self._rm_switch_trigger(device_id), native_log("dangling edit")])
             assert sorted(edit_doc.get("triggers") or {}) == ["1"], edit_doc
+            # A condition-gated action on the first device, and a spare condition on the second that nothing uses.
+            cond_id, _ = self._rm_rule("RHBrokenCond", [self._rm_switch_condition(device_id), self._rm_switch_condition(second_id)])
+            cond_rows = self._native_rule_document(cond_id).get("conditions") or {}
+            gone, spare = sorted(cond_rows, key=int)
+            self._rm_update(cond_id, [native_log("gated by a deleted device", condition=gone)])
+            cond_actions = self._native_rule_document(cond_id).get("actions")
             assert self._rm_health(app_id).get("broken") is False
+            assert self._rm_health(cond_id).get("broken") is False
             self._rm_delete_device(dni)
             self._rm_delete_device(second_dni)
+            # Rule Machine's own broken() misses a deleted condition device: health lists the gated condition from
+            # its device setting and reads broken; the spare condition is in no action or expression, so not listed.
+            cond_health = self._rm_health(cond_id)
+            assert cond_health.get("broken") is True and cond_health.get("ok") is False, cond_health
+            assert [(row.get("kind"), str(row.get("id")), row.get("setting")) for row in cond_health.get("brokenRows") or []] == \
+                [("condition", str(gone), f"rDev_{gone}")], (spare, cond_health)
+            cond_backups = self._rm_backup_keys(cond_id)
+            cond_refused = self._rm_call({"operation": "update", "ruleId": int(cond_id),
+                                          "args": {"changes": [native_log("not written")]}, "confirm": True})
+            cond_error = self._rm_refused(cond_refused)
+            assert f"already broken: condition {gone} (" in cond_error and "no change was written" in cond_error \
+                and cond_refused.get("partial") is False, cond_refused
+            assert self._rm_backup_keys(cond_id) == cond_backups, "a refused update took a backup"
+            assert self._native_rule_document(cond_id).get("actions") == cond_actions, "a refused update changed the actions"
             health = self._rm_health(app_id)
             assert health.get("broken") is True and health.get("ok") is False and health.get("ruleFormat") == "rm", health
             rows = health.get("brokenRows") or []
@@ -7935,8 +8002,9 @@ def updated() {}
             assert after.get("health", {}).get("broken") is True, after
         finally:
             self._delete_native(app_id)
-            if edit_id is not None:
-                self._delete_native(edit_id)
+            for extra_id in (edit_id, cond_id):
+                if extra_id is not None:
+                    self._delete_native(extra_id)
 
     @test("native_apps")
     def test_rule_health_ui_shaped_else_endif_rows(self) -> None:
@@ -9055,11 +9123,13 @@ def updated() {}
             assert "Broken Condition" in self._rm_page(app_id), "deleting the device did not break its condition"
             self._rm_refuse_all(app_id, [[native_log("gated edit", id=gated, condition=gone)]])
             # An unrelated edit is refused before anything is written, because the condition's device is gone.
+            actions_before = self._native_rule_document(app_id).get("actions")
             unrelated = self._rm_call({"operation": "update", "ruleId": int(app_id),
                                        "args": {"changes": [native_log("unrelated")]}, "confirm": True})
             error = str(unrelated.get("error"))
             assert unrelated.get("success") is False and unrelated.get("partial") is False \
                 and "is already broken" in error and "no change was written" in error, unrelated
+            assert self._native_rule_document(app_id).get("actions") == actions_before, "a refused update changed the actions"
         finally:
             self._delete_native(app_id)
 
@@ -10035,6 +10105,17 @@ def updated() {}
             # Button device for the controller to bind to: a PERMANENT non-child fixture, only ever a
             # bind TARGET -- the assertions are about the controller's form, never the device's state.
             device_id = self._ensure_perm_fixture("button")
+
+            # A create without its button device is refused before anything is installed: no Button Controllers
+            # parent appears where there was none, and no controller is left.
+            apps_before = {str(r.get("id")) for r in self._installed_app_rows()}
+            try:
+                bare = self._native_app("create", {"app_type": "button_controller"})
+            except McpToolError as exc:
+                assert "requires fields.buttonDev" in exc.content_text and "Nothing was created" in exc.content_text, exc.content_text
+            else:
+                raise AssertionError(f"a button_controller create without buttonDev was not refused: {bare}")
+            assert {str(r.get("id")) for r in self._installed_app_rows()} == apps_before, "a refused create installed an app"
 
             # An unbound controller comes from the Button Controllers page's own create control: a
             # create through hub_set_native_app presses the first page's Done, which needs the device.

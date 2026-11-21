@@ -170,10 +170,10 @@ class ToolRuleHealthSpec extends ToolSpecBase {
     }
 
     def "an action setting whose base name holds digits or underscores is an action, and an unknown name is no trigger"() {
-        given: "action ids 3 and 4 and trigger 2 are held; notify2 and switches_2 name no known trigger or condition prefix"
+        given: "action ids 3 and 4 and trigger 2 are held, action 3 is gated by condition 2; notify2 and switches_2 name no known trigger or condition prefix"
         ruleBroken = true
         seed(100, [capabstrue: ['2': 'B turns on'], capabsfalse: ['2': 'C is on'], actionList: ['3', '4'],
-                   actions: ['3': [method: 'getOnOffSwitch'], '4': [method: 'getOnOffSwitch']]], [:],
+                   actions: ['3': [method: 'getOnOffSwitch', cond: '2'], '4': [method: 'getOnOffSwitch']]], [:],
              [setting('foo2.3', 'capability.switch', []), setting('a_b.4', 'capability.switch', []),
               setting('notify2', 'capability.notification', []), setting('switches_2', 'capability.switch', []),
               setting('relDevice_2', 'capability.switch', [])])

@@ -263,6 +263,30 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         gets.isEmpty()
     }
 
+    @spock.lang.Unroll
+    def 'a button_controller create without buttonDev (#label) is refused before the parent is found or installed'() {
+        given:
+        atomicStateMap.parentAppIds = [:]
+
+        when:
+        create(args)
+
+        then:
+        IllegalArgumentException e = thrown()
+        e.message.contains('button_controller requires fields.buttonDev')
+        e.message.contains('Nothing was created.')
+        gets.isEmpty()
+        raws.isEmpty()
+        posts.isEmpty()
+        deleted.isEmpty()
+
+        where:
+        label            | args
+        'no fields'      | [app_type: 'button_controller']
+        'other fields'   | [app_type: 'button_controller', fields: [origLabel: 'Kitchen']]
+        'empty buttonDev'| [app_type: 'button_controller', fields: [buttonDev: []]]
+    }
+
     def 'name is refused, and the new app removed, when the first page renders no label input'() {
         given:
         parentAt(47L, 'childButtons', 'Button Controller-5.1')

@@ -10794,11 +10794,28 @@ boolean _rmIsEditableRuleType(namespace, name) {
 
 // The rows a Rule Machine rule can no longer resolve, read from its settings rather than its page: a
 // device setting whose device was deleted keeps its row but lists no device. The setting's suffix is the native
-// row id (tDev<id> or reltDevice<id> a trigger, rDev_<id> or relDevice_<id> a condition, <name>.<id> an action);
-// only ids the rule still holds count, so an unrelated empty picker is not reported.
+// row id (tDev<id> or reltDevice<id> a trigger, rDev_<id> or relDevice_<id> a condition, <name>.<id> an action).
+// Only rows in use count: a trigger the rule holds, an action in its action list, and a condition an action or the
+// Required Expression references. A picker left empty while a row is being built, or a spare condition, is not a
+// deleted device.
 private List _rmBrokenRows(Map compiled, List appSettings) {
     def kinds = ['trigger', 'condition', 'action']
     def stores = [trigger: compiled.capabstrue, condition: compiled.capabsfalse, action: compiled.actions]
+    def order = compiled.actionList instanceof List ? compiled.actionList.collect { it.toString() } : []
+    def evals = compiled.eval instanceof Map ? compiled.eval : [:]
+    def expressionIds = appSettings.any { it.name == 'useST' && it.value?.toString() == 'true' } ? ['0'] : []
+    def used = []
+    order.each { actionId ->
+        def action = compiled.actions instanceof Map ? _nmEntry(compiled.actions, actionId) : null
+        if (!(action instanceof Map)) return
+        if (action.cond != null) used << action.cond.toString()
+        if (action.rule != null) expressionIds << action.rule.toString()
+    }
+    expressionIds.each { expressionId ->
+        def tokens = _nmEntry(evals, expressionId)
+        if (tokens instanceof List) used.addAll(tokens.collect { it.toString() })
+    }
+    def inUse = [trigger: null, condition: used, action: order]
     def rows = []
     appSettings.each { setting ->
         if (!setting.type?.startsWith('capability') || setting.deviceIds) return
@@ -10812,6 +10829,8 @@ private List _rmBrokenRows(Map compiled, List appSettings) {
         if (kind == null) return
         def stored = stores.get(kind)
         if (!(stored instanceof Map) || !stored.containsKey(id)) return
+        def listed = inUse.get(kind)
+        if (listed != null && !(id in listed)) return
         Map row = [kind: kind, id: id, setting: setting.name]
         if (stored.get(id) instanceof String) row.text = stored.get(id)
         rows << row
@@ -12609,7 +12628,7 @@ Every action on a Rule Machine rule drives the rule's own page buttons (`runActi
 `health` has the same shape here, in hub_set_rule's read and in the update pre-check:
 
 - `ruleFormat` says what was inspected: `rm` (any Rule Machine rule or Button Rule) / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
-- **Rule Machine**: `broken` comes from the rule's own broken() check (a Rule Machine 5.1 rule or Button Rule; an older rule type reports its stored flag), so a rule whose trigger device was deleted reads broken without anyone opening it. That check misses a condition whose device was deleted, so a Rule Machine 5.1 rule or Button Rule with any `brokenRows` entry also reads `broken:true` and `ok:false`, and an issue says Rule Machine's own check does not flag it. `brokenRows` (`[{kind: trigger|action|condition, id, setting, text?}]`) lists each row whose device setting no longer names a device: `id` is the row's native id, the one hub_set_rule changes and operation:'form' use (trigger 2 is `tDev2`), `setting` the setting that lost its device, and `text` the trigger's or condition's stored description. A row that is broken for another reason (a deleted variable) is not listed, so `broken:true` with no rows means the broken row has no device setting, unless checkErrors says brokenRows was not listed (the rule's compiled state or settings went unread). `disabledActions` and `disabledTriggers` (native ids of rows switched off; `[]` when none), `structuralIssues` (the IF/Repeat block and expression check hub_set_rule runs) and `privateBoolean`.
+- **Rule Machine**: `broken` comes from the rule's own broken() check (a Rule Machine 5.1 rule or Button Rule; an older rule type reports its stored flag), so a rule whose trigger device was deleted reads broken without anyone opening it. That check misses a condition whose device was deleted, so a Rule Machine 5.1 rule or Button Rule with any `brokenRows` entry also reads `broken:true` and `ok:false`, and an issue says Rule Machine's own check does not flag it. `brokenRows` (`[{kind: trigger|action|condition, id, setting, text?}]`) lists each row in use (a trigger, an action in the action list, or a condition an action or the Required Expression uses) whose device setting no longer names a device: `id` is the row's native id, the one hub_set_rule changes and operation:'form' use (trigger 2 is `tDev2`), `setting` the setting that lost its device, and `text` the trigger's or condition's stored description. A row that is broken for another reason (a deleted variable) is not listed, so `broken:true` with no rows means the broken row has no device setting, unless checkErrors says brokenRows was not listed (the rule's compiled state or settings went unread). `disabledActions` and `disabledTriggers` (native ids of rows switched off; `[]` when none), `structuralIssues` (the IF/Repeat block and expression check hub_set_rule runs) and `privateBoolean`.
 - **Visual Rules Builder**: the engine's own verdict, a graph rule's `validationErrors` (broken when non-empty), and its pause state from its builder, with the rule's own name as `label`.
 - **Other apps** (Basic Rule, Button Controller, Room Lighting, user and community apps): label, red-X flag and the state flags below; `broken` is null.
 - `paused`, `stopped` and `privateBoolean` come from the app's state on its App Status page. A Rule Machine rule with no `paused` or `stopped` entry reads `false`, and so does a Basic Rule with no `paused` entry; for an app whose state has no flag, or when the status page cannot be read, the name's "(Paused)" or "(Stopped)" decoration is used. `privateBoolean` has no such fallback. An entry stored as neither true nor false reads null with a `checkErrors` entry. `label` has the decoration removed. `disabled` is the red-X flag.

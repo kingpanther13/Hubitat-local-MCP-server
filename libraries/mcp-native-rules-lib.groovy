@@ -473,22 +473,11 @@ def toolRunRmRule(args) {
     if (visual && action in ["stop", "start"]) {
         throw new IllegalArgumentException("Visual Rules have no stop or start; rule(s) ${visual.join(', ')} are Visual Rules. Use action:'pause' or 'resume' for them. Nothing was dispatched.")
     }
-    // The classic builder has no run button: only the 2.0 builder calls /app/ruleBuilderRun, and a 1.0 rule fails on it.
-    // A 1.x type name is classic; a type name without a version runs only once its state reads as the graph builder's.
-    List<Integer> unconfirmed = []
-    List<Integer> classic = action != "actions" ? [] : visual.findAll { Integer id ->
-        String type = guard.types.get(id)?.toString()
-        if (type ==~ /.*\s1(\.\d+)*/) return true
-        if (type ==~ /.*\s\d+(\.\d+)*/) return false
-        def format = _ruleCompiledState(id)?.ruleFormat
-        if (format == null) unconfirmed << id
-        format != "vrb-graph"
-    }
+    // The classic builder has no run button: only the 2.0 builder calls /app/ruleBuilderRun, and a 1.0 rule fails on
+    // it. The type name carries the builder version (Visual Rule Builder 1.0 or 2.0).
+    List<Integer> classic = action != "actions" ? [] : visual.findAll { Integer id -> guard.types.get(id)?.toString() ==~ /.*\s1(\.\d+)*/ }
     if (classic) {
-        List<Integer> oneZero = classic - unconfirmed
-        String found = (oneZero ? "; rule(s) ${oneZero.join(', ')} are 1.0 rules" : "") +
-            (unconfirmed ? "; the builder format of rule(s) ${unconfirmed.join(', ')} could not be read, so they are not run until it reads as 2.0 (retry, or check them with hub_get_rule)" : "")
-        throw new IllegalArgumentException("Visual Rule Builder 1.0 rules have no run button, so their actions cannot be run${found}. Pause and resume work on them. Nothing was dispatched.")
+        throw new IllegalArgumentException("Visual Rule Builder 1.0 rules have no run button, so their actions cannot be run; rule(s) ${classic.join(', ')} are 1.0 rules. Pause and resume work on them. Nothing was dispatched.")
     }
     boolean runActions = (action == "actions")
     def perRule = { Integer id ->
@@ -2853,6 +2842,8 @@ private void _naValidateCreate(Map args) {
         List stray = buttonKeys.findAll { args.containsKey(it) }
         if (stray) throw new IllegalArgumentException("${stray.join(', ')} apply only to app_type button_rule".toString())
         if (args.containsKey('fields') && !args.get('fields')) throw new IllegalArgumentException('fields must name at least one input; omit it to create the app with its page defaults')
+        // A Button Controller's Done fails without its button device, after the create may have installed the parent app.
+        if (args.app_type == 'button_controller' && !(args.get('fields') instanceof Map && args.get('fields').buttonDev)) throw new IllegalArgumentException("button_controller requires fields.buttonDev, the button device id list its first page saves with. Nothing was created.")
     }
 }
 
@@ -3349,7 +3340,7 @@ hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and co
 
 ### create
 
-operation:"create" with args:{app_type,name?,fields?} does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), presses that page's Create control, fills the new app's first page with fields and presses its Done, which installs the app. name goes to the label input the first page renders (origLabel, name, or the hub's own label field); a type whose first page renders none of them (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. fields are checked against that page before anything is saved: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input left empty for the Done is refused with success:false, and the new app is removed. Inputs that a choice reveals belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. installed:false means the first page has no Done (Basic Rule: finish it with form). A Done the hub answers by rendering the first page again returns success:false with what that page asks for, and the new app is removed. app_type rule_machine makes only an empty rule.
+operation:"create" with args:{app_type,name?,fields?} does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), presses that page's Create control, fills the new app's first page with fields and presses its Done, which installs the app. name goes to the label input the first page renders (origLabel, name, or the hub's own label field); a type whose first page renders none of them (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. app_type button_controller requires fields.buttonDev and is refused without it before anything is installed. fields are checked against that page before anything is saved: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input left empty for the Done is refused with success:false, and the new app is removed. Inputs that a choice reveals belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. installed:false means the first page has no Done (Basic Rule: finish it with form). A Done the hub answers by rendering the first page again returns success:false with what that page asks for, and the new app is removed. app_type rule_machine makes only an empty rule.
 
 A button_rule takes args:{app_type:"button_rule",controller_id,button_number,event} and no name or fields. It runs the Button Controller's own Add Button, the button number, then that event's Create Button Rule control. The controller needs its button device assigned first. A button number the controller does not offer returns success:false after its page's Cancel, with the controller as before and the recovery point taken before the call rendered anything. The controller seeds the trigger; add the actions with hub_set_rule(operation:"update",ruleId:<returned app_id>).
 

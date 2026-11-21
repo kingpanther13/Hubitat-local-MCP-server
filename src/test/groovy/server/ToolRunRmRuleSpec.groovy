@@ -936,11 +936,12 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "action=actions on a Visual Rule typed '#type' is #outcome by its type name or, unversioned, its classic shape"() {
-        given:
+    def "action=actions on a Visual Rule typed '#type' is #outcome by the version in its type name alone"() {
+        given: "the rule's stored builder format disagrees with its type name, and is not read"
         visualRule(175, classicShape ? 'classic' : 'graph', false)
         appTypes[175] = type
         hubGet.register('/app/ruleBuilderRun/175') { params -> '{"success":true}' }
+        hubGet.calls.clear()
 
         when:
         def result
@@ -949,34 +950,17 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
         then:
         (thrown != null) == refused
-        if (refused) assert thrown.message.contains('have no run button')
+        if (refused) assert thrown.message.contains('have no run button') && thrown.message.contains('rule(s) 175 are 1.0 rules')
         else assert result.success == true
         hubGet.calls*.path.count { it == '/app/ruleBuilderRun/175' } == (refused ? 0 : 1)
+        hubGet.calls*.path.every { !it.startsWith('/app/ruleBuilderJson') && !it.startsWith('/app/ruleBuilder20Json') }
 
         where:
         type                      | classicShape || refused | outcome
+        'Visual Rule Builder 1.0' | false        || true    | 'refused'
         'Visual Rule Builder 1.1' | false        || true    | 'refused'
-        'Visual Rule Builder'     | true         || true    | 'refused'
-        'Visual Rule Builder'     | false        || false   | 'run'
+        'Visual Rule Builder 2.0' | true         || false   | 'run'
         'Visual Rule Builder 2.1' | false        || false   | 'run'
-    }
-
-    def "action=actions on an unversioned Visual Rule whose format cannot be read is refused, naming the unread rule"() {
-        given: "the type name carries no version and both builder reads fail"
-        appTypes[176] = 'Visual Rule Builder'
-        hubGet.register('/app/ruleBuilderJson/176') { params -> throw new IOException('hub busy') }
-        hubGet.register('/app/ruleBuilder20Json/176') { params -> throw new IOException('hub busy') }
-        hubGet.register('/app/ruleBuilderRun/176') { params -> '{"success":true}' }
-
-        when:
-        script.toolRunRmRule([ruleId: 176, action: 'actions'])
-
-        then: "a classic rule would report a false success, so nothing runs until the format reads as 2.0"
-        IllegalArgumentException e = thrown()
-        e.message.contains('the builder format of rule(s) 176 could not be read')
-        !e.message.contains('are 1.0 rules')
-        e.message.contains('Nothing was dispatched')
-        hubGet.calls*.path.every { !it.startsWith('/app/ruleBuilderRun') }
     }
 
     def "a Visual Rule the hub does not run comes back as a runtime failure with the hub's message"() {

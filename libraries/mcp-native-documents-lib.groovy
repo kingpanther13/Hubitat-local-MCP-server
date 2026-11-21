@@ -547,10 +547,9 @@ Map toolUpdateRuleDocument(Map args) {
         // A rule that is already broken is refused here, not reported broken after the write; hub_get_rule reports the
         // same health, so the read and the refusal agree.
         Map beforeHealth = _rmCheckRuleHealth(id as Integer)
-        // Broken is refused first: broken() answers even when the compiled state went unread. A dead device picker
-        // counts too, since broken() misses a deleted condition device.
-        boolean alreadyBroken = beforeHealth.broken == true || beforeHealth.brokenRows
-        if (alreadyBroken) {
+        // Broken is refused first: broken() answers even when the compiled state went unread, and health also reads
+        // broken for an in-use row whose device is gone, which broken() misses for a condition.
+        if (beforeHealth.broken == true) {
             String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { "${it.kind} ${it.id}" + (it.text ? " ('${it.text}')" : '') }.unique().join('; ') : ''
             return [success: false, partial: false, ruleId: id, broken: true, brokenRows: beforeHealth.brokenRows, checkErrors: beforeHealth.checkErrors,
                 error: "Rule ${id} is already broken${rows}; no change was written.".toString(),
