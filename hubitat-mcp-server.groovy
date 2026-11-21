@@ -4544,9 +4544,13 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 // Reaching this branch REQUIRES a non-empty remainingRuleIds, and failed is a
                 // different set from not-yet-reached -- so name the un-actioned ids rather than
                 // making the caller diff them out of hub state.
+                // A failed rule re-queued behind the un-reached ones can be left over again: it was reached in an
+                // earlier slice, so it stays in failedRuleIds and out of the never-reached list.
                 if (result instanceof Map && result.remainingRuleIds instanceof List
                         && !(result.remainingRuleIds as List).isEmpty()) {
-                    capped.remainingRuleIds = result.remainingRuleIds
+                    Set reached = banked.collect { it instanceof Map ? it.ruleId?.toString() : null } as Set
+                    def unreached = (result.remainingRuleIds as List).findAll { !(it?.toString() in reached) }
+                    if (unreached) capped.remainingRuleIds = unreached
                 }
                 // partial means some rules were actioned and some were not. Keying it on
                 // "anything banked" would be structurally always true here -- reaching the cap
@@ -4555,8 +4559,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 // ordinary terminal reports a plain failure.
                 //
                 // The formula is deliberately NOT the terminal's `failed.size() < results.size()`:
-                // reaching this branch REQUIRES a non-empty remainingRuleIds, so rules that were
-                // never reached always exist here and the terminal's version never sees them. One
+                // reaching this branch REQUIRES a non-empty remainingRuleIds, so rules not yet actioned
+                // (never reached, or failed and re-queued) always exist here and the terminal's version never sees them. One
                 // success is therefore enough to make this batch some-actioned-some-not, whereas
                 // at the ordinary terminal nothing is left unreached and a mixed row set is the
                 // only way to be partial.
@@ -10868,7 +10872,8 @@ Map _rmCheckRuleHealth(Integer appId) {
     String label = status?.installedApp?.label ?: installed?.label?.toString()
     Boolean labelPaused = null
     Boolean labelStopped = null
-    if (label?.contains("*BROKEN*")) issues << "label contains *BROKEN* marker — rule has at least one malformed trigger or action".toString()
+    // Rule Machine's own broken check is the verdict; the label's *BROKEN* marker is only a hint when no verdict was read.
+    boolean labelBroken = label?.contains("*BROKEN*") == true
     // Only real markup is a runtime decoration; a typed suffix is escaped and stays the user's name.
     // The decoration is kept as evidence for an app whose state carries no flag.
     while (label != null) {
@@ -10881,8 +10886,10 @@ Map _rmCheckRuleHealth(Integer appId) {
     result.label = label?.replaceAll(/<[^>]+>/, "")?.trim()
     Map compiled = null
     if (ruleType) result.ruleFormat = "rm"
-    // Other apps with a type have no compiled state to read.
-    if (typeName != null && !visual && !ruleType) {
+    // Other apps with a type have no compiled state to read. Held in a local: a comparison chain in the if
+    // makes Groovy 2.4 compile the whole statement twice.
+    boolean otherApp = typeName != null && !visual && !ruleType
+    if (otherApp) {
         result.ruleFormat = _classicAppFormat(typeName)
     } else {
         def cs = _ruleCompiledState(appId)
@@ -10919,7 +10926,9 @@ Map _rmCheckRuleHealth(Integer appId) {
         }
     }
     if (result.ruleFormat == "rm" && result.broken == null && !brokenNoted) checkErrors << "the rule's broken flag could not be read, so whether it is broken is unknown".toString()
-    if (result.ruleFormat == "rm" && result.broken == true) {
+    if (labelBroken && result.broken == null) issues << "label contains *BROKEN* marker, a hint that the rule has a malformed trigger or action; no broken verdict could be read to confirm it".toString()
+    boolean rmBroken = result.ruleFormat == "rm" && result.broken == true
+    if (rmBroken) {
         issues << "Rule Machine marks this rule broken: a trigger, condition or action refers to something that is gone; brokenRows lists the rows whose device is gone.".toString()
         // The settings name each row by id; the compiled state says which ids the rule still holds.
         if (compiled == null) checkErrors << "the rule's compiled state went unread, so brokenRows was not listed".toString()
@@ -10929,6 +10938,8 @@ Map _rmCheckRuleHealth(Integer appId) {
         result.disabledActions = _rmDisabledRowIds(compiled, "disabledActions", checkErrors)
         result.disabledTriggers = _rmDisabledRowIds(compiled, "disabledTriggers", checkErrors)
         boolean useST = status?.appSettings?.any { it.name == "useST" && it.value?.toString() == "true" } == true
+        // Unread settings are not a Required Expression switched off: expression 0 then goes unchecked, so say so.
+        if (status == null || status.appSettingsMalformed) checkErrors << "the rule's settings went unread, so whether its Required Expression is on is unknown and expression 0 was not checked".toString()
         result.structuralIssues = _ndStructuralIssues(compiled, useST)
         if (result.structuralIssues) {
             issues << ("structural imbalance in the rule's actions or expressions: ${result.structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer with a hub_set_rule(operation='update') terminator change (subtype endIf or endRep). Otherwise compare against hub_get_rule(sections:['actions']) before considering a restore.").toString()

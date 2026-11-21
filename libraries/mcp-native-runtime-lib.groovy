@@ -184,13 +184,6 @@ Map _nrPage(Long ruleId, String page, Map params = [:]) {
     [verificationNeeded: true, result: result]
 }
 
-Map _nrButton(Long ruleId, String name) {
-    if (!name) throw new IllegalArgumentException('A native button name is required')
-    def result = _nrHandle(ruleId).appButtonHandler(name)
-    // Native handlers may consume errors internally; recipes must verify resulting structure.
-    [verificationNeeded: true, result: result]
-}
-
 private List _nrChoiceKeys(Object options) {
     // Shared native descriptor checks. Callers retain their own admission and wire encoding.
     if (options instanceof Map) return options.keySet().collect { it.toString() }.unique()
@@ -241,7 +234,8 @@ private void _nrValidateInput(Map field, Object value, boolean allowClear = fals
     if ((device || field.type in ['enum', 'mode', 'menu']) && options == null) throw new IllegalArgumentException("Native choices are unavailable for ${field.name}")
     if (options != null && values.any { !(allowClear && it.toString() == '') && !(it.toString() in options) }) throw new IllegalArgumentException("Invalid native choice for ${field.name}")
     _nrValidateScalar(field, value, allowClear)
-    if (field.type in ['number', 'decimal'] && !(allowClear && value.toString() == '')) {
+    boolean clearing = allowClear && value.toString() == ''
+    if (field.type in ['number', 'decimal'] && !clearing) {
         BigDecimal number = value.toString().toBigDecimal()
         List range = field.range?.toString()?.split(/\.\./)?.toList() ?: []
         def minimum = field.min != null ? field.min : (range.size() == 2 ? range.get(0) : null)

@@ -509,8 +509,10 @@ private Map _ndApply(Long id, List changes, boolean created) {
         if (created && getAppByAppId(id)?.installed != true) throw new IllegalStateException('Native rule is not installed after Done')
         Map written = [success: true, ruleId: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.']
         if (suppressed) written.subscriptionSettle = 'SUPPRESSED: Required Expression is false'
-        Map document = toolGetRuleDocument([ruleId: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])
-        // The write is verified by now, so a failed read-back must not read as a failed write that a caller would re-send.
+        // The write is verified by now, so a failed read-back, returned or thrown, must not read as a failed write that a caller would re-send.
+        Map document
+        try { document = toolGetRuleDocument([ruleId: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']]) }
+        catch (Exception readBack) { document = [success: false, error: readBack.message ?: readBack.toString()] }
         if (document.success == false) {
             written.documentReadError = document.error
             written.note = "The changes were written and verified; only reading the rule back failed. Do not send them again: read the rule with hub_set_rule(operation:'read') or hub_get_rule. See hub_get_tool_guide(section='set_rule_reference')."
@@ -554,7 +556,8 @@ Map toolUpdateRuleDocument(Map args) {
         }
         // disabledActions stays null only when the rule's compiled state went unread or is malformed; the writes below
         // verify against that same state, so a rule whose state cannot be read is not edited either.
-        if (beforeHealth.broken == null || beforeHealth.disabledActions == null) {
+        boolean unread = beforeHealth.broken == null || beforeHealth.disabledActions == null
+        if (unread) {
             return [success: false, partial: false, ruleId: id, broken: beforeHealth.broken, checkErrors: beforeHealth.checkErrors,
                 error: (beforeHealth.broken == null ? "Rule ${id}'s broken flag could not be read before the write, so whether it is already broken is unknown; no change was written." :
                     "Rule ${id}'s compiled state could not be read before the write, so it is not known to be intact; no change was written.").toString(),
@@ -659,7 +662,9 @@ private void _ndValidateSchema(Object value, Map schema, String path, boolean co
         value.each { item -> _ndValidateSchema(item, schema.items, path, complete) }
     } else if (schema.type == 'string') {
         if ((schema.minLength != null && value.trim().size() < schema.minLength) || (schema.maxLength != null && value.size() > schema.maxLength)) throw new IllegalArgumentException("Invalid ${path} length")
-    } else if (schema.minimum != null && value < schema.minimum) throw new IllegalArgumentException("Invalid ${path}")
+    } else if (schema.minimum != null) {
+        if (value < schema.minimum) throw new IllegalArgumentException("Invalid ${path}")
+    }
 }
 
 Map toolSetRule(Map request) {

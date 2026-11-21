@@ -171,6 +171,9 @@ private Map _nfWire(Map field, String encoded) {
 private void _nfWalk(Object node, Map fields, Map controls, List messages, List unsupported, Map model, int position = 0) {
     if (node instanceof List) { node.eachWithIndex { item, index -> _nfWalk(item, fields, controls, messages, unsupported, model, index) }; return }
     if (!(node instanceof Map)) return
+    // Read before the chain: a comparison chain inside an else-if makes Groovy 2.4 compile the whole chain twice,
+    // and the server class is close to its constant-pool limit.
+    boolean childApp = node.element == 'app' && node.namespace == 'hubitat' && node.appName instanceof String && node.appName && node.name && node.appId?.toString() == model.app?.id?.toString()
     if (node.element == 'input' && node.name && node.type) {
         String name = node.name.toString()
         String type = node.type.toString()
@@ -219,7 +222,7 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             if (fields.containsKey(name) && fields[name] != field) throw new IllegalStateException('Native form contains ambiguous fields')
             fields.put(name, field)
         }
-    } else if (node.element == 'app' && node.namespace == 'hubitat' && node.appName instanceof String && node.appName && node.name && node.appId?.toString() == model.app?.id?.toString()) {
+    } else if (childApp) {
         _nfControl(controls, [name: node.name.toString(), value: node.appName, kind: 'create_child', title: _nfText(node.title)])
     } else if (node.element in ['label', 'mode']) {
         _nfAppField(fields, model, node.element == 'mode', node)

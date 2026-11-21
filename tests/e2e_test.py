@@ -9048,10 +9048,14 @@ def updated() {}
             self._rm_delete_device(gone_dni)
             assert "Broken Condition" in self._rm_page(app_id), "deleting the device did not break its condition"
             self._rm_refuse_all(app_id, [[native_log("gated edit", id=gated, condition=gone)]])
-            # An unrelated edit does not report success while that conditional action is broken.
+            # An unrelated edit does not report success while that conditional action is broken. The pre-write health
+            # check refuses it when the rule's own broken() sees the deleted device; otherwise the write's structural
+            # check names the action.
             unrelated = self._rm_call({"operation": "update", "ruleId": int(app_id),
                                        "args": {"changes": [native_log("unrelated")]}, "confirm": True})
-            assert unrelated.get("success") is False and f"Native action {gated} is broken" in str(unrelated.get("error")), unrelated
+            error = str(unrelated.get("error"))
+            refused_first = "is already broken" in error and "no change was written" in error and unrelated.get("partial") is False
+            assert unrelated.get("success") is False and (refused_first or f"Native action {gated} is broken" in error), unrelated
         finally:
             self._delete_native(app_id)
 

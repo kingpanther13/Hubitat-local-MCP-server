@@ -793,6 +793,18 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.note.contains('written and verified') && result.note.contains('Do not send them again')
     }
 
+    def 'a verified write whose document read-back throws is still a successful write with the read error beside it'() {
+        given: "the read-back's rule lookup throws instead of returning a failed read"
+        script.metaClass.toolGetRuleDocument = { Map args -> throw new IllegalStateException('lookup timed out') }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == true
+        !result.containsKey('document')
+        result.documentReadError == 'lookup timed out'
+        result.note.contains('written and verified') && result.note.contains('Do not send them again')
+    }
+
     def 'a broken health result does not fail the document read'() {
         given:
         broken = true

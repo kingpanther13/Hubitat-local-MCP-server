@@ -2634,6 +2634,35 @@ class MrtrContinuationSpec extends ToolSpecBase {
         outcome.result.mrtr?.continued == true
     }
 
+    def "a failed rule re-queued into the capped slice stays out of the never-reached list"() {
+        given: 'rule 22 failed in an earlier slice and was re-queued behind the un-reached rule 23; the final slice ran out of budget after 23'
+        Map claim = [claimId: 'cap4', generation: 1]
+        Map rec = [status: 'active', claimId: 'cap4', claimedGeneration: 1, generation: 1,
+                   rounds: script._mrtrMaxContinuationSlices() - 1,
+                   outerTool: 'hub_manage_rule_machine', leafTool: 'hub_call_rule',
+                   startedAt: script.now(), expiresAt: script.now() + 60000L,
+                   aggregate: [kind: 'call_rule',
+                               results: [[ruleId: 21, success: true], [ruleId: 22, success: false]],
+                               ruleIds: [21, 22]]]
+        atomicStateMap.mrtrRequests = ['cap4': rec]
+        script._writeStateCacheInvalidate()
+        Map execArgs = [tool: 'hub_call_rule', args: [ruleId: [23, 22], action: 'stop']]
+        Map slice = [success: true, ruleIds: [23, 22], results: [[ruleId: 23, success: true]],
+                     remainingRuleIds: [22], partial: true]
+
+        when:
+        def outcome = script._mrtrCommitSlice('cap4', rec, claim, execArgs, slice)
+
+        then: 'rule 22 was attempted, so it is a failed rule and not one never reached'
+        outcome.result.status == 'continuation_limit'
+        outcome.result.failedRuleIds == [22]
+        !outcome.result.containsKey('remainingRuleIds')
+        outcome.result.partial == true
+
+        and: 'the re-issue set still carries it'
+        outcome.result.note.contains('Re-issue [22]')
+    }
+
     def "an all-SUCCESS batch at the continuation cap is still partial"() {
         given: 'the case the two siblings leave open. The cap formula deliberately differs from the ordinary terminal, and unifying them on the terminal formula would silently report this batch as complete with rules still un-actioned'
         Map claim = [claimId: 'cap3', generation: 1]

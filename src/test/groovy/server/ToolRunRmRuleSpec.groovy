@@ -961,6 +961,24 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         'Visual Rule Builder 2.1' | false        || false   | 'run'
     }
 
+    def "action=actions on an unversioned Visual Rule whose format cannot be read is refused, naming the unread rule"() {
+        given: "the type name carries no version and both builder reads fail"
+        appTypes[176] = 'Visual Rule Builder'
+        hubGet.register('/app/ruleBuilderJson/176') { params -> throw new IOException('hub busy') }
+        hubGet.register('/app/ruleBuilder20Json/176') { params -> throw new IOException('hub busy') }
+        hubGet.register('/app/ruleBuilderRun/176') { params -> '{"success":true}' }
+
+        when:
+        script.toolRunRmRule([ruleId: 176, action: 'actions'])
+
+        then: "a classic rule would report a false success, so nothing runs until the format reads as 2.0"
+        IllegalArgumentException e = thrown()
+        e.message.contains('the builder format of rule(s) 176 could not be read')
+        !e.message.contains('are 1.0 rules')
+        e.message.contains('Nothing was dispatched')
+        hubGet.calls*.path.every { !it.startsWith('/app/ruleBuilderRun') }
+    }
+
     def "a Visual Rule the hub does not run comes back as a runtime failure with the hub's message"() {
         given:
         visualRule(171, 'graph', false)

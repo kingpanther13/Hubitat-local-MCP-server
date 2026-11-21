@@ -308,7 +308,7 @@ private void registerRmRule(Map combined, def r) {
         }
         label = entry.value?.toString()
         name = label
-    } else if (r != null && !(r instanceof Map)) {
+    } else if (!(r instanceof Map)) {
         id = r
     }
     if (id == null) return
@@ -474,13 +474,21 @@ def toolRunRmRule(args) {
         throw new IllegalArgumentException("Visual Rules have no stop or start; rule(s) ${visual.join(', ')} are Visual Rules. Use action:'pause' or 'resume' for them. Nothing was dispatched.")
     }
     // The classic builder has no run button: only the 2.0 builder calls /app/ruleBuilderRun, and a 1.0 rule fails on it.
-    // A 1.x type name is classic; a type name without a version is read once for the classic shape.
+    // A 1.x type name is classic; a type name without a version runs only once its state reads as the graph builder's.
+    List<Integer> unconfirmed = []
     List<Integer> classic = action != "actions" ? [] : visual.findAll { Integer id ->
         String type = guard.types.get(id)?.toString()
-        type ==~ /.*\s1(\.\d+)*/ || (!(type ==~ /.*\s\d+(\.\d+)*/) && _ruleCompiledState(id)?.ruleFormat == "vrb-classic")
+        if (type ==~ /.*\s1(\.\d+)*/) return true
+        if (type ==~ /.*\s\d+(\.\d+)*/) return false
+        def format = _ruleCompiledState(id)?.ruleFormat
+        if (format == null) unconfirmed << id
+        format != "vrb-graph"
     }
     if (classic) {
-        throw new IllegalArgumentException("Visual Rule Builder 1.0 rules have no run button, so their actions cannot be run; rule(s) ${classic.join(', ')} are 1.0 rules. Pause and resume work on them. Nothing was dispatched.")
+        List<Integer> oneZero = classic - unconfirmed
+        String found = (oneZero ? "; rule(s) ${oneZero.join(', ')} are 1.0 rules" : "") +
+            (unconfirmed ? "; the builder format of rule(s) ${unconfirmed.join(', ')} could not be read, so they are not run until it reads as 2.0 (retry, or check them with hub_get_rule)" : "")
+        throw new IllegalArgumentException("Visual Rule Builder 1.0 rules have no run button, so their actions cannot be run${found}. Pause and resume work on them. Nothing was dispatched.")
     }
     boolean runActions = (action == "actions")
     def perRule = { Integer id ->
@@ -501,7 +509,7 @@ def toolRunRmRule(args) {
     def results = []
     List remaining = []
     boolean budgetPaused = false
-    for (int i = 0; i < ruleIds.size(); i++) {
+    for (int i in 0..<ruleIds.size()) {
         if (i > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
             budgetPaused = true
             remaining = ruleIds.subList(i, ruleIds.size()).collect { it }
@@ -704,7 +712,8 @@ private Map _vrbTogglePaused(Integer ruleId, String action) {
     } catch (Exception e) {
         sent = [success: false, error: "pause endpoint failed: ${e.message}"]
     }
-    if (sent.success == true && sent.confirmed != true) {
+    boolean unconfirmed = sent.success == true && sent.confirmed != true
+    if (unconfirmed) {
         // The endpoint gave no verdict, so the rule's own state decides whether the pause landed.
         def after = _ruleCompiledState(ruleId)
         if (after?.paused != target) {
@@ -1895,7 +1904,8 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
 
     // A snapshot whose config carries no type name also lands on rule_machine above, so the export is
     // gated on the hub's own Rule Machine type name.
-    if (detectedAppType == "rule_machine" && config != null && (configAppName?.toString() ==~ /Rule-[0-9.]+/)) {
+    boolean ruleMachineExport = detectedAppType == "rule_machine" && config != null && (configAppName?.toString() ==~ /Rule-[0-9.]+/)
+    if (ruleMachineExport) {
         // Rule Machine only (restore imports it as a rule). The cloner renders no export for a rule with a
         // committed Required Expression (live, fw 2.5.2.129).
         def evalState = (status?.appState instanceof List) ? (status.appState as List).find { it instanceof Map && it.name == "eval" }?.value : null
@@ -2326,7 +2336,7 @@ private List _rmRequiredTokens(Integer appId) {
 private Integer _rmReplayConditionSlot(Integer appId, Map srcSettings, int srcIdx, Closure writeST, Map cache) {
     Integer newIdx = null
     def written = [] as Set
-    for (int iter = 0; iter < 30; iter++) {
+    for (int iter in 0..<30) {
         def inputs = (_rmFetchConfigJson(appId, "STPage", cache)?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
         if (newIdx == null) {
             def rc = inputs.find { it?.name?.toString()?.startsWith("rCapab_") }
@@ -2483,7 +2493,8 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
             builtCount = 1
             if (snapTokens.size() > 1) _rmTokEnterEditor(appId, cache)
         }
-        if (liveCommitted || snapTokens.size() > 1) {
+        boolean appendTokens = liveCommitted || snapTokens.size() > 1
+        if (appendTokens) {
             // Tokens before the first condition (a leading paren or NOT) go in front of it; the rest
             // append. With an old expression present, everything appends after it.
             def prefix = liveCommitted ? [] : (firstCond > 0 ? snapTokens[0..<firstCond] : [])
@@ -2760,7 +2771,8 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
         throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub. Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='builtin_app_tools_crud').")
     }
 
-    if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
+    boolean staleRecent = recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)
+    if (staleRecent) {
         def staleFile = recent.value?.fileName?.toString()
         mcpLog("warn", "rm-native", "Recent backup ${recent.key} for rule ${ruleId} is missing or does not match its manifest; discarding the stale handle and taking a fresh baseline")
         try { unlinkItemBackupManifestFile(staleFile, recent.key?.toString()) }
@@ -3058,7 +3070,8 @@ private Map _naCreate(Map args) {
             return [success: false, partial: true, app_type: type, app_id: childId, error: failure.message?.toString(),
                     note: "App ${childId} exists and its page may already be saved. Open it with hub_set_native_app(operation:'form', app_id:${childId}, args:{steps:[{kind:'open'}]}, confirm:true) to see its state, then finish or delete it; do not create it again.${guide}".toString()]
         }
-        if (saved.done && !saved.committed && saved.done != '_action_done|Done|') {
+        boolean refusedDone = saved.done && !saved.committed && saved.done != '_action_done|Done|'
+        if (refusedDone) {
             // The hub answered the Done with a page instead of a location, so the app did not install.
             List asks = []
             try {

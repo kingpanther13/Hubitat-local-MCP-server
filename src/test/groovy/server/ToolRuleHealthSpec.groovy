@@ -524,17 +524,52 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.ok == false
     }
 
-    def "a *BROKEN* label is an issue"() {
+    def "a *BROKEN* label on a rule whose own broken check says false is the user's name, not an issue"() {
+        given: "a clean rule whose name happens to contain the marker"
+        seed(100, [:], [label: 'Kitchen *BROKEN* test'])
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.broken == false
+        h.ok == true
+        h.issues == []
+        h.label == 'Kitchen *BROKEN* test'
+    }
+
+    def "a *BROKEN* label is reported as a hint when the rule's own broken check cannot be read"() {
         given:
+        ruleBroken = { -> throw new IllegalStateException('down') }
         seed(100, [:], [label: 'Porch *BROKEN*'])
 
         when:
         def h = script._rmCheckRuleHealth(100)
 
         then:
+        h.broken == null
         h.ok == false
-        h.issues.any { it.contains('*BROKEN*') }
+        h.issues.any { it.contains('*BROKEN*') && it.contains('hint') }
+        h.checkErrors.any { it.contains('broken() check failed') }
         h.label == 'Porch *BROKEN*'
+    }
+
+    def "unreadable settings leave the Required Expression unchecked and say so, never reading as switched off"() {
+        given: "the status page returns appSettings as a map, so the useST setting cannot be read"
+        Map state = ruleState()
+        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson(state) }
+        hubGet.register('/installedapp/statusJson/100') {
+            def body = new groovy.json.JsonSlurper().parseText(statusJson(100, state))
+            body.appSettings = [useST: 'true']
+            JsonOutput.toJson(body)
+        }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.checkErrors.any { it.contains('Required Expression') && it.contains('expression 0 was not checked') }
+        h.ok == false
     }
 
     @spock.lang.Unroll
@@ -588,7 +623,9 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.stopped == null
         h.privateBoolean == null
         h.paused == false
-        h.checkErrors == ['statusJson: status timeout']
+        h.checkErrors.size() == 2
+        h.checkErrors[0] == 'statusJson: status timeout'
+        h.checkErrors[1].contains('expression 0 was not checked')
     }
 
     def "a status page whose appState is not a list of entries is a failed status read"() {
