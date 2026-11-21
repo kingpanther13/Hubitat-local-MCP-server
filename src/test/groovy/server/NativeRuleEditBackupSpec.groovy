@@ -43,7 +43,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
             [backupKey: 'rm-rule_42_fixture', ruleId: id]
         }
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30, boolean retry = false ->
-            if (path.startsWith('/app/ruleBuilderJson/')) return [broken: false, stopped: false, paused: false]
+            if (path.startsWith('/app/ruleBuilderJson/')) return JsonOutput.toJson([broken: false, stopped: false, paused: false])
             if (path.startsWith('/installedapp/settings/')) return [settings: []]
             if (path.startsWith('/installedapp/statusJson/')) return [eventSubscriptions: [], scheduledJobs: []]
             events << 'open'
@@ -84,7 +84,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
     }
 
     private static Map update() {
-        [rule_id: 42, confirm: true, changes: [
+        [ruleId: 42, confirm: true, changes: [
             [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]],
             [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]]]]
     }
@@ -95,6 +95,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         then:
         result.success
         result.backup.backupKey == 'rm-rule_42_fixture'
+        // Neither the broken pre-check nor the read-back document renders the rule's page.
         events == ['preflight', 'snapshot', 'apply']
     }
 
@@ -187,7 +188,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         result instanceof Map
         result.success == false
         result.partial == false
-        result.rule_id == 42L
+        result.ruleId == 42L
         result.error == 'read unavailable'
         sharedMap('NATIVE_FORM_BUSY').isEmpty()
         sharedMap('NATIVE_FORM_CONTEXTS').size() == 3

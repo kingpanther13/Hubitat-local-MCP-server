@@ -162,7 +162,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         def served = (script.toolGetToolGuide('set_rule_reference').content as String).readLines()[0] - 'Acknowledgment key: '
 
         expect:
-        script.executeTool('hub_set_rule', [operation: 'update', rule_id: 5, confirm: true, bestPracticeKey: served, args: [changes: [[part: 'required', value: [tokens: ['1']]]]]]).stubbed == true
+        script.executeTool('hub_set_rule', [operation: 'update', ruleId: 5, confirm: true, bestPracticeKey: served, args: [changes: [[part: 'required', value: [tokens: ['1']]]]]]).stubbed == true
     }
 
     def "a labelled sub-section key read from its parent passes that sub-section's write tool"() {

@@ -1120,6 +1120,18 @@ class NativeFormsSpec extends ToolSpecBase {
                  [kind: 'submit', expect_page: 'edit', fields: [text: '***redacted (password)***']]]
     }
 
+    @Unroll
+    def 'app_id #appId is refused before rendering, through the id check every rule tool shares'() {
+        when:
+        script.toolCallAppForm([app_id: appId, confirm: true, steps: [[kind: 'open']]])
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message == 'A positive app_id is required'
+        calls.empty
+        where:
+        appId << [4294967338L, '4294967338', 42.5, 0]
+    }
+
     def 'sequential explicit opens reuse one caller workflow beyond eight apps'() {
         given:
         List outcomes = []
@@ -1257,7 +1269,11 @@ class NativeFormsSpec extends ToolSpecBase {
         then:
         definitions*.name == ['hub_set_rule']
         script._ndOperationSchema('form').properties.steps.maxItems == 16
-        script._naOperationSchema('form') == script._ndOperationSchema('form')
+        script._naOperationSchema('form') == script._ndOperationSchema('form', 'hub_set_native_app')
+        script._ndOperationSchema('form').properties.keySet() == ['steps', 'optionsFor'] as Set
+        script._ndOperationSchema('form').properties.steps.items.properties.containsKey('expectPage')
+        script._naOperationSchema('form').properties.keySet() == ['steps', 'options_for'] as Set
+        script._naOperationSchema('form').properties.steps.items.properties.containsKey('expect_page')
         !definitions[0].inputSchema.required?.contains('confirm')
         script._ndGuide().contains('Even open renders execute app code')
     }

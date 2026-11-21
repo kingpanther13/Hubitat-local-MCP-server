@@ -486,6 +486,17 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.count == 1
     }
 
+    def "hub_list_drivers nameFilter matches the name only, not the driver's type"() {
+        given:
+        enableRead()
+        hubGet.register('/device/drivers') { params ->
+            '{"drivers":[{"id":837,"name":"Virtual Switch","namespace":"hubitat","type":"sys"}]}'
+        }
+
+        expect:
+        script.toolListHubDrivers([include: 'all', nameFilter: 'sys']).drivers == []
+    }
+
     def "hub_list_drivers include=all pages without a cursor; include=user stays whole"() {
         given: 'sixty drivers in each list'
         enableRead()

@@ -62,8 +62,8 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             ['toolSetNativeApp', [operation: 'form', app_id: 42, args: [steps: [[kind: 'open']]]]],
             ['toolSetNativeApp', [operation: 'create', args: [app_type: 'button_rule', controller_id: 42, button_number: 1, event: 'pushed']]],
             ['toolSetNativeApp', [operation: 'create', args: [app_type: 'notifier', name: 'x']]],
-            ['toolUpdateRuleDocument', [rule_id: 42, changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
-            ['toolCreateRuleDocument', [parent_id: 42, name: 'Fixture', changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
+            ['toolUpdateRuleDocument', [ruleId: 42, changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
+            ['toolCreateRuleDocument', [parentId: 42, name: 'Fixture', changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
             ['toolSetAppDisabled', [appId: '00042', disabled: true]],
             ['toolSetAppDisabled', [appId: 42, disabled: false]],
             ['toolDeleteNativeApp', [appId: 42]],
@@ -73,7 +73,6 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             ['toolUpdateDashboard', [dashboardId: '42', name: 'Changed']],
             ['toolDeleteDashboard', [dashboardId: '42']],
             ['toolRunRmRule', [ruleId: 42, action: 'stop']],
-            ['toolSetRulePaused', [ruleId: 42, paused: true]],
             ['toolSetRmRuleBoolean', [ruleId: 42, value: true]]
         ]].combinations()
         method = row[0]
@@ -91,6 +90,29 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         result.success
         result.appId == 43
         writes == ['/installedapp/disable']
+    }
+
+    @Unroll
+    def 'delete refuses appId #appId, which is not a whole int, before any read or write'() {
+        when: "4294967317 would wrap to app 21 and 21.7 truncate to it"
+        script.toolDeleteNativeApp([appId: appId, force: true, confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("within the hub's id range")
+        writes.empty
+        hubGet.calls.isEmpty()
+
+        where:
+        appId << [4294967317L, 21.7, '4294967317', 'abc', 0, -21]
+    }
+
+    def 'normalizeRuleId keeps whole ids within int range'() {
+        expect:
+        script.normalizeRuleId(21) == 21
+        script.normalizeRuleId(21.0) == 21
+        script.normalizeRuleId(' 21 ') == 21
+        script.normalizeRuleId(2147483647L) == 2147483647
     }
 
     @Unroll
@@ -221,7 +243,6 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         where:
         method                  | args
         'toolRunRmRule'          | [action: 'actions']
-        'toolSetRulePaused'      | [paused: true]
         'toolSetRmRuleBoolean'   | [value: true]
     }
 

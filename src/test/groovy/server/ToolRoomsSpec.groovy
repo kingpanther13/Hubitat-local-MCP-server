@@ -376,17 +376,17 @@ class ToolRoomsSpec extends ToolSpecBase {
         mcpDriver.parseInner(response).error.contains(needle)
         hubGet.calls.empty
 
-        // Through a gateway the required-parameter check runs first, so a call without roomId is
-        // answered with that message rather than the tool's own.
+        // Through a gateway a call without roomId gets the required-parameter list rather than the tool's own message,
+        // but an unknown key is named first, in both modes, since it is usually a renamed parameter.
         where:
         tool             | label               | args                      | needle                                  | useGateways
         'hub_get_room'   | 'an unknown roomId' | [roomId: '42']            | "No room has id '42'"                   | true
         'hub_get_room'   | 'an unknown roomId' | [roomId: '42']            | "No room has id '42'"                   | false
         'hub_get_room'   | 'a missing roomId'  | [:]                       | 'Missing required parameter for hub_get_room: roomId' | true
         'hub_get_room'   | 'a missing roomId'  | [:]                       | 'roomId is required'                    | false
-        'hub_get_room'   | 'a stale id'        | [id: '1']                 | 'Missing required parameter for hub_get_room: roomId' | true
+        'hub_get_room'   | 'a stale id'        | [id: '1']                 | 'Unknown hub_get_room argument: id'     | true
         'hub_get_room'   | 'a stale id'        | [id: '1']                 | 'Unknown hub_get_room argument: id'     | false
-        'hub_get_room'   | 'a stale name'      | [room: 'Kitchen']         | 'Missing required parameter for hub_get_room: roomId' | true
+        'hub_get_room'   | 'a stale name'      | [room: 'Kitchen']         | 'Unknown hub_get_room argument: room'   | true
         'hub_get_room'   | 'a stale name'      | [room: 'Kitchen']         | 'Unknown hub_get_room argument: room'   | false
         'hub_get_room'   | 'a cursor'          | [roomId: '1', cursor: ''] | 'Unknown hub_get_room argument: cursor' | true
         'hub_get_room'   | 'a cursor'          | [roomId: '1', cursor: ''] | 'Unknown hub_get_room argument: cursor' | false

@@ -1529,6 +1529,31 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         r.totalOnHub == 2
     }
 
+    @spock.lang.Unroll
+    def "hub_list_apps instances match nameFilter '#filter' against the app type as well as the name"() {
+        given: 'a Button Rule is named after its button, so only its type says what it is'
+        settingsMap.enableRead = true
+        hubGet.register('/hub2/appsList') { p ->
+            JsonOutput.toJson([apps: [[data: [id: 7, name: 'Button Rules', type: 'Button Rules', disabled: false, user: false, hidden: false],
+                                       children: [[data: [id: 8, name: 'Hall Pico: button 1 pushed', type: 'Button Rule-5.1', disabled: false, user: false, hidden: false], children: []]]],
+                                      [data: [id: 9, name: '<b>Porch</b>', type: 'Room Lights', disabled: false, user: false, hidden: false], children: []]]])
+        }
+
+        when:
+        def r = script.toolListInstalledApps([nameFilter: filter])
+
+        then:
+        r.apps*.id == ids
+
+        where:
+        filter              | ids
+        'Button Rule-5.1'   | [8]
+        'button rule'       | [7, 8]
+        'button 1 pushed'   | [8]
+        'room lights'       | [9]
+        'porch'             | [9]
+    }
+
     def "hub_list_device_dependents adds the apps only getAppsUsingDevice reports"() {
         given:
         childDevicesList << [id: '42', label: 'Kitchen', name: 'Switch']

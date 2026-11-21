@@ -246,8 +246,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         typeName                | _
         'Rule Machine 5.1'      | _   // fragment: "rule machine"
         'Rule-5.1'              | _   // fragment: "rule-5"
-        'Rule-5.0'              | _   // fragment: "rule-5"
-        'Rule-4.1'              | _   // fragment: "rule-4"
         'Room Lights'           | _   // fragment: "room light"
         'Room Lighting'         | _   // fragment: "room light"
         'Basic Rules'           | _   // fragment: "basic rules"
@@ -275,7 +273,7 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
     def "hub_export_custom_rule (b) RM rule id -- read-verb redirect in exception"() {
         given:
         hubGet.register('/hub2/appsList') { _ ->
-            appsListJson(500, 'Rule-5.0')
+            appsListJson(500, 'Rule-5.1')
         }
 
         when:
@@ -329,7 +327,7 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
         where:
         appType | editor
-        'Rule-5.1' | 'hub_set_rule(rule_id=300)'
+        'Rule-5.1' | 'hub_set_rule(ruleId=300)'
         'Room Lights' | "hub_set_native_app(operation='update', app_id=300)"
         'Basic Rules' | "hub_set_native_app(operation='update', app_id=300)"
         'Visual Rule Builder 2.0' | 'hub_set_visual_rule(appId=300)'
@@ -405,9 +403,14 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Rule not found: 600')
-        ex.message.contains('hub_get_app_config(appId=600)')
-        ex.message.contains('hub_call_rule')
+        ex.message.contains('hub_get_rule(ruleId=600)')
+        !ex.message.contains('hub_get_app_config')
         ex.message.contains('hub_test_custom_rule')
+
+        and: 'hub_call_rule is named for what it does, not offered as a dry run'
+        ex.message.contains('no dry run')
+        ex.message.contains('`hub_call_rule(ruleId=600)` runs every one of the rule\'s actions')
+        !ex.message.contains('to trigger it')
     }
 
     def "hub_test_custom_rule (b2) non-RM rule-like id -- test-verb redirect omits hub_call_rule"() {

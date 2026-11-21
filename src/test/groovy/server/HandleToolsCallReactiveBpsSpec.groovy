@@ -92,13 +92,17 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
 
     def "a thrown native document error points at set_rule_reference (a DIFFERENT tool -> different section)"() {
         given:
-        script.metaClass.toolUpdateRuleDocument = { a -> throw new IllegalArgumentException("trigger is required") }
+        script.metaClass.toolUpdateRuleDocument = { Map a -> throw new IllegalArgumentException("trigger is required") }
+        stateMap.lastBackupTimestamp = script.now()
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', rule_id: 1, confirm: true, args: [changes: []]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', ruleId: 1, confirm: true,
+            args: [changes: [[part: 'required', value: [tokens: ['1']]]]]])
 
-        then:
+        then: "the call reached the update handler, whose own error carries the pointer"
         response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('trigger is required')
         mcpDriver.parseInner(response).error.contains('hub_get_tool_guide(section="set_rule_reference")')
     }
 
@@ -274,7 +278,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
          'hub_manage_virtual_device', 'hub_call_device_command', 'hub_clone_native_app',
          'hub_call_rule', 'hub_delete_device', 'hub_call_zwave', 'hub_call_device_swap',
          'hub_delete_native_app', 'hub_clone_native_app', 'hub_export_native_app',
-         'hub_import_native_app', 'hub_set_app_disabled', 'hub_set_rule_paused',
+         'hub_import_native_app', 'hub_set_app_disabled',
          'hub_set_rule_private_boolean', 'hub_call_zigbee', 'hub_call_matter',
          'hub_call_device_replace', 'hub_update_firmware', 'hub_call_destructive_ops',
          'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',

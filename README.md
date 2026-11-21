@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 113 MCP tools (36 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 111 MCP tools (36 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 113 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 111 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -255,9 +255,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (113 total — 36 on tools/list)
+### MCP Tools (111 total — 36 on tools/list)
 
-The server has 113 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 111 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (13) — Always visible on tools/list
 
@@ -325,7 +325,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 | `hub_list_backups` | List auto-created source code backups |
 | `hub_get_backup` | Get source from a backup |
 | `hub_list_device_dependents` | Find all apps that reference a specific device (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.) |
-| `hub_get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values, and the pages it links to (`page.hrefs`); read a linked page with `pageName`. Read-only. Read master. |
+| `hub_get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values, and the pages it links to (`page.hrefs`); read a linked page with `pageName`; `includeStatus=true` adds the app's state, event subscriptions and scheduled jobs. Read-only. Read master. |
 | `hub_list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Top-level `count` and echoed `hpmAppId`. Auto-discovers HPM's app ID. Pass `includeDrift=true` to also cross-reference HPM-tracked packages against installed apps and drivers (surfacing missing-required components, orphan apps, and orphan drivers under a `drift` key; optional `packageFilter` substring; surfaces `orphanDetection` / `orphanDriverDetection` when registry fetches fail; data-quality warning types: `heid-whitespace-normalized`, `heid-non-scalar-dropped`, `empty-heid`, `skipped-malformed-component` — see `hub_get_tool_guide` for full details). Read master. |
 
 `hub_list_device_dependents`, `hub_get_app_config`, and `hub_list_hpm_packages` are gated by the Read master (ON by default). HPM itself must be installed on the hub.
@@ -382,15 +382,14 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 </details>
 
 <details>
-<summary><b>hub_read_rules</b> (6) — Rule introspection (read-only)</summary>
+<summary><b>hub_read_rules</b> (5) — Rule introspection (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
 | `hub_get_custom_rule` | Full custom-engine rule details (triggers, conditions, actions). Omit `ruleId` to list all custom-engine rules with status; pass `detailed=true` for comprehensive diagnostics on a specific rule. |
 | `hub_test_custom_rule` | Dry-run a custom-engine rule without executing actions |
-| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API |
-| `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers (with per-marker counts in `brokenMarkerCounts`), multiple-flag poison, configPage errors. |
-| `hub_list_rule_local_variables` | List a Rule Machine rule's local variables with their current values. Distinct from `hub_list_variables` (hub globals). `type` is RM's internal token (`integer`, `bigdecimal`, `boolean`, `string` or `datetime`; see TOOL_GUIDE's Set Rule Reference). |
+| `hub_list_rules` | List the Rule Machine 5.x rules with their live status via the official `hubitat.helper.RMUtils` API (Button Rules: `hub_list_apps`; Visual Rules: `hub_get_visual_rule`) |
+| `hub_get_rule` | Read one Rule Machine rule, Button Rule or Basic Rule without opening its page: its health (broken state and broken rows by native id, paused/stopped, private boolean, disabled actions, block structure and live subscription/job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; a Basic Rule's settings. Any other app returns its health alone. |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition + format (`classic` whenNodes/thenNodes/elseNodes or `graph` nodes/edges). |
 
 </details>
@@ -588,34 +587,31 @@ Write/delete require the Write master + confirm + a recent backup.
 </details>
 
 <details>
-<summary><b>hub_manage_rule_machine</b> (11) — Rule authoring (Rule Machine + Visual Rules Builder) and RM runtime control</summary>
+<summary><b>hub_manage_rule_machine</b> (9) — Rule authoring (Rule Machine + Visual Rules Builder) and RM runtime control</summary>
 
 | Tool | Description |
 |------|-------------|
 | `hub_set_rule` | Read, create, update or use native RM editor forms. Omit operation for help; unconfirmed writes return argument schemas. |
-| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
-| `hub_call_rule` | Trigger one or more RM rules (`ruleId` takes an id or an array; `action`: "rule"/"actions"/"stop"/"start") |
-| `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
+| `hub_list_rules` | List the Rule Machine 5.x rules with their live status via the official `hubitat.helper.RMUtils` API (Button Rules: `hub_list_apps`; Visual Rules: `hub_get_visual_rule`; also in `hub_read_rules`) |
+| `hub_call_rule` | Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (`ruleId` takes an id or an array; `action`: "actions" (default)/"stop"/"start"/"pause"/"resume"; a Visual Rule takes pause and resume, and actions only on a graph (2.0) Visual Rule) |
 | `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
-| `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
-| `hub_list_rule_local_variables` | List a Rule Machine rule's local variables (name/type/value) from `state.allLocalVars`; distinct from `hub_list_variables` (hub globals). (also in `hub_read_rules`) |
+| `hub_get_rule` | Read one Rule Machine rule, Button Rule or Basic Rule without opening its page: its health (broken state and broken rows by native id, paused/stopped, private boolean, disabled actions, block structure and live subscription/job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; a Basic Rule's settings. Any other app returns its health alone. (also in `hub_read_rules`) |
 | `hub_delete_native_app` | Delete any classic native app incl. RM rules (auto-snapshot first; `force=true` for hard delete; also in `hub_manage_native_rules_and_apps`) |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition + format (also in `hub_read_rules`) |
 | `hub_set_visual_rule` | Create or update a Visual Rules Builder rule — VRB is the primary rule engine; one JSON write with if/then/else gating. Use native document tools for supported RM structures. |
 | `hub_delete_visual_rule` | Delete a Visual Rules Builder rule (type-gated; returns the pre-delete definition for recovery) |
 
-Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated by the Read master; the writes by the Write master (both ON by default). Confirmed `hub_set_rule` writes, `hub_delete_native_app`, `hub_set_visual_rule`, and `hub_delete_visual_rule` additionally require `confirm=true` + a backup within 24h.
+Reads (`hub_list_rules`, `hub_get_rule`, `hub_get_visual_rule`) are gated by the Read master; the writes by the Write master (both ON by default). Confirmed `hub_set_rule` writes, `hub_delete_native_app`, `hub_set_visual_rule`, and `hub_delete_visual_rule` additionally require `confirm=true` + a backup within 24h.
 
 </details>
 
 <details>
-<summary><b>hub_manage_native_rules_and_apps</b> (12) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
+<summary><b>hub_manage_native_rules_and_apps</b> (11) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
-| `hub_call_rule` | Trigger one or more RM rules (`ruleId` takes an id or an array; `action`: "rule"/"actions"/"stop"/"start") |
-| `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
+| `hub_list_rules` | List the Rule Machine 5.x rules with their live status via the official `hubitat.helper.RMUtils` API (Button Rules: `hub_list_apps`; Visual Rules: `hub_get_visual_rule`; also in `hub_read_rules`) |
+| `hub_call_rule` | Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (`ruleId` takes an id or an array; `action`: "actions" (default)/"stop"/"start"/"pause"/"resume"; a Visual Rule takes pause and resume, and actions only on a graph (2.0) Visual Rule) |
 | `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
 | `hub_set_rule` | Read, create, update or use native RM editor forms. Omit operation for help; unconfirmed writes return argument schemas. |
 | `hub_set_native_app` | Create, update or drive the native forms of every other classic app, user and community apps included (`operation`: create/update/form). Omit operation for help; unconfirmed writes return argument schemas. |
@@ -624,7 +620,7 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint (deep: child apps + pause state copy; `stageDisabled` lands it disabled). Returns the new `appId`. |
 | `hub_export_native_app` | Export a classic SmartApp to JSON and persist it to File Manager (round-trippable with `hub_import_native_app`). |
 | `hub_import_native_app` | Import previously-exported app JSON into a new instance (lands ACTIVE; `stageDisabled` lands it disabled). Returns the new `appId`. |
-| `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
+| `hub_get_rule` | Read one Rule Machine rule, Button Rule or Basic Rule without opening its page: its health (broken state and broken rows by native id, paused/stopped, private boolean, disabled actions, block structure and live subscription/job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; a Basic Rule's settings. Any other app returns its health alone. (also in `hub_read_rules`) |
 
 Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default. Native editor operations use returned controls; unsupported app variants remain explicit capability gaps. `hub_set_native_app` covers every other classic app: create a built-in app type, update a page's fields, or run the same native form steps on any app. RM actions, triggers, expressions and local variables use `hub_set_rule` rather than generic shortcut fields.
 

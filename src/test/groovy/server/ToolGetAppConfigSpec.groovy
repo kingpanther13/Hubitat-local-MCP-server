@@ -16,6 +16,8 @@ import support.ToolSpecBase
  *  - pageName arg: URL includes the page segment
  *  - includeSettings=false (default): settings key absent, settingsNote present
  *  - includeSettings=true: settings key populated
+ *  - includeStatus=true: appState, eventSubscriptions and scheduledJobs from the one App Status read,
+ *    credential-named appState values masked; a failed status read leaves the page read standing
  *  - summary=true: identity-only fast path via /installedapp/json (pass-through + namespace + error paths)
  *  - Empty hub response: returns success=false
  *  - Unknown appId (hub returns {app:null}): 'missing app' fingerprint, success=false
@@ -825,6 +827,306 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    // -------------------------------------------------------------------------
+    // includeStatus flag
+    // -------------------------------------------------------------------------
+
+    // statusJson as the hub serves it: appState is a LIST of {name, value} rows.
+    private void registerAppStatus(List appState, int appId = 35) {
+        hubGet.register("/installedapp/statusJson/${appId}".toString()) { params ->
+            JsonOutput.toJson([installedApp: [id: appId], appSettings: [],
+                               eventSubscriptions: [[deviceId: 12, name: 'switch', handler: 'handler']],
+                               scheduledJobs: [[handler: 'poll', nextRunTime: '2026-11-20T10:00:00+0000']],
+                               appState: appState])
+        }
+    }
+
+    def "includeStatus=true returns appState, eventSubscriptions and scheduledJobs, credential-named values hidden at any depth"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'paused', value: false],
+                           [name: 'apiKey', value: 'secret-api-key'],
+                           [name: 'allLocalVars', value: [counter: [type: 'integer', value: 3], doorCode: [type: 'string', value: '4321']]],
+                           [name: 'lv_doorCode', value: [type: 'string', value: '4321']],
+                           [name: 'history', value: [[when: 1, alarmPin: '9999'], 'plain']],
+                           [name: 'batches', value: [[[apiKey: 'nested-api-key']], 'plain']]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.success == true
+        result.eventSubscriptions == [[deviceId: 12, name: 'switch', handler: 'handler']]
+        result.scheduledJobs == [[handler: 'poll', nextRunTime: '2026-11-20T10:00:00+0000']]
+        result.appState.find { it.name == 'paused' }.value == false
+        result.appState.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        result.appState.find { it.name == 'allLocalVars' }.value.counter == [type: 'integer', value: 3]
+        result.appState.find { it.name == 'allLocalVars' }.value.doorCode == '***redacted (password)***'
+        result.appState.find { it.name == 'lv_doorCode' }.value == '***redacted (password)***'
+        result.appState.find { it.name == 'history' }.value == [[when: 1, alarmPin: '***redacted (password)***'], 'plain']
+        result.appState.find { it.name == 'batches' }.value == [[[apiKey: '***redacted (password)***']], 'plain']
+        result.statusRedactionNote.contains('***redacted (password)***')
+        !JsonOutput.toJson(result).contains('4321') && !JsonOutput.toJson(result).contains('secret-api-key')
+        !JsonOutput.toJson(result).contains('nested-api-key')
+        hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
+    }
+
+    def "includeStatus=true reads values as stored with Hide passwords and credentials off"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'apiKey', value: 'secret-api-key']])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState == [[name: 'apiKey', value: 'secret-api-key']]
+        !result.containsKey('statusRedactionNote')
+    }
+
+    def "statusRedactionNote says whether an app's access token is shown"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        settingsMap.redactAccessTokens = redactTokens
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'accessToken', value: 'tok-123']])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.statusRedactionNote.contains(expected)
+
+        where:
+        redactTokens | expected
+        true         | 'read as redacted'
+        false        | 'are shown, because Hide access tokens is off'
+    }
+
+    def "for a per-client token, statusRedactionNote says both are always hidden and offers no settings advice"() {
+        given: 'both settings are off, which a client token overrides'
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        settingsMap.redactAccessTokens = false
+        script.callerClient = [id: 'c1']
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'accessToken', value: 'tok-123'], [name: 'apiKey', value: 'secret-api-key']])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.statusRedactionNote == "This client's token always reads credential-named appState values and access tokens as redacted, whatever the MCP app's settings say."
+        !JsonOutput.toJson(result).contains('tok-123') && !JsonOutput.toJson(result).contains('secret-api-key')
+
+        cleanup:
+        script.callerClient = null
+    }
+
+    def "a status page with no app state is marked appStateMissing, unlike an app whose state is empty"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: []] + (empty ? [appState: []] : [:]))
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState == []
+        result.containsKey('appStateMissing') == !empty
+        if (!empty) assert result.appStateMissing == true
+
+        where:
+        empty << [true, false]
+    }
+
+    def "without includeStatus no status lists are returned and the status page is not read"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        !result.containsKey('appState') && !result.containsKey('eventSubscriptions') && !result.containsKey('scheduledJobs')
+        !hubGet.calls.any { it.path.startsWith('/installedapp/statusJson/') }
+    }
+
+    def "a failed status read leaves the page read standing and says why the lists are missing"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params -> throw new IOException('status timeout') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.success == true
+        result.page != null
+        !result.containsKey('appState')
+        result.statusNote.contains('status timeout')
+    }
+
+    def "includeStatus works with summary=true and renders no page"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/json/35') { params -> JsonOutput.toJson([id: 35, name: 'webCoRE Piston', type: 'webCoRE Piston', disabled: false, user: true]) }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'ady624', name: 'webCoRE Piston']] }
+        registerAppStatus([[name: 'piston', value: [o: [], s: [[t: 'action']]]]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, summary: true, includeStatus: true])
+
+        then:
+        result.success == true
+        result.appState == [[name: 'piston', value: [o: [], s: [[t: 'action']]]]]
+        result.scheduledJobs.size() == 1
+        !hubGet.calls.any { it.path.startsWith('/installedapp/configure/json/') }
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_app_config via dispatch returns the status lists with includeStatus (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'stopped', value: true]])
+
+        when:
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeStatus: true])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        !response.result.isError
+        inner.appState == [[name: 'stopped', value: true]]
+        inner.eventSubscriptions.size() == 1
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "includeStatus masks an accessToken state row for #who"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactAccessTokens = setting
+        if (client) script.callerClient = [id: 'c1']
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'accessToken', value: 'a1b2c3d4-live-token'], [name: 'paused', value: false]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState.find { it.name == 'accessToken' }.value == shown
+        result.appState.find { it.name == 'paused' }.value == false
+
+        cleanup:
+        script.callerClient = null
+
+        where:
+        who                               | setting | client | shown
+        'the main token, setting on'      | true    | false  | '***redacted (access token)***'
+        'a per-client token, setting off' | false   | true   | '***redacted (access token)***'
+        'the main token, setting off'     | false   | false  | 'a1b2c3d4-live-token'
+    }
+
+    def "includeStatus masks each per-client token inside a clientTokens state row"() {
+        given: "credentials shown, so only the access-token setting can hide the tokens"
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        settingsMap.redactAccessTokens = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'clientTokens', value: [c1: [label: 'Desk', token: 'client-token-one'], c2: [label: 'Phone', token: 'client-token-two']]]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState.find { it.name == 'clientTokens' }.value == [c1: [label: 'Desk', token: '***redacted (access token)***'],
+                                                                     c2: [label: 'Phone', token: '***redacted (access token)***']]
+        !JsonOutput.toJson(result).contains('client-token-')
+    }
+
+    def "includeStatus too large for one response lists appState names only, then cuts subscriptions and jobs with their totals"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass._responseSizeLimitBytes = { -> limit }
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [],
+                               eventSubscriptions: (1..subs).collect { [deviceId: it, name: 'switch', handler: 'handler'] },
+                               scheduledJobs: [[handler: 'poll', nextRunTime: '2026-11-20T10:00:00+0000']],
+                               appState: [[name: 'piston', value: 'x' * 20000], [name: 'paused', value: false]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.success == true
+        result.statusTruncated == true
+        result.appState == [[name: 'piston'], [name: 'paused']]
+        result.statusTruncatedNote.contains('values omitted')
+        result.statusTruncatedNote.contains("hub_get_tool_guide(section='builtin_app_tools_apps')")
+        (result.eventSubscriptions.size() < subs) == cut
+        result.containsKey('eventSubscriptionsTotal') == cut
+        !cut || (result.eventSubscriptionsTotal == subs && result.statusTruncatedNote.contains("eventSubscriptions lists the first ${result.eventSubscriptions.size()} of ${subs}"))
+        result.scheduledJobs.size() == 1
+        !result.containsKey('scheduledJobsTotal')
+        script._appConfigResultBytes(result) <= limit - 1024
+
+        where:
+        limit | subs | cut
+        12000 | 3    | false
+        12000 | 400  | true
+    }
+
+    def "includeStatus whose appState names alone are too large leaves appState out with its count"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass._responseSizeLimitBytes = { -> 12000 }
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                               appState: (1..2000).collect { [name: "key${it}x".toString(), value: it] }])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.success == true
+        result.statusTruncated == true
+        !result.containsKey('appState')
+        result.appStateTotal == 2000
+        result.statusTruncatedNote.contains('appState is omitted (2000 entries)')
+        script._appConfigResultBytes(result) <= 12000 - 1024
+    }
+
+    def "includeStatus within the size budget is returned whole"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'piston', value: 'x' * 20000]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState[0].value.size() == 20000
+        !result.containsKey('statusTruncated')
     }
 
     def "includeSettings=true: settings map present and populated"() {
@@ -2560,7 +2862,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         script.toolGetAppConfig([appId: 35, pageName: 'selectTriggers']).page.sections[0].paragraphs[0].disabled == ['Switch A turns on']
     }
 
-    def "disabled rows fall back to the page when the rule state cannot be read or the rule is not a 5.1 rule"() {
+    def "disabled rows fall back to the page when the rule state cannot be read"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -2576,12 +2878,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         para.disabled == ["Notify Pushover: 'Fixed mismatch'"]
-        stateReads == reads
+        stateReads == 1
 
         where:
-        appName    | reads
-        'Rule-5.1' | 1
-        'Rule-5.0' | 0
+        appName << ['Rule-5.1', 'Button Rule-5.1']
     }
 
     def "a Rule Machine main page's action link lists the disabled rows its summary holds"() {
@@ -2738,21 +3038,22 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "_rmIsRuleAppType('#name') == #expected"() {
+    def "_rmIsRuleAppType('#namespace', '#name') == #expected"() {
         expect:
-        script._rmIsRuleAppType(name) == expected
+        script._rmIsRuleAppType(namespace, name) == expected
 
         where:
-        name               | expected
-        'Rule-5.1'         | true
-        'Button Rule-5.1'  | true
-        'Rule-4.1'         | true
-        'Rule-4.0'         | true
-        'Rule Machine'     | false
-        'Room Lights'      | false
-        'My Rule-5.1'      | false
-        'rule-5.1'         | false
-        null               | false
+        namespace | name               | expected
+        'hubitat' | 'Rule-5.1'         | true
+        'hubitat' | 'Button Rule-5.1'  | true
+        'hubitat' | 'Rule-6.0'         | true
+        'hubitat' | 'Rule Machine'     | false
+        'hubitat' | 'Room Lights'      | false
+        'hubitat' | 'My Rule-5.1'      | false
+        'hubitat' | 'rule-5.1'         | false
+        'hubitat' | null               | false
+        'acme'    | 'Rule-5.1'         | false
+        null      | 'Rule-5.1'         | false
     }
 
     @spock.lang.Unroll

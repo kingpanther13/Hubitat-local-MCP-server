@@ -4,15 +4,14 @@ Supplement to `tests/BAT-v2.md`. These scenarios retain the behavioral acceptanc
 
 **Current tools exercised**:
 
-- `hub_manage_rule_machine.hub_set_rule` (`operation=create` with `args.parent_id` and `args.name`; `operation=update` with `rule_id` and `args.changes`; `operation=read` and `operation=form` for native inspection and editor workflows)
+- `hub_manage_rule_machine.hub_set_rule` (`operation=create` with `args.parentId` and `args.name`; `operation=update` with `ruleId` and `args.changes`; `operation=read` and `operation=form` for native inspection and editor workflows)
 - `hub_manage_native_rules_and_apps.hub_delete_native_app`
-- `hub_manage_native_rules_and_apps.hub_get_rule_health`
+- `hub_manage_native_rules_and_apps.hub_get_rule` (also in `hub_read_rules`)
 
 **Existing tools also exercised** (already present in the repo, verified behavior):
 
 - `hub_manage_native_rules_and_apps.hub_list_rules`
-- `hub_manage_native_rules_and_apps.hub_call_rule(ruleId=ruleId, action=...)` -- supports `rule` / `actions` / `stop`
-- `hub_manage_native_rules_and_apps.hub_set_rule_paused` (value=true to pause, value=false to resume)
+- `hub_manage_native_rules_and_apps.hub_call_rule(ruleId=ruleId, action=...)` -- supports `actions` / `stop` / `start` / `pause` / `resume`
 - `hub_manage_native_rules_and_apps.hub_set_rule_private_boolean`
 - `hub_read_apps_code.hub_get_app_config` (used as fallback verification)
 
@@ -92,7 +91,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule(operation="create", args={parent_id:<Rule Machine app id>, name:'BAT-RM-Empty Create'}, confirm=true)`, captures the returned `rule_id`, then reads it back with `hub_set_rule(operation="read")` or `hub_read_apps_code.hub_get_app_config(appId=ruleId)`. Post-test invariant: [INV-1] `configPage.error == null`. With no triggers, `statusJson.eventSubscriptions` may be empty — that's expected for a triggerless rule. Teardown succeeds with `{success: true}`.
+**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule(operation="create", args={parentId:<Rule Machine app id>, name:'BAT-RM-Empty Create'}, confirm=true)`, captures the returned `ruleId`, then reads it back with `hub_set_rule(operation="read")` or `hub_read_apps_code.hub_get_app_config(appId=ruleId)`. Post-test invariant: [INV-1] `configPage.error == null`. With no triggers, `statusJson.eventSubscriptions` may be empty — that's expected for a triggerless rule. Teardown succeeds with `{success: true}`.
 
 ### T301 — Rename an existing rule
 
@@ -104,7 +103,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI opens the rule's main page and submits its label input (`origLabel`) with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` returns the new label. Post-test invariants: [INV-1] `configPage.error == null` after the update (render guard), and the app's `label` field matches the new name.
+**Expected**: AI opens the rule's main page and submits its label input (`origLabel`) with `hub_set_rule(operation="form", ruleId, args={steps:[{kind:"open"}, {kind:"submit", expectPage:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` returns the new label. Post-test invariants: [INV-1] `configPage.error == null` after the update (render guard), and the app's `label` field matches the new name.
 
 ### T302 — Set rule notes (comments textarea)
 
@@ -116,7 +115,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI submits the main page's `comments` textarea with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` shows the comments field unchanged. Post-test invariant: [INV-1] `configPage.error == null`; textarea whitespace is preserved exactly.
+**Expected**: AI submits the main page's `comments` textarea with `hub_set_rule(operation="form", ruleId, args={steps:[{kind:"open"}, {kind:"submit", expectPage:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` shows the comments field unchanged. Post-test invariant: [INV-1] `configPage.error == null`; textarea whitespace is preserved exactly.
 
 ### T303 — Enable Required Expression flag
 
@@ -128,7 +127,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI submits `useST=true` on the main page with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`. `hub_get_app_config(appId=ruleId)` shows `useST=true` and exposes the required-expression editor inputs. Post-test invariant: [INV-1] `configPage.error == null` — toggling useST often hits the `.size()` render-path bug, so this is a deliberate regression check.
+**Expected**: AI submits `useST=true` on the main page with `hub_set_rule(operation="form", ruleId, args={steps:[{kind:"open"}, {kind:"submit", expectPage:<main page>, fields:{...}}]}, confirm=true)`. `hub_get_app_config(appId=ruleId)` shows `useST=true` and exposes the required-expression editor inputs. Post-test invariant: [INV-1] `configPage.error == null` — toggling useST often hits the `.size()` render-path bug, so this is a deliberate regression check.
 
 ### T304 — Convert rule to function mode
 
@@ -140,7 +139,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI submits `isFunction=true` on the main page with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` returns `isFunction=true`. Post-test invariant: [INV-1] `configPage.error == null`.
+**Expected**: AI submits `isFunction=true` on the main page with `hub_set_rule(operation="form", ruleId, args={steps:[{kind:"open"}, {kind:"submit", expectPage:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` returns `isFunction=true`. Post-test invariant: [INV-1] `configPage.error == null`.
 
 ### T305 — Set all three logging options + dValues toggle
 
@@ -152,13 +151,13 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI submits `logging=['Events','Triggers','Actions']` (a list for the multi-select) and `dValues=true` on the main page with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`. `hub_get_app_config(appId=ruleId)` shows `logging` as a 3-element enum array and `dValues=true`. Post-test invariants: [INV-1] `configPage.error == null`; the enum array is not collapsed to a scalar (regression guard for list-vs-string marshaling).
+**Expected**: AI submits `logging=['Events','Triggers','Actions']` (a list for the multi-select) and `dValues=true` on the main page with `hub_set_rule(operation="form", ruleId, args={steps:[{kind:"open"}, {kind:"submit", expectPage:<main page>, fields:{...}}]}, confirm=true)`. `hub_get_app_config(appId=ruleId)` shows `logging` as a 3-element enum array and `dValues=true`. Post-test invariants: [INV-1] `configPage.error == null`; the enum array is not collapsed to a scalar (regression guard for list-vs-string marshaling).
 
 ### T306 — Full round-trip: many fields populated and surviving an updateRule re-init
 
 ```json
 {
-  "setup_prompt": "Create a scratch native RM rule via hub_set_rule(operation='create', args={parent_id:<Rule Machine app id>, name:'BAT-RM-Full Create'}, confirm=true). Capture the returned rule_id.",
+  "setup_prompt": "Create a scratch native RM rule via hub_set_rule(operation='create', args={parentId:<Rule Machine app id>, name:'BAT-RM-Full Create'}, confirm=true). Capture the returned ruleId.",
   "test_prompt": "STEP 1 (populate in one edit): In a single edit, populate the rule with every rule-level field at once — comments 'Created with every rule-level field populated', enable the Required Expression feature, mark it NOT a function, logging ['Triggers','Actions'], and enable Display Current Values. Verify the edit reports no config-page error and that all five fields were applied.\n\nSTEP 2 (read-back #1): Read the rule back including its settings. Assert every one of these round-trips: app.label === 'BAT-RM-Full Create'; settings.comments === the exact string; settings.useST === 'true'; settings.isFunction === 'false'; settings.logging is a JSON array === ['Triggers','Actions'] (length 2, NOT collapsed to CSV); settings.dValues === 'true'. The page paragraphs MUST include 'Define Required Expression' — this proves useST=true actually exposed the required-expression editor section.\n\nSTEP 3 (force a re-init): Press the rule's 'Update Rule' button to force it to re-initialize. Verify there is no config-page error.\n\nSTEP 4 (read-back #2, post re-init): Read the rule back again including its settings. Assert ALL fields from STEP 2 are still present with the same values and logging is STILL a 2-element array. This is the wire-format regression guard — enum-multi persisted from the in-memory write must survive the updateRule re-marshal.\n\nReport any field whose read value does not match what was sent, either after STEP 2 or after STEP 4.",
   "teardown_prompt": "Force-delete the rule via hub_delete_native_app(appId=<id>, force=true, confirm=true)."
 }
@@ -199,7 +198,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: AI calls `hub_delete_native_app(appId=ruleId, force=true)`. Tool returns `{success: true}` (302 redirect from `/installedapp/forcedelete/<id>/quiet` is handled as success). `hub_list_rules` confirms the rule is gone.
 
-### T309 — Pause / Resume via hub_set_rule_paused path
+### T309 — Pause / Resume via hub_call_rule
 
 ```json
 {
@@ -209,7 +208,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_set_rule_paused(ruleId=ruleId, value=true)` (verified paused), then `hub_set_rule_paused(ruleId=ruleId, value=false)` (verified active). Both return `{success: true}`. Post-test invariant: [INV-1] `configPage.error == null` in both paused and resumed states.
+**Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='pause')` (verified paused), then `hub_call_rule(ruleId=ruleId, action='resume')` (verified active). Both return `{success: true}` with `rmAction` naming the pausRule button. Post-test invariant: [INV-1] `configPage.error == null` in both paused and resumed states.
 
 ### T310 — Run Actions verb (runRuleAct)
 
@@ -221,7 +220,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI uses `hub_call_rule` tool with `action='actions'`. Returns `{success: true, rmAction: 'runRuleAct'}`. This covers the `runRuleAct` lifecycle verb from matrix §7.
+**Expected**: AI uses `hub_call_rule` tool with `action='actions'` (the default). Returns `{success: true, rmAction: 'runAction button'}`: the rule's own Run Actions button, the UI's route for the `runRuleAct` lifecycle verb from matrix §7.
 
 ### T311 — Stop / Start lifecycle buttons
 
@@ -233,7 +232,8 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='stop')`, then `hub_get_rule_health(appId=ruleId)` and verifies `stopped == true` with `eventSubscriptionCount == 0` (0 = read fine, nothing live; null appears only when the runtime status itself was unreadable); it calls `hub_call_rule(ruleId=ruleId, action='start')`, reads health again, and verifies `stopped == false` and `eventSubscriptionCount > 0` (the rule's trigger is device-event-based).
+**Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='stop')`, then `hub_get_rule(ruleId=ruleId)` and verifies `health.stopped == true` with `health.eventSubscriptionCount == 0` (0 = read fine, nothing live; null appears only when the App Status read itself failed); it calls `hub_call_rule(ruleId=ruleId, action='start')`, reads the rule again, and verifies `health.stopped == false` and `health.eventSubscriptionCount > 0` (the rule's trigger is device-event-based).
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- after `hub_call_rule(action='stop')`, `hub_get_rule` read `stopped:true` with `eventSubscriptionCount` 1 -> 0; after `action='start'`, `stopped:false`, count 1, `ok:true`. The client built the rule's switch trigger with `operation:'form'` after `create` refused its guessed trigger fields.
 
 ### T312 — Update Rule button (re-initialize)
 
@@ -801,7 +801,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI creates the rule via `hub_set_rule` and pauses it via `hub_set_rule_paused`; `statusJson` shows rule disabled. `hub_get_app_config.actions` has all 4 HSM actions. HSM real state untouched. [INV-1] `configPage.error == null`.
+**Expected**: AI creates the rule via `hub_set_rule` and pauses it via `hub_call_rule(action='pause')`; `statusJson` shows rule disabled. `hub_get_app_config.actions` has all 4 HSM actions. HSM real state untouched. [INV-1] `configPage.error == null`.
 
 ### T361 — HSM per-rule arm/disarm + cancel rule alert + arm all rules
 
@@ -1523,7 +1523,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: After the `hub_set_rule(operation='create', args={changes: [...]})` call that adds the trigger, the Required Expression and the action, the mainPage paragraphs show the switch-on action cleanly (e.g. "On: Test Plug" or similar) WITHOUT any "IF (**Broken Condition**)" wrapper. No hidden clean-up step runs: the create writes each row through the native editor as the UI does, and the returned document's `nativeHealth` reports the rule not broken. [INV-1] `configPage.error == null`.
+**Expected**: After the `hub_set_rule(operation='create', args={changes: [...]})` call that adds the trigger, the Required Expression and the action, the mainPage paragraphs show the switch-on action cleanly (e.g. "On: Test Plug" or similar) WITHOUT any "IF (**Broken Condition**)" wrapper. No hidden clean-up step runs: the create writes each row through the native editor as the UI does, and the returned document's `health` reports the rule not broken. [INV-1] `configPage.error == null`.
 
 ### T432b — Bug E: Sequential runCommand actions all render with parameters
 
@@ -1789,13 +1789,13 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "setup_prompt": "Record the current Advanced: Per-tool Overrides state (MCP Rule Server app settings, under the Read/Write masters) for the `hub_manage_rule_machine` and `hub_manage_native_rules_and_apps` gateways. These deny-only per-gateway overrides hide a whole gateway's sub-tools from the catalog. (Post-#113/#114 the legacy single 'Enable Built-in App Tools' toggle is gone; gating is the Read/Write masters plus per-tool/per-gateway overrides.)",
-  "test_prompt": "Deny both the `hub_manage_rule_machine` and `hub_manage_native_rules_and_apps` gateways via Advanced: Per-tool Overrides. Then call MCP `tools/list` (or equivalent listing endpoint). Assert that `hub_set_rule`, `hub_delete_native_app`, `hub_get_rule_health` are COMPLETELY ABSENT from the returned tool list -- NOT present with a 'disabled' flag, NOT present but erroring on call, literally absent from tools/list. The gating design: a per-gateway override removes every sub-tool of that gateway (writes AND reads) from the visible catalog entirely. Then remove the overrides and confirm the tools reappear in tools/list.",
+  "setup_prompt": "First confirm the baseline: the Read and Write masters are on and no per-tool override hides `hub_set_rule`, `hub_delete_native_app` or `hub_get_rule`, and all three are visible to this client (in the gateway catalogs in gateway mode, in `tools/list` in flat mode); if not, mark the scenario blocked rather than testing from a partial catalog. Record the current Advanced: Per-tool Overrides state (MCP Rule Server app settings, under the Read/Write masters) for the `hub_manage_rule_machine` and `hub_manage_native_rules_and_apps` gateways. These deny-only per-gateway overrides hide a whole gateway's sub-tools from the catalog. (Post-#113/#114 the legacy single 'Enable Built-in App Tools' toggle is gone; gating is the Read/Write masters plus per-tool/per-gateway overrides.)",
+  "test_prompt": "Deny both the `hub_manage_rule_machine` and `hub_manage_native_rules_and_apps` gateways via Advanced: Per-tool Overrides. Then call MCP `tools/list`. In gateway mode it lists gateways, not these leaf tools: assert the two denied gateways are absent from it, and that `hub_set_rule`, `hub_delete_native_app` and `hub_get_rule` appear in no remaining gateway's catalog (call `hub_read_rules` with no arguments). In flat mode, assert the three leaf tools are absent from `tools/list` itself. Absent means NOT present with a 'disabled' flag and NOT present but erroring on call. The gating design: a per-gateway override removes every sub-tool of that gateway (writes AND reads) from the visible catalog entirely. Then remove the overrides and confirm the gateways reappear in tools/list and their catalogs (or, in flat mode, tools/list) list the three tools again.",
   "teardown_prompt": "Restore the Per-tool Overrides to their original state as recorded in setup."
 }
 ```
 
-**Expected**: With the `hub_manage_rule_machine` + `hub_manage_native_rules_and_apps` gateways denied via Per-tool Overrides, `tools/list` does NOT include `hub_set_rule`, `hub_delete_native_app`, or `hub_get_rule_health`. With the overrides removed, all three appear with their full schemas. This guards against the anti-pattern of returning tools that immediately error -- the tool surface must match the user's enablement state.
+**Expected**: Setup confirms all three tools are visible before any override; otherwise the scenario is blocked, not failed. With the `hub_manage_rule_machine` + `hub_manage_native_rules_and_apps` gateways denied via Per-tool Overrides, gateway mode's `tools/list` omits both gateways and `hub_read_rules`' catalog omits `hub_get_rule` (a gateway override hides its tools everywhere they appear); flat mode's `tools/list` omits `hub_set_rule`, `hub_delete_native_app` and `hub_get_rule`. With the overrides removed, all three appear with their full schemas in the gateway catalogs (flat mode: in `tools/list`). This guards against the anti-pattern of returning tools that immediately error -- the tool surface must match the user's enablement state.
 
 ### T453 — Create a Basic Rule (basic_rule app_type, issue #185 item 1)
 
@@ -1830,55 +1830,59 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_native_app(operation='create', args={app_type: 'button_rule', controller_id, button_number: 1, event: 'pushed'})` (no `name`) returns `success: true` with the rule's `app_id` and `controller_id`, and the trigger auto-seeded (Button, button 1, pushed). The rule renders (NOT the broken "Cannot set property '1' on null object" orphan a bare createchild produces). `hub_set_rule(operation='update', rule_id=<app_id>, args={changes: [<log action>]})` authors the action (RM-wire-format). Post-test invariant: [INV-1] the button rule's `configPage.error == null`. Teardown deletes the controller (cascading to the grandchild rule) and the device.
+**Expected**: `hub_set_native_app(operation='create', args={app_type: 'button_rule', controller_id, button_number: 1, event: 'pushed'})` (no `name`) returns `success: true` with the rule's `app_id` and `controller_id`, and the trigger auto-seeded (Button, button 1, pushed). The rule renders (NOT the broken "Cannot set property '1' on null object" orphan a bare createchild produces). `hub_set_rule(operation='update', ruleId=<app_id>, args={changes: [<log action>]})` authors the action (RM-wire-format). Post-test invariant: [INV-1] the button rule's `configPage.error == null`. Teardown deletes the controller (cascading to the grandchild rule) and the device.
 
-### T456 — hub_get_rule_health prefers the ruleBuilderJson compiled-state boolean (issue #254)
+### T456 — hub_get_rule reads a new rule's document, health and local variables (issue #254)
 
 ```json
 {
-  "setup_prompt": "Create a minimal empty rule named 'BAT-HealthSrc' via hub_set_rule and remember its appId.",
-  "test_prompt": "Check the rule's health (let it pick the best source automatically) and report ok, broken, and source. Then check its health again, restricted to the config-page render as the source, and report broken and source.",
+  "setup_prompt": "Create a minimal empty rule named 'BAT-RuleRead' via hub_set_rule and remember its ruleId.",
+  "test_prompt": "Read the rule and report its health (ok, broken, brokenRows, paused, stopped, privateBoolean, disabledActions, disabledTriggers, eventSubscriptionCount, scheduledJobCount), its local variables and how many actions, triggers and conditions it has.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: The auto `hub_get_rule_health` call returns `ok: true`, `broken: false` (the authoritative boolean read from GET /app/ruleBuilderJson), and `source` containing `ruleBuilderJson` (typically `ruleBuilderJson+configPage`). The `hub_get_rule_health(source='configPage')` call returns `broken: null` (the HTML render scan does not produce the compiled-state boolean) and `source: configPage`. Neither path is dropped.
+**Expected**: `hub_get_rule(ruleId)` returns `ruleId`, `localVariables: []`, the document sections (`actions: []`, empty `triggers`, `conditions` and `expressions`, and `settings`) and `health` with `ruleFormat: "rm"`, `ok: true`, `broken: false` (Rule Machine's compiled flag from GET /app/ruleBuilderJson, read after the rule's page renders), `brokenRows: []`, `paused: false`, `stopped: false`, `privateBoolean: true` (a new rule's default), `disabledActions: []`, `disabledTriggers: []`, `structuralIssues: []` and integer `eventSubscriptionCount` / `scheduledJobCount`. Nothing is written.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- `hub_get_rule` returned `localVariables: []`, empty document sections and `health` with `ok:true`, `broken:false`, `brokenRows: []`, `paused`/`stopped` false, `privateBoolean:true`, empty disabled lists and both counts 0.
 
-### T457 — hub_get_rule_health reports broken:true on a genuinely broken rule (issue #254 verification)
+### T457 — hub_get_rule reports a rule broken by a deleted trigger device without opening its page (issue #254 verification)
 
 ```json
 {
-  "setup_prompt": "Create a rule named 'BAT-BrokenProbe' via hub_set_rule with a trigger on a BAT virtual device, then delete that BAT device so the rule's trigger reference dangles (RM marks the rule *BROKEN*). Use ONLY BAT-prefixed devices.",
-  "test_prompt": "Check the rule's health and report ok, broken, source, and issues.",
+  "setup_prompt": "Create a rule named 'BAT-BrokenProbe' via hub_set_rule with a Switch trigger on a BAT virtual switch, then delete that BAT switch so the rule's trigger reference dangles. Do not open the rule's page. Use ONLY BAT-prefixed devices.",
+  "test_prompt": "Read the rule's health and report ok, broken, brokenRows and issues. Then add a Log action to the rule and report what happens.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: `hub_get_rule_health` returns `broken: true` (the compiled-state boolean from ruleBuilderJson), `ok: false`, and an `issues` entry naming the broken state. `source` includes `ruleBuilderJson`. This confirms the boolean fires both ways (the open verification item from the issue). SAFETY: only BAT-prefixed devices/rules are touched.
+**Expected**: `hub_get_rule` asks the rule's own broken() check without opening its page, so it returns `health.broken: true`, `health.ok: false`, `health.brokenRows` naming the trigger row by native id (`kind: "trigger"`, `id`, `setting: "tDev<id>"`) and an `issues` entry naming the broken state. The `hub_set_rule(operation='update')` that adds the Log action is refused before anything is written, with the error naming the broken rows; a following read shows the rule's actions unchanged. SAFETY: only BAT-prefixed devices/rules are touched.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: not run as written: the AI client's own permission layer refused to create the deliberately broken rule. The same check passed the same day in a scripted run on that hub at commit b8256a01 (`hub_get_rule` read `broken:true` with a trigger row in `brokenRows`; the update was refused with the rule's actions unchanged) and in `test_rule_health_broken_true_on_dangling_trigger`.
 
-### T458 — hub_get_rule_health covers Visual Rules Builder rules (issue #254)
+### T458 — hub_get_rule reads a Visual Rules Builder rule's health (issue #254)
 
 ```json
 {
   "setup_prompt": "Create a Visual Rules Builder rule named 'BAT-VRB-Health' via hub_set_visual_rule with a simple trigger on a BAT virtual device. Remember its appId and format.",
-  "test_prompt": "Check the rule's health and report ruleFormat, broken, source, and issues. Also report whether the create response for the Visual Rules Builder rule carried a `health` block.",
+  "test_prompt": "Read the rule with hub_get_rule and report health.ruleFormat, health.broken, health.issues, localVariables and note. Also report whether the create response for the Visual Rules Builder rule carried a `health` block.",
   "teardown_prompt": "Delete the rule via hub_delete_visual_rule(appId=ruleId, confirm=true)."
 }
 ```
 
-**Expected**: `hub_get_rule_health` does NOT reject the VRB rule — it returns `ruleFormat` of `vrb-graph` or `vrb-classic`. For a graph rule, `broken` is a boolean derived from `validationErrors` (true when non-empty) and `source` is `ruleBuilder20Json`; for a classic VRB rule, `broken` is null. The `hub_set_visual_rule` create response carries a `health` block with the same shape (health attached to every VRB authoring response, success AND failure). SAFETY: only BAT-prefixed devices/rules are touched.
+**Expected**: `hub_get_rule` does NOT reject the VRB rule. It returns `health` with `ruleFormat` `vrb-graph` or `vrb-classic`, `localVariables: null` and a `note` pointing at `hub_get_visual_rule` for the definition. For a graph rule, `broken` is a boolean derived from `validationErrors` (true when non-empty); for a classic VRB rule, `broken` is null. The `hub_set_visual_rule` create response carries a `health` block with the same shape (health is attached to every VRB authoring response, success AND failure). SAFETY: only BAT-prefixed devices/rules are touched.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- a graph Visual Rule read `health.ruleFormat: "vrb-graph"`, `broken:false`, no issues, `localVariables: null` and a note pointing at `hub_get_visual_rule`; the `hub_set_visual_rule` create response carried the same `health` block.
 
-### T459 — hub_get_rule_health covers classic apps (Button Controller, Basic Rule) (issue #254)
+### T459 — hub_get_rule reads the health of classic apps (Button Controller, Basic Rule) (issue #254)
 
 ```json
 {
   "setup_prompt": "Create a Basic Rule via hub_set_native_app(operation='create', args={app_type: 'basic_rule'}) and a Button Controller bound to a virtual button via hub_set_native_app(operation='create', args={app_type: 'button_controller', fields: {buttonDev: [deviceId]}}) (neither first page renders a label input, so no name). Remember both app_ids.",
-  "test_prompt": "Check the health of each. Report ruleFormat, broken, source, configPageError, and multipleFlagPoison for both.",
+  "test_prompt": "Read each app with hub_get_rule. Report health.ruleFormat, health.broken, health.ok, health.issues and note for both.",
   "teardown_prompt": "Delete both via hub_delete_native_app(appId=..., force=true)."
 }
 ```
 
-**Expected**: `hub_get_rule_health` does NOT reject either app. The Basic Rule returns `ruleFormat: "basic-rule"` and the Button Controller `ruleFormat: "button-controller"`, both with `broken: null` (no compiled boolean for non-RM classic apps), `source: "configPage"`, and the generic classic-app checks present (`configPageError`, `multipleFlagPoison` — the same multi-flag-poison failure mode RM has). SAFETY: only BAT-prefixed apps are touched.
+**Expected**: `hub_get_rule` does NOT reject either app. The Basic Rule returns `health.ruleFormat: "basic-rule"` and the Button Controller `health.ruleFormat: "button-controller"`, both with `broken: null` (no compiled flag for non-RM classic apps), `ok: true`, no `issues` (a page error would be listed there), `localVariables: null` and a `note` pointing at `hub_get_app_config` for the configuration. SAFETY: only BAT-prefixed apps are touched.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- the Basic Rule read `ruleFormat: "basic-rule"` and the Button Controller `"button-controller"`, both `broken:null`, `ok:true`, no issues, with a note pointing at `hub_get_app_config`.
 
 ## Section 6: RM recreation bundle (T460–T464)
 
