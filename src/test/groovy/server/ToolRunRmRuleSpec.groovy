@@ -485,12 +485,15 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
         where:
         kind                   | badId           | message
-        'a non-numeric id'     | 'not-a-number'  | 'is not an integer-valued rule id'
-        'a null element'       | [400, null]     | 'is not an integer-valued rule id'
-        'JSON number 400.7'    | [400.7]         | 'is not an integer-valued rule id'
-        'decimal string 400.7' | ['400.7']       | 'is not an integer-valued rule id'
-        'an id past int range' | [4294967696]    | 'is not an integer-valued rule id'
-        'that id as a string'  | ['4294967696']  | 'is not an integer-valued rule id'
+        'a non-numeric id'     | 'not-a-number'  | 'is not a valid rule id'
+        'a null element'       | [400, null]     | 'is not a valid rule id'
+        'JSON number 400.7'    | [400.7]         | 'is not a valid rule id'
+        'decimal string 400.7' | ['400.7']       | 'is not a valid rule id'
+        'an id past int range' | [4294967696]    | 'is not a valid rule id'
+        'that id as a string'  | ['4294967696']  | 'is not a valid rule id'
+        'rule id zero'         | [0]             | 'is not a valid rule id'
+        'a negative id'        | [-1]            | 'is not a valid rule id'
+        'zero as a string'     | ['0']           | 'is not a valid rule id'
         'an empty array'       | []              | 'must not be empty'
     }
 
@@ -505,7 +508,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('is not an integer-valued rule id')
+        mcpDriver.parseInner(response).error.contains('is not a valid rule id')
         posts.isEmpty()
 
         where:

@@ -104,7 +104,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         hubGet.calls.isEmpty()
 
         where:
-        appId << [4294967317L, 21.7, '4294967317', 'abc']
+        appId << [4294967317L, 21.7, '4294967317', 'abc', 0, -21]
     }
 
     def 'normalizeRuleId keeps whole ids within int range'() {

@@ -8806,9 +8806,10 @@ def updated() {}
             # otherwise narrow to app_id and run this rule's actions.
             wrapped = (1 << 32) + int(app_id)
             for tool, args in (("hub_call_rule", {"ruleId": wrapped, "action": "actions"}),
-                               ("hub_set_rule_private_boolean", {"ruleId": [wrapped], "value": False})):
+                               ("hub_set_rule_private_boolean", {"ruleId": [wrapped], "value": False}),
+                               ("hub_call_rule", {"ruleId": 0, "action": "actions"})):
                 overflow = refused(tool, args)
-                assert "is not an integer-valued rule id" in str(overflow.get("error")), (tool, overflow)
+                assert "is not a valid rule id" in str(overflow.get("error")), (tool, overflow)
             # The delete tool shares the check: the wrapped id must not back up and delete this rule.
             kept = refused("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app",
                 "args": {"appId": wrapped, "force": True, "confirm": True}})

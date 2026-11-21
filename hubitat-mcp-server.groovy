@@ -9813,18 +9813,21 @@ def _exceptionStack(Throwable e) {
  */
 private Integer normalizeRuleId(def ruleId) {
     Integer exact = _exactIntId(ruleId)
-    if (exact == null) throw new IllegalArgumentException("The app id must be a whole number within the hub's id range, got: ${ruleId}. Find app ids with hub_list_apps or hub_list_rules.")
+    if (exact == null) throw new IllegalArgumentException("The app id must be a positive whole number within the hub's id range, got: ${ruleId}. Find app ids with hub_list_apps or hub_list_rules.")
     return exact
 }
 
-// An id that is a whole number within int range, else null. toInteger() would wrap 4294967696 to 400 and
+// An id that is a positive whole number within int range, else null. toInteger() would wrap 4294967696 to 400 and
 // truncate 400.7 to 400, so a destructive tool would act on app 400.
 Integer _exactIntId(Object id) {
     try {
         def s = id?.toString()?.trim()
         if (!s) return null
         def bd = new BigDecimal(s)
-        return (bd.stripTrailingZeros().scale() <= 0) ? bd.intValueExact() : null
+        if (bd.stripTrailingZeros().scale() > 0) return null
+        int value = bd.intValueExact()
+        // Hub ids start at 1, so 0 and negatives name nothing.
+        return value > 0 ? value : null
     } catch (Exception ignored) { return null }
 }
 
@@ -12537,7 +12540,7 @@ Every action on a Rule Machine rule drives the rule's own page buttons (`runActi
 
 - `localVariables`: `[{name, type, value}]`, the rule's own list, including a value the running rule just set. `type` is Rule Machine's token (integer, bigdecimal, string, boolean, datetime), the value a hub_set_rule variable change takes. A credential-named variable's value is hidden (`redacted:true`) while credential hiding is on. Hub globals are read with hub_list_variables.
 - If the local variables alone cannot be read, `localVariables` is null and `localVariablesError` says why; the health and the requested sections still return.
-- A read that fails returns `success:false` with `error` and `note`. The read renders the app's page as opening it in the hub UI does and writes nothing else, so it can be retried.
+- A read that fails returns `success:false` with `error` and `note`. The read renders the app's page as opening it in the hub UI does. Retrying is safe for a Rule Machine rule, whose page only shows its settings; another app's page runs that app's own code (rendering a Swap Device instance swaps its devices again), so check such an app with hub_get_app_config before reading it again.
 
 `health` has the same shape here, in hub_set_rule's read and in its write responses' documents:
 

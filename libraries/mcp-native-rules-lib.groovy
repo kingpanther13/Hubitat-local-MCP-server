@@ -443,7 +443,7 @@ private List<Integer> _rmRuleIdListArg(Object raw) {
         // via toInteger(), and the target check would then act on the wrong rule.
         def n = _rmCoerceRuleId(id)
         if (n == null) {
-            throw new IllegalArgumentException("ruleId '${id}' is not an integer-valued rule id. Use hub_list_rules to find valid ids.")
+            throw new IllegalArgumentException("ruleId '${id}' is not a valid rule id (a positive whole number). Use hub_list_rules to find valid ids.")
         }
         if (!ids.contains(n)) ids << n
     }

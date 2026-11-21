@@ -190,7 +190,7 @@ Map toolGetRuleDocument(Map args) {
     } catch (Exception failure) {
         mcpLogError('rm-native', "${toolName} read failed for rule ${id}: ${failure.message}".toString(), failure)
         [success: false, ruleId: id, error: "Rule ${id} could not be read: ${failure.message ?: failure.toString()}".toString(),
-         note: "Retry once; the read writes nothing beyond rendering the rule's page, as opening it does. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
+         note: "The read rendered the rule's page, as opening it does, and wrote nothing else; a Rule Machine rule's page only shows its settings, so retrying once is safe. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
     }
 }
 
