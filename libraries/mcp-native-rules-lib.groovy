@@ -679,7 +679,7 @@ private Map _vrbTogglePaused(Integer ruleId, String action) {
         // The endpoint gave no verdict, so the rule's own state decides whether the pause landed.
         def after = _ruleCompiledState(ruleId)
         if (after?.paused != target) {
-            sent = [success: false, error: "the pause endpoint gave no success verdict and the rule then read ${after?.paused == null ? 'no paused state' : 'paused=' + after.paused}".toString()]
+            sent = [success: false, error: (after?.paused == null ? "the pause endpoint gave no success verdict and the rule's paused state could not be read, so the change could not be confirmed" : "the pause endpoint gave no success verdict and the rule then read paused=${after.paused}").toString()]
         }
     }
     if (sent.success != true) return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${sent.error}".toString(),

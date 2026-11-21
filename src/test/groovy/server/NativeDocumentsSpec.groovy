@@ -298,6 +298,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
         then:
         health.stopped == null
         health.privateBoolean == null
+        !health.ok
+        health.checkErrors.any { it.contains('carried no appState') }
     }
 
     def 'hub_get_rule(sections: []) reads health and locals without the native state'() {

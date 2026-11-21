@@ -4429,8 +4429,8 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
 
     if (leafTool == "hub_call_rule" && result.remainingRuleIds instanceof List
             && !result.remainingRuleIds.isEmpty()) {
-        // Un-reached rules go first: a failed rule that eats a slice's budget again must not starve them, and once
-        // only failed rules remain the next slice takes their final attempt.
+        // Un-reached rules go first, so a failed rule that eats a slice's budget again cannot starve them; when every
+        // rule keeps failing, the continuation's slice cap ends the batch.
         def retryIds = []
         retryIds.addAll(result.remainingRuleIds)
         if (result.failedRuleIds instanceof List) retryIds.addAll(result.failedRuleIds)
@@ -10894,6 +10894,8 @@ Map _rmCheckRuleHealth(Integer appId, Map probe = null) {
             Map stopped = _appStatusFlag(status, "stopped")
             result.stopped = stopped.value != null ? stopped.value : (ruleType && !stopped.present && !stopped.missing ? false : null)
             if (ruleType) result.privateBoolean = _appStatusFlag(status, "private").value
+            // A status page with no app state left the runtime flags unread, so the rule was not fully checked.
+            if (paused.missing) checkErrors << "the app's status page carried no appState, so paused, stopped and the private boolean were not read".toString()
         }
     } catch (Exception statusErr) {
         checkErrors << "statusJson: ${statusErr.message ?: statusErr.toString()}".toString()
