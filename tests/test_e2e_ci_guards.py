@@ -484,17 +484,16 @@ def test_ephemeral_request_workflow_never_runs_pr_code():
     assert f"ephemeral-hub-session-{run}\n" in REQUEST and f"ephemeral-hub-results-{run}\n" in REQUEST
 
 
-def test_fast_ci_listener_runs_only_default_branch_code():
-    # workflow_run fires on fork PR completions with an actions: write token.
-    text = (ROOT / ".github/workflows/ephemeral-fast-ci-completed.yml").read_text()
-    head, jobs = _jobs(text)
-    assert "\npermissions: {}\n" in head and set(jobs) == {"resume"}
-    resume = jobs["resume"]
-    assert "ref:" not in text and "secrets." not in text and "persist-credentials: false" in resume
-    assert "    permissions:\n      contents: read\n      pull-requests: read\n      actions: write\n    steps:" in resume
-    assert "github.event.workflow_run.conclusion == 'success'" in resume
-    assert "(github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main')" in resume
-    assert "run: ruby .github/scripts/resume_ephemeral_ci.rb\n" in resume
+def test_workflows_use_only_events_the_actions_policy_allows():
+    # The repository's Actions policy fails any other event at startup (workflow_run did, after #598).
+    allowed = {"pull_request", "pull_request_target", "push", "schedule", "workflow_dispatch"}
+    workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
+    assert workflows
+    for path in workflows:
+        block = re.search(r"^on:\n((?:[ #].*\n|\n)*)", path.read_text(), re.M)
+        assert block, f"{path.name}: no block-style on:"
+        events = set(re.findall(r"^  ([a-z_]+):", block.group(1), re.M))
+        assert events and events <= allowed, f"{path.name}: {sorted(events - allowed)}"
 
 
 def test_ephemeral_artifact_names_agree_across_workflows():

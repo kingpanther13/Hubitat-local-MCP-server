@@ -30,14 +30,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Renaming this job or its Defer step stops deferred runs from resuming; tests pin both names.
+  # Polls until this revision's fast CI finishes (about five minutes), up to 15 minutes.
   fast-ci:
     name: Fast CI prerequisites
     outputs:
       result: ${{ steps.fast.outputs.result }}
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     permissions:
       actions: read
       contents: read
@@ -51,9 +51,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ruby .github/scripts/ephemeral_fast_ci.rb
-      - name: Defer hubs until fast CI passes
-        if: steps.fast.outputs.result == 'deferred'
-        run: echo "Ephemeral hubs skipped until all applicable fast checks pass." >> "$GITHUB_STEP_SUMMARY"
 
   request-hub:
     name: Request ephemeral hub (${{ matrix.kind }})
@@ -216,7 +213,7 @@ jobs:
                   echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
                 fi
                 grace=$((grace + 1))
-                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without results or a session for this attempt. Re-run this job, then right away Request ephemeral hub ($KIND) in the request run, or its Fast CI prerequisites job if that run deferred the hubs (or push a commit or close and reopen the PR); for push or dispatch use Re-run all jobs."; exit 1; }
+                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without results or a session for this attempt. Re-run this job, then right away Request ephemeral hub ($KIND) in the request run, or its Fast CI prerequisites job if that job did not start the hubs (or push a commit or close and reopen the PR); for push or dispatch use Re-run all jobs."; exit 1; }
               fi
             fi
             [ "$SECONDS" -lt "$deadline" ] || { echo "::error::No hub results or session within $((wait / 60)) minutes."; exit 1; }

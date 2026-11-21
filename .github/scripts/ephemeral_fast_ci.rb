@@ -9,22 +9,18 @@ module EphemeralFastCI
   REQUIRED = %w[unit-tests pr-guard groovy2x-spock].freeze
   FILTERED = %w[groovy24-parse sandbox-lint python-tests ruff self-deploy-recovery
                 lane-gate-test lease-scripts-test dependency-updates-check].freeze
-  CONSUMER = 'hub-e2e-ephemeral'
-  REQUESTER = 'hub-e2e-ephemeral-request'
-  # The gate job and step names in both ephemeral workflows; resuming matches them by name.
-  GATE_JOB = 'Fast CI prerequisites'
-  DEFERRED_STEP = 'Defer hubs until fast CI passes'
+  # Fast CI takes about five minutes; the gate polls so no second workflow has to wake it.
+  WAIT_SECONDS = 15 * 60
+  POLL_SECONDS = 30
 
   def self.api(path, *options)
-    # A transient API read must not strand a green revision. A POST may have
-    # taken effect even when its response was lost, so issue it only once.
-    attempts = options.include?('POST') ? 1 : 3
-    attempts.times do |attempt|
+    # A transient API read must not strand a green revision.
+    3.times do |attempt|
       stdout, stderr, status = Open3.capture3('gh', 'api', *options, "repos/#{ENV.fetch('GITHUB_REPOSITORY')}/#{path}")
       return stdout.empty? ? nil : JSON.parse(stdout) if status.success?
       warn stderr
       transient = stderr.match?(/HTTP (?:429|5\d\d)|timeout|timed out|connection reset|unexpected EOF/i)
-      break unless transient && attempt + 1 < attempts
+      break unless transient && attempt < 2
       sleep 2**(attempt + 1)
     end
     raise "GitHub API request failed for #{path.split('?').first}"
@@ -118,31 +114,45 @@ module EphemeralFastCI
           pr.dig('head', 'sha') == head.fetch('sha') && pr.dig('head', 'repo', 'full_name') == head.dig('repo', 'full_name')
   end
 
-  def self.report(title, detail)
-    puts "::notice title=#{title}::#{detail}"
-    summary = ENV['GITHUB_STEP_SUMMARY']
-    File.open(summary, 'a') { |out| out.puts "#{title}: #{detail}" } if summary
-  end
-
-  def self.decision(pr, head, initial_runs = nil)
+  # ['ready'], ['superseded'], ['failed', names] or ['pending', names].
+  def self.check(pr, head)
     number = pr&.fetch('number')
     fresh = current(head, number)
-    return 'superseded' unless fresh
+    return ['superseded'] unless fresh
     expected_names = ['unit-tests']
     if pr
       # A re-run gate replays the original event, so read changed_files from the PR as it is now.
-      pr = fresh
       files = pages("pulls/#{Integer(number)}/files?per_page=100").flatten(1)
       # The PR files API lists at most 3000 files.
-      raise 'Incomplete PR file list' unless files.size == [pr.fetch('changed_files'), 3000].min
-      expected_names = expected(pr, files)
+      raise 'Incomplete PR file list' unless files.size == [fresh.fetch('changed_files'), 3000].min
+      expected_names = expected(fresh, files)
     end
-    latest = initial_runs || runs(head.fetch('sha'), pr ? 'pull_request' : 'push', head, number)
-    pending, failed = state(expected_names, latest)
-    report('Ephemeral hubs deferred', "waiting for #{pending.join(', ')}") unless pending.empty?
-    report('Ephemeral hubs deferred', "fast CI did not pass: #{failed.join(', ')}") unless failed.empty?
-    return 'deferred' unless pending.empty? && failed.empty?
-    current(head, number) ? 'ready' : 'superseded'
+    pending, failed = state(expected_names, runs(head.fetch('sha'), pr ? 'pull_request' : 'push', head, number))
+    return ['failed', failed] unless failed.empty?
+    return ['pending', pending] unless pending.empty?
+    [current(head, number) ? 'ready' : 'superseded']
+  end
+
+  def self.report(detail)
+    puts "::notice title=Ephemeral hubs not started::#{detail}"
+    summary = ENV['GITHUB_STEP_SUMMARY']
+    File.open(summary, 'a') { |out| out.puts "Ephemeral hubs not started: #{detail}" } if summary
+  end
+
+  def self.decision(pr, head)
+    clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+    deadline = clock.call + Integer(ENV.fetch('FAST_CI_WAIT_SECONDS', WAIT_SECONDS))
+    loop do
+      result, names = check(pr, head)
+      return result unless names
+      waiting = result == 'pending' && clock.call < deadline
+      unless waiting
+        report(result == 'failed' ? "fast CI did not pass: #{names.join(', ')}" : "still waiting for #{names.join(', ')}")
+        return 'deferred'
+      end
+      puts "Waiting for #{names.join(', ')}"
+      sleep Integer(ENV.fetch('FAST_CI_POLL_SECONDS', POLL_SECONDS))
+    end
   end
 end
 
