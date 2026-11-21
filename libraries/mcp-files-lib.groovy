@@ -6,13 +6,85 @@ private String _filesFoldCase(value) {
     return value?.toString()?.tr('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
 }
 
-// Keep the name filter in one place so JSON and HTML firmware response shapes agree.
-private List _filesApplyListFilters(List fileList, String filterLower) {
-    def out = fileList
-    if (filterLower) {
-        out = out.findAll { _filesFoldCase(it?.name)?.contains(filterLower) }
+private String _filesDownloadUrl(String name) {
+    String hubIp = null
+    try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* placeholder below */ }
+    return "http://${hubIp ?: '<HUB_IP>'}/local/${name}".toString()
+}
+
+@groovy.transform.Field static final String FILES_GUIDE_POINTER = "See hub_get_tool_guide(section='file_manager')."
+// A failed listing proves neither presence nor absence.
+@groovy.transform.Field static final String FILES_KIND_UNKNOWN = "unknown"
+
+// The read, write and delete tools act on root files only, and the hub accepts only these
+// characters in a name it uploads; a leading period fails its upload.
+private void _filesRequireRootName(String fileName, String toolName) {
+    if (fileName.contains("/")) {
+        String folder = fileName.substring(0, fileName.lastIndexOf('/'))
+        String rootOnly = "'${fileName}' names a file in a subfolder; ${toolName} acts on root files only."
+        // A folder the hub cannot list gets no listing hint, because that call would fail.
+        throw new IllegalArgumentException(toolName == "hub_write_file"
+            ? "'${fileName}' names a file in a subfolder. hub_write_file writes root files only; it cannot write into a subfolder.".toString()
+            : _filesValidFolder(folder)
+                ? "${rootOnly} List the folder with hub_list_files(folder: '${folder}'); its files download from that listing's downloadUrlBase.".toString()
+                : rootOnly)
     }
-    return out
+    if (!(fileName ==~ /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/)) {
+        throw new IllegalArgumentException("Invalid file name '${fileName}'. Only letters, numbers, hyphens, underscores and periods; cannot start with a period.")
+    }
+}
+
+// The hub cannot create or list a folder whose name has a space or a dot.
+private boolean _filesValidFolder(String folder) {
+    return folder ==~ /[A-Za-z0-9_\/-]+/ && !folder.split("/").any { it == "" }
+}
+
+// A download of a name the hub does not hold throws NoSuchFileException, which settles it
+// without a listing.
+private boolean _filesDownloadMissing(Exception e) {
+    return e.class.simpleName == "NoSuchFileException"
+}
+
+// A folder and an unreadable file both fail their download with FileSystemException, so only the
+// listing tells them apart.
+private String _filesRootEntryKind(String name) {
+    try {
+        def entry = _fileManagerRootEntries().find { it.name == name }
+        return entry == null ? null : (entry.type == "dir" ? "dir" : "file")
+    } catch (Exception e) {
+        mcpLog("warn", "file-manager", "Could not list File Manager to check '${name}': ${e.message}")
+        return FILES_KIND_UNKNOWN
+    }
+}
+
+private Map _filesFolderResult(String name) {
+    return [success: false, fileName: name, error: "'${name}' is a folder, not a file.",
+            note: "List it with hub_list_files(folder: '${name}'). ${FILES_GUIDE_POINTER}".toString()]
+}
+
+private Map _filesMissing(String fileName, String error, String extraNote = null) {
+    return [success: false, fileName: fileName, error: error,
+            note: "Use hub_list_files (filter narrows it) to find the exact file name.${extraNote ? ' ' + extraNote : ''} ${FILES_GUIDE_POINTER}".toString()]
+}
+
+private int _filesIntArg(Map args, String key, int defaultValue, int min, int max) {
+    def v = args?.get(key)
+    if (v == null) return defaultValue
+    String t = (v instanceof Number || v instanceof CharSequence) ? v.toString().trim() : ""
+    String outOfRange = "${key} must be an integer from ${min} to ${max}; got ${v}."
+    // JSON clients may send 3 as 3.0; a number with no fractional part is still that integer.
+    if (v instanceof Number && !t.isLong() && t.isBigDecimal()) {
+        BigDecimal d = new BigDecimal(t)
+        // Range first: toBigInteger() on an exponent such as 1E+1000000000 builds the whole number.
+        if (d.compareTo(new BigDecimal(min)) < 0 || d.compareTo(new BigDecimal(max)) > 0) {
+            throw new IllegalArgumentException(outOfRange)
+        }
+        if (d.signum() == 0 || d.stripTrailingZeros().scale() <= 0) t = d.toBigInteger().toString()
+    }
+    if (!t.isLong() || t.toLong() < min || t.toLong() > max) {
+        throw new IllegalArgumentException(outOfRange)
+    }
+    return t.toInteger()
 }
 
 private List _filesBackupNameParts(String fileName) {
@@ -83,191 +155,85 @@ def toolListFiles(args = null) {
     if (args?.filter != null && !(args.filter instanceof CharSequence)) {
         throw new IllegalArgumentException("filter must be a string (a case-insensitive substring of the file name), not ${args.filter instanceof Number ? 'a number' : args.filter instanceof Map ? 'an object' : args.filter instanceof List ? 'an array' : 'a non-string value'}")
     }
-    mcpLog("debug", "file-manager", "Listing files in File Manager")
     def cursor = args?.cursor
-    def filterText = args?.filter?.toString()?.trim()
-    def filterLower = _filesFoldCase(filterText)
+    def filterLower = _filesFoldCase(args?.filter?.toString()?.trim())
     def folder = args?.folder?.toString()?.trim()?.replaceAll(/^\/+|\/+$/, "")
-    if (folder && (!(folder ==~ /[A-Za-z0-9_.\/ -]+/) || folder.split("/").any { it == ".." || it == "." || it == "" })) {
-        throw new IllegalArgumentException("folder must be a relative File Manager folder path such as 'webcore' (letters, digits, space, dot, underscore, hyphen, '/' between parts; no '..').")
+    if (folder && !_filesValidFolder(folder)) {
+        throw new IllegalArgumentException("folder must be a relative File Manager folder path such as 'webcore' (letters, digits, underscore and hyphen, '/' between parts; no spaces or dots).")
     }
-    if (folder && _hubFirmwareBefore("2.5.2")) throw new IllegalArgumentException("folder needs firmware 2.5.2 or later; older File Manager has no subfolders.")
-    // Try known File Manager API endpoints (varies by firmware version). Only the JSON endpoint
-    // takes a folder (?folder=, as the File Manager page sends it).
-    def endpoints = folder ? ["/hub/fileManager/json"] : ["/hub/fileManager/json", "/hub/fileManager"]
-    def responseText = null
-    def endpointUsed = null
-
-    for (endpoint in endpoints) {
-        try {
-            responseText = hubInternalGet(endpoint, folder ? [folder: folder] : null)
-            if (responseText) {
-                endpointUsed = endpoint
-                mcpLog("debug", "file-manager", "Got response from ${endpoint} (${responseText.length()} chars): ${responseText.take(300)}")
-                break
-            }
-        } catch (Exception e) {
-            mcpLog("debug", "file-manager", "Endpoint ${endpoint} failed: ${e.message}")
-        }
+    Map listing
+    try { listing = _fileManagerListing(folder ?: null) }
+    catch (Exception e) {
+        mcpLogError("file-manager", "File Manager listing failed${folder ? " for folder '${folder}'" : ''}", e)
+        return [success: false, error: "Could not list File Manager: ${e.message}",
+                note: "Nothing was changed. Retry in a moment; if it keeps failing, check Settings > File Manager in the hub web UI. ${FILES_GUIDE_POINTER}".toString()]
     }
-
-    if (!responseText) {
-        return [
-            files: [],
-            total: 0,
-            message: "File Manager API not available on this firmware. Use Hubitat > Settings > File Manager to view files.",
-            manualAccess: "Go to Hubitat > Settings > File Manager to view files in the web UI."
-        ]
-    }
-
-    try {
-        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-        def fileList = []
-        String prefix = folder ? "${folder}/" : ""
-
-        if (parsed instanceof List) {
-            // Direct list response: [{name: "file.txt", size: 123}, ...]
-            fileList = parsed.collect { f ->
-                def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
-                def entry = [name: name, directDownload: "http://<HUB_IP>/local/${prefix}${name}"]
-                if (f instanceof Map) {
-                    if (f.size != null) entry.size = f.size
-                    if (f.date) entry.lastModified = f.date
-                }
-                return entry
-            }
-        } else if (parsed instanceof Map) {
-            // Object response: {files: [...]} or {type: [...]}
-            // An empty folder answers files:[]; only a shape without the key falls back to its values.
-            def files = parsed.containsKey("files") ? parsed.get("files") : parsed.values()?.flatten()
-            if (files instanceof List) {
-                fileList = files.collect { f ->
-                    def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
-                    def entry = [name: name]
-                    if (f instanceof Map) {
-                        // Firmware 2.5.2 lists subfolders (type "dir") beside files and flags files a
-                        // full backup leaves out (backupIncluded:false, past its 100 MiB limit).
-                        if (f.type) entry.type = f.type
-                        if (f.type != "dir") entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
-                        if (f.size != null && f.type != "dir") entry.size = f.size
-                        if (f.date) entry.lastModified = f.date
-                        if (f.backupIncluded != null) entry.backupIncluded = f.backupIncluded
-                    } else {
-                        entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
-                    }
-                    return entry
-                }
-            }
-        }
-
-        fileList = fileList.sort { a, b -> (a.name <=> b.name) }
-
-        // Shape-drift diagnostic: a non-empty parsed response that yielded zero files is almost
-        // always a firmware shape change (new top-level key, files nested deeper, etc.); an
-        // answer that carries a files list, empty or not, is the known shape.
-        if (fileList.isEmpty() && parsed && !(parsed instanceof Map && parsed.containsKey("files"))) {
-            def shapeHint = (parsed instanceof Map) ? "Map with keys=${parsed.keySet()?.take(10)?.toList()}" :
-                            (parsed instanceof List) ? "empty List" : _typeName(parsed)
-            mcpLog("warn", "file-manager", "hub_list_files: parsed response yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [endpoint: endpointUsed, shape: shapeHint]])
-        }
-
-        fileList = _filesApplyListFilters(fileList, filterLower)
-        mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files in File Manager (via ${endpointUsed})")
-        def pagedFM = _paginateList(fileList, cursor, 100, "hub_list_files")
-        def res = [
-            files: pagedFM.page,
-            total: fileList.size(),
-            storage: "Files are stored locally on the hub's file system. Access via http://<HUB_IP>/local/<filename> or Hubitat > Settings > File Manager."
-        ]
-        if (folder) res.folder = folder
-        // An empty subfolder and a missing one answer the same, so say both.
-        if (folder && fileList.isEmpty() && !filterLower) res.note = "Folder '${folder}' is empty or does not exist; the root listing shows the folders as type:'dir'."
-        if (parsed instanceof Map) {
-            if (parsed.freeSpace != null) res.freeSpaceBytes = parsed.freeSpace
-            if (parsed.backupSelection instanceof Map && parsed.backupSelection.excludedFiles != null) res.filesExcludedFromFullBackup = parsed.backupSelection.excludedFiles
-        }
-        if (cursor != null && pagedFM.nextCursor != null) res.nextCursor = pagedFM.nextCursor
-        return res
-    } catch (Exception jsonErr) {
-        // Response wasn't JSON — might be HTML File Manager page
-        mcpLog("debug", "file-manager", "Response from ${endpointUsed} was not JSON: ${jsonErr.message}")
-
-        // Try to extract file names from HTML response
-        def fileList = []
-        try {
-            def matcher = responseText =~ /(?i)href=["']?\/local\/([^"'\s>]+)/
-            while (matcher.find()) {
-                def name = java.net.URLDecoder.decode(matcher.group(1), "UTF-8")
-                if (!fileList.any { it.name == name }) {
-                    fileList << [name: name, directDownload: "http://<HUB_IP>/local/${name}"]
-                }
-            }
-        } catch (Exception htmlErr) {
-            mcpLog("debug", "file-manager", "HTML parsing also failed: ${htmlErr.message}")
-        }
-
-        if (fileList) {
-            fileList = fileList.sort { a, b -> (a.name <=> b.name) }
-            fileList = _filesApplyListFilters(fileList, filterLower)
-            mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files from File Manager HTML page")
-            def pagedHtml = _paginateList(fileList, cursor, 100, "hub_list_files")
-            def res = [
-                files: pagedHtml.page,
-                total: fileList.size(),
-                note: "File list extracted from File Manager HTML page. Sizes not available. Use Hubitat > Settings > File Manager for full details.",
-                storage: "Files are stored locally on the hub's file system. Access via http://<HUB_IP>/local/<filename> or Hubitat > Settings > File Manager."
-            ]
-            if (cursor != null && pagedHtml.nextCursor != null) res.nextCursor = pagedHtml.nextCursor
-            return res
-        }
-
-        return [
-            files: [],
-            total: 0,
-            error: "Could not parse File Manager response. The API format may have changed.",
-            rawResponsePreview: responseText.take(500),
-            manualAccess: "Go to Hubitat > Settings > File Manager to view files in the web UI."
-        ]
-    }
+    List fileList = listing.files.collect { f ->
+        Map entry = [name: f.name]
+        if (f.type) entry.type = f.type
+        if (f.size != null && f.type != "dir") entry.size = f.size
+        if (f.date != null) entry.lastModified = f.date
+        if (f.backupIncluded != null) entry.backupIncluded = f.backupIncluded
+        return entry
+    }.sort { a, b -> a.name <=> b.name }
+    if (filterLower) fileList = fileList.findAll { _filesFoldCase(it.name).contains(filterLower) }
+    mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files in File Manager")
+    def paged = _paginateList(fileList, cursor, 100, "hub_list_files")
+    def res = [files: paged.page, total: fileList.size(), downloadUrlBase: _filesDownloadUrl(folder ? "${folder}/" : "")]
+    if (folder) res.folder = folder
+    // The hub answers an empty subfolder and a missing one identically.
+    if (folder && fileList.isEmpty() && !filterLower) res.note = "Folder '${folder}' is empty or does not exist; the root listing shows the folders as type:'dir'."
+    if (listing.freeSpace != null) res.freeSpaceBytes = listing.freeSpace
+    if (listing.excludedFiles != null) res.filesExcludedFromFullBackup = listing.excludedFiles
+    if (cursor != null && paged.nextCursor != null) res.nextCursor = paged.nextCursor
+    return res
 }
 
 def toolReadFile(args) {
-    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required.")
+    String fileName = args.fileName.toString()
+    _filesRequireRootName(fileName, "hub_read_file")
+    int requestedOffset = _filesIntArg(args, "offset", 0, 0, Integer.MAX_VALUE)
+    int requestedLength = _filesIntArg(args, "length", defaultReadChunkChars() as int, 1, 60000)
 
-    def maxChunkSize = 60000
-    def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : defaultReadChunkChars()
-
-    mcpLog("debug", "file-manager", "Reading file: ${args.fileName} (offset: ${requestedOffset}, length: ${requestedLength})")
+    mcpLog("debug", "file-manager", "Reading file: ${fileName} (offset: ${requestedOffset}, length: ${requestedLength})")
     def content
     try {
-        def bytes = downloadHubFile(args.fileName)
-        if (bytes == null) throw new Exception("File not found in File Manager")
+        def bytes = downloadHubFile(fileName)
+        if (bytes == null) throw new Exception("the hub returned no content")
         content = new String(bytes, "UTF-8")
     } catch (Exception e) {
-        mcpLogError("file-manager", "Failed to read file '${args.fileName}'", e)
+        String kind = _filesDownloadMissing(e) ? null : _filesRootEntryKind(fileName)
+        if (kind == null) {
+            mcpLog("info", "file-manager", "Read of '${fileName}' refused: no such file")
+            return _filesMissing(fileName, "File '${fileName}' does not exist in File Manager.")
+        }
+        if (kind == "dir") return _filesFolderResult(fileName)
+        mcpLogError("file-manager", "Failed to read file '${fileName}'", e)
         return [
             success: false,
-            error: "File '${args.fileName}' could not be read: ${e.message}",
-            suggestion: "Check that the file name is correct. Go to Hubitat > Settings > File Manager to see available files.",
-            directDownload: "http://<HUB_IP>/local/${args.fileName}"
+            fileName: fileName,
+            error: "File '${fileName}' could not be read: ${e.message}",
+            note: "Check the exact name with hub_list_files, or download it from directDownload. ${FILES_GUIDE_POINTER}".toString(),
+            directDownload: _filesDownloadUrl(fileName)
         ]
     }
 
     def totalLength = content.length()
-    def endIndex = Math.min(requestedOffset + requestedLength, totalLength)
+    long requestedEnd = (long) requestedOffset + requestedLength
+    int endIndex = (int) Math.min(requestedEnd, (long) totalLength)
     def chunk = (requestedOffset < totalLength) ? content.substring(requestedOffset, endIndex) : ""
     def hasMore = endIndex < totalLength
 
     def result = [
         success: true,
-        fileName: args.fileName,
+        fileName: fileName,
         totalLength: totalLength,
         offset: requestedOffset,
         chunkLength: chunk.length(),
         hasMore: hasMore,
         content: chunk,
-        directDownload: "http://<HUB_IP>/local/${args.fileName}"
+        directDownload: _filesDownloadUrl(fileName)
     ]
     if (hasMore) {
         result.nextOffset = endIndex
@@ -275,141 +241,204 @@ def toolReadFile(args) {
         result.hint = "Call again with offset: ${endIndex} to get the next chunk."
     }
 
-    mcpLog("info", "file-manager", "Read file '${args.fileName}' (${totalLength} chars total, returned offset ${requestedOffset}..${endIndex}${hasMore ? ', more available' : ''})")
+    mcpLog("info", "file-manager", "Read file '${fileName}' (${totalLength} chars total, returned offset ${requestedOffset}..${endIndex}${hasMore ? ', more available' : ''})")
     return result
 }
 
 def toolWriteFile(args) {
     requireDestructiveConfirm(args.confirm)
-    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
-    if (args.content == null) throw new IllegalArgumentException("content is required")
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required.")
+    if (args.content == null) throw new IllegalArgumentException("content is required.")
+    String fileName = args.fileName.toString()
+    _filesRequireRootName(fileName, "hub_write_file")
+    String content = args.content.toString()
 
-    // Validate file name — only A-Za-z0-9, hyphens, underscores, periods allowed
-    if (!(args.fileName ==~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/)) {
-        throw new IllegalArgumentException("Invalid file name '${args.fileName}'. Only letters, numbers, hyphens, underscores, and periods are allowed. Cannot start with a period.")
-    }
-
-    // If file already exists, back it up first
-    def backedUp = false
-    def backupFileName = null
-    def identicalContent = false
     byte[] existingBytes = null
-    try { existingBytes = downloadHubFile(args.fileName) }
-    catch (Exception e) {
-        // File doesn't exist or can't be read — that's fine, proceed with write
-        mcpLog("debug", "file-manager", "No existing file '${args.fileName}' to back up: ${e.message}")
+    String downloadError = "the hub returned no content"
+    boolean missing = false
+    try { existingBytes = downloadHubFile(fileName) }
+    catch (Exception e) { downloadError = e.message ?: e.class.simpleName; missing = _filesDownloadMissing(e) }
+    if (existingBytes == null) {
+        // Any other failed download may hide an existing file, and overwriting one whose content
+        // could not be copied first would lose it, so then only a name the listing lacks is created.
+        String kind = missing ? null : _filesRootEntryKind(fileName)
+        if (kind == "dir") return _filesFolderResult(fileName)
+        if (kind != null) {
+            mcpLog("warn", "file-manager", "Write of '${fileName}' refused: its current content could not be read (${downloadError})")
+            String cause = kind == FILES_KIND_UNKNOWN
+                ? "The File Manager listing also failed, so whether '${fileName}' exists is unknown."
+                : "'${fileName}' exists but its content could not be downloaded."
+            // The hub's message stays in error.
+            return [
+                success: false,
+                fileName: fileName,
+                error: "Could not read the current '${fileName}' to take its backup copy (${downloadError}); nothing was written.".toString(),
+                note: "${cause} Retry once the read recovers, write the content under a new name, or save the current content from directDownload, then upload the new content over the file in Settings > File Manager. ${FILES_GUIDE_POINTER}".toString(),
+                directDownload: _filesDownloadUrl(fileName)
+            ]
+        }
+        mcpLog("debug", "file-manager", "No existing file '${fileName}' to back up")
     }
     // Compare the bytes that will be written, not decoded text: invalid UTF-8 in the existing
     // file decodes to replacement characters that incoming text can match while the bytes differ.
-    byte[] incomingBytes = args.content.toString().getBytes("UTF-8")
+    byte[] incomingBytes = content.getBytes("UTF-8")
     if (existingBytes != null && existingBytes.length == incomingBytes.length && (existingBytes as List) == (incomingBytes as List)) {
-        identicalContent = true
-        // Identical-content write (e.g. a retry after a dropped response): a
-        // backup would duplicate the very bytes being written, and a fresh
-        // timestamped file per retry is unbounded growth -- the exact
-        // additional side effect the tool's idempotentHint promises not to
-        // have. Skip the backup; the overwrite below is a byte-level no-op.
-        mcpLog("info", "file-manager", "Existing '${args.fileName}' already matches the incoming content -- skipping backup")
-    } else if (existingBytes != null) {
+        // Same bytes again: a rewrite or another backup copy would only add side effects, and
+        // the idempotent hint promises none.
+        mcpLog("info", "file-manager", "Existing '${fileName}' already matches the incoming content -- nothing written")
+        return [
+            success: true,
+            unchanged: true,
+            message: "File '${fileName}' already holds this exact content; nothing was written.",
+            fileName: fileName,
+            contentLength: content.length(),
+            directDownload: _filesDownloadUrl(fileName)
+        ]
+    }
+    String backupFileName = null
+    if (existingBytes != null) {
         // File exists: an overwrite without its backup copy would lose the old content.
         try {
-            backupFileName = _filesWriteBackupCopy(args.fileName.toString(), existingBytes)
+            backupFileName = _filesWriteBackupCopy(fileName, existingBytes)
         } catch (Exception e) {
-            mcpLogError("file-manager", "Could not back up existing '${args.fileName}' before overwriting", e)
+            mcpLogError("file-manager", "Could not back up existing '${fileName}' before overwriting", e)
             return [
                 success: false,
-                error: "Could not back up existing '${args.fileName}' before overwriting: ${e.message}",
-                note: "Nothing was written; '${args.fileName}' still holds its previous content. Retry once File Manager accepts writes."
+                fileName: fileName,
+                error: "Could not back up existing '${fileName}' before overwriting: ${e.message}".toString(),
+                note: "Nothing was written; '${fileName}' still holds its previous content. Retry once File Manager accepts writes. ${FILES_GUIDE_POINTER}".toString()
             ]
         }
-        backedUp = true
-        mcpLog("info", "file-manager", "Backed up existing '${args.fileName}' to '${backupFileName}' before overwriting (${existingBytes.length} bytes)")
+        mcpLog("info", "file-manager", "Backed up existing '${fileName}' to '${backupFileName}' before overwriting (${existingBytes.length} bytes)")
     }
 
-    // Write the file
     try {
-        uploadHubFile(args.fileName, args.content.getBytes("UTF-8"))
-        mcpLog("info", "file-manager", "Wrote file '${args.fileName}' (${args.content.length()} chars)")
+        uploadHubFile(fileName, incomingBytes)
+        mcpLog("info", "file-manager", "Wrote file '${fileName}' (${content.length()} chars)")
 
         def result = [
             success: true,
-            message: backedUp
-                ? "File '${args.fileName}' updated. Previous version backed up as '${backupFileName}'."
-                : (identicalContent
-                    ? "File '${args.fileName}' already contained this exact content (no backup needed)."
-                    : "File '${args.fileName}' created."),
-            fileName: args.fileName,
-            contentLength: args.content.length(),
-            directDownload: "http://<HUB_IP>/local/${args.fileName}"
+            message: backupFileName
+                ? "File '${fileName}' updated. Previous version backed up as '${backupFileName}'."
+                : "File '${fileName}' created.",
+            fileName: fileName,
+            contentLength: content.length(),
+            directDownload: _filesDownloadUrl(fileName)
         ]
-        if (backedUp) {
+        if (backupFileName) {
             result.backupFile = backupFileName
-            result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
+            result.backupDownload = _filesDownloadUrl(backupFileName)
             // Pruned only after the write landed, so a failed write keeps every older copy.
-            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString(), backupFileName))
+            _filesReportCopyRetention(result, fileName, _filesPruneBackupCopies(fileName, backupFileName))
         }
         return result
     } catch (Exception e) {
-        mcpLogError("file-manager", "Failed to write file '${args.fileName}'", e)
+        mcpLogError("file-manager", "Failed to write file '${fileName}'", e)
         return [
             success: false,
-            error: "Failed to write file '${args.fileName}': ${e.message}"
+            fileName: fileName,
+            error: "Failed to write file '${fileName}': ${e.message}",
+            note: backupFileName
+                ? "Its previous content is kept in the backup copy '${backupFileName}'. Read '${fileName}' to see what it holds now before retrying. ${FILES_GUIDE_POINTER}".toString()
+                : "The hub reported the upload failed; check with hub_list_files whether '${fileName}' now exists before retrying. ${FILES_GUIDE_POINTER}".toString()
         ]
     }
 }
 
 def toolDeleteFile(args) {
     requireDestructiveConfirm(args.confirm)
-    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required.")
+    String fileName = args.fileName.toString()
+    _filesRequireRootName(fileName, "hub_delete_file")
+    String missingError = "File '${fileName}' does not exist in File Manager; nothing was deleted."
 
     // Skip auto-backup for files that are already backups (prevent infinite backup chains)
-    def isBackupFile = args.fileName.contains("_backup_") || args.fileName.startsWith("mcp-backup-") ||
-        args.fileName.startsWith("mcp-rm-backup-") || args.fileName.startsWith("mcp-prerestore-")
+    def isBackupFile = fileName.contains("_backup_") || fileName.startsWith("mcp-backup-") ||
+        fileName.startsWith("mcp-rm-backup-") || fileName.startsWith("mcp-prerestore-")
 
-    // Back up the file before deleting (unless it's already a backup file)
-    def backedUp = false
-    def backupFileName = null
+    // deleteHubFile does not fail for a missing name, so existence is checked first: through the
+    // backup download for a normal file, and through the listing when that download fails for
+    // another reason or when no download is taken. A failed listing proves nothing, so the delete
+    // goes ahead.
+    String backupFileName = null
+    boolean existenceUnknown = false
     if (!isBackupFile) {
-        try {
-            def bytes = downloadHubFile(args.fileName)
-            if (bytes == null) throw new Exception("File not found")
-            backupFileName = _filesWriteBackupCopy(args.fileName.toString(), bytes)
-            backedUp = true
-            mcpLog("info", "file-manager", "Backed up '${args.fileName}' to '${backupFileName}' before deletion (${bytes.length} bytes)")
-        } catch (Exception e) {
-            mcpLog("warn", "file-manager", "Could not back up '${args.fileName}' before deletion: ${e.message}")
+        byte[] bytes = null
+        boolean missing = false
+        String downloadError = null
+        try { bytes = downloadHubFile(fileName) }
+        catch (Exception e) {
+            downloadError = e.message ?: e.class.simpleName
+            missing = _filesDownloadMissing(e)
+            mcpLog("debug", "file-manager", "Could not download '${fileName}' before deletion: ${downloadError}")
+        }
+        if (bytes == null && _loadLimiterRefusedMessage(downloadError)) {
+            // The no-copy delete below is for a file that can never be read; a limiter refusal
+            // passes, so deleting now would lose a copy that a retry could take. The hub's message
+            // stays in error.
+            mcpLog("warn", "file-manager", "Delete of '${fileName}' refused: the load limiter refused its backup download (${downloadError})")
+            return [
+                success: false,
+                fileName: fileName,
+                error: "Could not read '${fileName}' to take its backup copy (${downloadError}); nothing was deleted.".toString(),
+                note: "The hub's load limiter refused the download, which is temporary. Nothing was deleted; retry in a moment. ${FILES_GUIDE_POINTER}".toString()
+            ]
+        }
+        if (bytes == null) {
+            String kind = missing ? null : _filesRootEntryKind(fileName)
+            if (kind == "dir") return _filesFolderResult(fileName)
+            if (kind == null) {
+                // The name may be gone because an earlier delete of it landed; its copy shows where.
+                String base = _filesBackupNameParts(fileName)[0]
+                return _filesMissing(fileName, missingError,
+                    "An earlier call may already have deleted it; its backup copy is listed by hub_list_files(filter: '${base}_backup_').")
+            }
+            existenceUnknown = kind == FILES_KIND_UNKNOWN
+            mcpLog("warn", "file-manager", existenceUnknown
+                ? "Could not check whether '${fileName}' exists before deletion: its download and the listing both failed"
+                : "Could not back up '${fileName}' before deletion: its content could not be downloaded")
+        } else {
+            try {
+                backupFileName = _filesWriteBackupCopy(fileName, bytes)
+                mcpLog("info", "file-manager", "Backed up '${fileName}' to '${backupFileName}' before deletion (${bytes.length} bytes)")
+            } catch (Exception e) {
+                mcpLog("warn", "file-manager", "Could not back up '${fileName}' before deletion: ${e.message}")
+            }
         }
     } else {
-        mcpLog("debug", "file-manager", "Skipping auto-backup for '${args.fileName}' -- file is itself a backup")
+        String kind = _filesRootEntryKind(fileName)
+        if (kind == "dir") return _filesFolderResult(fileName)
+        if (kind == null) return _filesMissing(fileName, missingError)
+        existenceUnknown = kind == FILES_KIND_UNKNOWN
+        mcpLog("debug", "file-manager", "Skipping auto-backup for '${fileName}' -- file is itself a backup")
     }
 
-    // Delete the file
     try {
-        Map deletionDetails = _deleteHubFileAndUnlinkBackups(args.fileName.toString())
-        mcpLog("info", "file-manager", "Deleted file '${args.fileName}'")
+        Map deletionDetails = _deleteHubFileAndUnlinkBackups(fileName)
+        mcpLog("info", "file-manager", "Deleted file '${fileName}'")
 
         def result = [
             success: true,
-            message: backedUp
-                ? "File '${args.fileName}' deleted. Backup saved as '${backupFileName}'."
+            message: backupFileName
+                ? "File '${fileName}' deleted. Backup saved as '${backupFileName}'."
                 : isBackupFile
-                    ? "Backup file '${args.fileName}' deleted permanently (no backup-of-backup created)."
-                    : "File '${args.fileName}' deleted. WARNING: Could not create backup before deletion.",
-            fileName: args.fileName
+                    ? "Backup file '${fileName}' deleted permanently (no backup-of-backup created)."
+                    : "File '${fileName}' deleted. WARNING: Could not create backup before deletion.",
+            fileName: fileName
         ]
-        if (backedUp) {
+        if (backupFileName) {
             result.backupFile = backupFileName
-            // Resolve the hub's real IP for a clickable URL; fall back to the
-            // documented <HUB_IP> placeholder (the same convention the other
-            // file-manager tools use) when location.hub.localIP is unavailable.
-            String hubIp = null
-            try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall through */ }
-            result.backupDownload = "http://${hubIp ?: '<HUB_IP>'}/local/${backupFileName}"
-            result.undoHint = "To recover: use 'hub_read_file' on '${backupFileName}' to view contents, or 'hub_write_file' to recreate '${args.fileName}' from the backup."
+            result.backupDownload = _filesDownloadUrl(backupFileName)
+            result.undoHint = "To recover a text file, read '${backupFileName}' with hub_read_file (every chunk, following nextOffset) and recreate '${fileName}' with hub_write_file. For a binary file, download backupDownload and upload it in Settings > File Manager."
             // Pruned only after the delete landed, so a failed delete keeps every older copy.
-            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString(), backupFileName))
+            _filesReportCopyRetention(result, fileName, _filesPruneBackupCopies(fileName, backupFileName))
         }
-        if (!backedUp && !isBackupFile) {
+        if (existenceUnknown) {
+            // The listing could not say whether the name exists, so nothing proves a file went away.
+            String failed = isBackupFile ? "the File Manager listing failed" : "its download and the File Manager listing both failed"
+            result.message = "Could not check whether '${fileName}' exists: ${failed}. The hub was asked to delete it; it may not have existed.".toString()
+            result.warning = "${isBackupFile ? '' : 'No backup copy was taken. '}Check with hub_list_files whether '${fileName}' is still listed.".toString()
+        } else if (!backupFileName && !isBackupFile) {
             result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
         }
         result.putAll(deletionDetails)
@@ -420,13 +449,19 @@ def toolDeleteFile(args) {
         }
         return result
     } catch (Exception e) {
-        mcpLogError("file-manager", "Failed to delete file '${args.fileName}'", e)
+        mcpLogError("file-manager", "Failed to delete file '${fileName}'", e)
+        // The index load runs before the hub delete, so a refusal here means nothing was deleted.
+        if (!backupFileName) {
+            Map unavailable = _itemBackupIndexUnavailableResult(e)
+            if (unavailable != null) return unavailable + [fileName: fileName, note: "${unavailable.note} ${FILES_GUIDE_POINTER}".toString()]
+        }
         return [
             success: false,
-            message: "Failed to delete file '${args.fileName}': ${e.message}",
-            fileName: args.fileName,
-            error: "Failed to delete '${args.fileName}': ${e.message}",
-            suggestion: "Check that the file exists. Use 'hub_list_files' to see available files."
+            fileName: fileName,
+            error: "Failed to delete '${fileName}': ${e.message}",
+            note: backupFileName
+                ? "Its backup copy '${backupFileName}' was taken first. Check with hub_list_files whether '${fileName}' is still listed before retrying. ${FILES_GUIDE_POINTER}".toString()
+                : "Check with hub_list_files whether '${fileName}' is still listed before retrying. ${FILES_GUIDE_POINTER}".toString()
         ]
     }
 }
@@ -436,7 +471,7 @@ def _getAllToolDefinitions_partFiles() {
         // File Manager Tools
         [
             name: "hub_list_files",
-            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL[[FLAT_TRIM]], plus subfolders[[/FLAT_TRIM]]. Optionally filter by a case-insensitive substring of the file name[[FLAT_TRIM]], or list a subfolder[[/FLAT_TRIM]]. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only.",
+            description: "List files in the hub's File Manager (its local web file store): name, size in bytes and last-modified epoch ms per file[[FLAT_TRIM]], subfolders as type 'dir'[[/FLAT_TRIM]]; a file downloads from downloadUrlBase + name. Optionally filter by a case-insensitive name substring[[FLAT_TRIM]], or list a subfolder[[/FLAT_TRIM]]. Use it to find a file before hub_read_file, or to confirm a write or backup landed. Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -452,34 +487,34 @@ def _getAllToolDefinitions_partFiles() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    fileName: [type: "string", description: "The exact file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy')"],
-                    offset: [type: "integer", description: "Character offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max chars (default 30000, max 60000)."]
+                    fileName: [type: "string", description: "The exact root file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy'); a folder or a name with '/' is refused."],
+                    offset: [type: "integer", description: "Character offset to start from, 0 or more. Default 0."],
+                    length: [type: "integer", description: "Max chars, 1-60000 (default 30000)."]
                 ],
                 required: ["fileName"]
             ]
         ],
         [
             name: "hub_write_file",
-            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery; the newest ${FILE_BACKUP_COPIES} copies per file are kept). Requires Write master and confirm=true — confirm the write with the user before calling.",
+            description: "⚠️ Create or overwrite a text file in the hub's File Manager. An existing file is OVERWRITTEN wholesale after a backup copy is taken (backupFile in the result; the newest ${FILE_BACKUP_COPIES} copies per file are kept); identical content writes nothing; if the current content cannot be read, nothing is written. Requires confirm=true and a hub backup from the last 24 hours — confirm with the user first.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    fileName: [type: "string", description: "The file name to write (e.g., 'my-config.json'). Only A-Za-z0-9, hyphens, underscores, and periods allowed."],
-                    content: [type: "string", description: "The text content to write to the file"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the write."]
+                    fileName: [type: "string", description: "The root file name to write (e.g., 'my-config.json'): letters, numbers, hyphens, underscores and periods only, not starting with a period; a name with '/' is refused."],
+                    content: [type: "string", description: "The text content to write."],
+                    confirm: [type: "boolean", description: "Must be true: the user approved the write."]
                 ],
                 required: ["fileName", "content", "confirm"]
             ]
         ],
         [
             name: "hub_delete_file",
-            description: "⚠️ Permanently delete a file from the hub's File Manager. The file is auto-backed up first (see backupFile/undoHint for recovery). Requires Write master, confirm=true, and a recent hub backup — get user approval before calling.",
+            description: "⚠️ Permanently delete a file from the hub's File Manager. A backup copy is taken first when possible (backupFile/undoHint in the result); a file that is itself a backup gets none, and if no copy can be taken (unreadable content or a failed upload) the delete still runs with a warning[[FLAT_TRIM]], except that a download the load limiter refused deletes nothing (retry)[[/FLAT_TRIM]]. Requires confirm=true and a hub backup from the last 24 hours — get user approval first.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    fileName: [type: "string", description: "The exact file name to delete"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the deletion."]
+                    fileName: [type: "string", description: "The exact root file name to delete; a folder or a name with '/' is refused."],
+                    confirm: [type: "boolean", description: "Must be true: the user approved the deletion."]
                 ],
                 required: ["fileName", "confirm"]
             ]
@@ -513,7 +548,7 @@ def _toolDisplayMeta_partFiles() {
         // File Manager
         hub_list_files: [title: "List Files", summary: "List files in the hub File Manager, optionally filtered by a name substring."],
         hub_read_file: [title: "Read File", summary: "Read a File Manager file's contents."],
-        hub_write_file: [title: "Write File", summary: "Create or update a File Manager file (auto-backs up existing)."],
-        hub_delete_file: [title: "Delete File", summary: "Delete a File Manager file (auto-backs up first)."]
+        hub_write_file: [title: "Write File", summary: "Create or update a File Manager file (backs up the existing one; identical content writes nothing)."],
+        hub_delete_file: [title: "Delete File", summary: "Delete a File Manager file (takes a backup copy first when possible)."]
     ]
 }

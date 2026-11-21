@@ -1436,8 +1436,10 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/fileManager/json') { p ->
-            JsonOutput.toJson([backupSelection: [excludedFiles: 1], freeSpace: 991530715,
-                               files: [[type: 'dir', name: 'sub', size: '0'], [type: 'file', name: 'a.js', size: '10', date: '1', backupIncluded: false]]])
+            JsonOutput.toJson([backupSelection: [excludedFiles: 1],
+                               files: [[id: '-8042247494160655236', type: 'dir', name: 'sub', size: '0'],
+                                       [id: '676497121135832461', type: 'file', name: 'a.js', size: '10', date: '1794719017781', backupIncluded: false]],
+                               path: 'webcore', freeSpace: 991530715])
         }
 
         when:
@@ -1449,7 +1451,9 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         r.freeSpaceBytes == 991530715
         r.filesExcludedFromFullBackup == 1
         r.files.find { it.name == 'sub' } == [name: 'sub', type: 'dir']
-        r.files.find { it.name == 'a.js' }.directDownload == 'http://<HUB_IP>/local/webcore/a.js'
+        r.files.find { it.name == 'a.js' }.size == 10L
+        !r.files.find { it.name == 'a.js' }.containsKey('directDownload')
+        r.downloadUrlBase.endsWith('/local/webcore/')
         r.files.find { it.name == 'a.js' }.backupIncluded == false
     }
 
@@ -1469,26 +1473,13 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     def "an empty folder listing says the folder may not exist"() {
         given:
         settingsMap.enableRead = true
-        hubGet.register('/hub/fileManager/json') { p -> JsonOutput.toJson([files: [], freeSpace: 5]) }
+        hubGet.register('/hub/fileManager/json') { p -> JsonOutput.toJson([backupSelection: [excludedFiles: 0], files: [], path: 'webcoer', freeSpace: 5]) }
 
         when:
         def r = script.toolListFiles([folder: 'webcoer'])
 
         then:
         r.note.contains('does not exist')
-    }
-
-    def "hub_list_files refuses a folder on firmware before 2.5.2"() {
-        given:
-        sharedLocation.hub = hubOnFirmware('2.5.1.181')
-
-        when:
-        script.toolListFiles([folder: 'webcore'])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('2.5.2')
-        hubGet.calls.isEmpty()
     }
 
     @Unroll
@@ -1501,7 +1492,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.calls.isEmpty()
 
         where:
-        folder << ['../etc', 'a/../b', 'a//b', 'x;rm']
+        folder << ['../etc', 'a/../b', 'a//b', 'x;rm', 'a b', 'a.b']
     }
 
     // ---------------- apps, dependents, events ----------------
