@@ -12730,14 +12730,14 @@ def updated() {}
 
     @test("hub_variables")
     def test_hub_set_variable_mesh_validation(self) -> None:
-        # hub_set_variable gained mesh_shared (Hub Mesh share/unshare). Prove the validation contract
+        # hub_set_variable gained meshShared (Hub Mesh share/unshare). Prove the validation contract
         # LIVE with NO mesh state change -- every rejection fires before any hub call and surfaces as an
         # isError validation result the caller can correct and retry.
         absent = f"{PREFIX}NoSuchMeshVar_{int(time.time())}"
         for args, needle, label in (
-            ({"name": absent, "mesh_shared": True}, "hub variable", "mesh_shared on a non-hub-variable"),
-            ({"name": absent}, "value, mesh_shared", "neither value nor mesh_shared"),
-            ({"name": absent, "mesh_shared": "yes"}, "boolean", "non-boolean mesh_shared"),
+            ({"name": absent, "meshShared": True}, "hub variable", "meshShared on a non-hub-variable"),
+            ({"name": absent}, "value, meshShared", "neither value nor meshShared"),
+            ({"name": absent, "meshShared": "yes"}, "boolean", "non-boolean meshShared"),
         ):
             try:
                 detail = self.client.call_tool("hub_set_variable", args)
@@ -12748,17 +12748,17 @@ def updated() {}
 
     @test("hub_variables")
     def test_hub_create_variable_mesh_link_validation(self) -> None:
-        # hub_create_variable gained a Hub Mesh LINK form (mesh_source_hub_id + mesh_source_name), mutually
+        # hub_create_variable gained a Hub Mesh LINK form (meshSourceHubId + meshSourceName), mutually
         # exclusive with the create forms. Assert the MESH-SPECIFIC rejection message (not the destructive-
         # confirm backup message): the suite ensures a recent backup at startup, so requireDestructiveConfirm
         # passes and the mesh validation is what fires -- accepting "backup"/"confirm" here would let a run
         # with no backup green without ever exercising the mesh contract. NOTHING is created either way.
         probe = f"{PREFIX}MeshLinkProbe_{int(time.time())}"
         for args, needle, label in (
-            ({"mesh_source_hub_id": "HUB-A", "mesh_source_name": probe, "name": probe, "confirm": True},
+            ({"meshSourceHubId": "HUB-A", "meshSourceName": probe, "name": probe, "confirm": True},
              "not both", "link mixed with a create field"),
-            ({"mesh_source_hub_id": "HUB-A", "confirm": True},
-             "both mesh_source", "link with only the hub id"),
+            ({"meshSourceHubId": "HUB-A", "confirm": True},
+             "both meshSource", "link with only the hub id"),
         ):
             rejected = False
             detail: Any = None
@@ -12791,7 +12791,7 @@ def updated() {}
         unshared_ok = False
         try:
             # SHARE into the mesh.
-            shared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": True})
+            shared = self.client.call_tool("hub_set_variable", {"name": var_name, "meshShared": True})
             assert shared.get("success") is not False, f"share failed: {shared}"
             assert shared.get("meshShared") is True, f"share did not report meshShared=true: {shared}"
             assert self._poll_mesh_shared(var_name, want=True), \
@@ -12807,7 +12807,7 @@ def updated() {}
                 f"the hub_list_variables row did not show the share: {row}"
 
             # UNSHARE and assert the teardown caution rides the result note.
-            unshared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
+            unshared = self.client.call_tool("hub_set_variable", {"name": var_name, "meshShared": False})
             assert unshared.get("success") is not False, f"unshare failed: {unshared}"
             assert unshared.get("meshShared") is False, f"unshare did not report meshShared=false: {unshared}"
             note = str(unshared.get("note") or "")
@@ -12820,7 +12820,7 @@ def updated() {}
             # Best-effort: never leave the permanent variable shared if an assertion above bailed mid-cycle.
             if not unshared_ok:
                 try:
-                    self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
+                    self.client.call_tool("hub_set_variable", {"name": var_name, "meshShared": False})
                 except Exception:
                     pass
 

@@ -325,18 +325,18 @@ def toolCreateVariable(args) {
     // with every create form (single and bulk). Validation before any hub call. "Wants to link" is a
     // NON-BLANK source value, not key presence -- a mesh_source_*:null on a normal create must not be
     // pushed onto the link path.
-    String meshHubId = args.mesh_source_hub_id?.toString()?.trim()
-    String meshName = args.mesh_source_name?.toString()?.trim()
+    String meshHubId = args.meshSourceHubId?.toString()?.trim()
+    String meshName = args.meshSourceName?.toString()?.trim()
     boolean wantsMeshLink = meshHubId || meshName
     if (wantsMeshLink) {
         if (args.name != null || args.type != null || args.value != null || args.variables != null) {
             throw new IllegalArgumentException(
                 "Provide EITHER a new-variable create (name/type/value or the variables array) OR a Hub Mesh link " +
-                "(mesh_source_hub_id + mesh_source_name) -- not both.")
+                "(meshSourceHubId + meshSourceName) -- not both.")
         }
         if (!meshHubId || !meshName) {
             throw new IllegalArgumentException(
-                "Linking a Hub Mesh variable needs BOTH mesh_source_hub_id and mesh_source_name " +
+                "Linking a Hub Mesh variable needs BOTH meshSourceHubId and meshSourceName " +
                 "(the hubId + name of one hub_get_hub_mesh availableLinkedHubVariables[] row).")
         }
         return _createLinkedMeshVariable(meshHubId, meshName)
@@ -891,24 +891,24 @@ def toolSetVariable(Map args) {
     }
     // A `value` key that is PRESENT (even null) is a value write -- omitting the key entirely is the
     // only way to skip the value leg. This preserves the legacy "set a rule_engine var to null" path
-    // while still letting mesh_shared stand alone.
+    // while still letting meshShared stand alone.
     boolean hasValue = args.containsKey("value")
-    boolean hasMeshShared = args.containsKey("mesh_shared")
+    boolean hasMeshShared = args.containsKey("meshShared")
 
     // VALIDATION FIRST -- everything below throws before any hub call / state write, so a rejected
     // call can be corrected and retried without a half-applied change.
     if (args.containsKey("increment")) {
-        if (hasValue || hasMeshShared) throw new IllegalArgumentException("increment runs on its own; send value or mesh_shared on a separate call.")
+        if (hasValue || hasMeshShared) throw new IllegalArgumentException("increment runs on its own; send value or meshShared on a separate call.")
         return _incrementHubVariable(name.toString(), args.increment)
     }
     if (!hasValue && !hasMeshShared) {
-        throw new IllegalArgumentException("Provide value, mesh_shared, or both (or increment on its own).")
+        throw new IllegalArgumentException("Provide value, meshShared, or both (or increment on its own).")
     }
-    if (hasMeshShared && !(args.mesh_shared instanceof Boolean)) {
-        throw new IllegalArgumentException("mesh_shared must be a boolean (true or false), got: ${args.mesh_shared}")
+    if (hasMeshShared && !(args.meshShared instanceof Boolean)) {
+        throw new IllegalArgumentException("meshShared must be a boolean (true or false), got: ${args.meshShared}")
     }
     // Hub Mesh sharing applies only to HUB variables -- reject it on a rule-only var up front (before
-    // the value leg runs), so mesh_shared never silently no-ops against a rule_engine variable. A THROW
+    // the value leg runs), so meshShared never silently no-ops against a rule_engine variable. A THROW
     // from getGlobalVar is transient/unknown, NOT proof the name is not a hub variable -- distinguish it
     // from a genuine null so a lookup blip does not misreport the variable as absent.
     if (hasMeshShared) {
@@ -923,12 +923,12 @@ def toolSetVariable(Map args) {
         if (lookupThrew) {
             throw new IllegalArgumentException(
                 "Unable to verify whether '${name}' is a hub variable (getGlobalVar errored: ${lookupErr}). " +
-                "Retry, or drop mesh_shared.")
+                "Retry, or drop meshShared.")
         }
         if (hv == null) {
             throw new IllegalArgumentException(
-                "mesh_shared applies only to hub variables; '${name}' is not a hub variable. " +
-                "Create it with hub_create_variable first, or drop mesh_shared.")
+                "meshShared applies only to hub variables; '${name}' is not a hub variable. " +
+                "Create it with hub_create_variable first, or drop meshShared.")
         }
     }
 
@@ -936,7 +936,7 @@ def toolSetVariable(Map args) {
     if (result.success != true) return result
 
     if (hasMeshShared) {
-        boolean share = (args.mesh_shared == true)
+        boolean share = (args.meshShared == true)
         // Name passed literally: the platform HTTP layer encodes the path, so pre-encoding double-encodes.
         // A throw is an UNKNOWN outcome (a read timeout can fire after the hub applied it), not proof the
         // change did not happen -- capture it and let the sharedHubVariables read-back classify.
@@ -1308,29 +1308,29 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_set_variable",
-            description: "Set an existing variable's value[[FLAT_TRIM]], or add to a Number/Decimal hub variable with increment[[/FLAT_TRIM]]. For hub variables, the value must fit the variable's declared type, or nothing is written.[[FLAT_TRIM]] A DateTime keeps its kind: date-and-time takes 2026-02-04T14:00, date-only 2026-02-04, time-only 14:00 (hub-local; {date,time} and the stored form from hub_get_variable also work). A name that is not a hub variable falls back to the rule_engine namespace. Creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both — see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
+            description: "Set an existing variable's value[[FLAT_TRIM]], or add to a Number/Decimal hub variable with increment[[/FLAT_TRIM]]. For hub variables, the value must fit the variable's declared type, or nothing is written.[[FLAT_TRIM]] A DateTime keeps its kind: date-and-time takes 2026-02-04T14:00, date-only 2026-02-04, time-only 14:00 (hub-local; {date,time} and the stored form from hub_get_variable also work). A name that is not a hub variable falls back to the rule_engine namespace. Creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create. meshShared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, meshShared, or both — see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Variable name"],
-                    value: [type: "string", description: "Variable value (string, number, or boolean as string).[[FLAT_TRIM]] Optional when mesh_shared is given.[[/FLAT_TRIM]]"],
+                    value: [type: "string", description: "Variable value (string, number, or boolean as string).[[FLAT_TRIM]] Optional when meshShared is given.[[/FLAT_TRIM]]"],
                     increment: [type: "number", description: "[[FLAT_TRIM]]Add this amount atomically to a Number/Decimal hub variable (instead of value; send alone).[[/FLAT_TRIM]]"],
-                    mesh_shared: [type: "boolean", description: "Hub Mesh: share/unshare this hub variable.[[FLAT_TRIM]] true shares into the mesh, false unshares; hub variables only; may accompany value or stand alone.[[/FLAT_TRIM]]"]
+                    meshShared: [type: "boolean", description: "Hub Mesh: share/unshare this hub variable.[[FLAT_TRIM]] true shares into the mesh, false unshares; hub variables only; may accompany value or stand alone.[[/FLAT_TRIM]]"]
                 ],
                 required: ["name"]
             ]
         ],
         [
             name: "hub_create_variable",
-            description: "Create a new hub variable[[FLAT_TRIM]] (global variable visible to apps and Rule Machine)[[/FLAT_TRIM]], one at a time or several in one call.[[FLAT_TRIM]] Single form: name + type + value. Or LINK a variable a peer hub shares over Hub Mesh: mesh_source_hub_id + mesh_source_name from hub_get_hub_mesh availableLinkedHubVariables[], instead of name/type/value/variables; see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
+            description: "Create a new hub variable[[FLAT_TRIM]] (global variable visible to apps and Rule Machine)[[/FLAT_TRIM]], one at a time or several in one call.[[FLAT_TRIM]] Single form: name + type + value. Or LINK a variable a peer hub shares over Hub Mesh: meshSourceHubId + meshSourceName from hub_get_hub_mesh availableLinkedHubVariables[], instead of name/type/value/variables; see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "New variable name, e.g. \"vacationMode\".[[FLAT_TRIM]] Omit when using variables or the Hub Mesh link form.[[/FLAT_TRIM]]"],
                     type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
                     value: [description: "Initial value, must match the type.[[FLAT_TRIM]] DateTime is hub-local: 2026-02-04T14:00 makes a date-and-time variable, 2026-02-04 a date-only one, 14:00 a time-only one; {date,time} takes either or both. Offsets are ignored and seconds dropped. Omit when using variables.[[/FLAT_TRIM]]"],
-                    mesh_source_hub_id: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with mesh_source_name, not name/type/value.[[/FLAT_TRIM]]"],
-                    mesh_source_name: [type: "string", description: "Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"],
+                    meshSourceHubId: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with meshSourceName, not name/type/value.[[/FLAT_TRIM]]"],
+                    meshSourceName: [type: "string", description: "Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"],
                     variables: [type: "array", description: "Bulk form: several variables in one call.", items: [
                         type: "object",
                         properties: [
