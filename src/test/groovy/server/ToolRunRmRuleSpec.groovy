@@ -20,6 +20,8 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     RMUtilsMock rmUtils
     // App type per id for the getAppByAppId stub; an id mapped to null has no app, an absent id is a Rule-5.1 rule.
     Map<Integer, String> appTypes = [:]
+    // A Visual Rule's paused state, read on every builder read, so a test's pause endpoint can change it.
+    Map<Integer, Boolean> vrPaused = [:]
     List<Map> posts = []
     // Each rule's stopped/paused flags as its App Status page reads them; a stopRule/pausRule click flips one, as on a hub.
     Map<String, Map> flags = [:]
@@ -675,6 +677,27 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.results[1].success == false
     }
 
+    def "an actions batch whose only reached rule failed before the budget checkpoint is not partial, and keeps the unreached rule"() {
+        given: "120's click fails and the budget reads exhausted after it"
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            throw new IllegalStateException('btn POST refused')
+        }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> true }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: [120, 121], action: 'actions', __reqT0: 1L])
+
+        then:
+        result.success == false
+        result.partial == false
+        result.failedRuleIds == [120]
+        result.remainingRuleIds == [121]
+        result.results*.ruleId == [120]
+        result.error.contains('failed for EVERY rule reached (120)')
+        result.note.contains('ruleId=[121]')
+    }
+
     @spock.lang.Unroll
     def "a multi-rule #action pauses at the response-budget checkpoint and hands back the remainder"() {
         given: "the budget reads exhausted after the first rule"
@@ -880,14 +903,15 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     private void visualRule(int id, String format, boolean paused) {
         appTypes[id] = format == 'graph' ? 'Visual Rule Builder 2.0' : 'Visual Rule Builder 1.0'
+        vrPaused[id] = paused
         if (format == 'graph') {
             hubGet.register("/app/ruleBuilderJson/${id}") { params -> '{}' }
             hubGet.register("/app/ruleBuilder20Json/${id}") { params ->
-                JsonOutput.toJson([name: 'Porch', rulePaused: paused, ruleJson: '', validationErrors: []])
+                JsonOutput.toJson([name: 'Porch', rulePaused: vrPaused[id], ruleJson: '', validationErrors: []])
             }
         } else {
             hubGet.register("/app/ruleBuilderJson/${id}") { params ->
-                JsonOutput.toJson([name: 'Porch', rulePaused: paused, whenNodes: [], thenNodes: [], elseNodes: []])
+                JsonOutput.toJson([name: 'Porch', rulePaused: vrPaused[id], whenNodes: [], thenNodes: [], elseNodes: []])
             }
         }
     }
@@ -983,7 +1007,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     def "action=#action on a #format Visual Rule #outcome"() {
         given:
         visualRule(172, format, pausedBefore)
-        hubGet.register("/app/ruleBuilderPause/172/${action == 'pause'}") { params -> '{"success":true}' }
+        hubGet.register("/app/ruleBuilderPause/172/${action == 'pause'}") { params -> vrPaused[172] = (action == 'pause'); '{"success":true}' }
 
         when:
         def result = script.toolRunRmRule([ruleId: 172, action: action])
@@ -1073,12 +1097,14 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         result.success == ok
         reads == 2
-        ok || result.error.contains('no success verdict')
+        ok || result.error.contains(verdict)
 
         where:
-        label           | answer | after | ok    | outcome
-        'an empty body' | ''     | true  | true  | 'landed'
-        '{}'            | '{}'   | false | false | 'did not land'
+        label           | answer             | after | ok    | verdict              | outcome
+        'an empty body' | ''                 | true  | true  | ''                   | 'landed'
+        '{}'            | '{}'               | false | false | 'no success verdict' | 'did not land'
+        'success'       | '{"success":true}' | true  | true  | ''                   | 'landed'
+        'success'       | '{"success":true}' | false | false | 'reported success and the rule then read paused=false' | 'did not land although the endpoint said it did'
     }
 
     @spock.lang.Unroll

@@ -516,6 +516,11 @@ private Map _ndApply(Long id, List changes, boolean created) {
         if (document.success == false) {
             written.documentReadError = document.error
             written.note = "The changes were written and verified; only reading the rule back failed. Do not send them again: read the rule with hub_set_rule(operation:'read') or hub_get_rule. See hub_get_tool_guide(section='set_rule_reference')."
+        } else if (groovy.json.JsonOutput.toJson(groovy.json.JsonOutput.toJson(written + [document: document])).getBytes("UTF-8").length > _responseSizeLimitBytes() - 1024) {
+            // An oversized result is replaced whole by the size guard, which would drop this receipt and its backup
+            // key; the cloud relay's cap applies, since a detached worker cannot tell which route will deliver it.
+            written.documentOmitted = true
+            written.note = "The changes were written and verified; the rule's document is too large to return with them. Do not send them again: read it one section at a time with hub_set_rule(operation:'read', args:{sections:['actions'], cursor:'', limit:50}) and follow nextCursor. See hub_get_tool_guide(section='set_rule_reference')."
         } else written.document = document
         written
     } catch (Exception failure) {
@@ -556,13 +561,16 @@ Map toolUpdateRuleDocument(Map args) {
                 note: "Repair the broken rows first: open the rule with hub_set_rule(operation:'form') or in the Hubitat UI and replace or remove what refers to the missing device or variable, then retry. hub_get_rule lists the broken rows; see hub_get_tool_guide(section='set_rule_reference').".toString()]
         }
         // disabledActions stays null only when the rule's compiled state went unread or is malformed; the writes below
-        // verify against that same state, so a rule whose state cannot be read is not edited either.
-        boolean unread = beforeHealth.broken == null || beforeHealth.disabledActions == null
+        // verify against that same state, so a rule whose state cannot be read is not edited either. brokenRows is null
+        // when the device settings went unread, and broken() alone misses a condition whose device was deleted.
+        boolean unread = beforeHealth.broken == null || beforeHealth.disabledActions == null || beforeHealth.brokenRows == null
         if (unread) {
+            String why = beforeHealth.broken == null ? "broken flag could not be read before the write, so whether it is already broken is unknown" :
+                beforeHealth.disabledActions == null ? "compiled state could not be read before the write, so it is not known to be intact" :
+                "device settings could not be read before the write, so a row whose device was deleted would go unnoticed"
             return [success: false, partial: false, ruleId: id, broken: beforeHealth.broken, checkErrors: beforeHealth.checkErrors,
-                error: (beforeHealth.broken == null ? "Rule ${id}'s broken flag could not be read before the write, so whether it is already broken is unknown; no change was written." :
-                    "Rule ${id}'s compiled state could not be read before the write, so it is not known to be intact; no change was written.").toString(),
-                note: "checkErrors says why. Check that the hub answers with hub_get_info, then read the rule with hub_get_rule: send the update once its health reads broken:false and lists disabledActions. If it stays unreadable, check the rule in the Hubitat UI or with hub_set_rule(operation:'form') before editing it. See hub_get_tool_guide(section='set_rule_reference')."]
+                error: "Rule ${id}'s ${why}; no change was written.".toString(),
+                note: "checkErrors says why. Check that the hub answers with hub_get_info, then read the rule with hub_get_rule: send the update once its health reads broken:false and lists disabledActions and brokenRows. If it stays unreadable, check the rule in the Hubitat UI or with hub_set_rule(operation:'form') before editing it. See hub_get_tool_guide(section='set_rule_reference')."]
         }
         Map backup
         try { backup = _ndEditBackup(id, 'pre-document-update') }
@@ -749,7 +757,7 @@ Each change is {part,value}. Supported parts:
 
 Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; not every capability-specific variant is supported. Discover native options through operation:"form" when a document contract is unavailable. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback, native editor diagnostics, expression-reference checks and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
 
-Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state; a document read renders none of them.
+Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document; a document too large to send with the result is left out (documentOmitted:true), so read it by section. These pages can mutate native state; a document read renders none of them.
 
 ## Native Rule Forms
 

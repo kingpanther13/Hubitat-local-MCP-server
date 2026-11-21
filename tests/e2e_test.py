@@ -1799,6 +1799,8 @@ class TestRunner:
         "test_rm_rule_restore_expression_by_device_name",
         "test_complex_edit_recovers_deleted_rows_and_existing_payloads",
         "test_rule_edit_backups_capture_once_per_edit",
+        # Its refused updates must take no backup, which only shows while backups are on.
+        "test_rule_health_broken_true_on_dangling_trigger",
     })
 
     def _rule_edit_backups(self, on: bool) -> None:

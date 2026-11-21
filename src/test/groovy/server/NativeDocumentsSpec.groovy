@@ -787,6 +787,23 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
+    def 'an update whose App Status read fails is refused before its backup and any write, since a deleted condition device would go unseen'() {
+        given: "broken() and the compiled state both answer, as they do for a deleted condition device; only the settings read fails"
+        def backups = backupsOn()
+        hubGet.register('/installedapp/statusJson/42') { q -> throw new RuntimeException('read timed out') }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.broken == false
+        result.error == "Rule 42's device settings could not be read before the write, so a row whose device was deleted would go unnoticed; no change was written."
+        result.checkErrors.any { it == "the rule's settings went unread, so brokenRows was not listed" }
+        result.note.contains('brokenRows')
+        backups.isEmpty()
+        events.empty
+    }
+
     def 'a broken rule whose compiled state cannot be read is refused as already broken, before its backup and any write'() {
         given:
         def backups = backupsOn()
@@ -855,6 +872,33 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !result.containsKey('document')
         result.documentReadError == 'Rule 42 could not be read: boom'
         result.note.contains('written and verified') && result.note.contains('Do not send them again')
+    }
+
+    def 'a verified write whose document is too large to send keeps its receipt and backup key and leaves the document out'() {
+        given:
+        def backups = backupsOn()
+        script.metaClass.toolGetRuleDocument = { Map args -> [ruleId: 42L, actions: [[id: '1', text: 'x' * 200000]]] }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == true
+        result.ruleId == 42L
+        result.backup.backupKey == 'k'
+        backups == [42]
+        result.documentOmitted == true
+        !result.containsKey('document')
+        result.note.contains('written and verified') && result.note.contains('Do not send them again') && result.note.contains('nextCursor')
+    }
+
+    def 'a verified write whose document fits returns it inline'() {
+        given:
+        script.metaClass.toolGetRuleDocument = { Map args -> [ruleId: 42L, actions: [[id: '1', text: 'x' * 1000]]] }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == true
+        result.document.actions[0].text.size() == 1000
+        !result.containsKey('documentOmitted')
     }
 
     def 'a verified write whose document read-back throws is still a successful write with the read error beside it'() {

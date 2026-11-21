@@ -117,8 +117,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
         then:
         ['privateBoolean', 'disabledActions', 'disabledTriggers', 'paused', 'stopped', 'broken',
-         'eventSubscriptionCount', 'scheduledJobCount'].every { h.containsKey(it) && h.get(it) == null }
-        h.brokenRows == []
+         'eventSubscriptionCount', 'scheduledJobCount', 'brokenRows'].every { h.containsKey(it) && h.get(it) == null }
     }
 
     def "a rule whose own broken check says broken is reported broken while its compiled flag still reads false"() {
@@ -203,15 +202,15 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.stopped == false
         h.eventSubscriptionCount == 1
         h.scheduledJobCount == 0
-        h.brokenRows == []
-        h.checkErrors.any { it.contains('appSettings') } == brokenNow
+        h.brokenRows == null
+        h.checkErrors.any { it.contains('brokenRows was not listed') }
         !h.checkErrors.any { it.startsWith('statusJson') }
 
         where:
         brokenNow << [false, true]
     }
 
-    def "a broken rule whose compiled state went unread still carries the broken issue, and says why brokenRows is empty"() {
+    def "a broken rule whose compiled state went unread still carries the broken issue, and says why brokenRows is null"() {
         given:
         ruleBroken = true
         hubGet.register('/app/ruleBuilderJson/100') { throw new IOException('down') }
@@ -223,7 +222,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         then:
         h.broken == true
         h.disabledActions == null
-        h.brokenRows == []
+        h.brokenRows == null
         h.issues.any { it.contains('marks this rule broken') }
         h.checkErrors.any { it.contains('brokenRows was not listed') }
     }
@@ -264,6 +263,22 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.brokenRows == [[kind: 'condition', id: '1', setting: 'rDev_1', text: 'C is on']]
         h.issues == ["the rule refers to 1 row(s) whose device was deleted, which Rule Machine's own check does not flag; brokenRows lists them."]
         h.checkErrors == []
+    }
+
+    def "a Rule Machine 5.1 rule whose App Status read fails reads brokenRows null, not an empty list, with a checkErrors entry"() {
+        given: "broken() says false, as it does for a deleted condition device, and the settings cannot be read"
+        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson(ruleState(capabsfalse: ['1': 'C is on'], actionList: ['1'], actions: ['1': [method: 'getLogMsg', cond: '1']])) }
+        hubGet.register('/installedapp/statusJson/100') { throw new IOException('timed out') }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.broken == false
+        h.brokenRows == null
+        h.disabledActions == []
+        h.ok == false
+        h.checkErrors.any { it == "the rule's settings went unread, so brokenRows was not listed" }
     }
 
     def "an older Rule Machine type is not scanned for dead pickers unless its own flag says broken"() {
@@ -377,6 +392,33 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         [paused: false]     | false
         [paused: null]      | null
         [paused: 'invalid'] | null
+    }
+
+    def "an App Status flag that is not a flag reads null, neither the compiled value nor the name's decoration standing in for it"() {
+        given: "compiled state says not paused and not stopped; App Status holds a malformed value for each; the name carries both decorations"
+        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson(ruleState(paused: false, stopped: false)) }
+        hubGet.register('/installedapp/statusJson/100') {
+            statusJson(100, ruleState(paused: 'invalid', stopped: 'x'), [label: 'BAT-RH-test <span style="color:red">(Paused)</span> <span style="color:red">(Stopped)</span>'])
+        }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.paused == null
+        h.stopped == null
+        h.ok == false
+        h.checkErrors.any { it.contains('paused state is stored as neither true nor false') }
+        h.checkErrors.any { it.contains('stopped state is stored as neither true nor false') }
+    }
+
+    def "a valid App Status paused flag overrides the compiled value"() {
+        given:
+        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson(ruleState(paused: false)) }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100, ruleState(paused: true)) }
+
+        expect:
+        script._rmCheckRuleHealth(100).paused == true
     }
 
     def "an unclosed IF in the compiled actions is a structural issue pointing at the terminator change and hub_get_rule"() {
@@ -522,8 +564,10 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.broken == false
         h.disabledActions == null
         h.privateBoolean == true
-        h.checkErrors.size() == 1
+        h.brokenRows == null
+        h.checkErrors.size() == 2
         h.checkErrors[0].contains('is not Rule Machine state')
+        h.checkErrors[1] == "the rule's compiled state went unread, so brokenRows was not listed"
         h.issues == []
         h.ok == false
     }
@@ -644,9 +688,11 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.stopped == null
         h.privateBoolean == null
         h.paused == false
-        h.checkErrors.size() == 2
+        h.brokenRows == null
+        h.checkErrors.size() == 3
         h.checkErrors[0] == 'statusJson: status timeout'
-        h.checkErrors[1].contains('expression 0 was not checked')
+        h.checkErrors[1] == "the rule's settings went unread, so brokenRows was not listed"
+        h.checkErrors[2].contains('expression 0 was not checked')
     }
 
     def "a status page whose appState is not a list of entries is a failed status read"() {

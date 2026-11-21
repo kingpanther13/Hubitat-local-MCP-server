@@ -45,7 +45,8 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30, boolean retry = false ->
             if (path.startsWith('/app/ruleBuilderJson/')) return JsonOutput.toJson([broken: false, stopped: false, paused: false])
             if (path.startsWith('/installedapp/settings/')) return [settings: []]
-            if (path.startsWith('/installedapp/statusJson/')) return [eventSubscriptions: [], scheduledJobs: []]
+            // The hub answers JSON text; the pre-write health check needs the settings it carries.
+            if (path.startsWith('/installedapp/statusJson/')) return JsonOutput.toJson([appSettings: [], appState: [], eventSubscriptions: [], scheduledJobs: []])
             events << 'open'
             if (renderFails) throw new IllegalStateException('render failed')
             JsonOutput.toJson(form())

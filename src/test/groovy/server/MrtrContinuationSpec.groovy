@@ -432,6 +432,43 @@ class MrtrContinuationSpec extends ToolSpecBase {
         mcpDriver.parseInner(second).success == true
     }
 
+    def "a re-queued rule refused before dispatch in a later slice keeps its earlier row, whose click may have landed"() {
+        given: "slice one's pause click on 11 lands but its read-back fails; in slice two 11 cannot be looked up, so 12 and 11 are refused unrun"
+        settingsMap.enableWrite = true
+        def ranWith = []
+        script.metaClass.toolRunRmRule = { Map a ->
+            ranWith << new LinkedHashMap(a)
+            if (ranWith.size() == 1) {
+                return [success: false, partial: false, ruleIds: [11, 12], rmAction: 'pause x1',
+                        results: [[success: false, ruleId: 11, error: 'the pausRule click was accepted, but the rule\'s paused state then read timed out, not true']],
+                        failedRuleIds: [11], remainingRuleIds: [12]]
+            }
+            return script._rmRunGuardFailure([12, 11], [failure: script._rmLookupFailure([11: 'hub busy']), unreadable: [11: 'hub busy']])
+        }
+        def original = [ruleId: [11, 12], action: 'pause']
+
+        when:
+        def first = modernCall('hub_call_rule', original)
+        def terminal = modernCall('hub_call_rule', original, first.result.requestState)
+        def inner = mcpDriver.parseInner(terminal)
+
+        then:
+        ranWith[1].ruleId == [12, 11]
+        inner.success == false
+        inner.results*.ruleId == [11, 12]
+        inner.results.find { it.ruleId == 11 }.error.contains('click was accepted')
+        inner.results.find { it.ruleId == 12 }.dispatched == false
+        inner.failedRuleIds as Set == [11, 12] as Set
+    }
+
+    def "a re-queued rule that succeeds on retry replaces its earlier failed row"() {
+        expect:
+        script._mrtrCollapseRuleResults([[success: false, ruleId: 11, error: 'read-back failed'], [success: true, ruleId: 11]]) ==
+            [[success: true, ruleId: 11]]
+        script._mrtrCollapseRuleResults([[success: false, ruleId: 11, error: 'read-back failed'], [success: false, ruleId: 11, dispatched: false, error: 'Not run']]) ==
+            [[success: false, ruleId: 11, error: 'read-back failed']]
+    }
+
     def "a target refusal in a later call_rule slice keeps every rule in the terminal result"() {
         given: 'slice one stops 11; in slice two 13 cannot be looked up, so 12 and 13 are refused unrun'
         settingsMap.enableWrite = true

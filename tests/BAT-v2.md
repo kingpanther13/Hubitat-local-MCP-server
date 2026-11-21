@@ -3655,7 +3655,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 **Failure modes**: Response carries a `nextCursor` (pagination was re-introduced or never removed — silent client truncation regression). Tool count substantially less than the expected flat-mode catalog (size-guard hit `-32603` because the catalog grew past the 124,000-byte cap — needs more `[[FLAT_TRIM]]` wraps). Stale `-32602` errors on cursor values (cursor handling not fully removed). Duplicate tool names in the response (catalog assembly regression).
 
-**Reading note for T607-T619 Expected sections**: where these scenarios say "no broken markers", the check is `hub_get_rule` returning `health.ok=true` with an empty `health.issues` list. Together they confirm the rule picked up no `*BROKEN*` rendering markers after the write.
+**Reading note for T607-T619 Expected sections**: where these scenarios say "no broken markers", the check is the health check: `hub_get_rule` returning `health.ok=true` with an empty `health.issues` list, meaning Rule Machine's own broken check and the row checks found nothing wrong. It does not render the rule's page, so it is not evidence about rendered text; where a scenario expects a particular rendering, that is a separate check against the page the scenario names.
 
 ### T607 — Set a hub variable to a constant value inside an RM rule
 
@@ -4158,7 +4158,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The IF action renders its condition on mainPage. The condition page routes the enum attribute as in T636: the value lands in `state_<N>` and the comparator `RelrDev_<N>` is never shown. The tool refuses an IF left open, so the agent adds END-IF in the same edit; `hub_get_rule` then reports `ok=true`.
+**Expected**: The write reports `success=true`. The IF action renders its condition on mainPage. The condition page routes the enum attribute as in T636: the value lands in `state_<N>` and the comparator `RelrDev_<N>` is never shown. The tool refuses an IF left open, so the agent adds END-IF in the same edit; `hub_get_rule` then reports `health.ok=true`.
 
 **Failure modes**: A hard error on an attribute the hub legitimately treats as an enum. The agent writes the hidden comparator. Contrast control: a free-valued Custom Attribute condition renders `RelrDev_<N>` on the action page too.
 

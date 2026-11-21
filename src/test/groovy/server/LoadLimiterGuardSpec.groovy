@@ -592,8 +592,10 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         settingsMap.useGateways = true
         hubGet.register(RESET) { p -> 'ok' }
         int calls = 0
+        def seenIds = []
         script.metaClass.toolGetNativeRule = { args ->
             calls++
+            seenIds << args.ruleId
             if (calls == 1) throw new RuntimeException('App 1 generates excessive hub load')
             return [success: true, healthy: true]
         }
@@ -601,9 +603,10 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         when:
         def result = script.executeTool('hub_read_rules', [tool: 'hub_get_rule', args: [ruleId: 5]])
 
-        then:
+        then: "the repeat reads the same rule"
         result == [success: true, healthy: true]
         calls == 2
+        seenIds == [5, 5]
         resets() == 1
     }
 

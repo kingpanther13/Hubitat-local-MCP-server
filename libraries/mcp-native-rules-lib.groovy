@@ -510,7 +510,8 @@ def toolRunRmRule(args) {
     results.eachWithIndex { r, i -> if (r?.success != true) failed << ruleIds[i] }
     def out = [
         success: failed.isEmpty() && !budgetPaused,
-        partial: budgetPaused || (!failed.isEmpty() && failed.size() < results.size()),
+        // Partial means some rules were actioned and some were not; a pause after only failures actioned none.
+        partial: failed.size() < results.size() && (budgetPaused || !failed.isEmpty()),
         ruleIds: ruleIds,
         rmAction: "${action} x${results.size()}".toString(),
         results: results
@@ -519,7 +520,7 @@ def toolRunRmRule(args) {
         out.failedRuleIds = failed
         def actionedCount = results.size() - failed.size()
         out.error = (actionedCount == 0)
-            ? "${action} failed for EVERY rule in the batch (${failed.join(', ')}); per-rule detail in results[].".toString()
+            ? "${action} failed for EVERY rule ${budgetPaused ? 'reached' : 'in the batch'} (${failed.join(', ')}); per-rule detail in results[].".toString()
             : "${action} failed for rule(s) ${failed.join(', ')} -- the other ${actionedCount} rule(s) in the batch WERE actioned; per-rule detail in results[].".toString()
         out.note = runActions
             ? _rmRunFailedNote(failed)
@@ -551,12 +552,13 @@ private String _rmRunFailedNote(List failed) {
 // still names each rule in the combined result instead of leaving only the earlier slices' rows.
 private Map _rmRunGuardFailure(List<Integer> ruleIds, Map guard) {
     Map failure = guard.failure as Map
-    if (ruleIds.size() == 1) return [ruleId: ruleIds[0]] + failure + [ruleIds: ruleIds]
+    // dispatched:false lets a continuation keep an earlier slice's row for a rule, whose click may have landed.
+    if (ruleIds.size() == 1) return [ruleId: ruleIds[0], dispatched: false] + failure + [ruleIds: ruleIds]
     Map unreadable = guard.unreadable as Map
     def rows = ruleIds.collect { id ->
         unreadable.containsKey(id)
-            ? [success: false, ruleId: id, error: "The rule could not be looked up (${unreadable.get(id)}), so it was not run.".toString()]
-            : [success: false, ruleId: id, error: "Not run: another rule in the same call could not be looked up, so none of them was dispatched."]
+            ? [success: false, ruleId: id, dispatched: false, error: "The rule could not be looked up (${unreadable.get(id)}), so it was not run.".toString()]
+            : [success: false, ruleId: id, dispatched: false, error: "Not run: another rule in the same call could not be looked up, so none of them was dispatched."]
     }
     [success: false, partial: false, ruleIds: ruleIds, results: rows, failedRuleIds: ruleIds, error: failure.error,
      note: "No rule in this lookup was run; each one's results[] row says why. Retry them once; if the lookup fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
@@ -701,12 +703,13 @@ private Map _vrbTogglePaused(Integer ruleId, String action) {
     } catch (Exception e) {
         sent = [success: false, error: "pause endpoint failed: ${e.message}"]
     }
-    boolean unconfirmed = sent.success == true && sent.confirmed != true
-    if (unconfirmed) {
-        // The endpoint gave no verdict, so the rule's own state decides whether the pause landed.
+    if (sent.success == true) {
+        // The rule's own state decides whether the pause landed, as for the Rule Machine toggles: the endpoint's
+        // verdict alone does not show the state changed.
         def after = _ruleCompiledState(ruleId)
+        String answered = sent.confirmed == true ? "reported success" : "gave no success verdict"
         if (after?.paused != target) {
-            sent = [success: false, error: (after?.paused == null ? "the pause endpoint gave no success verdict and the rule's paused state could not be read, so the change could not be confirmed" : "the pause endpoint gave no success verdict and the rule then read paused=${after.paused}").toString()]
+            sent = [success: false, error: (after?.paused == null ? "the pause endpoint ${answered} and the rule's paused state could not be read, so the change could not be confirmed" : "the pause endpoint ${answered} and the rule then read paused=${after.paused}").toString()]
         }
     }
     if (sent.success != true) return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${sent.error}".toString(),
@@ -1009,7 +1012,7 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
             _rmStructuralSequenceFromSettings(settingsByName, ([actionIdx] as Set), orderedIndices))
         def newIssues = projectedIssues - currentIssues
         if (newIssues) {
-            throw new IllegalArgumentException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind}; removing it would introduce a new structural-balance issue (${newIssues.first()}). Remove the matching opener/closer first. RM is not touched.")
+            throw new IllegalArgumentException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind}; removing it would introduce a new structural-balance issue (${newIssues.first()}). Removing either half of a balanced pair alone is refused, so remove both together: one hub_set_rule(operation:'update') batch that deletes both rows (its balance is checked once, after the batch), or the Hubitat UI. RM is not touched.")
         }
     }
     _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
