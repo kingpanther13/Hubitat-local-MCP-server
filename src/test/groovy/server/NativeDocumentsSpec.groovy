@@ -706,6 +706,39 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.actionList == ['3', '1']
     }
 
+    def 'a rule whose condition device was deleted is refused as already broken before its backup and any change, though its own broken check says false'() {
+        given: "Rule Machine's broken() misses a deleted condition device; the condition's picker lists no device"
+        def backups = backupsOn()
+        nativeState.actions = ['3': [method: 'getLogMsg', cond: '4'], '1': [method: 'getLogMsg']]
+        statusSettings = [[name: 'rCapab_4', type: 'enum', value: 'Switch', deviceIdsForDeviceList: [], deviceList: null],
+                          [name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.broken == true
+        result.brokenRows == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
+        result.error == "Rule 42 is already broken: condition 4 ('Switch is on'); no change was written."
+        backups.isEmpty()
+        events.empty
+        renders.isEmpty()
+    }
+
+    def 'the document read reports a deleted condition device as broken although the rule\'s own check says false'() {
+        given:
+        statusSettings = [[name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        when:
+        def health = script.toolGetRuleDocument([ruleId: 42, sections: []]).health
+        then:
+        health.broken == true
+        health.ok == false
+        health.brokenRows == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
+        health.issues.any { it.contains('1 row(s) whose device was deleted') && it.contains("Rule Machine's own check does not flag") }
+        !health.issues.any { it.contains('marks this rule broken') }
+        renders.isEmpty()
+    }
+
     def 'an update whose compiled state cannot be read is refused before its backup and any write, though its broken check answers'() {
         given:
         def backups = backupsOn()

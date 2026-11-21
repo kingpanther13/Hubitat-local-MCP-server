@@ -9046,16 +9046,20 @@ def updated() {}
             gone = self._rm_ids(self._rm_update(app_id, [self._rm_switch_condition(gone_id)]))[0]
             gated = self._rm_ids(self._rm_update(app_id, [native_log("gated by a deleted device", condition=gone)]))[0]
             self._rm_delete_device(gone_dni)
+            # Read before anything renders the page: Rule Machine's own broken() misses a deleted condition device,
+            # so health lists the condition from its device setting and reads broken from that.
+            health = self._rm_health(app_id)
+            assert health.get("broken") is True and health.get("ok") is False, health
+            assert ("condition", str(gone), f"rDev_{gone}") in \
+                [(row.get("kind"), str(row.get("id")), row.get("setting")) for row in health.get("brokenRows") or []], health
             assert "Broken Condition" in self._rm_page(app_id), "deleting the device did not break its condition"
             self._rm_refuse_all(app_id, [[native_log("gated edit", id=gated, condition=gone)]])
-            # An unrelated edit does not report success while that conditional action is broken. The pre-write health
-            # check refuses it when the rule's own broken() sees the deleted device; otherwise the write's structural
-            # check names the action.
+            # An unrelated edit is refused before anything is written, because the condition's device is gone.
             unrelated = self._rm_call({"operation": "update", "ruleId": int(app_id),
                                        "args": {"changes": [native_log("unrelated")]}, "confirm": True})
             error = str(unrelated.get("error"))
-            refused_first = "is already broken" in error and "no change was written" in error and unrelated.get("partial") is False
-            assert unrelated.get("success") is False and (refused_first or f"Native action {gated} is broken" in error), unrelated
+            assert unrelated.get("success") is False and unrelated.get("partial") is False \
+                and "is already broken" in error and "no change was written" in error, unrelated
         finally:
             self._delete_native(app_id)
 

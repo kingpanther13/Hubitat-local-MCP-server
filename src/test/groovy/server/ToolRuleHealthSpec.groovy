@@ -250,12 +250,33 @@ class ToolRuleHealthSpec extends ToolSpecBase {
                                                       [kind: 'trigger', id: '1', setting: 'tDev1', text: 'Temp above Other']]
     }
 
-    def "a healthy rule reads no broken rows even with an empty device setting"() {
-        given:
-        seed(100, [capabstrue: ['1': 'A turns on']], [:], [setting('tDev1', 'capability.switch', [])])
+    def "a condition whose device was deleted makes the rule broken although Rule Machine's own check says false"() {
+        given: "broken() misses a deleted condition device; the condition's picker lists no device"
+        seed(100, [capabsfalse: ['1': 'C is on'], actionList: ['1'], actions: ['1': [method: 'getLogMsg', cond: '1']]], [:],
+             [setting('rCapab_1', 'enum', null, 'Switch'), setting('rDev_1', 'capability.switch', []), setting('state_1', 'enum', null, 'on')])
 
-        expect:
-        script._rmCheckRuleHealth(100).brokenRows == []
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.broken == true
+        h.ok == false
+        h.brokenRows == [[kind: 'condition', id: '1', setting: 'rDev_1', text: 'C is on']]
+        h.issues == ["the rule refers to 1 row(s) whose device was deleted, which Rule Machine's own check does not flag; brokenRows lists them."]
+        h.checkErrors == []
+    }
+
+    def "an older Rule Machine type is not scanned for dead pickers unless its own flag says broken"() {
+        given:
+        appType('Rule-4.1')
+        seed(100, [capabsfalse: ['1': 'C is on']], [typeName: 'Rule-4.1'], [setting('rDev_1', 'capability.switch', [])])
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.broken == false
+        h.brokenRows == []
     }
 
     @spock.lang.Unroll

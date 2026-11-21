@@ -547,8 +547,10 @@ Map toolUpdateRuleDocument(Map args) {
         // A rule that is already broken is refused here, not reported broken after the write; hub_get_rule reports the
         // same health, so the read and the refusal agree.
         Map beforeHealth = _rmCheckRuleHealth(id as Integer)
-        // Broken is refused first: broken() answers even when the compiled state went unread.
-        if (beforeHealth.broken == true) {
+        // Broken is refused first: broken() answers even when the compiled state went unread. A dead device picker
+        // counts too, since broken() misses a deleted condition device.
+        boolean alreadyBroken = beforeHealth.broken == true || beforeHealth.brokenRows
+        if (alreadyBroken) {
             String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { "${it.kind} ${it.id}" + (it.text ? " ('${it.text}')" : '') }.unique().join('; ') : ''
             return [success: false, partial: false, ruleId: id, broken: true, brokenRows: beforeHealth.brokenRows, checkErrors: beforeHealth.checkErrors,
                 error: "Rule ${id} is already broken${rows}; no change was written.".toString(),
@@ -729,7 +731,7 @@ String _ndGuide() {
 
 Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level ruleId identifies the target; args cannot override it or confirm. When mandatory guide acknowledgment is enabled, pass its key as top-level bestPracticeKey alongside operation, ruleId, args and confirm.
 
-Read hub_set_rule(operation:"read",ruleId,args:{sections:[...]}) before editing an existing native rule; hub_get_rule returns the same document from the read-only tools, with the local variables as a localVariables list in place of the variables section. A read does not open the rule's page: it returns health, the same report hub_get_rule returns (broken from the rule's own check, brokenRows, paused, stopped, privateBoolean, structuralIssues; see builtin_app_tools_rules). The sections come from native state and typed settings. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
+Read hub_set_rule(operation:"read",ruleId,args:{sections:[...]}) before editing an existing native rule; hub_get_rule returns the same document from the read-only tools, with the local variables as a localVariables list in place of the variables section. A read does not open the rule's page: it returns health, the same report hub_get_rule returns (broken from the rule's own check or a row whose device is gone, brokenRows, paused, stopped, privateBoolean, structuralIssues; see builtin_app_tools_rules). The sections come from native state and typed settings. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 
 For large rules, read one section with args:{sections:["settings"],cursor:"",limit:50}. Paging requires exactly one section; limit is 1..100 (default 50). The section keeps its usual map or list shape. Pass the returned top-level nextCursor into args.cursor until nextCursor is null. page returns offset, limit, total and revision, a hash of the complete section; restart if revision changes. Pages may contain fewer than limit rows to fit the response size cap; an individual oversized row is refused explicitly without truncation. Actions retain native order, settings sort by name, and map sections sort by string key. Omit cursor and limit for an unpaged read.
 
