@@ -54,6 +54,10 @@ if fault.exists() and fault.read_text() == path:
     fault.unlink()
     print("gh: Server Error (HTTP 502)", file=sys.stderr)
     sys.exit(1)
+rejected = root / "reject"
+if rejected.exists() and rejected.read_text() == path:
+    print("gh: Forbidden (HTTP 403)", file=sys.stderr)
+    sys.exit(1)
 if "POST" in sys.argv:
     with (root / "posts").open("a") as out:
         print(path, file=out)
@@ -103,7 +107,7 @@ def change_files(api, files):
     ("green", "ready"), ("missing-match", "deferred"), ("other-fork", "deferred"),
     ("older-green", "deferred"), ("cancelled", "deferred"), ("queued", "deferred"),
     ("stale", "superseded"), ("rename", "deferred"), ("scheduled-red", "deferred"),
-    ("filter-narrowed", "ready"), ("filter-removed", "ready"), ("beyond-300", "ready"),
+    ("filter-narrowed", "ready"), ("filter-removed", "ready"), ("file-301", "deferred"),
 ])
 def test_pr_gate(github, case, expected):
     api, rows, execute = github
@@ -134,8 +138,8 @@ def test_pr_gate(github, case, expected):
         change_files(api, [api[FILES][0][0], {"filename": f".github/workflows/{lane}.yml", "status": status}])
         narrowed = "name: lane-gate-test\non:\n  pull_request:\n    paths: ['nothing/**']\n"
         api[f"contents/.github/workflows/lane-gate-test.yml?ref={SHA}"] = {"content": base64.b64encode(narrowed.encode()).decode()}
-    elif case == "beyond-300":
-        # GitHub ignores file 301, so python-tests and ruff never start.
+    elif case == "file-301":
+        # GitHub evaluates up to 3,000 files, so python-tests and ruff apply; neither ran.
         change_files(api, [{"filename": f"libraries/f{i}.groovy", "status": "modified"} for i in range(300)]
                      + [{"filename": "tests/test_x.py", "status": "added"}])
     assert execute("ephemeral_fast_ci", {"pull_request": PR}) == f"result={expected}"
@@ -186,6 +190,14 @@ def test_lost_rerun_reply_is_repeated_only_when_nothing_ran(github, tmp_path):
     _, rows, execute = github
     (tmp_path / "fail-once").write_text("actions/jobs/77/rerun")
     assert execute("resume_ephemeral_ci", {"workflow_run": rows[0]}) == ["actions/jobs/77/rerun", "actions/jobs/66/rerun"]
+
+
+def test_rejected_requester_rerun_still_resumes_the_consumer(github, tmp_path):
+    _, rows, execute = github
+    (tmp_path / "reject").write_text("actions/jobs/77/rerun")
+    with pytest.raises(subprocess.CalledProcessError):
+        execute("resume_ephemeral_ci", {"workflow_run": rows[0]})
+    assert (tmp_path / "posts").read_text().splitlines() == ["actions/jobs/66/rerun"]
 
 
 def test_transient_workflow_lookup_on_a_green_revision(github, tmp_path):

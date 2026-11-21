@@ -60,8 +60,8 @@ module EphemeralFastCI
   end
 
   def self.expected(pr, files)
-    # Actions evaluates workflow-level path filters on the first 300 changed files.
-    paths = files.first(300).flat_map { |f| [f.fetch('filename'), f['previous_filename']].compact }
+    # Actions evaluates path filters on the first 3,000 changed files, all the files API lists.
+    paths = files.flat_map { |f| [f.fetch('filename'), f['previous_filename']].compact }
     FILTERED.select do |name|
       path = workflow_path(name)
       changed = files.find { |f| [f['filename'], f['previous_filename']].include?(path) }

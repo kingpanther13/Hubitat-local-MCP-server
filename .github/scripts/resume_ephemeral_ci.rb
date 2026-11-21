@@ -61,6 +61,7 @@ module EphemeralFastCI
     result = decision(pr, head, fast)
     return puts("Not resuming: #{result}") unless result == 'ready'
 
+    failed = []
     targets.each do |workflow, trigger|
       latest = trigger == event ? fast : runs(head.fetch('sha'), trigger, head, number)
       run = latest[workflow_path(workflow)]
@@ -77,10 +78,15 @@ module EphemeralFastCI
       end
       next puts("#{workflow}: already re-run (attempt #{run.fetch('run_attempt')})") if run.fetch('run_attempt') != attempt
       raise 'Deferred workflow did not finish' unless run.fetch('status') == 'completed'
-      return puts("#{head.fetch('sha')} is no longer current; not resuming") unless current(head, number)
+      break puts("#{head.fetch('sha')} is no longer current; not resuming") unless current(head, number)
       rerun(job, run)
       puts "Resumed #{workflow} for #{head.fetch('sha')}"
+    rescue RuntimeError => e
+      # One workflow's failure must not strand the other.
+      warn "#{workflow}: #{e.message}"
+      failed << workflow
     end
+    raise "Could not resume #{failed.join(', ')}" unless failed.empty?
   end
 end
 
