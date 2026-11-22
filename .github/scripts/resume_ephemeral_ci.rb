@@ -12,10 +12,11 @@ module EphemeralFastCI
     30.times do
       jobs = pages("actions/runs/#{Integer(run.fetch('id'))}/attempts/#{Integer(run.fetch('run_attempt'))}/jobs?per_page=100")
       gate = jobs.flat_map { |page| page.fetch('jobs') }.find { |job| job['name'] == GATE_JOB }
-      unless gate && gate['conclusion'] != 'skipped'
+      skipped = gate && gate['conclusion'] == 'skipped'
+      unless gate && !skipped
         puts "#{run.fetch('path')}: no #{GATE_JOB} decision in run #{run.fetch('id')}"
         # A gate that has not started yet reads the green checks itself.
-        return run['status'] == 'completed' ? nil : false
+        return skipped || run['status'] == 'completed' ? nil : false
       end
       if gate['status'] == 'completed'
         # A gate that failed (e.g. a GitHub API outage) is re-evaluated too.

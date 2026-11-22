@@ -197,7 +197,8 @@ def test_fast_completion_resumes_only_deferred_jobs(github, case, expected):
 @pytest.mark.parametrize("case,resumed", [
     ("deferred", True), ("gate-failed", True), ("no-run", False),
     # Label events on the same head add runs whose gate job is skipped.
-    ("newer-label-run", True), ("newer-run-starting", False), ("newer-run-past-gate", False),
+    ("newer-label-run", True), ("newer-label-run-finishing", True),
+    ("newer-run-starting", False), ("newer-run-past-gate", False),
 ])
 def test_fast_completion_resumes_the_deferred_physical_run(github, case, resumed):
     api, rows, execute = github
@@ -207,10 +208,10 @@ def test_fast_completion_resumes_the_deferred_physical_run(github, case, resumed
         physical.pop()
     if case.startswith("newer"):
         newer = run_row(PHYSICAL, 9, trigger="pull_request_target", number=4,
-                        status="in_progress" if case == "newer-run-starting" else "completed")
+                        status="in_progress" if case.endswith("ing") else "completed")
         physical.append(newer)
         api[jobs(9)] = [{"jobs": [] if case == "newer-run-starting" else
-                         [gate_job(99, False, conclusion="skipped" if case == "newer-label-run" else "success")]}]
+                         [gate_job(99, False, conclusion="skipped" if "label" in case else "success")]}]
     expected = [77, 66, 88] if resumed else [77, 66]
     assert execute("resume_ephemeral_ci", {"workflow_run": rows[0]}) == [f"actions/jobs/{i}/rerun" for i in expected]
 
