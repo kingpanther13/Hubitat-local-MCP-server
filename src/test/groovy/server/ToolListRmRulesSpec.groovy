@@ -634,8 +634,30 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         r482.status == 'paused'
         r482.statusSource == 'name'
         !r486.containsKey('statusSource')
-        result.statusSourceNote.contains('rule(s) 482 could not be read')
+        result.statusSourceNote.contains('rule(s) 482 could not be fully read')
         !result.statusSourceNote.contains('486')
+    }
+
+    def "a row whose state reads one flag and not the other mixes its sources, and the note does not claim both fell back"() {
+        given: 'paused reads from state; stopped is malformed, so it keeps the name-derived value'
+        rmUtils.stubRuleList5 = [[488: 'Garage loop']]
+        registerRmAppsList([ruleNode(488, 'Garage loop (Stopped)')])
+        hubGet.register('/installedapp/statusJson/488') { params ->
+            groovy.json.JsonOutput.toJson([installedApp: [id: 488], appSettings: [],
+                                           appState: [[name: 'paused', value: true], [name: 'stopped', value: 'maybe']]])
+        }
+
+        when:
+        def result = script.toolListRmRules([:])
+        def r488 = result.rules.find { it.id == 488 }
+
+        then:
+        r488.paused == true
+        r488.stopped == true
+        r488.statusSource == 'name'
+        result.statusSourceNote.contains('rule(s) 488 could not be fully read')
+        result.statusSourceNote.contains('paused flag, stopped flag or both come from the name decoration')
+        !result.statusSourceNote.contains('decoration alone')
     }
 
     def "a red-X disabled, decorated row whose state read succeeds keeps disabled first and its state's flags"() {

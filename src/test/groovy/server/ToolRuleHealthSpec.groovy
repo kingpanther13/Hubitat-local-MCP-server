@@ -1097,21 +1097,64 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         hubGet.calls.isEmpty()
     }
 
-    def "a failed app lookup is a runtime failure with a read's recovery note"() {
+    def "a failed app lookup with nothing else readable is a runtime failure with a read's recovery note"() {
         given:
         script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
+        hubGet.register('/installedapp/statusJson/100') { throw new IOException('down') }
+        hubGet.register('/app/ruleBuilderJson/100') { throw new IOException('down') }
 
         when:
         def result = script.toolGetNativeRule([ruleId: 100])
 
-        then: 'a read is told it changed nothing and may retry, not that nothing was run'
+        then: 'a read is told it changed no configuration and may retry, not that nothing was run'
         result.success == false
         result.error == 'Rule 100 could not be read: lookup failed'
+        result.note.contains("does not open the rule's page or change its configuration")
         result.note.contains('retrying once is safe')
-        !result.note.contains('Nothing was changed')
+        !result.note.contains('writes nothing')
         !result.error.contains('nothing was run')
         result.note.contains("hub_get_tool_guide(section='builtin_app_tools_rules')")
-        hubGet.calls.isEmpty()
+        count('/installedapp/configure/json/100') == 0
+    }
+
+    def "a failed app lookup still returns the health its status page supplies, with the document marked unread"() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
+        seed(100)
+
+        when:
+        def result = script.toolGetNativeRule([ruleId: 100, sections: ['actions']])
+
+        then: 'health is read without the page; nothing of the document is returned'
+        !result.containsKey('success')
+        result.health.ruleFormat == 'rm'
+        result.health.unreadable == false
+        result.health.checkErrors.any { it.contains('could not be identified (lookup failed)') }
+        result.localVariables == null
+        !result.containsKey('actions')
+        result.documentError == 'Rule 100 could not be identified (lookup failed), so its document and local variables were not read; its health was read from its status page.'
+        result.note.contains('retrying once is safe')
+        count('/installedapp/configure/json/100') == 0
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_rule via dispatch returns health, not an error, when only the app lookup fails (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
+        seed(100)
+
+        when:
+        def response = mcpDriver.callTool('hub_get_rule', [ruleId: 100, sections: []])
+
+        then:
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.health.ruleFormat == 'rm'
+        inner.documentError.contains('could not be identified (lookup failed)')
+
+        where:
+        useGateways << [true, false]
     }
 
     @spock.lang.Unroll

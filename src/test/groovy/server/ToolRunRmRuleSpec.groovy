@@ -393,6 +393,46 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "a landed #action whose page re-renders with an error stays successful and notes the stale status (useGateways=#useGateways)"() {
+        given: 'the refresh answers, but its page reports an error'
+        settingsMap.useGateways = useGateways
+        rule(108, action == 'start', action == 'resume')
+        hubGet.register('/installedapp/configure/json/108') { params ->
+            JsonOutput.toJson([app: [id: 108, version: 3], configPage: [name: 'mainPage', error: 'Cannot invoke method on null', sections: []]])
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 108, action: action])
+
+        then: 'the flag was verified, so success holds; the note names the page error and how to refresh'
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.note.contains('the page reported: Cannot invoke method on null')
+        inner.note.contains('hub_list_rules may show the old status')
+        inner.note.contains('hub_get_app_config(appId: 108)')
+        flags['108'][action in ['stop', 'start'] ? 'stopped' : 'paused'] == (action in ['stop', 'pause'])
+
+        where:
+        action   | useGateways
+        'stop'   | true
+        'pause'  | false
+        'resume' | true
+    }
+
+    def "a landed toggle whose page renders cleanly carries no note"() {
+        given:
+        rule(109, false, false)
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 109, action: 'pause'])
+
+        then:
+        result.success == true
+        !result.containsKey('note')
+    }
+
+    @spock.lang.Unroll
     def "action=#action whose #button click the hub accepts without changing the flag is a failure with a recovery note"() {
         given: 'the click lands, but the rule state does not move'
         rule(160, action == 'start', action == 'resume')
