@@ -174,9 +174,9 @@ jobs:
           fi
           export SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND" RESULTS="ephemeral-hub-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND"
           export JOB="Request ephemeral hub ($KIND)"
-          # Longer than the request side can take: 20 minutes for its fast-CI gate, 25 for the hub to
-          # start and 40 for the results.
-          wait=5400
+          # Fail fast: up to 20 minutes for the request run's fast-CI gate, then 35 for a hub to boot
+          # and run the suite (about 20). A slower run is failed here and re-run, not waited out.
+          wait=3300
           deadline=$((SECONDS + wait)); first_seen=$((SECONDS + 600)); grace=0; polls=0
           # One artifact read per minute. The request run's state is re-read every poll for the first
           # five, so a lane the request side skips ends within a minute or two, then every fifth.

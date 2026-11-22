@@ -247,8 +247,8 @@ def test_main_push_waits_for_its_own_unit_run(github):
 def test_gate_can_read_every_fast_workflow_and_outlasts_its_wait():
     # A missing workflow file or an unreadable filter would fail every PR's gate. A job timeout less
     # than four minutes above the wait could kill the gate before it reports why no hub started, and
-    # a test run must outwait the gate plus the request side's 25 minutes for the hub to start and 40 for
-    # its results, or it gives up on results the request run would still relay.
+    # a test run that waits less than 35 minutes beyond the gate could give up on a hub still running
+    # its suite.
     subprocess.run(["ruby", "-r", "./.github/scripts/ephemeral_fast_ci", "-e", """
       EphemeralFastCI::REQUIRED.each { |name| File.read(EphemeralFastCI.workflow_path(name)) }
       EphemeralFastCI::FILTERED.each do |name|
@@ -260,5 +260,5 @@ def test_gate_can_read_every_fast_workflow_and_outlasts_its_wait():
         abort "#{name}: fast-ci timeout too close to the wait" unless limit * 60 >= EphemeralFastCI::WAIT_SECONDS + 240
       end
       wait = File.read(EphemeralFastCI.workflow_path('hub-e2e-ephemeral'))[/^ +wait=(\\d+)$/, 1]
-      abort 'the test run waits too little beyond the gate' unless Integer(wait) >= EphemeralFastCI::WAIT_SECONDS + 1500 + 2400
+      abort 'the test run waits too little beyond the gate' unless Integer(wait) >= EphemeralFastCI::WAIT_SECONDS + 2100
     """], cwd=ROOT, check=True)
