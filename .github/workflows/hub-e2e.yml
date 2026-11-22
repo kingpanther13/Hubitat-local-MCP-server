@@ -146,9 +146,13 @@ permissions:
 # the attempt>1 override in lane_gate.js. The attempt==1 guard only SHRINKS the shared set, so the
 # subset invariant above still holds. If run_attempt were ever stale at re-run time the expression
 # degrades to the old per-event grouping -- never a new hazard.
+# FAST-CI RESUME: ephemeral-fast-ci-completed.yml re-runs a deferred `fast-ci` job as
+# github-actions[bot]. That re-run keeps the group its first attempt had, so a later commit still
+# cancels it, and cancel-in-progress is false for every re-run, so it waits behind a newer run
+# instead of cancelling it (its gate then reports the head superseded).
 concurrency:
   group: >-
-    ${{ (github.run_attempt == 1
+    ${{ ((github.run_attempt == 1 || github.triggering_actor == 'github-actions[bot]')
     && (github.event_name != 'pull_request_target'
     || (github.event.action != 'labeled' && github.event.action != 'unlabeled')
     || (github.event.action == 'labeled' && (
@@ -159,7 +163,7 @@ concurrency:
     || (github.event.label.name == 'e2e:full' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major'))))))
     && format('hub-e2e-{0}-{1}', github.event.pull_request.head.repo.full_name || github.repository, github.head_ref || github.ref_name)
     || format('hub-e2e-{0}-{1}-isolated-{2}', github.event.pull_request.head.repo.full_name || github.repository, github.head_ref || github.ref_name, github.run_id) }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.run_attempt == 1 }}
 
 jobs:
   # The hub-less self-deploy recovery guard (issue #237) is NOT here: running untrusted
@@ -313,15 +317,61 @@ jobs:
       - name: Gate
         run: echo "e2e approved to run against the shared test hub"
 
+  # A PR's hub run waits for this revision's fast CI. The job checks once; when fast CI is not green
+  # yet it defers, and ephemeral-fast-ci-completed.yml re-runs it when the last fast workflow passes
+  # (docs/ephemeral-hub-e2e.md). It follows `approve`, so a resumed run needs no second approval.
+  # A dispatch has no gate. Renaming this job or its Defer step stops deferred runs from resuming.
+  fast-ci:
+    name: Fast CI prerequisites
+    outputs:
+      result: ${{ steps.fast.outputs.result }}
+    needs: [lane-gate, approve]
+    if: >-
+      !cancelled() && github.event_name == 'pull_request_target'
+      && needs.lane-gate.outputs.run == 'true' && needs.approve.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      GATE_SHA: ${{ github.event.pull_request.head.sha }}
+      STATE: pending
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check fast CI on this revision
+        id: fast
+        run: ruby .github/scripts/ephemeral_fast_ci.rb
+      # The required status stays pending, so a deferral that never resumes is visible.
+      - name: Defer hubs until fast CI passes
+        if: steps.fast.outputs.result == 'deferred'
+        env:
+          DESC: 'e2e waiting for fast CI to pass; it starts by itself when fast CI is green'
+        run: bash .github/scripts/post_e2e_gate.sh
+      - name: Post e2e gate status (fast CI check failed)
+        if: failure()
+        env:
+          DESC: 'the Fast CI prerequisites job failed; e2e did not run -- re-run that job'
+        run: bash .github/scripts/post_e2e_gate.sh
+
   # Fork PRs have no bundle-artifacts entry (publish-bundle-artifact.yml only runs on pushes to THIS
   # repo), so once `approve` clears, build the PR's apps (libraries inlined) and publish them here under
   # shas/<head-sha>/ -- see publish_fork_bundle.sh for the trust model. Checkout is the BASE ref, so the
   # script and builder are main's; only the PR's app sources and libraries/ are read, as data.
   # Same-repo PRs skip it.
   fork-bundle:
-    needs: [lane-gate, approve]
+    needs: [lane-gate, approve, fast-ci]
+    # fast-ci is SKIPPED for a dispatch, so the needs are checked explicitly.
     if: >-
-      inputs.probe_only != 'true' && inputs.watchdog_update != 'true' && inputs.install_main != 'true' && needs.lane-gate.outputs.run == 'true'
+      !cancelled() && needs.approve.result == 'success'
+      && (github.event_name == 'workflow_dispatch' || needs.fast-ci.outputs.result == 'ready')
+      && inputs.probe_only != 'true' && inputs.watchdog_update != 'true' && inputs.install_main != 'true' && needs.lane-gate.outputs.run == 'true'
       && ((github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
       || (github.event_name == 'workflow_dispatch' && inputs.pr_number != ''))
     runs-on: ubuntu-latest
@@ -541,12 +591,13 @@ jobs:
     # lane). The REQUIRED merge gate is the SEPARATE posted commit status named "Full e2e (runs with
     # label)" (see LABEL-GATED FLOW at top + the "Post e2e gate status" step). Branch protection requires "Full e2e (runs with label)", NOT "e2e (run)".
     name: e2e (run)
-    needs: [lane-gate, approve, fork-bundle]
-    # fork-bundle is SKIPPED for same-repo PRs; a skipped need would skip this job under the implicit
-    # success(), so the needs are checked explicitly.
+    needs: [lane-gate, approve, fast-ci, fork-bundle]
+    # fork-bundle is SKIPPED for same-repo PRs and fast-ci for a dispatch; a skipped need would skip
+    # this job under the implicit success(), so the needs are checked explicitly.
     if: >-
       !cancelled() && inputs.probe_only != 'true' && inputs.watchdog_update != 'true' && inputs.install_main != 'true' && needs.lane-gate.outputs.run == 'true'
       && needs.approve.result == 'success'
+      && (github.event_name == 'workflow_dispatch' || needs.fast-ci.outputs.result == 'ready')
       && (needs.fork-bundle.result == 'success' || needs.fork-bundle.result == 'skipped')
     runs-on: ubuntu-latest
     # Bounds the EXECUTING job. Cross-PR queueing happens BEFORE this clock starts (a run waits its
