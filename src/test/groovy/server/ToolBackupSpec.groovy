@@ -428,7 +428,7 @@ class ToolBackupSpec extends ToolSpecBase {
         flag                                 | body                                                                                  | remedy
         'zwaveFirmwareMismatchHubNewer'      | '{"success":false,"zwaveFirmwareMismatchHubNewer":true}'                              | 'allowZwaveFirmwareMismatch=true'
         'zwaveFirmwareMismatchBackupNewer'   | '{"success":false,"zwaveFirmwareMismatchBackupNewer":true}'                           | 'Update the hub'
-        'zwaveStackMismatch'                 | '{"success":false,"zwaveStackMismatch":true,"backupZWaveStack":"js","activeZWaveStack":"legacy"}' | 'hub_set_zwave(zwave_js'
+        'zwaveStackMismatch'                 | '{"success":false,"zwaveStackMismatch":true,"backupZWaveStack":"js","activeZWaveStack":"legacy"}' | 'hub_set_zwave(zwaveJs'
     }
 
     @spock.lang.Unroll

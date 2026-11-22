@@ -16,7 +16,7 @@ class ToolNativeDiagnosticsReviewSpec extends ToolSpecBase {
         hubGet.register('/hub/zigbee/updatePingDevice/42/true') { 'ok' }
 
         when:
-        def result = script.toolSetZigbee([ping_device: [device_id: '42', enabled: true]])
+        def result = script.toolSetZigbee([pingDevice: [deviceId: '42', enabled: true]])
 
         then:
         result.success == true
@@ -34,7 +34,7 @@ class ToolNativeDiagnosticsReviewSpec extends ToolSpecBase {
     @Unroll
     def 'Zigbee ping rejects unauthorized or non-hub ID #deviceId before HTTP'() {
         when:
-        def response = mcpDriver.callTool('hub_set_zigbee', [ping_device: [device_id: deviceId, enabled: true]])
+        def response = mcpDriver.callTool('hub_set_zigbee', [pingDevice: [deviceId: deviceId, enabled: true]])
 
         then:
         response.result.isError == true
@@ -50,7 +50,7 @@ class ToolNativeDiagnosticsReviewSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { JsonOutput.toJson([device: [id: 43]]) }
 
         when:
-        def response = mcpDriver.callTool('hub_set_zigbee', [ping_device: [device_id: '42', enabled: true]])
+        def response = mcpDriver.callTool('hub_set_zigbee', [pingDevice: [deviceId: '42', enabled: true]])
 
         then:
         response.result.isError == true
