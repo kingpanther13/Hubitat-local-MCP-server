@@ -10,8 +10,7 @@ module EphemeralFastCI
   FILTERED = %w[groovy24-parse sandbox-lint python-tests ruff self-deploy-recovery
                 lane-gate-test lease-scripts-test dependency-updates-check].freeze
   # Fast CI takes about five minutes. workflow_run is not an allowed event here
-  # (docs/ephemeral-hub-e2e.md), so the gate polls. The gate jobs' timeout-minutes must be
-  # at least four minutes above this, and the test run's wait at least 35 minutes above it.
+  # (docs/ephemeral-hub-e2e.md), so the gate polls.
   WAIT_SECONDS = 20 * 60
   POLL_SECONDS = 30
 
