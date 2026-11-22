@@ -148,7 +148,9 @@ def with_first(rows, **change):
     ("red-while-another-runs", "not-started", "fast CI did not pass: pr-guard"),
     ("approved-then-green", "ready", ""),
     ("never-approved", "not-started", "unit-tests (awaiting workflow approval)"),
-    ("read-refused-once", "ready", ""),
+    ("runs-read-refused-once", "ready", ""),
+    ("pr-read-refused-once", "ready", ""),
+    ("files-read-refused-once", "ready", ""),
     ("unlisted-run-appears", "ready", ""),
 ])
 def test_gate_waits_for_running_checks(github, tmp_path, case, expected, reported):
@@ -177,8 +179,9 @@ def test_gate_waits_for_running_checks(github, tmp_path, case, expected, reporte
         api[runs] = {"__sequence__": [held, held, done]}
     elif case == "never-approved":
         api[runs], wait = held, 0
-    elif case == "read-refused-once":
-        (tmp_path / "refuse-once").write_text(runs)
+    elif case.endswith("-read-refused-once"):
+        # A rate-limited read, also one made before the first poll, is retried at the next poll.
+        (tmp_path / "refuse-once").write_text({"runs": runs, "pr": "pulls/7", "files": FILES}[case.split("-")[0]])
     elif case == "unlisted-run-appears":
         # A path-filtered workflow that applies but has no run listed yet is waited for.
         api[runs] = {"__sequence__": [[{"workflow_runs": [*rows[:3], rows[4]]}], done]}
@@ -190,7 +193,7 @@ def test_gate_waits_for_running_checks(github, tmp_path, case, expected, reporte
         assert "Waiting for unit-tests" in log
     elif case == "approved-then-green":
         assert "Waiting for unit-tests (awaiting workflow approval)" in log
-    elif case == "read-refused-once":
+    elif case.endswith("-read-refused-once"):
         assert "retrying at the next poll" in log
     elif case == "unlisted-run-appears":
         assert "Waiting for groovy24-parse" in log
@@ -244,7 +247,8 @@ def test_main_push_waits_for_its_own_unit_run(github):
 def test_gate_can_read_every_fast_workflow_and_outlasts_its_wait():
     # A missing workflow file or an unreadable filter would fail every PR's gate. A job timeout less
     # than four minutes above the wait could kill the gate before it reports why no hub started, and
-    # a test run that waits less than 35 minutes beyond the gate could give up on a hub still booting.
+    # a test run must outwait the gate plus the request side's 25 minutes for the hub to start and 40 for
+    # its results, or it gives up on results the request run would still relay.
     subprocess.run(["ruby", "-r", "./.github/scripts/ephemeral_fast_ci", "-e", """
       EphemeralFastCI::REQUIRED.each { |name| File.read(EphemeralFastCI.workflow_path(name)) }
       EphemeralFastCI::FILTERED.each do |name|
@@ -256,5 +260,5 @@ def test_gate_can_read_every_fast_workflow_and_outlasts_its_wait():
         abort "#{name}: fast-ci timeout too close to the wait" unless limit * 60 >= EphemeralFastCI::WAIT_SECONDS + 240
       end
       wait = File.read(EphemeralFastCI.workflow_path('hub-e2e-ephemeral'))[/^ +wait=(\\d+)$/, 1]
-      abort 'the test run waits too little beyond the gate' unless Integer(wait) >= EphemeralFastCI::WAIT_SECONDS + 2100
+      abort 'the test run waits too little beyond the gate' unless Integer(wait) >= EphemeralFastCI::WAIT_SECONDS + 1500 + 2400
     """], cwd=ROOT, check=True)

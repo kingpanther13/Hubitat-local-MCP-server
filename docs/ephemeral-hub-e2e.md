@@ -91,7 +91,8 @@ These steps describe hold mode, where the test run drives the hub. The default
    test run's ID and its kind, and finds that provider run by the run ID and kind in its name. It
    waits up to 25 minutes for the hub's session and relays it, still encrypted, as artifact
    `ephemeral-hub-session-<test run id>-<attempt>-<kind>`.
-5. `e2e` waits up to 55 minutes (20 for the fast-CI gate, then 35) for its own kind's artifact, in its own run or in the request run
+5. `e2e` waits up to 90 minutes, longer than the request side's 20 for the fast-CI gate, 25 for
+   the hub to start and 40 for its results, for its own kind's artifact, in its own run or in the request run
    for its head SHA. A request run that reports the lane unavailable makes `e2e` skip with that reason.
    A request run that ends without either artifact fails `e2e`. While the default branch has no
    request workflow the lane skips on PRs, because `pull_request_target` always runs the default
@@ -139,7 +140,7 @@ only when the provider run succeeded, failure when it did not complete within th
 not be read, or was never started while that job ran. The PR's own `e2e` job cannot change that
 status.
 
-The `e2e` job waits up to 55 minutes for that artifact and applies the same entry check. It prints
+The `e2e` job waits up to 90 minutes for that artifact and applies the same entry check. It prints
 the three logs with workflow commands disabled, writes the counts and failed tests to the step
 summary, and uploads the files as its results. It passes only when `e2e.status` and `sdk.status`
 are both `passed`. An SDK leg that did not run fails the job, because conformance may not skip.
@@ -162,7 +163,7 @@ run, but `pull_request_target` runs regardless of it, so the request workflow ga
 reviewer-protected `e2e-approval` environment otherwise. No hub boots and none of the PR's code
 runs until a maintainer approves both: **Approve workflows to run** on the PR, then **Review
 deployments** on the request run. The request side then waits up to 20 minutes for fast CI,
-which starts only with the first approval, and the test run waits 55 minutes for results, so
+which starts only with the first approval, and the test run waits 90 minutes for results, so
 approve the two together; after a timeout, re-run both jobs as described above. A rejected deployment fails `e2e`.
 
 The hub is disposable and serves only the test run that requested it. The job that runs PR code

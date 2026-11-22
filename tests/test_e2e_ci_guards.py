@@ -734,8 +734,8 @@ def test_ephemeral_test_job_waits_for_its_own_session_or_a_skip_reason(event, ba
     ("push", "failure", "", "true", "ended"),
     # A re-run request attempt's results win over the reason an earlier attempt left on the run.
     ("pull_request", "7 completed success", "ephemeral-hub-unavailable\nephemeral-hub-results-100-1-os", "true", "results"),
-    ("pull_request", "7 in_progress ", "", "true", "55 minutes"),
-    ("pull_request", "7 in_progress ", "", "false", "55 minutes"),
+    ("pull_request", "7 in_progress ", "", "true", "90 minutes"),
+    ("pull_request", "7 in_progress ", "", "false", "90 minutes"),
 ])
 def test_ephemeral_test_job_takes_provider_run_results(event, request_state, artifacts, run_suite, outcome, tmp_path):
     result, output, _ = _wait_for_hub(tmp_path, event, "present", request_state, artifacts, run_suite)

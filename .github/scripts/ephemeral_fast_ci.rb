@@ -138,25 +138,31 @@ module EphemeralFastCI
     'not-started'
   end
 
+  # The fast workflows that apply to this revision: Unit Tests for a push, more for a PR.
+  def self.applicable(pr, number)
+    return ['unit-tests'] unless number
+    # A re-run gate replays the original event, so changed_files comes from the PR as it is now.
+    files = pages("pulls/#{Integer(number)}/files?per_page=100").flatten(1)
+    # The PR files API lists at most 3000 files.
+    raise 'Incomplete PR file list' unless files.size == [pr.fetch('changed_files'), 3000].min
+    expected(pr, files)
+  end
+
   def self.decision(pr, head)
     number = pr&.fetch('number')
-    fresh = current(head, number)
-    return superseded(head) unless fresh
-    # A moved head ends the wait as superseded, so this revision's applicable workflows are read once.
-    names = ['unit-tests']
-    if pr
-      # A re-run gate replays the original event, so read changed_files from the PR as it is now.
-      files = pages("pulls/#{Integer(number)}/files?per_page=100").flatten(1)
-      # The PR files API lists at most 3000 files.
-      raise 'Incomplete PR file list' unless files.size == [fresh.fetch('changed_files'), 3000].min
-      names = expected(fresh, files)
-    end
     clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
     wait = Integer(ENV.fetch('FAST_CI_WAIT_SECONDS', WAIT_SECONDS))
     deadline = clock.call + wait
+    names = nil
     loop do
       expired = clock.call >= deadline
       begin
+        # A moved head ends the wait as superseded, so this revision's applicable workflows are read once.
+        names ||= begin
+          fresh = current(head, number)
+          return superseded(head) unless fresh
+          applicable(fresh, number)
+        end
         pending, failed = state(names, runs(head.fetch('sha'), pr ? 'pull_request' : 'push', head, number))
         return superseded(head) unless current(head, number)
       rescue TransientError => e
