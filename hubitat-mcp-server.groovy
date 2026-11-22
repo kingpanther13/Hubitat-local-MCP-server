@@ -10446,7 +10446,8 @@ Map _appStatusRead(Integer appId) {
     sections.each { key, value ->
         if (value != null && !(value instanceof List)) throw new IllegalStateException("App ${appId}'s status page returned ${key} in an unexpected shape")
     }
-    // Only brokenRows reads the settings, so a malformed list reads empty and is flagged rather than failing the read.
+    // Only rule health reads the settings (brokenRows and useST), so a malformed list reads empty and is flagged
+    // rather than failing the read.
     // An absent list is flagged too: it is settings that went unread, not an app with none ([]).
     boolean settingsMalformed = !(status.appSettings instanceof List)
     sections.appSettings = settingsMalformed ? null : status.appSettings
