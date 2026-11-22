@@ -1806,7 +1806,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
                 [id: 'api-hubitat-zwave-x', className: 'hubitat.zwave.X', label: 'X', section: 'protocols', topic: 'Z-Wave',
                  methods: [[kind: 'method', name: 'events', signature: 'void events()', summary: 'protocol events between frames']]]]])
 
-    def "platform_api_search pages 25 matches at a time"() {
+    def "platformApiSearch pages 25 matches at a time"() {
         given:
         hubGet.register('/developer-docs/index.json') { p ->
             JsonOutput.toJson([contentRevision: '1', guides: [], pages: [[id: 'api-x', className: 'X', label: 'X', section: 'shared',
@@ -1814,8 +1814,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def first = script.toolGetToolGuide(null, null, [platform_api_search: 'events'])
-        def second = script.toolGetToolGuide(null, first.nextCursor, [platform_api_search: 'events'])
+        def first = script.toolGetToolGuide(null, null, [platformApiSearch: 'events'])
+        def second = script.toolGetToolGuide(null, first.nextCursor, [platformApiSearch: 'events'])
 
         then:
         first.total == 30
@@ -1824,12 +1824,12 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         !second.containsKey('nextCursor')
     }
 
-    def "platform_api_search finds a method on its class page"() {
+    def "platformApiSearch finds a method on its class page"() {
         given:
         hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
 
         when:
-        def r = script.toolGetToolGuide(null, null, [platform_api_search: 'eventsBetween'])
+        def r = script.toolGetToolGuide(null, null, [platformApiSearch: 'eventsBetween'])
 
         then:
         r.success == true
@@ -1839,30 +1839,30 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         !r.containsKey('nextCursor')
     }
 
-    def "platform_api_search matches a class name and a method name together"() {
+    def "platformApiSearch matches a class name and a method name together"() {
         given:
         hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
 
         when:
-        def r = script.toolGetToolGuide(null, null, [platform_api_search: 'DeviceWrapper eventsBetween'])
+        def r = script.toolGetToolGuide(null, null, [platformApiSearch: 'DeviceWrapper eventsBetween'])
 
         then:
         r.total == 1
         r.matches[0].name == 'eventsBetween'
     }
 
-    def "a broad platform_api_search puts shared-API hits ahead of protocol pages"() {
+    def "a broad platformApiSearch puts shared-API hits ahead of protocol pages"() {
         given:
         hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
 
         when:
-        def r = script.toolGetToolGuide(null, null, [platform_api_search: 'events'])
+        def r = script.toolGetToolGuide(null, null, [platformApiSearch: 'events'])
 
         then:
         r.matches.findIndexOf { it.section == 'shared' } < r.matches.findIndexOf { it.section == 'protocols' }
     }
 
-    def "platform_api_page returns a class's methods with full descriptions"() {
+    def "platformApiPage returns a class's methods with full descriptions"() {
         given:
         hubGet.register('/developer-docs/api-com-hubitat-app-devicewrapper.json') { p ->
             JsonOutput.toJson([id: 'api-com-hubitat-app-devicewrapper', className: 'com.hubitat.app.DeviceWrapper', label: 'Device wrapper', section: 'shared',
@@ -1870,8 +1870,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def first = script.toolGetToolGuide(null, null, [platform_api_page: 'api-com-hubitat-app-devicewrapper'])
-        def second = script.toolGetToolGuide(null, first.nextCursor, [platform_api_page: 'api-com-hubitat-app-devicewrapper'])
+        def first = script.toolGetToolGuide(null, null, [platformApiPage: 'api-com-hubitat-app-devicewrapper'])
+        def second = script.toolGetToolGuide(null, first.nextCursor, [platformApiPage: 'api-com-hubitat-app-devicewrapper'])
 
         then:
         first.totalMethods == 45
@@ -1881,7 +1881,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         !second.containsKey('nextCursor')
     }
 
-    def "platform_api_page shortens a page whose descriptions would run past ~60 KB"() {
+    def "platformApiPage shortens a page whose descriptions would run past ~60 KB"() {
         given:
         hubGet.register('/developer-docs/api-big.json') { p ->
             JsonOutput.toJson([id: 'api-big', className: 'Big', label: 'Big', section: 'shared',
@@ -1889,7 +1889,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def first = script.toolGetToolGuide(null, null, [platform_api_page: 'api-big'])
+        def first = script.toolGetToolGuide(null, null, [platformApiPage: 'api-big'])
 
         then:
         first.methods.size() < 40
@@ -1897,7 +1897,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         first.nextCursor == first.methods.size().toString()
     }
 
-    def "platform_api_page cuts a single oversized description and flags it"() {
+    def "platformApiPage cuts a single oversized description and flags it"() {
         given:
         hubGet.register('/developer-docs/api-huge.json') { p ->
             JsonOutput.toJson([id: 'api-huge', className: 'Huge', label: 'Huge', section: 'shared',
@@ -1905,7 +1905,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolGetToolGuide(null, null, [platform_api_page: 'api-huge'])
+        def r = script.toolGetToolGuide(null, null, [platformApiPage: 'api-huge'])
 
         then:
         r.methods[0].description.length() == 20000
@@ -2360,20 +2360,20 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         where:
         label                 | section  | extra
-        'with a section'      | 'rules'  | [platform_api_search: 'x']
-        'both lookups'        | null     | [platform_api_search: 'x', platform_api_page: 'y']
-        'bad page id'         | null     | [platform_api_page: '../etc']
-        'empty search'        | null     | [platform_api_search: '   ']
+        'with a section'      | 'rules'  | [platformApiSearch: 'x']
+        'both lookups'        | null     | [platformApiSearch: 'x', platformApiPage: 'y']
+        'bad page id'         | null     | [platformApiPage: '../etc']
+        'empty search'        | null     | [platformApiSearch: '   ']
     }
 
     @Unroll
-    def "platform_api_search reaches a client through hub_get_tool_guide dispatch (useGateways=#useGateways)"() {
+    def "platformApiSearch reaches a client through hub_get_tool_guide dispatch (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
 
         when:
-        def response = mcpDriver.callTool('hub_get_tool_guide', [platform_api_search: 'eventsBetween'])
+        def response = mcpDriver.callTool('hub_get_tool_guide', [platformApiSearch: 'eventsBetween'])
 
         then:
         response.error == null

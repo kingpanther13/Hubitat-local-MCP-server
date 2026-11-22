@@ -6812,7 +6812,7 @@ def updated() {}
             if code_id:
                 try:
                     self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {
-                        "type": "app", "item_id": code_id, "confirm": True}})
+                        "type": "app", "itemId": code_id, "confirm": True}})
                 except (McpError, McpToolError, requests.HTTPError) as exc:
                     print(f"  [WARN] password snapshot cleanup: delete code {code_id} failed: {exc}")
 
@@ -6954,7 +6954,7 @@ def updated() {}
             for code_id in codes:
                 try:
                     gone = self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {
-                        "type": "app", "item_id": code_id, "confirm": True}})
+                        "type": "app", "itemId": code_id, "confirm": True}})
                     if gone.get("success") is not True:
                         print(f"  [WARN] form fixture cleanup: delete code {code_id} reported failure: {gone}")
                 except (McpError, McpToolError, requests.HTTPError) as exc:
@@ -7041,7 +7041,7 @@ def updated() {}
                     print(f"  [WARN] form types cleanup: delete instance {instance} failed: {exc}")
             if code:
                 try:
-                    self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {"type": "app", "item_id": code, "confirm": True}})
+                    self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {"type": "app", "itemId": code, "confirm": True}})
                 except (McpError, McpToolError, requests.HTTPError) as exc:
                     print(f"  [WARN] form types cleanup: delete code {code} failed: {exc}")
 
@@ -11275,7 +11275,7 @@ def updated() {}
             item_type = "app" if tool == "hub_create_app" else "driver"
             try:
                 self.client.call_tool("hub_manage_code", {
-                    "tool": "hub_delete_item", "args": {"type": item_type, "item_id": stray, "confirm": True}})
+                    "tool": "hub_delete_item", "args": {"type": item_type, "itemId": stray, "confirm": True}})
             except Exception as exc:
                 print(f"  [WARN] {tool} compile-error leg: delete stray {item_type} {stray} failed: {exc}")
         assert refused and stray is None, \
@@ -11439,12 +11439,12 @@ def updated() {}
             self._assert_code_call_refused("hub_create_app", {
                 "installs": [{"source": source_v1}], "confirm": True}, "installs")
             self._assert_code_call_refused("hub_delete_item", {
-                "type": "app", "item_id": "2147483000", "id": "2147483000", "confirm": True}, "argument: id.")
+                "type": "app", "itemId": "2147483000", "id": "2147483000", "confirm": True}, "argument: id.")
             self._assert_code_call_refused("hub_delete_item", {
-                "type": "app", "item_id": "abc", "confirm": True}, "positive integer")
+                "type": "app", "itemId": "abc", "confirm": True}, "positive integer")
             missing = self.client.call_tool_failure("hub_manage_code", {
                 "tool": "hub_delete_item",
-                "args": {"type": "app", "item_id": "2147483000", "confirm": True},
+                "args": {"type": "app", "itemId": "2147483000", "confirm": True},
             })
             assert "does not exist" in str(missing.get("error")), \
                 f"deleting an app id that does not exist was not refused: {missing}"
@@ -11465,7 +11465,7 @@ def updated() {}
                 try:
                     self.client.call_tool("hub_manage_code", {
                         "tool": "hub_delete_item",
-                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
+                        "args": {"type": "app", "itemId": code_app_id, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] app-code update cleanup: delete code class {code_app_id} failed: {exc}")
@@ -11593,7 +11593,7 @@ def updated() {}
                 try:
                     self.client.call_tool("hub_manage_code", {
                         "tool": "hub_delete_item",
-                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
+                        "args": {"type": "app", "itemId": code_app_id, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] app-code restore cleanup: delete code class {code_app_id} failed: {exc}")
@@ -11689,7 +11689,7 @@ def updated() {}
             # refusal carries the remove-instances note.
             in_use = self.client.call_tool_failure("hub_manage_code", {
                 "tool": "hub_delete_item",
-                "args": {"type": "app", "item_id": code_app_id, "confirm": True},
+                "args": {"type": "app", "itemId": code_app_id, "confirm": True},
             })
             assert "in use" in str(in_use.get("error")).lower() \
                 and "instances" in str(in_use.get("note")), \
@@ -11793,7 +11793,7 @@ def updated() {}
                 try:
                     self.client.call_tool("hub_manage_code", {
                         "tool": "hub_delete_item",
-                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
+                        "args": {"type": "app", "itemId": code_app_id, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] triggerUpdated cleanup: delete code class {code_app_id} failed: {exc}")
@@ -11948,7 +11948,7 @@ def updated() {}
                 try:
                     self.client.call_tool("hub_manage_code", {
                         "tool": "hub_delete_item",
-                        "args": {"type": "driver", "item_id": driver_id, "confirm": True},
+                        "args": {"type": "driver", "itemId": driver_id, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] driver-code update cleanup: delete driver code class {driver_id} failed: {exc}")
@@ -12403,7 +12403,7 @@ def updated() {}
                                                        "fields": ["label", "deviceNetworkId"]}}) for d in made}
                 result = self.client.call_tool("hub_manage_devices", {
                     "tool": "hub_call_device_swap",
-                    "args": {"from_device_id": src, "to_device_id": tgt, "confirm": True}})
+                    "args": {"fromDeviceId": src, "toDeviceId": tgt, "confirm": True}})
                 assert result.get("success") is True and result.get("identityExchanged") is True, \
                     f"swap of two free-standing switches did not report the identity exchange: {result}"
                 assert result.get("swapped") == {"from": src, "to": tgt}, result
@@ -12468,7 +12468,7 @@ def updated() {}
             # A success here means the hub's eligibility rules changed.
             result = self.client.call_tool_failure("hub_manage_devices", {
                 "tool": "hub_call_device_swap",
-                "args": {"from_device_id": id_a, "to_device_id": id_b, "confirm": True},
+                "args": {"fromDeviceId": id_a, "toDeviceId": id_b, "confirm": True},
             })
             blob = f"{result.get('error') or ''} {result.get('note') or ''}".lower()
             assert "does not offer" in blob or "child" in blob, \
@@ -12501,21 +12501,21 @@ def updated() {}
         # operation needing a real compatible free-standing replacement node, which the
         # MCP tool surface cannot create (every fixture is an MCP child device). The full
         # apply round-trip is BAT/manual-only (tests/BAT-v2.md T703). This scenario
-        # exercises the safe read-only leg live: list_options drives
+        # exercises the safe read-only leg live: listOptions drives
         # GET /device/getReplacementOptions/<id> and returns the structured candidate
         # array without mutating anything, so the persistent scaffold switch (an MCP child
         # device, like any fixture this suite can create) serves.
         dev_id = self.get_test_switch_id()
         result = self.client.call_tool_result("hub_manage_devices", {
             "tool": "hub_call_device_replace",
-            "args": {"old_device_id": dev_id, "list_options": True},
+            "args": {"oldDeviceId": dev_id, "listOptions": True},
         })
-        assert isinstance(result, dict), f"hub_call_device_replace(list_options) returned non-dict: {result}"
+        assert isinstance(result, dict), f"hub_call_device_replace(listOptions) returned non-dict: {result}"
         # Read leg: success with an options array (a virtual fixture usually has no
         # compatible replacement -> empty list), or a structured failure -- never a
         # silent mutation. Assert the structured contract either way.
         if result.get("success") is True:
-            assert result.get("listOptions") is True, f"list_options read missing listOptions flag: {result}"
+            assert result.get("listOptions") is True, f"listOptions read missing listOptions flag: {result}"
             assert isinstance(result.get("options"), list), f"options is not a list: {result}"
             opt_count = result.get("optionCount")
             assert isinstance(opt_count, int) and opt_count == len(result["options"]), \
@@ -12524,12 +12524,12 @@ def updated() {}
                 pick = str(result["options"][0].get("id"))
                 checked = self.client.call_tool("hub_manage_devices", {
                     "tool": "hub_call_device_replace",
-                    "args": {"old_device_id": dev_id, "new_device_id": pick, "list_options": True}})
+                    "args": {"oldDeviceId": dev_id, "newDeviceId": pick, "listOptions": True}})
                 assert checked.get("compatible") is True, f"a listed candidate must read compatible: {checked}"
-            print(f"    DEVICE_REPLACE ok -- list_options read {opt_count} compatible candidate(s) for {dev_id}, no mutation")
+            print(f"    DEVICE_REPLACE ok -- listOptions read {opt_count} compatible candidate(s) for {dev_id}, no mutation")
         else:
-            assert result.get("error"), f"list_options failure without a structured error: {result}"
-            print(f"    DEVICE_REPLACE ok -- list_options returned a structured failure (no mutation): {result.get('error')}")
+            assert result.get("error"), f"listOptions failure without a structured error: {result}"
+            print(f"    DEVICE_REPLACE ok -- listOptions returned a structured failure (no mutation): {result.get('error')}")
 
     # -----------------------------------------------------------------------
     # GROUP 4h: hub_variables (1 test) -- hub-NAMESPACE variable lifecycle
@@ -12887,14 +12887,14 @@ def updated() {}
 
     @test("hub_variables")
     def test_hub_set_variable_mesh_validation(self) -> None:
-        # hub_set_variable gained mesh_shared (Hub Mesh share/unshare). Prove the validation contract
+        # hub_set_variable gained meshShared (Hub Mesh share/unshare). Prove the validation contract
         # LIVE with NO mesh state change -- every rejection fires before any hub call and surfaces as an
         # isError validation result the caller can correct and retry.
         absent = f"{PREFIX}NoSuchMeshVar_{int(time.time())}"
         for args, needle, label in (
-            ({"name": absent, "mesh_shared": True}, "hub variable", "mesh_shared on a non-hub-variable"),
-            ({"name": absent}, "value, mesh_shared", "neither value nor mesh_shared"),
-            ({"name": absent, "mesh_shared": "yes"}, "boolean", "non-boolean mesh_shared"),
+            ({"name": absent, "meshShared": True}, "hub variable", "meshShared on a non-hub-variable"),
+            ({"name": absent}, "value, meshShared", "neither value nor meshShared"),
+            ({"name": absent, "meshShared": "yes"}, "boolean", "non-boolean meshShared"),
         ):
             try:
                 detail = self.client.call_tool("hub_set_variable", args)
@@ -12905,17 +12905,17 @@ def updated() {}
 
     @test("hub_variables")
     def test_hub_create_variable_mesh_link_validation(self) -> None:
-        # hub_create_variable gained a Hub Mesh LINK form (mesh_source_hub_id + mesh_source_name), mutually
+        # hub_create_variable gained a Hub Mesh LINK form (meshSourceHubId + meshSourceName), mutually
         # exclusive with the create forms. Assert the MESH-SPECIFIC rejection message (not the destructive-
         # confirm backup message): the suite ensures a recent backup at startup, so requireDestructiveConfirm
         # passes and the mesh validation is what fires -- accepting "backup"/"confirm" here would let a run
         # with no backup green without ever exercising the mesh contract. NOTHING is created either way.
         probe = f"{PREFIX}MeshLinkProbe_{int(time.time())}"
         for args, needle, label in (
-            ({"mesh_source_hub_id": "HUB-A", "mesh_source_name": probe, "name": probe, "confirm": True},
+            ({"meshSourceHubId": "HUB-A", "meshSourceName": probe, "name": probe, "confirm": True},
              "not both", "link mixed with a create field"),
-            ({"mesh_source_hub_id": "HUB-A", "confirm": True},
-             "both mesh_source", "link with only the hub id"),
+            ({"meshSourceHubId": "HUB-A", "confirm": True},
+             "both meshSource", "link with only the hub id"),
         ):
             rejected = False
             detail: Any = None
@@ -12948,14 +12948,14 @@ def updated() {}
         unshared_ok = False
         try:
             # SHARE into the mesh.
-            shared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": True})
+            shared = self.client.call_tool("hub_set_variable", {"name": var_name, "meshShared": True})
             assert shared.get("success") is not False, f"share failed: {shared}"
             assert shared.get("meshShared") is True, f"share did not report meshShared=true: {shared}"
             assert self._poll_mesh_shared(var_name, want=True), \
                 f"{var_name} never appeared in hub_get_hub_mesh sharedHubVariables after sharing"
 
             # UNSHARE and assert the teardown caution rides the result note.
-            unshared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
+            unshared = self.client.call_tool("hub_set_variable", {"name": var_name, "meshShared": False})
             assert unshared.get("success") is not False, f"unshare failed: {unshared}"
             assert unshared.get("meshShared") is False, f"unshare did not report meshShared=false: {unshared}"
             note = str(unshared.get("note") or "")
@@ -12968,20 +12968,20 @@ def updated() {}
             # Best-effort: never leave the permanent variable shared if an assertion above bailed mid-cycle.
             if not unshared_ok:
                 try:
-                    self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
+                    self.client.call_tool("hub_set_variable", {"name": var_name, "meshShared": False})
                 except Exception:
                     pass
 
     @test("devices")
     def test_hub_create_device_mesh_link_validation(self) -> None:
-        # hub_create_device can LINK a Hub Mesh device (mesh_source_hub_id + mesh_source_device_id),
+        # hub_create_device can LINK a Hub Mesh device (meshSourceHubId + meshSourceDeviceId),
         # mutually exclusive with deviceTypeId. Prove the rejections live -- validation fires before any
         # hub call, so NOTHING is created (a real link needs a peer sharing a device; not a dependency here).
         for args, needle, label in (
-            ({"deviceTypeId": "1", "mesh_source_hub_id": "HUB-A", "mesh_source_device_id": "42", "confirm": True},
+            ({"deviceTypeId": "1", "meshSourceHubId": "HUB-A", "meshSourceDeviceId": "42", "confirm": True},
              "not both", "deviceTypeId mixed with the mesh pair"),
-            ({"mesh_source_hub_id": "HUB-A", "confirm": True},
-             "both mesh_source", "mesh link with only the hub id"),
+            ({"meshSourceHubId": "HUB-A", "confirm": True},
+             "both meshSource", "mesh link with only the hub id"),
         ):
             try:
                 detail = self.client.call_tool("hub_create_device", args)
@@ -14023,18 +14023,18 @@ def updated() {}
         assert "privateDevices" not in res, "privateDevices must be a count only, not the full list"
         assert "localHubVariables" not in res, "localHubVariables must be a count only, not the full list"
 
-        # The mesh token is a credential: absent entirely unless include_token=true was asked for.
+        # The mesh token is a credential: absent entirely unless includeToken=true was asked for.
         assert "hubMeshToken" not in res, \
-            "hub_get_hub_mesh returned hubMeshToken without include_token=true"
+            "hub_get_hub_mesh returned hubMeshToken without includeToken=true"
 
-        # include_token=true surfaces the credential KEY. Prove the flag works by presence ONLY --
+        # includeToken=true surfaces the credential KEY. Prove the flag works by presence ONLY --
         # this test never asserts the token's value (the harness's own -v response log may still print
         # the raw response body, so this is not a secrecy guarantee, only that the test does not read it).
-        with_token = self.client.call_tool("hub_get_hub_mesh", {"include_token": True})
+        with_token = self.client.call_tool("hub_get_hub_mesh", {"includeToken": True})
         assert isinstance(with_token, dict) and with_token.get("success") is True, \
-            f"hub_get_hub_mesh(include_token=true) did not succeed: {sorted(with_token) if isinstance(with_token, dict) else type(with_token).__name__}"
+            f"hub_get_hub_mesh(includeToken=true) did not succeed: {sorted(with_token) if isinstance(with_token, dict) else type(with_token).__name__}"
         assert "hubMeshToken" in with_token, \
-            "hub_get_hub_mesh(include_token=true) did not surface the hubMeshToken key"
+            "hub_get_hub_mesh(includeToken=true) did not surface the hubMeshToken key"
 
     @test("system_tools")
     def test_hub_mesh_update_validation(self) -> None:
@@ -14048,9 +14048,9 @@ def updated() {}
               "state and enable/disable needs a reboot; ToolHubMeshSpec covers them against a mocked hub.")
         for args, needle, label in (
             ({}, "at least one field", "no settable field"),
-            ({"full_refresh_interval": 42}, "full_refresh_interval", "out-of-set interval"),
-            ({"full_refresh_interval": 300.5}, "full_refresh_interval", "fractional interval"),
-            ({"peer_hub_id": "12"}, "peer_", "peer_hub_id without peer_token"),
+            ({"fullRefreshInterval": 42}, "fullRefreshInterval", "out-of-set interval"),
+            ({"fullRefreshInterval": 300.5}, "fullRefreshInterval", "fractional interval"),
+            ({"peerHubId": "12"}, "peerHubId and peerToken", "peerHubId without peerToken"),
             ({"enabled": "true"}, "enabled", "non-boolean enabled"),
         ):
             try:
@@ -15430,7 +15430,7 @@ def updated() {}
             assert len(app_ids) == 1, f"the fixture bundle does not list exactly one app id: {listed.get(bid)}"
             app_id = str(app_ids[0])
             self._write_once("hub_manage_code", "hub_delete_item",
-                             {"type": "app", "item_id": app_id, "confirm": True}, "throwaway bundle app delete")
+                             {"type": "app", "itemId": app_id, "confirm": True}, "throwaway bundle app delete")
             relisted = {b.get("id"): b for b in self._listed_bundles()}
             still_listed = app_id in [str(i) for i in ((relisted.get(bid) or {}).get("codeIds") or {}).get("apps") or []]
             if still_listed:
@@ -16865,9 +16865,9 @@ def updated() {}
     def _device_replace_boundary_checks(self, unauth: str, auth: str) -> None:
         # With confirm=False, a missing access gate still cannot replace fixture hardware.
         for args in (
-            {"old_device_id": unauth, "list_options": True},
-            {"old_device_id": unauth, "new_device_id": auth, "confirm": False},
-            {"old_device_id": auth, "new_device_id": unauth, "confirm": False},
+            {"oldDeviceId": unauth, "listOptions": True},
+            {"oldDeviceId": unauth, "newDeviceId": auth, "confirm": False},
+            {"oldDeviceId": auth, "newDeviceId": unauth, "confirm": False},
         ):
             try:
                 result = self.client.call_tool("hub_call_device_replace", args)
@@ -17777,7 +17777,7 @@ def updated() {}
         assert len(second.get("content", "")) > 0, "cursor page carried no content"
 
         # The hub's own API documentation pages too: a ranked search, then one class page.
-        found = self.client.call_tool_result("hub_get_tool_guide", {"platform_api_search": "eventsBetween"})
+        found = self.client.call_tool_result("hub_get_tool_guide", {"platformApiSearch": "eventsBetween"})
         if not self._hub_fw_at_least("2.5.2"):
             assert found.get("success") is False and "2.5.2" in str(found.get("note")), \
                 f"an API-docs miss must name the firmware it needs: {found}"
@@ -17785,9 +17785,9 @@ def updated() {}
             assert found.get("success") is True, f"API-docs search failed on a 2.5.2+ hub: {found}"
             hit = next((m for m in found.get("matches") or [] if m.get("name") == "eventsBetween"), None)
             assert hit, f"eventsBetween not among the API-docs matches: {(found.get('matches') or [])[:5]}"
-            page = self.client.call_tool("hub_get_tool_guide", {"platform_api_page": hit["pageId"]})
+            page = self.client.call_tool("hub_get_tool_guide", {"platformApiPage": hit["pageId"]})
             assert page.get("methods") and len(page["methods"]) <= 40, f"API page did not page at 40 methods: {str(page)[:300]}"
-        self._expect_tool_refusal("hub_get_tool_guide", {"section": "rules", "platform_api_search": "x"}, "separate lookups")
+        self._expect_tool_refusal("hub_get_tool_guide", {"section": "rules", "platformApiSearch": "x"}, "separate lookups")
 
     @test("best_practice_gating")
     def test_guide_sub_section_is_a_cheap_slice_of_its_parent(self) -> None:
@@ -18945,7 +18945,7 @@ def updated() {}
                         print(f"  Sweep: deleting stranded deadman code class {a.get('id')}")
                         self.client.call_tool("hub_manage_code", {
                             "tool": "hub_delete_item",
-                            "args": {"type": "app", "item_id": str(a.get("id")), "confirm": True},
+                            "args": {"type": "app", "itemId": str(a.get("id")), "confirm": True},
                         })
                     except Exception as exc:
                         print(f"  [WARN] deadman sweep: code-class delete failed: {exc}")
@@ -18962,7 +18962,7 @@ def updated() {}
                         print(f"  Sweep: deleting stranded throwaway driver code class {d.get('id')}")
                         self.client.call_tool("hub_manage_code", {
                             "tool": "hub_delete_item",
-                            "args": {"type": "driver", "item_id": str(d.get("id")), "confirm": True},
+                            "args": {"type": "driver", "itemId": str(d.get("id")), "confirm": True},
                         })
                     except Exception as exc:
                         print(f"  [WARN] driver sweep: code-class delete failed: {exc}")

@@ -256,7 +256,7 @@ class BackupRetentionSpec extends ToolSpecBase {
         when:
         def listing = script.toolListItemBackups([:])
         def fetched = script.toolGetItemBackup([backupKey: 'app_1'])
-        def deleted = script.toolDeleteItem([type: 'app', item_id: '33', confirm: true])
+        def deleted = script.toolDeleteItem([type: 'app', itemId: '33', confirm: true])
 
         then:
         [listing, fetched, deleted].every {

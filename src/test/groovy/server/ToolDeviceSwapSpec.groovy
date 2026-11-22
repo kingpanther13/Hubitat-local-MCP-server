@@ -162,7 +162,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         )
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then: 'success is verified by the identity exchange the hub performs, and reports the post-swap devices'
         result.success == true
@@ -211,7 +211,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         )
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == true
@@ -236,7 +236,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
             fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), ''])
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == true
@@ -254,7 +254,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
             fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), ''])
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == false
@@ -271,7 +271,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
             fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), ''])
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == true
@@ -290,7 +290,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         )
 
         when:
-        def response = mcpDriver.callTool('hub_call_device_swap', [from_device_id: '101', to_device_id: '202', confirm: true])
+        def response = mcpDriver.callTool('hub_call_device_swap', [fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         response.error == null
@@ -316,7 +316,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         )
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == false
@@ -341,7 +341,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         )
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == false
@@ -364,7 +364,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/202') { params -> '{"appsUsing":[]}' }
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == false
@@ -380,7 +380,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def calls = wireSwapStubs(beforeCount: 'unreadable', fetches: [pageJson()])
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == false
@@ -391,7 +391,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     // -------- ineligible source (oldDev eligibility pre-check) --------
 
-    def "from_device_id not offered as swappable: eligibility error before any setting write, instance closed"() {
+    def "fromDeviceId not offered as swappable: eligibility error before any setting write, instance closed"() {
         given: 'the hub offers other devices as oldDev candidates but NOT 101 (e.g. 101 is an app child device)'
         enableWriteWithBackup()
         registerDevices()
@@ -401,7 +401,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         )
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then: 'structured failure naming the device and the eligibility rule'
         result.success == false
@@ -422,7 +422,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     // -------- incompatible target --------
 
-    def "incompatible to_device_id: structured error lists the offered options and the transient instance is closed"() {
+    def "incompatible toDeviceId: structured error lists the offered options and the transient instance is closed"() {
         given:
         enableWriteWithBackup()
         registerDevices()
@@ -435,7 +435,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         )
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then: 'structured failure with the compatible options the hub offered'
         result.success == false
@@ -468,7 +468,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         )
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == false
@@ -496,7 +496,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         )
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == false
@@ -515,7 +515,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def calls = wireSwapStubs(resolveBroken: true, beforeCount: 3, fetches: [])
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == false
@@ -535,7 +535,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "missing confirm throws SAFETY CHECK before device validation (devices intentionally unregistered)"() {
         when:
-        script.toolCallDeviceSwap([from_device_id: '999', to_device_id: '888'])
+        script.toolCallDeviceSwap([fromDeviceId: '999', toDeviceId: '888'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -547,7 +547,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
 
         when:
-        script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -560,7 +560,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_call_device_swap', [from_device_id: '101', to_device_id: '202'])
+        def response = mcpDriver.callTool('hub_call_device_swap', [fromDeviceId: '101', toDeviceId: '202'])
 
         then:
         response.error == null
@@ -577,20 +577,20 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         registerDevices()
 
         when:
-        script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '101', confirm: true])
+        script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '101', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('must be different')
     }
 
-    def "unknown from_device_id throws Device not found before any wizard step"() {
+    def "unknown fromDeviceId throws Device not found before any wizard step"() {
         given:
         enableWriteWithBackup()
         registerDevices()
 
         when:
-        script.toolCallDeviceSwap([from_device_id: '999', to_device_id: '202', confirm: true])
+        script.toolCallDeviceSwap([fromDeviceId: '999', toDeviceId: '202', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -611,7 +611,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == false
@@ -638,7 +638,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == false
@@ -679,7 +679,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register(CONFIGURE_PATH) { params -> pageJson() }
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then: 'runtime failure is a structured envelope, not a throw'
         result.success == false
@@ -728,10 +728,10 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     // --- hub_call_device_replace (toolCallDeviceReplace) ---
     // Replace re-points a device onto new hardware via GET /device/replace?oldId&newId,
-    // PRESERVING the old id + references (distinct from swap). list_options reads the hub's
+    // PRESERVING the old id + references (distinct from swap). listOptions reads the hub's
     // compatible candidates from /device/getReplacementOptions/<id> (read-only, no confirm).
 
-    def "device replace list_options returns the hub's compatible replacement candidates (read-only, no confirm)"() {
+    def "device replace listOptions returns the hub's compatible replacement candidates (read-only, no confirm)"() {
         given:
         childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         hubGet.register('/device/getReplacementOptions/80') { params ->
@@ -739,7 +739,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCallDeviceReplace([old_device_id: '80', list_options: true])
+        def result = script.toolCallDeviceReplace([oldDeviceId: '80', listOptions: true])
 
         then:
         result.success == true
@@ -750,14 +750,14 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         result.options[0].deviceTypes == ['Graph']
     }
 
-    def "device replace list_options with new_device_id says whether the hub lists it as compatible"() {
+    def "device replace listOptions with newDeviceId says whether the hub lists it as compatible"() {
         given:
         childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         hubGet.register('/device/getReplacementOptions/80') { params -> '[{"deviceTypes":["Switch"],"id":23,"name":"New"}]' }
 
         expect:
-        script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', list_options: true]).compatible == true
-        script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '55', list_options: true]).compatible == false
+        script.toolCallDeviceReplace([oldDeviceId: '80', newDeviceId: '23', listOptions: true]).compatible == true
+        script.toolCallDeviceReplace([oldDeviceId: '80', newDeviceId: '55', listOptions: true]).compatible == false
     }
 
     def "device replace happy path: GET /device/replace?oldId&newId, old id preserved"() {
@@ -767,7 +767,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/replace?oldId=80&newId=23') { params -> '{"success":true}' }
 
         when:
-        def result = script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', confirm: true])
+        def result = script.toolCallDeviceReplace([oldDeviceId: '80', newDeviceId: '23', confirm: true])
 
         then:
         result.success == true
@@ -784,7 +784,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/replace?oldId=80&newId=23') { params -> '{"success":true}' }
 
         when:
-        def response = mcpDriver.callTool('hub_call_device_replace', [old_device_id: '80', new_device_id: '23', confirm: true])
+        def response = mcpDriver.callTool('hub_call_device_replace', [oldDeviceId: '80', newDeviceId: '23', confirm: true])
 
         then:
         def inner = mcpDriver.parseInner(response)
@@ -801,7 +801,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_call_device_replace', [old_device_id: '80', new_device_id: '23'])
+        def response = mcpDriver.callTool('hub_call_device_replace', [oldDeviceId: '80', newDeviceId: '23'])
 
         then:
         response.error == null
@@ -819,7 +819,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/replace?oldId=80&newId=23') { params -> groovy.json.JsonOutput.toJson([success: false, message: answer]) }
 
         when:
-        def result = script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', confirm: true])
+        def result = script.toolCallDeviceReplace([oldDeviceId: '80', newDeviceId: '23', confirm: true])
 
         then:
         result.success == false
@@ -839,27 +839,27 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         enableWriteWithBackup()
 
         when:
-        script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '80', confirm: true])
+        script.toolCallDeviceReplace([oldDeviceId: '80', newDeviceId: '80', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('must be different')
     }
 
-    def "device replace without new_device_id (and no list_options) throws asking for it"() {
+    def "device replace without newDeviceId (and no listOptions) throws asking for it"() {
         given:
         childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         enableWriteWithBackup()
 
         when:
-        script.toolCallDeviceReplace([old_device_id: '80', confirm: true])
+        script.toolCallDeviceReplace([oldDeviceId: '80', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('new_device_id is required')
+        ex.message.contains('newDeviceId is required')
     }
 
-    def "device replace list_options read FAILURE returns success:false (not an empty no-candidates result)"() {
+    def "device replace listOptions read FAILURE returns success:false (not an empty no-candidates result)"() {
         given:
         childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         // The read endpoint throws (relay/auth/transient) -- must surface as a failure, NOT as
@@ -867,14 +867,14 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/getReplacementOptions/80') { params -> throw new RuntimeException("hub unreachable") }
 
         when:
-        def result = script.toolCallDeviceReplace([old_device_id: '80', list_options: true])
+        def result = script.toolCallDeviceReplace([oldDeviceId: '80', listOptions: true])
 
         then:
         result.success == false
         result.error.contains('Could not read replacement options')
     }
 
-    def "device replace list_options non-list response returns success:false (not empty success)"() {
+    def "device replace listOptions non-list response returns success:false (not empty success)"() {
         given:
         childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         // A 2xx-but-non-array body (e.g. an {error:...} object or HTML) is a failed read, not
@@ -882,20 +882,20 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/getReplacementOptions/80') { params -> '{"error":"unknown device"}' }
 
         when:
-        def result = script.toolCallDeviceReplace([old_device_id: '80', list_options: true])
+        def result = script.toolCallDeviceReplace([oldDeviceId: '80', listOptions: true])
 
         then:
         result.success == false
         result.error.contains('non-list')
     }
 
-    def "device replace list_options empty array is a clean no-candidates success"() {
+    def "device replace listOptions empty array is a clean no-candidates success"() {
         given:
         childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         hubGet.register('/device/getReplacementOptions/80') { params -> '[]' }
 
         when:
-        def result = script.toolCallDeviceReplace([old_device_id: '80', list_options: true])
+        def result = script.toolCallDeviceReplace([oldDeviceId: '80', listOptions: true])
 
         then:
         result.success == true
@@ -910,7 +910,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/replace?oldId=80&newId=23') { params -> throw new RuntimeException("relay 504") }
 
         when:
-        def result = script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', confirm: true])
+        def result = script.toolCallDeviceReplace([oldDeviceId: '80', newDeviceId: '23', confirm: true])
 
         then:
         result.success == false
@@ -925,7 +925,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/replace?oldId=80&newId=23') { params -> '<html>error</html>' }
 
         when:
-        def result = script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', confirm: true])
+        def result = script.toolCallDeviceReplace([oldDeviceId: '80', newDeviceId: '23', confirm: true])
 
         then:
         result.success == false
@@ -939,7 +939,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
 
         when:
-        script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', confirm: true])
+        script.toolCallDeviceReplace([oldDeviceId: '80', newDeviceId: '23', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -952,7 +952,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         childDevicesList.addAll([[id: '80'], [id: '23']].findAll { it.id != deniedId })
 
         when:
-        script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', list_options: options, confirm: true])
+        script.toolCallDeviceReplace([oldDeviceId: '80', newDeviceId: '23', listOptions: options, confirm: true])
 
         then:
         def error = thrown(IllegalArgumentException)
@@ -976,7 +976,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/23') { '{"device":{"id":23,"label":"New"}}' }
 
         when:
-        def response = mcpDriver.callTool('hub_call_device_replace', [old_device_id: '80', new_device_id: '23', confirm: true])
+        def response = mcpDriver.callTool('hub_call_device_replace', [oldDeviceId: '80', newDeviceId: '23', confirm: true])
 
         then:
         if (ownership == 'unlisted' && !bypass) {
@@ -1006,7 +1006,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/getReplacementOptions/80') { throw new AssertionError('options read reached the hub') }
 
         when:
-        def result = script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', list_options: options, confirm: true])
+        def result = script.toolCallDeviceReplace([oldDeviceId: '80', newDeviceId: '23', listOptions: options, confirm: true])
 
         then:
         result.success == false
@@ -1025,7 +1025,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/80') { '{"device":{"id":99,"label":"Other"}}' }
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '80', to_device_id: '23', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '80', toDeviceId: '23', confirm: true])
 
         then:
         result.success == false
@@ -1042,7 +1042,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/getReplacementOptions/80') { '[{"id":23,"name":"Owned"},{"id":55,"name":"Unselected"}]' }
 
         when:
-        def result = script.toolCallDeviceReplace([old_device_id: '80', list_options: true])
+        def result = script.toolCallDeviceReplace([oldDeviceId: '80', listOptions: true])
 
         then:
         result.options*.id == (bypass ? ['23', '55'] : ['23'])

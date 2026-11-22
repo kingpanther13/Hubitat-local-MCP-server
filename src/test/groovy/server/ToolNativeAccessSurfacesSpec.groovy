@@ -151,7 +151,7 @@ class ToolNativeAccessSurfacesSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == false
@@ -178,7 +178,7 @@ class ToolNativeAccessSurfacesSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+        def result = script.toolCallDeviceSwap([fromDeviceId: '101', toDeviceId: '202', confirm: true])
 
         then:
         result.success == false

@@ -354,7 +354,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
     }
 
     def "toolCreateDevice with present-but-null mesh keys still does a normal driver create (not diverted to link)"() {
-        given: 'a driver create with mesh_source_* explicitly null -- must NOT be pushed onto the link form'
+        given: 'a driver create with meshSource* explicitly null -- must NOT be pushed onto the link form'
         hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
         hubGet.register('/device/fullJson/777') { params ->
             groovy.json.JsonOutput.toJson([device: [id: 777, label: 'X', name: 'Generic LAN Driver',
@@ -362,7 +362,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateDevice([deviceTypeId: '500', mesh_source_hub_id: null, mesh_source_device_id: null, confirm: true])
+        def result = script.toolCreateDevice([deviceTypeId: '500', meshSourceHubId: null, meshSourceDeviceId: null, confirm: true])
 
         then: 'the driver-create path runs; no "not both" throw, no divert to the mesh link GET'
         result.success == true
@@ -629,7 +629,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
@@ -657,7 +657,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         result.success == true
@@ -712,7 +712,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         result.success == false
@@ -722,7 +722,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.note.toLowerCase().contains('retry')
         result.note.toLowerCase().contains('re-establish')
         result.note.contains('mesh token')
-        result.note.contains('hub_update_hub_mesh(peer_hub_id, peer_token)')
+        result.note.contains('hub_update_hub_mesh(peerHubId, peerToken)')
     }
 
     // Outcome 3 (unresolvable): the link GET is accepted but the mesh list cannot be read back at all
@@ -733,7 +733,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         result.success == true
@@ -750,7 +750,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         result.success == false
@@ -772,7 +772,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         result.success == false
@@ -780,9 +780,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.error.contains('did not take')
     }
 
-    def "toolCreateDevice rejects mixing deviceTypeId with the mesh_source pair"() {
+    def "toolCreateDevice rejects mixing deviceTypeId with the meshSource pair"() {
         when:
-        script.toolCreateDevice([deviceTypeId: '500', mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        script.toolCreateDevice([deviceTypeId: '500', meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -793,7 +793,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
     // it cannot carry a local label).
     def "toolCreateDevice mesh link rejects a create-only field (label)"() {
         when:
-        script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', label: 'Nope', confirm: true])
+        script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', label: 'Nope', confirm: true])
 
         then: 'rejected before any hub call'
         def ex = thrown(IllegalArgumentException)
@@ -803,11 +803,11 @@ class ToolDeviceEditSpec extends ToolSpecBase {
 
     def "toolCreateDevice mesh link requires BOTH hub id and device id"() {
         when:
-        script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', confirm: true])
+        script.toolCreateDevice([meshSourceHubId: 'HUB-A', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('BOTH mesh_source_hub_id and mesh_source_device_id')
+        ex.message.contains('BOTH meshSourceHubId and meshSourceDeviceId')
     }
 
     // An available list that is READABLE but does NOT offer the pair (typo/stale/peer stopped sharing)
@@ -824,7 +824,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then: 'rejected as a validation error and the createLinked GET was never called'
         def ex = thrown(IllegalArgumentException)
@@ -845,7 +845,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         result.success == true
@@ -866,7 +866,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when: 'local device rows carry no source-device-id, so a same-hub proxy must NOT prove 42 is linked'
-        script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then: 'rejected as not-offered, not a false alreadyLinked; no GET'
         def ex = thrown(IllegalArgumentException)
@@ -888,7 +888,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then: 'the link GET IS sent (not short-circuited by the pre-existing same-hub proxy) and it links'
         hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
@@ -907,7 +907,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         result.success == true
@@ -931,7 +931,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         result.success == true
@@ -954,7 +954,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         result.success == true
@@ -974,7 +974,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         result.success == true
@@ -1000,7 +1000,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def result = script.toolCreateDevice([meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         result.success == true
@@ -1017,7 +1017,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         hubGet.register('/hub2/hubMeshJson') { params -> groovy.json.JsonOutput.toJson([localLinkedDevices: linked]) }
 
         when:
-        def response = mcpDriver.callTool('hub_create_device', [mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_create_device', [meshSourceHubId: 'HUB-A', meshSourceDeviceId: '42', confirm: true])
 
         then:
         response.error == null
