@@ -9,28 +9,26 @@ module EphemeralFastCI
   REQUIRED = %w[unit-tests pr-guard groovy2x-spock].freeze
   FILTERED = %w[groovy24-parse sandbox-lint python-tests ruff self-deploy-recovery
                 lane-gate-test lease-scripts-test dependency-updates-check].freeze
-  # Fast CI takes about five minutes. workflow_run is not an allowed event here
-  # (docs/ephemeral-hub-e2e.md), so the gate polls.
-  WAIT_SECONDS = 20 * 60
-  POLL_SECONDS = 30
-
-  # A read that may succeed later: worth another poll, unlike a refusal that will not change.
-  class TransientError < RuntimeError; end
+  CONSUMER = 'hub-e2e-ephemeral'
+  REQUESTER = 'hub-e2e-ephemeral-request'
+  PHYSICAL = 'hub-e2e'
+  # The gate job and step names in all three hub workflows; resuming matches them by name.
+  GATE_JOB = 'Fast CI prerequisites'
+  DEFERRED_STEP = 'Defer hubs until fast CI passes'
 
   def self.api(path, *options)
-    # A transient API read must not strand a green revision.
-    later = false
-    3.times do |attempt|
+    # A transient API read must not strand a green revision. A POST may have
+    # taken effect even when its response was lost, so issue it only once.
+    attempts = options.include?('POST') ? 1 : 3
+    attempts.times do |attempt|
       stdout, stderr, status = Open3.capture3('gh', 'api', *options, "repos/#{ENV.fetch('GITHUB_REPOSITORY')}/#{path}")
       return stdout.empty? ? nil : JSON.parse(stdout) if status.success?
       warn stderr
       transient = stderr.match?(/HTTP (?:429|5\d\d)|timeout|timed out|connection reset|unexpected EOF/i)
-      # A rate limit clears too slowly for the quick retries here, but the next poll may pass.
-      later = transient || stderr.match?(/rate limit/i)
-      break unless transient && attempt < 2
+      break unless transient && attempt + 1 < attempts
       sleep 2**(attempt + 1)
     end
-    raise(later ? TransientError : RuntimeError, "GitHub API request failed for #{path.split('?').first}")
+    raise "GitHub API request failed for #{path.split('?').first}"
   end
 
   def self.pages(path)
@@ -82,7 +80,8 @@ module EphemeralFastCI
     end + REQUIRED
   end
 
-  def self.runs(sha, event, head, pr_number = nil)
+  # Every run of each workflow on this revision, newest first.
+  def self.history(sha, event, head, pr_number = nil)
     query = URI.encode_www_form(head_sha: sha, event: event, per_page: 100)
     rows = pages("actions/runs?#{query}").flat_map { |page| page.fetch('workflow_runs') }
     rows.select! do |run|
@@ -92,8 +91,12 @@ module EphemeralFastCI
         (!pr_number || prs.empty? || prs.any? { |p| p['number'] == pr_number })
     end
     rows.group_by { |run| run.fetch('path') }.transform_values do |attempts|
-      attempts.max_by { |run| [run.fetch('run_number'), run.fetch('run_attempt')] }
+      attempts.sort_by { |run| [run.fetch('run_number'), run.fetch('run_attempt')] }.reverse
     end
+  end
+
+  def self.runs(sha, event, head, pr_number = nil)
+    history(sha, event, head, pr_number).transform_values(&:first)
   end
 
   def self.state(expected, runs)
@@ -124,61 +127,31 @@ module EphemeralFastCI
           pr.dig('head', 'sha') == head.fetch('sha') && pr.dig('head', 'repo', 'full_name') == head.dig('repo', 'full_name')
   end
 
-  def self.superseded(head)
-    puts "#{head.fetch('sha')} is no longer the current head; hubs not started."
-    'superseded'
+  def self.report(title, detail)
+    puts "::notice title=#{title}::#{detail}"
+    summary = ENV['GITHUB_STEP_SUMMARY']
+    File.open(summary, 'a') { |out| out.puts "#{title}: #{detail}" } if summary
   end
 
-  def self.not_started(detail)
-    reason = "Ephemeral hubs not started: #{detail}"
-    puts "::warning title=Ephemeral hubs not started::#{detail}"
-    [ENV['GITHUB_STEP_SUMMARY'], ENV['GITHUB_OUTPUT']].zip([reason, "reason=#{reason}"]) do |file, line|
-      File.open(file, 'a') { |out| out.puts line } if file
-    end
-    'not-started'
-  end
-
-  # The fast workflows that apply to this revision: Unit Tests for a push, more for a PR.
-  def self.applicable(pr, number)
-    return ['unit-tests'] unless number
-    # A re-run gate replays the original event, so changed_files comes from the PR as it is now.
-    files = pages("pulls/#{Integer(number)}/files?per_page=100").flatten(1)
-    # The PR files API lists at most 3000 files.
-    raise 'Incomplete PR file list' unless files.size == [pr.fetch('changed_files'), 3000].min
-    expected(pr, files)
-  end
-
-  def self.decision(pr, head)
+  def self.decision(pr, head, initial_runs = nil)
     number = pr&.fetch('number')
-    clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
-    wait = Integer(ENV.fetch('FAST_CI_WAIT_SECONDS', WAIT_SECONDS))
-    deadline = clock.call + wait
-    names = nil
-    loop do
-      expired = clock.call >= deadline
-      begin
-        # A moved head ends the wait as superseded, so this revision's applicable workflows are read once.
-        names ||= begin
-          fresh = current(head, number)
-          return superseded(head) unless fresh
-          applicable(fresh, number)
-        end
-        pending, failed = state(names, runs(head.fetch('sha'), pr ? 'pull_request' : 'push', head, number))
-        return superseded(head) unless current(head, number)
-      rescue TransientError => e
-        # One failed read must not end a wait that the next poll can finish.
-        raise if expired
-        warn "#{e.message}; retrying at the next poll"
-        pending = nil
-      end
-      if pending
-        return not_started("fast CI did not pass: #{failed.join(', ')}") unless failed.empty?
-        return 'ready' if pending.empty?
-        return not_started("fast CI not finished after #{wait / 60} minutes: #{pending.join(', ')}") if expired
-        puts "Waiting for #{pending.join(', ')}"
-      end
-      sleep Integer(ENV.fetch('FAST_CI_POLL_SECONDS', POLL_SECONDS))
+    fresh = current(head, number)
+    return 'superseded' unless fresh
+    expected_names = ['unit-tests']
+    if pr
+      # A re-run gate replays the original event, so read changed_files from the PR as it is now.
+      pr = fresh
+      files = pages("pulls/#{Integer(number)}/files?per_page=100").flatten(1)
+      # The PR files API lists at most 3000 files.
+      raise 'Incomplete PR file list' unless files.size == [pr.fetch('changed_files'), 3000].min
+      expected_names = expected(pr, files)
     end
+    latest = initial_runs || runs(head.fetch('sha'), pr ? 'pull_request' : 'push', head, number)
+    pending, failed = state(expected_names, latest)
+    report('Hub e2e deferred', "waiting for #{pending.join(', ')}") unless pending.empty?
+    report('Hub e2e deferred', "fast CI did not pass: #{failed.join(', ')}") unless failed.empty?
+    return 'deferred' unless pending.empty? && failed.empty?
+    current(head, number) ? 'ready' : 'superseded'
   end
 end
 

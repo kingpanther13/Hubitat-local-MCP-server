@@ -9,36 +9,40 @@ verified dependency-only bot PRs skip it.
 
 ## Fast CI prerequisites
 
-On a PR, both OS and JVM wait for Unit Tests, PR Guard,
-Groovy 2.5 Spock, and the other fast workflows selected by the PR's changed paths.
+On a PR, both OS and JVM, and the physical hub's labelled run (`hub-e2e.yml`), wait for Unit
+Tests, PR Guard, Groovy 2.5 Spock, and the other fast workflows selected by the PR's changed paths.
 On a push to `main`, Unit Tests is the prerequisite. Manual stable and beta
-dispatches can run immediately.
+dispatches can run immediately, and so does a dispatch of `hub-e2e.yml`.
 
-One job decides, `Fast CI prerequisites`: on a PR the request run's, after its `approve`
-job; on a push to `main` the test workflow's own. It polls the fast workflow results every
-30 seconds (`.github/scripts/ephemeral_fast_ci.rb`) and lets the hub jobs start once every
-applicable check is green on the current revision, about five minutes after a push. A PR's
-test run has no gate of its own: its `e2e` jobs start at once and wait for the request run.
+Each gated workflow has a `Fast CI prerequisites` job that checks the fast workflow results
+once (`.github/scripts/ephemeral_fast_ci.rb`): the test workflow's own, the request run's and
+the physical run's, the last two after their `approve` job. When every applicable check is
+green on the current revision the hub jobs start. Otherwise the job defers them: Actions shows
+the hub jobs as skipped, the gate job names the waiting or failed workflows, and the
+`Ephemeral e2e verdict` statuses and the physical lane's `Full e2e (runs with label)` status
+stay pending. A fast workflow still waiting for **Approve workflows to run** counts as
+unfinished, not failed.
 
-The hubs are not started when a check fails, or when the checks have not finished after 20
-minutes. The gate job then names the failed or unfinished workflows in a warning. On a PR it
-also sets both `Ephemeral e2e verdict` statuses to pending and uploads the reason as
-`ephemeral-hub-unavailable`, which ends the waiting `e2e` jobs green with a warning that names the reason. A fast
-workflow still waiting for **Approve workflows to run** counts as unfinished, not failed.
+`ephemeral-fast-ci-completed.yml` resumes deferred runs. It is a `workflow_run` workflow, so
+GitHub starts it from the default branch each time a fast workflow finishes. When every
+applicable check is green on the current revision, `.github/scripts/resume_ephemeral_ci.rb`
+re-runs each deferred gate job, and GitHub re-runs the jobs that depend on it; this shows as a
+second run attempt. Re-running a failed fast check until it passes uses the same path, and a
+gate job that failed (for example on a GitHub API outage) is re-evaluated the same way. On a PR
+it resumes the request run before the test run, then the physical run. It never approves a
+deployment and never re-runs a hub that already started: the `approve` jobs are not re-run, so
+an approval given before the deferral still stands. The physical lane's label gate still
+decides whether that lane runs at all.
 
-To start the hubs after a failed fast check passes on a re-run, after the 20 minutes ran
-out, or after the gate job itself failed: on a PR, re-run `Fast CI prerequisites` in the
-request run, then within 10 minutes re-run the `e2e (ephemeral hub, <kind>)` jobs in the test
-run; on `main`, where the gate job fails when it does not start the hubs, use **Re-run failed
-jobs**. On a PR the other order ends the `e2e` jobs at once on the old reason. Pushing a
-commit restarts everything. The physical hub's label gate is
-independent.
+Label events add physical runs on the same head that make no gate decision, so for that lane
+the script resumes the newest run whose gate did decide. A resumed physical run keeps its
+per-branch concurrency group, so a later commit cancels it, and it never cancels another run.
 
-The gate polls because this repository's Actions policy "Allowed workflow events"
-(**Settings → Actions → Policies**, or `gh api repos/<owner>/<repo>/actions/policies`)
-permits only `pull_request`, `pull_request_target`, `push`, `schedule` and
-`workflow_dispatch`. A `workflow_run` workflow fails at startup here, so nothing can wake a
-waiting run from outside.
+`workflow_run` must be in this repository's Actions policy "Allowed workflow events"
+(**Settings → Actions → Policies**, or `gh api repos/<owner>/<repo>/actions/policies`), next to
+`pull_request`, `pull_request_target`, `push`, `schedule` and `workflow_dispatch`. Without it
+the resume workflow fails at startup and deferred runs stay deferred until their gate job is
+re-run by hand.
 
 ## Two hub kinds
 
@@ -82,7 +86,7 @@ These steps describe hold mode, where the test run drives the hub. The default
    that change no file `.github/scripts/hub_relevant_paths.json` lists for this lane. When the lane should not run, it uploads artifact
    `ephemeral-hub-unavailable` with the reason, once for both kinds. Its `approve` job then
    holds a first-time contributor's PR for [approval](#first-time-contributors), and its
-   `Fast CI prerequisites` job waits for [fast CI](#fast-ci-prerequisites). For a push or dispatch, the test workflow's own `request-hub` job does the secrets check
+   `Fast CI prerequisites` job checks [fast CI](#fast-ci-prerequisites). For a push or dispatch, the test workflow's own `request-hub` job does the secrets check
    and uploads `ephemeral-hub-unavailable-<kind>`.
 3. For a fork head, the `publish` job publishes its release files once, for both kinds, with
    `.github/scripts/publish_fork_bundle.sh`. `request-hub` waits until the revision's files are served. For a pull request it then finds the running
@@ -91,7 +95,7 @@ These steps describe hold mode, where the test run drives the hub. The default
    test run's ID and its kind, and finds that provider run by the run ID and kind in its name. It
    waits up to 25 minutes for the hub's session and relays it, still encrypted, as artifact
    `ephemeral-hub-session-<test run id>-<attempt>-<kind>`.
-5. `e2e` waits up to 55 minutes (20 for the fast-CI gate, then 35) for its own kind's artifact, in its own run or in the request run
+5. `e2e` waits up to 35 minutes for its own kind's artifact, in its own run or in the request run
    for its head SHA. A request run that reports the lane unavailable makes `e2e` skip with that reason.
    A request run that ends without either artifact fails `e2e`. While the default branch has no
    request workflow the lane skips on PRs, because `pull_request_target` always runs the default
@@ -101,7 +105,8 @@ These steps describe hold mode, where the test run drives the hub. The default
 
 There is no teardown call: the hub ends with the test run. To retry one kind on a pull request,
 re-run that kind's `e2e (ephemeral hub, <kind>)` job in the test run, then right away re-run
-`Request ephemeral hub (<kind>)` in the request run. The request job pairs with the test run still
+`Request ephemeral hub (<kind>)` in the request run, or its `Fast CI prerequisites` job if that
+run deferred the hubs. The request job pairs with the test run still
 in progress and the public key of its new attempt, so a hub boots for that attempt. Re-running only
 the test run gets no hub: it fails once it sees the request run stay finished. Pushing a commit or
 closing and reopening the PR also restarts both workflows. To retry a push or dispatch, use
@@ -139,7 +144,7 @@ only when the provider run succeeded, failure when it did not complete within th
 not be read, or was never started while that job ran. The PR's own `e2e` job cannot change that
 status.
 
-The `e2e` job waits up to 55 minutes for that artifact and applies the same entry check. It prints
+The `e2e` job waits up to 35 minutes for that artifact and applies the same entry check. It prints
 the three logs with workflow commands disabled, writes the counts and failed tests to the step
 summary, and uploads the files as its results. It passes only when `e2e.status` and `sdk.status`
 are both `passed`. An SDK leg that did not run fails the job, because conformance may not skip.
@@ -161,9 +166,9 @@ run, but `pull_request_target` runs regardless of it, so the request workflow ga
 `MEMBER`, `COLLABORATOR` or `CONTRIBUTOR` (a change already merged here), and the
 reviewer-protected `e2e-approval` environment otherwise. No hub boots and none of the PR's code
 runs until a maintainer approves both: **Approve workflows to run** on the PR, then **Review
-deployments** on the request run. The request side then waits up to 20 minutes for fast CI,
-which starts only with the first approval, and the test run waits 55 minutes for results, so
-approve the two together; after a timeout, re-run both jobs as described above. A rejected deployment fails `e2e`.
+deployments** on the request run. A request run approved before fast CI is green is deferred and
+resumes by itself, with no second approval. The test run waits 35 minutes for results once its
+own gate has passed, so approve the two together; after a timeout, re-run both jobs as described above. A rejected deployment fails `e2e`.
 
 The hub is disposable and serves only the test run that requested it. The job that runs PR code
 holds no secrets. Its token can only read this repository's contents and Actions artifacts and
@@ -180,10 +185,10 @@ request workflow and the copy of the shared script it runs come from `main`. A d
 its copy of the shared script and the provider contract through the push/dispatch request job;
 it never runs `hub-e2e-ephemeral-request.yml`, whose only trigger is `pull_request_target`,
 which always runs `main`'s copy. A change to that file is therefore proven only after it is on `main`, by the
-next PR's run. The request run's `Fast CI prerequisites` job likewise runs `main`'s copy of
-`ephemeral_fast_ci.rb`, the test workflow's own gate job runs only on a push to `main`, and a
-dispatch has no gate, so a change to the gate is exercised by its tests and by the first PR
-and push after it merges.
+next PR's run. The same holds for `ephemeral-fast-ci-completed.yml`, `resume_ephemeral_ci.rb` and the
+copy of `ephemeral_fast_ci.rb` that the request run and the physical run use: `workflow_run`
+and `pull_request_target` take them from `main`. A dispatch has no gate, so a change to the
+gate is exercised by its tests and by the first PR and push after it merges.
 
 ## Repository secrets
 
