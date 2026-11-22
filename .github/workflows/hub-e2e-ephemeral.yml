@@ -52,6 +52,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ruby .github/scripts/ephemeral_fast_ci.rb
+      # A green run with skipped hub jobs would hide that this push went untested.
+      - name: Fail when fast CI kept the hubs from starting
+        if: steps.fast.outputs.result == 'not-started'
+        run: exit 1
 
   request-hub:
     name: Request ephemeral hub (${{ matrix.kind }})
@@ -211,10 +215,12 @@ jobs:
                   gh run download "$src" --repo "$GITHUB_REPOSITORY" --name "$unavailable" --dir "$RUNNER_TEMP/unavailable"
                   reason="$(head -n1 "$RUNNER_TEMP/unavailable/reason.txt")"
                   echo "$reason"; echo "$reason" >> "$GITHUB_STEP_SUMMARY"
+                  # Hubs that fast CI kept from starting still owe a run: say so on this green check.
+                  [[ "$reason" != "Ephemeral hubs not started: "* ]] || echo "::warning title=Ephemeral hubs not started::${reason#*: }"
                   echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
                 fi
                 grace=$((grace + 1))
-                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without results or a session for this attempt. Re-run this job, then right away Request ephemeral hub ($KIND) in the request run, or its Fast CI prerequisites job if that job failed (or push a commit or close and reopen the PR); for push or dispatch use Re-run all jobs."; exit 1; }
+                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without results or a session for this attempt. Re-run this job, then right away Request ephemeral hub ($KIND) in the request run; if that run's Fast CI prerequisites job failed, re-run it first, then this job (or push a commit or close and reopen the PR); for push or dispatch use Re-run all jobs."; exit 1; }
               fi
             fi
             [ "$SECONDS" -lt "$deadline" ] || { echo "::error::No hub results or session within $((wait / 60)) minutes."; exit 1; }

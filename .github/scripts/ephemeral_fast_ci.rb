@@ -10,21 +10,28 @@ module EphemeralFastCI
   FILTERED = %w[groovy24-parse sandbox-lint python-tests ruff self-deploy-recovery
                 lane-gate-test lease-scripts-test dependency-updates-check].freeze
   # Fast CI takes about five minutes. workflow_run is not an allowed event here
-  # (docs/ephemeral-hub-e2e.md), so the gate polls. The gate jobs' timeout-minutes must exceed this.
+  # (docs/ephemeral-hub-e2e.md), so the gate polls. The gate jobs' timeout-minutes must be
+  # at least four minutes above this, and the test run's wait at least 35 minutes above it.
   WAIT_SECONDS = 20 * 60
   POLL_SECONDS = 30
 
+  # A read that may succeed later: worth another poll, unlike a refusal that will not change.
+  class TransientError < RuntimeError; end
+
   def self.api(path, *options)
     # A transient API read must not strand a green revision.
+    later = false
     3.times do |attempt|
       stdout, stderr, status = Open3.capture3('gh', 'api', *options, "repos/#{ENV.fetch('GITHUB_REPOSITORY')}/#{path}")
       return stdout.empty? ? nil : JSON.parse(stdout) if status.success?
       warn stderr
       transient = stderr.match?(/HTTP (?:429|5\d\d)|timeout|timed out|connection reset|unexpected EOF/i)
+      # A rate limit clears too slowly for the quick retries here, but the next poll may pass.
+      later = transient || stderr.match?(/rate limit/i)
       break unless transient && attempt < 2
       sleep 2**(attempt + 1)
     end
-    raise "GitHub API request failed for #{path.split('?').first}"
+    raise(later ? TransientError : RuntimeError, "GitHub API request failed for #{path.split('?').first}")
   end
 
   def self.pages(path)
@@ -123,7 +130,6 @@ module EphemeralFastCI
     'superseded'
   end
 
-  # The reason output is what the request run relays to the test run.
   def self.not_started(detail)
     reason = "Ephemeral hubs not started: #{detail}"
     puts "::warning title=Ephemeral hubs not started::#{detail}"
@@ -137,7 +143,7 @@ module EphemeralFastCI
     number = pr&.fetch('number')
     fresh = current(head, number)
     return superseded(head) unless fresh
-    # The head cannot change during the wait, so the applicable workflows are read once.
+    # A moved head ends the wait as superseded, so this revision's applicable workflows are read once.
     names = ['unit-tests']
     if pr
       # A re-run gate replays the original event, so read changed_files from the PR as it is now.
@@ -154,7 +160,7 @@ module EphemeralFastCI
       begin
         pending, failed = state(names, runs(head.fetch('sha'), pr ? 'pull_request' : 'push', head, number))
         return superseded(head) unless current(head, number)
-      rescue RuntimeError => e
+      rescue TransientError => e
         # One failed read must not end a wait that the next poll can finish.
         raise if expired
         warn "#{e.message}; retrying at the next poll"

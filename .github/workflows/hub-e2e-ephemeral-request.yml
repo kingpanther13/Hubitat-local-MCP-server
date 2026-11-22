@@ -91,8 +91,9 @@ jobs:
       - run: echo "Ephemeral hub approved for this revision."
 
   # The only fast-CI gate on a PR: it polls until this revision's fast CI finishes (about five
-  # minutes), up to 20 minutes. It runs after approval, so a first-time contributor's fast CI,
-  # which starts only once a maintainer approves it, is already running when the wait begins.
+  # minutes), up to 20 minutes. It runs after approval, so when a maintainer approves a first-time
+  # contributor's workflows and deployment together, their fast CI is running when the wait begins.
+  # A fast workflow still held for approval counts as unfinished.
   fast-ci:
     name: Fast CI prerequisites
     outputs:
@@ -115,21 +116,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ruby .github/scripts/ephemeral_fast_ci.rb
-      # A finished test run reads as "not relevant"; a pending verdict shows the hubs still owe a run.
-      - name: Keep the verdicts pending
-        if: ${{ !cancelled() && steps.fast.outputs.result != 'ready' && steps.fast.outputs.result != 'superseded' }}
+      # The test run reads this reason and ends without waiting for a hub. It is uploaded before the
+      # statuses are posted, so a failed post cannot leave the test run without it.
+      - name: Write the reason for the test run
+        if: steps.fast.outputs.result == 'not-started'
         env:
-          GH_TOKEN: ${{ github.token }}
-          PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
           REASON: ${{ steps.fast.outputs.reason }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/unavailable"; echo "$REASON" > "$RUNNER_TEMP/unavailable/reason.txt"
-          for kind in os jvm; do
-            gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PUBLIC_SHA" -f state=pending \
-              -f context="Ephemeral e2e verdict ($kind)" \
-              -f description="Hubs not started: fast CI is not green. To retry: docs/ephemeral-hub-e2e.md, Fast CI prerequisites." >/dev/null
-          done
-      # The test run reads this reason and ends without waiting for a hub.
+        run: mkdir -p "$RUNNER_TEMP/unavailable"; echo "$REASON" > "$RUNNER_TEMP/unavailable/reason.txt"
       - uses: actions/upload-artifact@v7
         if: steps.fast.outputs.result == 'not-started'
         with:
@@ -137,6 +130,20 @@ jobs:
           path: ${{ runner.temp }}/unavailable/reason.txt
           retention-days: 1
           overwrite: true
+      # The test run's e2e jobs end green on the relayed reason, so the pending verdicts are what
+      # show that the hubs still owe a run. They are also posted when the gate itself failed.
+      - name: Keep the verdicts pending
+        if: ${{ !cancelled() && steps.fast.outputs.result != 'ready' && steps.fast.outputs.result != 'superseded' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
+          WHY: ${{ steps.fast.outputs.result == 'not-started' && 'fast CI is not green' || 'the Fast CI prerequisites job failed' }}
+        run: |
+          for kind in os jvm; do
+            gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PUBLIC_SHA" -f state=pending \
+              -f context="Ephemeral e2e verdict ($kind)" \
+              -f description="Hubs not started: $WHY. To retry: docs/ephemeral-hub-e2e.md, Fast CI prerequisites." >/dev/null
+          done
 
   # A fork head's release files are published once, for both hub kinds.
   publish:

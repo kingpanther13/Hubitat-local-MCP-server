@@ -33,13 +33,15 @@ def endpoint(event):
 def github(tmp_path):
     gh = tmp_path / "gh"
     # A {"__sequence__": [...]} entry answers each read with the next item, repeating the last.
-    # fail-once fails one read of a path with a retryable 502, refuse-once with a 403.
+    # fail-once fails one read of a path with a retryable 502, refuse-once with a rate-limit 403
+    # and deny-once with a 404 that no retry can change.
     gh.write_text(f"#!{sys.executable}\n" + """
 import json, os, sys
 from pathlib import Path
 root = Path(os.environ["FAKE_GITHUB"])
 path = sys.argv[-1].removeprefix("repos/base/server/")
-for name, error in (("fail-once", "Server Error (HTTP 502)"), ("refuse-once", "API rate limit exceeded (HTTP 403)")):
+for name, error in (("fail-once", "Server Error (HTTP 502)"), ("refuse-once", "API rate limit exceeded (HTTP 403)"),
+                    ("deny-once", "Not Found (HTTP 404)")):
     fault = root / name
     if fault.exists() and fault.read_text() == path:
         fault.unlink()
@@ -80,13 +82,20 @@ def change_files(api, files):
     api["pulls/7"] = {**PR, "changed_files": len(files)}
 
 
-@pytest.mark.parametrize("case,expected", [
-    ("green", "ready"), ("missing-match", "not-started"), ("other-fork", "not-started"),
-    ("older-green", "not-started"), ("cancelled", "not-started"), ("queued", "not-started"),
-    ("stale", "superseded"), ("rename", "not-started"), ("scheduled-red", "not-started"),
-    ("filter-narrowed", "ready"), ("filter-removed", "ready"), ("file-301", "not-started"),
+UNFINISHED = "fast CI not finished after 0 minutes: "
+RED = "fast CI did not pass: "
+
+
+@pytest.mark.parametrize("case,expected,why", [
+    ("green", "ready", None), ("missing-match", "not-started", UNFINISHED + "groovy24-parse"),
+    ("other-fork", "not-started", UNFINISHED + "groovy24-parse"),
+    ("older-green", "not-started", RED + "groovy24-parse"), ("cancelled", "not-started", RED + "groovy24-parse"),
+    ("queued", "not-started", UNFINISHED + "groovy24-parse"), ("stale", "superseded", None),
+    ("rename", "not-started", UNFINISHED + "python-tests, ruff"), ("scheduled-red", "not-started", RED + "python-tests"),
+    ("filter-narrowed", "ready", None), ("filter-removed", "ready", None),
+    ("file-301", "not-started", UNFINISHED + "python-tests, ruff"),
 ])
-def test_pr_gate(github, tmp_path, case, expected):
+def test_pr_gate(github, tmp_path, case, expected, why):
     api, rows, execute = github
     parse = rows[3]
     if case == "missing-match":
@@ -120,10 +129,10 @@ def test_pr_gate(github, tmp_path, case, expected):
         change_files(api, [{"filename": f"libraries/f{i}.groovy", "status": "modified"} for i in range(300)]
                      + [{"filename": "tests/test_x.py", "status": "added"}])
     assert execute({"pull_request": PR}) == f"result={expected}"
-    # The request run relays this line to the test run; no other outcome writes one.
+    # The request run relays this line to the test run; no other outcome writes one. A check that
+    # has not finished and one that failed must stay apart: only the first is worth waiting for.
     reasons = [line for line in (tmp_path / "outputs").read_text().splitlines() if line.startswith("reason=")]
-    assert len(reasons) == (expected == "not-started")
-    assert all(line.startswith("reason=Ephemeral hubs not started: fast CI ") for line in reasons)
+    assert reasons == ([f"reason=Ephemeral hubs not started: {why}"] if why else [])
 
 
 def with_first(rows, **change):
@@ -140,6 +149,7 @@ def with_first(rows, **change):
     ("approved-then-green", "ready", ""),
     ("never-approved", "not-started", "unit-tests (awaiting workflow approval)"),
     ("read-refused-once", "ready", ""),
+    ("unlisted-run-appears", "ready", ""),
 ])
 def test_gate_waits_for_running_checks(github, tmp_path, case, expected, reported):
     api, rows, execute = github
@@ -169,6 +179,9 @@ def test_gate_waits_for_running_checks(github, tmp_path, case, expected, reporte
         api[runs], wait = held, 0
     elif case == "read-refused-once":
         (tmp_path / "refuse-once").write_text(runs)
+    elif case == "unlisted-run-appears":
+        # A path-filtered workflow that applies but has no run listed yet is waited for.
+        api[runs] = {"__sequence__": [[{"workflow_runs": [*rows[:3], rows[4]]}], done]}
     assert execute({"pull_request": PR}, wait=wait) == f"result={expected}"
     assert reported in (tmp_path / "summary").read_text()
     assert bool(reported) == bool((tmp_path / "summary").read_text())
@@ -179,6 +192,8 @@ def test_gate_waits_for_running_checks(github, tmp_path, case, expected, reporte
         assert "Waiting for unit-tests (awaiting workflow approval)" in log
     elif case == "read-refused-once":
         assert "retrying at the next poll" in log
+    elif case == "unlisted-run-appears":
+        assert "Waiting for groovy24-parse" in log
     else:
         assert "Waiting for" not in log
 
@@ -188,6 +203,14 @@ def test_a_refused_read_at_the_deadline_fails_the_gate(github, tmp_path):
     (tmp_path / "refuse-once").write_text(endpoint("pull_request"))
     with pytest.raises(subprocess.CalledProcessError):
         execute({"pull_request": PR})
+
+
+def test_a_read_no_retry_can_change_fails_the_gate_at_once(github, tmp_path):
+    _, _, execute = github
+    (tmp_path / "deny-once").write_text(endpoint("pull_request"))
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        execute({"pull_request": PR}, wait=60)
+    assert "retrying at the next poll" not in failure.value.stderr
 
 
 def test_incomplete_file_list_fails_the_gate(github):
@@ -219,8 +242,9 @@ def test_main_push_waits_for_its_own_unit_run(github):
 
 
 def test_gate_can_read_every_fast_workflow_and_outlasts_its_wait():
-    # A missing workflow file or an unreadable filter would fail every PR's gate, and a job
-    # timeout at or below the wait would kill the gate before it reports why no hub started.
+    # A missing workflow file or an unreadable filter would fail every PR's gate. A job timeout less
+    # than four minutes above the wait could kill the gate before it reports why no hub started, and
+    # a test run that waits less than 35 minutes beyond the gate could give up on a hub still booting.
     subprocess.run(["ruby", "-r", "./.github/scripts/ephemeral_fast_ci", "-e", """
       EphemeralFastCI::REQUIRED.each { |name| File.read(EphemeralFastCI.workflow_path(name)) }
       EphemeralFastCI::FILTERED.each do |name|
@@ -231,4 +255,6 @@ def test_gate_can_read_every_fast_workflow_and_outlasts_its_wait():
         limit = YAML.safe_load_file(EphemeralFastCI.workflow_path(name)).fetch('jobs').fetch('fast-ci').fetch('timeout-minutes')
         abort "#{name}: fast-ci timeout too close to the wait" unless limit * 60 >= EphemeralFastCI::WAIT_SECONDS + 240
       end
+      wait = File.read(EphemeralFastCI.workflow_path('hub-e2e-ephemeral'))[/^ +wait=(\\d+)$/, 1]
+      abort 'the test run waits too little beyond the gate' unless Integer(wait) >= EphemeralFastCI::WAIT_SECONDS + 2100
     """], cwd=ROOT, check=True)

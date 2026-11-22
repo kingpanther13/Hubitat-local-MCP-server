@@ -408,6 +408,8 @@ def test_ephemeral_pr_code_runs_only_under_pull_request():
     # gate, and a dispatch runs directly. A PR never requests a hub from here.
     gate = jobs["fast-ci"]
     assert "    if: github.event_name == 'push'\n" in gate and "pull-requests:" not in gate and "secrets." not in gate
+    # A push whose hubs were not started fails the gate job, so the run is not green with skipped hub jobs.
+    assert "        if: steps.fast.outputs.result == 'not-started'\n        run: exit 1\n" in gate
     ready = "needs.fast-ci.outputs.result == 'ready'"
     assert "    needs: fast-ci\n" in request and "    needs: fast-ci\n" in e2e
     assert f"(github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && {ready}))" in request
@@ -459,15 +461,20 @@ def test_ephemeral_request_workflow_never_runs_pr_code():
     assert "on:\n  pull_request_target:\n    types: [opened, synchronize, reopened]\n\npermissions:" in head
     assert "\npermissions:\n  contents: read\n" in head
     assert set(jobs) == {"gate", "fast-ci", "approve", "publish", "request-hub"}
-    # Approval comes first, so a first-time contributor's fast CI is running when the gate starts to wait.
+    # Approval comes first, so fast CI that a maintainer approves together with the deployment is
+    # running when the gate starts to wait.
     assert "    needs: gate\n" in jobs["approve"] and "needs.gate.outputs.run == 'true'" in jobs["approve"]
     gate = jobs["fast-ci"]
     assert "    needs: [gate, approve]\n" in gate and "needs.gate.outputs.run == 'true'" in gate and "secrets." not in gate
-    # Hubs that are not started leave both kinds' verdicts pending (the loop's kinds match the request
-    # matrix), also when the gate itself failed, and the test run is told why through the artifact it reads.
+    # Both kinds' verdicts stay pending when the hubs are not started and when the gate itself failed
+    # (the loop's kinds match the request matrix).
     assert "statuses: write" in gate and "for kind in os jvm; do" in gate and KIND_MATRIX in jobs["request-hub"]
-    assert "!cancelled() && steps.fast.outputs.result != 'ready' && steps.fast.outputs.result != 'superseded'" in gate
-    assert "        if: steps.fast.outputs.result == 'not-started'\n        with:\n          name: ephemeral-hub-unavailable\n" in gate
+    pending = "        if: ${{ !cancelled() && steps.fast.outputs.result != 'ready' && steps.fast.outputs.result != 'superseded' }}\n"
+    assert pending in gate
+    # Only a not-started gate relays its reason, in the artifact the test run reads, and it does so
+    # before the statuses are posted so a failed post cannot leave the test run without it.
+    upload = "        if: steps.fast.outputs.result == 'not-started'\n        with:\n          name: ephemeral-hub-unavailable\n"
+    assert upload in gate and gate.index(upload) < gate.index(pending)
     ready = "needs.fast-ci.outputs.result == 'ready'"
     assert ready in jobs["publish"] and ready in jobs["request-hub"]
     # Only contributors with a merged change skip the reviewer-gated environment, and no hub is
@@ -523,11 +530,13 @@ def test_ephemeral_artifact_names_agree_across_workflows():
     assert "ephemeral-hub-unavailable-${{ matrix.kind }}\n" in EPHEMERAL
     assert "ephemeral-e2e-results-${{ github.run_attempt }}-${{ matrix.kind }}\n" in EPHEMERAL
     assert '"ephemeral-hub-results-$1"' in script and '-f kind="$kind" -f run_suite="$suite"' in script
-    # Every artifact either job uploads carries the kind; only the PR gate's shared skip reason does not.
+    # Every artifact either job uploads carries the kind; only the request run's reason for both kinds,
+    # from its lane gate or its fast-CI gate, does not.
     for workflow in (EPHEMERAL, REQUEST):
         for job, body in _jobs(workflow)[1].items():
             for name in re.findall(r"^          name: (.*)$", body, re.M):
-                assert name.endswith("-${{ matrix.kind }}") or (job, name) == ("gate", "ephemeral-hub-unavailable"), name
+                shared = workflow is REQUEST and job in ("gate", "fast-ci") and name == "ephemeral-hub-unavailable"
+                assert name.endswith("-${{ matrix.kind }}") or shared, name
 
 
 @pytest.mark.parametrize("kind", ["os", "jvm"])
@@ -723,6 +732,8 @@ def test_ephemeral_test_job_waits_for_its_own_session_or_a_skip_reason(event, ba
     ("pull_request", "7 completed success", "ephemeral-hub-results-100-2-os", "true", "ended"),  # another attempt's results
     ("pull_request", "7 completed success", "ephemeral-hub-results-100-1-jvm", "true", "ended"),  # the other kind's results
     ("push", "failure", "", "true", "ended"),
+    # A re-run request attempt's results win over the reason an earlier attempt left on the run.
+    ("pull_request", "7 completed success", "ephemeral-hub-unavailable\nephemeral-hub-results-100-1-os", "true", "results"),
     ("pull_request", "7 in_progress ", "", "true", "55 minutes"),
     ("pull_request", "7 in_progress ", "", "false", "55 minutes"),
 ])
@@ -743,10 +754,19 @@ def test_ephemeral_test_job_skips_without_waiting(run_suite, tmp_path):
     result, output, _ = _wait_for_hub(tmp_path, "pull_request", "present", "7 completed success",
                                       "ephemeral-hub-unavailable", run_suite)
     assert result.returncode == 0 and "ready=false" in output.read_text()
-    assert not (tmp_path / "sleeps").exists()
+    assert not (tmp_path / "sleeps").exists() and "::warning" not in result.stdout
 
 
-def _wait_for_hub(tmp_path, event, base, request_state, artifacts, run_suite):
+def test_ephemeral_test_job_warns_when_fast_ci_kept_the_hubs_from_starting(tmp_path):
+    # The job ends green on the relayed reason, so the warning is what shows that the hubs still owe a run.
+    reason = "Ephemeral hubs not started: fast CI did not pass: ruff"
+    result, output, summary = _wait_for_hub(tmp_path, "pull_request", "present", "7 completed success",
+                                            "ephemeral-hub-unavailable", "true", reason)
+    assert result.returncode == 0 and "ready=false" in output.read_text() and reason in summary.read_text()
+    assert "::warning title=Ephemeral hubs not started::fast CI did not pass: ruff" in result.stdout
+
+
+def _wait_for_hub(tmp_path, event, base, request_state, artifacts, run_suite, reason="Ephemeral hub lane not configured."):
     loop = _run_block(EPHEMERAL, "        id: session\n").split("\nkey=", 1)[0]
     script = '''
 sleep() { SECONDS=$((SECONDS + 600)); echo "$1" >> "$RUNNER_TEMP/sleeps"; }
@@ -763,7 +783,7 @@ gh() {
     "api repos/owner/repo/actions/runs/"*/artifacts) printf '%s\\n' "$ARTIFACTS" ;;
     "run download")
       shift 2; while [ "$1" != --dir ]; do [ "$1" != --name ] || echo "$1 $2" >> "$RUNNER_TEMP/downloads"; shift; done
-      mkdir -p "$2"; echo "Ephemeral hub lane not configured." > "$2/reason.txt" ;;
+      mkdir -p "$2"; echo "$REASON_TEXT" > "$2/reason.txt" ;;
     *) return 1 ;;
   esac
 }
@@ -772,7 +792,7 @@ gh() {
     env = {**os.environ, "EVENT_NAME": event, "HEAD_SHA": FORK_SHA, "GITHUB_REPOSITORY": "owner/repo",
            "BASE": base, "DEFAULT_BRANCH": "default-branch", "KIND": "os",
            "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "1", "REQUEST_STATE": request_state, "ARTIFACTS": artifacts,
-           "EPHEMERAL_RUN_SUITE": run_suite,
+           "EPHEMERAL_RUN_SUITE": run_suite, "REASON_TEXT": reason,
            "RUNNER_TEMP": str(tmp_path), "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
     result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
     return result, output, summary

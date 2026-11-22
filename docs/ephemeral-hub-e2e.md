@@ -3,8 +3,8 @@
 The ephemeral lane runs the full `tests/e2e_test.py` registry and then
 `tests/sdk_conformance_test.py` against a disposable test hub. An external workflow boots that hub
 for one run and ends it when the run completes. The lane runs on every pull request, forks
-included, on pushes to `main`, and on manual dispatch of a branch. It has no approval environment
-and no label gate of its own. `e2e:skip` holds only the physical-hub lane. Docs-only PRs and
+included, on pushes to `main`, and on manual dispatch of a branch. It has no label gate of its
+own; a first-time contributor's hub waits for an [approval](#first-time-contributors). `e2e:skip` holds only the physical-hub lane. Docs-only PRs and
 verified dependency-only bot PRs skip it.
 
 ## Fast CI prerequisites
@@ -23,14 +23,15 @@ test run has no gate of its own: its `e2e` jobs start at once and wait for the r
 The hubs are not started when a check fails, or when the checks have not finished after 20
 minutes. The gate job then names the failed or unfinished workflows in a warning. On a PR it
 also sets both `Ephemeral e2e verdict` statuses to pending and uploads the reason as
-`ephemeral-hub-unavailable`, which ends the waiting `e2e` jobs without a failure. A fast
+`ephemeral-hub-unavailable`, which ends the waiting `e2e` jobs green with a warning that names the reason. A fast
 workflow still waiting for **Approve workflows to run** counts as unfinished, not failed.
 
-To start the hubs after a failed fast check passes on a re-run, or after the 20 minutes ran
-out: on a PR, re-run `Fast CI prerequisites` in the request run, then within 10 minutes
-re-run the `e2e (ephemeral hub, <kind>)` jobs in the test run; on `main`, re-run
-`Fast CI prerequisites` in the test run. The other order ends the `e2e` jobs at once on the
-old reason. Pushing a commit restarts everything. The physical hub's label gate is
+To start the hubs after a failed fast check passes on a re-run, after the 20 minutes ran
+out, or after the gate job itself failed: on a PR, re-run `Fast CI prerequisites` in the
+request run, then within 10 minutes re-run the `e2e (ephemeral hub, <kind>)` jobs in the test
+run; on `main`, where the gate job fails when it does not start the hubs, use **Re-run failed
+jobs**. On a PR the other order ends the `e2e` jobs at once on the old reason. Pushing a
+commit restarts everything. The physical hub's label gate is
 independent.
 
 The gate polls because this repository's Actions policy "Allowed workflow events"
@@ -172,7 +173,8 @@ request workflow.
 
 ## Validating changes
 
-Under `pull_request` the test workflow comes from the PR head, so its changes run in-PR. The
+Under `pull_request` the test workflow comes from the PR's merge commit with the base branch,
+so its changes run in-PR. The
 request workflow and the copy of the shared script it runs come from `main`. A dispatch,
 `gh workflow run hub-e2e-ephemeral.yml --ref <branch>`, exercises the branch's test workflow,
 its copy of the shared script and the provider contract through the push/dispatch request job;
