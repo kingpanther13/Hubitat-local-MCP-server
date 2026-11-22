@@ -34,6 +34,7 @@
     ".github/scripts/request_ephemeral_hub.sh",
     ".github/scripts/publish_fork_bundle.sh",
     ".github/scripts/lane_gate.js",
-    ".github/scripts/hub_relevant_paths.json"
+    ".github/scripts/hub_relevant_paths.json",
+    ".github/scripts/ephemeral_fast_ci.rb"
   ]
 }
