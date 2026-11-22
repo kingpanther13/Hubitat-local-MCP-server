@@ -35,8 +35,6 @@
     ".github/scripts/publish_fork_bundle.sh",
     ".github/scripts/lane_gate.js",
     ".github/scripts/hub_relevant_paths.json",
-    ".github/scripts/ephemeral_fast_ci.rb",
-    ".github/scripts/resume_ephemeral_ci.rb",
-    ".github/workflows/ephemeral-fast-ci-completed.yml"
+    ".github/scripts/ephemeral_fast_ci.rb"
   ]
 }

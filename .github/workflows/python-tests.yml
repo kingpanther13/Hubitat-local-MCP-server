@@ -16,25 +16,8 @@ on:
       # the pytest suite that exercises their pure helpers.
       - 'tests/sandbox_lint.py'
       - 'tests/e2e_test.py'
-      - '.github/workflows/python-tests.yml'
-      - '.github/workflows/hub-e2e.yml'
-      - '.github/workflows/hub-e2e-ephemeral.yml'
-      - '.github/workflows/hub-e2e-ephemeral-beta.yml'
-      - '.github/workflows/hub-e2e-ephemeral-request.yml'
-      - '.github/workflows/ephemeral-fast-ci-completed.yml'
-      # The ephemeral fast-CI gate reads these workflows' names and path filters.
-      - '.github/workflows/unit-tests.yml'
-      - '.github/workflows/pr-guard.yml'
-      - '.github/workflows/groovy2x-spock.yml'
-      - '.github/workflows/groovy24-parse.yml'
-      - '.github/workflows/sandbox-lint.yml'
-      - '.github/workflows/ruff.yml'
-      - '.github/workflows/self-deploy-recovery.yml'
-      - '.github/workflows/lane-gate-test.yml'
-      - '.github/workflows/lease-scripts-test.yml'
-      - '.github/workflows/dependency-updates-check.yml'
-      - '.github/scripts/request_ephemeral_hub.sh'
-      - '.github/workflows/release.yml'
+      # Every workflow: the tests read their triggers, path filters and job wiring.
+      - '.github/workflows/**'
 
 permissions:
   contents: read
