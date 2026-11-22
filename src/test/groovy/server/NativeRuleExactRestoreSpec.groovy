@@ -599,7 +599,7 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         nativeContexts()['other caller'] = [app_id: 99L, expires: script.now() + 300000L]
         when:
         def restored = restore()
-        def staleSubmit = script.toolCallAppForm([app_id: 42, confirm: true, steps: [[kind: 'submit', expect_page: 'mainPage']]])
+        def staleSubmit = script.toolCallAppForm([appId: 42, confirm: true, steps: [[kind: 'submit', expectPage: 'mainPage']]])
         then:
         restored.success
         !staleSubmit.success && !staleSubmit.partial
@@ -625,7 +625,7 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
     def 'the restore lock also refuses a form started during undo capture'() {
         given:
         script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean strict, String protectedKey ->
-            def busy = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+            def busy = script.toolCallAppForm([appId: 42, steps: [[kind: 'open']], confirm: true])
             assert busy.success == false && busy.error.contains('active form operation')
             [backupKey: 'rm-rule_42_undo']
         }

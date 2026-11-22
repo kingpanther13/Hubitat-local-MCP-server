@@ -262,8 +262,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         leaf                       | args
         'hub_set_rule' | [operation: 'create', args: [parentId: 28, name: 'Unconfirmed', changes: [[part: 'variable', value: [operation: 'create', name: 'Counter', type: 'integer', value: 0]]]], confirm: false]
         'hub_set_rule'         | [operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']]], confirm: false]
-        'hub_set_native_app'   | [operation: 'update', app_id: 42, args: [fields: [comments: 'x']]]
-        'hub_set_native_app'   | [operation: 'form', app_id: 42, args: [steps: [[kind: 'open']]], confirm: false]
+        'hub_set_native_app'   | [operation: 'update', appId: 42, args: [fields: [comments: 'x']]]
+        'hub_set_native_app'   | [operation: 'form', appId: 42, args: [steps: [[kind: 'open']]], confirm: false]
     }
 
     def "hub_set_native_app help is answered inline without a request record or worker"() {
@@ -288,7 +288,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when:
         def response = modernCall('hub_manage_native_rules_and_apps', [tool: 'hub_set_native_app',
-            args: [operation: 'update', app_id: 779, args: [fields: [comments: 'worker']], confirm: true]])
+            args: [operation: 'update', appId: 779, args: [fields: [comments: 'worker']], confirm: true]])
         String requestState = response.result.requestState
 
         then:

@@ -50,7 +50,7 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
         where:
         request << [[operation: 'delete'], [operation: 'read', ruleId: 42, args: [ruleId: 99]],
-                    [operation: 'update', args: [confirm: true]], [operation: 'form', args: [app_id: 99]],
+                    [operation: 'update', args: [confirm: true]], [operation: 'form', args: [appId: 99]],
                     [operation: 'read', extra: true], [operation: 'form', args: [unknown: true]],
                     [operation: 'update', confirm: 'true'], [operation: 'read', ruleId: 0],
                     [operation: 'read', ruleId: true], [operation: 'read', ruleId: 1.5],
@@ -90,7 +90,7 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
 
         and: 'hub_set_native_app is a write tool in every call shape; its help lives in the read-only guide'
         !script._isRuleReadCall('hub_set_native_app', [:])
-        !script._isRuleReadCall('hub_set_native_app', [operation: 'update', app_id: 5])
+        !script._isRuleReadCall('hub_set_native_app', [operation: 'update', appId: 5])
     }
 
     def 'form rejects unrelated native apps before executing helper'() {
@@ -125,18 +125,32 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         result.controls == [[controlId: 'N||doAct', kind: 'create_child', submitOnChange: false]]
     }
 
-    def 'form names the control id key of the tool that was called'() {
+    def 'both form tools name the control id key controlId'() {
         given:
         Map context = [envelope: [:], fields: [:], controls: [:]]
         when:
         script._nfPrepare(42L, context, [:], 'missing', toolName)
         then:
         def refused = thrown(IllegalArgumentException)
-        refused.message == "Choose one exact returned native ${key}".toString()
+        refused.message == 'Choose one exact returned native controlId'
         where:
-        toolName             | key
-        'hub_set_rule'       | 'controlId'
-        'hub_set_native_app' | 'control_id'
+        toolName << ['hub_set_rule', 'hub_set_native_app']
+    }
+
+    def 'hub_set_native_app form results spell their keys in camelCase as hub_set_rule does'() {
+        given:
+        script.metaClass.toolCallAppForm = { Map args, String toolName ->
+            [success: false, appId: args.appId, reopen_required: true, remaining_steps: 1, navigated_app_id: 43, navigated_page: 'mainPage',
+             created_app_id: 44, completed: [[kind: 'submit', navigation_ended: true]],
+             controls: [[control_id: 'N||doAct', kind: 'create_child', submit_on_change: false]]]
+        }
+        when:
+        def result = script.toolSetNativeApp([operation: 'form', appId: 42, args: [steps: [[kind: 'open']]], confirm: true])
+        then:
+        result.keySet() == ['success', 'appId', 'reopenRequired', 'remainingSteps', 'navigatedAppId', 'navigatedPage', 'createdAppId', 'completed', 'controls'] as Set
+        result.appId == 42
+        result.completed == [[kind: 'submit', navigationEnded: true]]
+        result.controls == [[controlId: 'N||doAct', kind: 'create_child', submitOnChange: false]]
     }
 
     def 'form opens the Rule Machine parent app'() {

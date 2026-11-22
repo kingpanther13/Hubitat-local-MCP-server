@@ -57,11 +57,11 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
         where:
         [developerMode, row] << [[false, true], [
-            ['toolCallAppForm', [app_id: 42, steps: [[kind: 'open']]]],
-            ['toolSetNativeApp', [operation: 'update', app_id: 42, args: [fields: [comments: 'x']]]],
-            ['toolSetNativeApp', [operation: 'form', app_id: 42, args: [steps: [[kind: 'open']]]]],
-            ['toolSetNativeApp', [operation: 'create', args: [app_type: 'button_rule', controller_id: 42, button_number: 1, event: 'pushed']]],
-            ['toolSetNativeApp', [operation: 'create', args: [app_type: 'notifier', name: 'x']]],
+            ['toolCallAppForm', [appId: 42, steps: [[kind: 'open']]]],
+            ['toolSetNativeApp', [operation: 'update', appId: 42, args: [fields: [comments: 'x']]]],
+            ['toolSetNativeApp', [operation: 'form', appId: 42, args: [steps: [[kind: 'open']]]]],
+            ['toolSetNativeApp', [operation: 'create', args: [appType: 'button_rule', controllerId: 42, buttonNumber: 1, event: 'pushed']]],
+            ['toolSetNativeApp', [operation: 'create', args: [appType: 'notifier', name: 'x']]],
             ['toolUpdateRuleDocument', [ruleId: 42, changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
             ['toolCreateRuleDocument', [parentId: 42, name: 'Fixture', changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
             ['toolSetAppDisabled', [appId: '00042', disabled: true]],

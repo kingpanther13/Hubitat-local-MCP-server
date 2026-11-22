@@ -631,7 +631,7 @@ boolean _isNativeAppSchemaOnlyCall(args) {
     args instanceof Map && (!args.containsKey('operation') || args.confirm != true)
 }
 
-private Map _ndOperationSchema(String operation, String toolName = 'hub_set_rule') {
+private Map _ndOperationSchema(String operation) {
     def changes = [type: 'array', minItems: operation == 'create' ? 0 : 1, maxItems: 100,
         items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator', 'delete', 'order']], value: [type: 'object']], required: ['part', 'value']]]
     Map properties = [:]
@@ -647,10 +647,9 @@ private Map _ndOperationSchema(String operation, String toolName = 'hub_set_rule
         properties.changes = changes
         required = ['changes']
     } else if (operation == 'form') {
-        Map names = _nfKeyNames(toolName)
         properties = [steps: [type: 'array', minItems: 1, maxItems: 16, items: [type: 'object', additionalProperties: false,
-            properties: [kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], from: [type: 'string'], (names.expect): [type: 'string'], fields: [type: 'object'], activate: [type: 'string']], required: ['kind']]],
-            (names.options): [type: 'array', maxItems: 32, items: [type: 'string']]]
+            properties: [kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], from: [type: 'string'], expectPage: [type: 'string'], fields: [type: 'object'], activate: [type: 'string']], required: ['kind']]],
+            optionsFor: [type: 'array', maxItems: 32, items: [type: 'string']]]
         required = ['steps']
     } else throw new IllegalArgumentException('Unknown rule operation; use read, create, update or form')
     [type: 'object', additionalProperties: false, properties: properties, required: required]
@@ -710,8 +709,8 @@ Map toolSetRule(Map request) {
     _ndCamelForm(toolCallAppForm(arguments + [ruleId: request.ruleId, confirm: true], 'hub_set_rule'))
 }
 
-// hub_set_rule spells its keys in camelCase; the form code it shares with hub_set_native_app writes snake_case,
-// so the result, its completed steps, fields and controls are renamed here. Values (input names, kinds) stay.
+// The form tools spell their keys in camelCase; the shared form code writes snake_case, so the result,
+// its completed steps, fields and controls are renamed here. Values (input names, kinds) stay.
 private Map _ndCamelForm(Map result) {
     Closure camel = { Map row -> row.collectEntries { k, v -> [(k.toString().replaceAll(/_([a-z])/) { all, c -> c.toUpperCase() }): v] } }
     Map renamed = camel(result)
@@ -761,7 +760,7 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 ## Native Rule Forms
 
-hub_set_rule(operation:"form",ruleId,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",app_id,...) runs the same steps on any other classic app, spelling expectPage and optionsFor as expect_page and options_for, and its result keys in snake_case (control_id, created_app_id, navigated_app_id, reopen_required). Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns createdAppId and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
+hub_set_rule(operation:"form",ruleId,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",appId,...) runs the same steps, with the same keys, on any other classic app. Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns createdAppId and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
 
 Submit with {kind:"submit",expectPage:"last returned page",fields:{"native field name":value},activate:"returned controlId"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. With Hide passwords and credentials on (the default), form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses; with it off they read as stored, except for a per-client token. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (labelRestored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. A file-text input takes the file's text, not a path. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.optionsFor:["device field name"] expands device choices on the final returned page.
 

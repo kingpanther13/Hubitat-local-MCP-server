@@ -635,7 +635,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
 
         then: "the note points at the app's own form, not hub_set_rule"
         failed.failedStep == "the closing Done"
-        failed.note.contains('hub_set_native_app(operation:"form", app_id:100')
+        failed.note.contains('hub_set_native_app(operation:"form", appId:100')
         !failed.note.contains("hub_set_rule(")
     }
 
