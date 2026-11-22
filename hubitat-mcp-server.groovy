@@ -10809,8 +10809,13 @@ private List _rmBrokenRows(Map compiled, List appSettings) {
     def expressionIds = appSettings.any { it.name == 'useST' && it.value?.toString() == 'true' } ? ['0'] : []
     def used = []
     // A Conditional Trigger binds its condition through a condTrig.<trigger id> setting, not the compiled state.
+    // Unticking isCondTrig.<trigger id> keeps condTrig's value, so only a ticked box on a held trigger counts.
+    def ticked = appSettings.findAll { it.name?.startsWith('isCondTrig.') && it.value?.toString() == 'true' }.collect { it.name.substring(11) }
+    if (!(stores.trigger instanceof Map)) ticked = []
     appSettings.each { setting ->
-        if (setting.name?.startsWith('condTrig.') && setting.value != null && stores.trigger instanceof Map && stores.trigger.containsKey(setting.name.substring(9))) used << setting.value.toString()
+        boolean binds = setting.name?.startsWith('condTrig.') && setting.value != null
+        if (binds) binds = setting.name.substring(9) in ticked && stores.trigger.containsKey(setting.name.substring(9))
+        if (binds) used << setting.value.toString()
     }
     order.each { actionId ->
         def action = compiled.actions instanceof Map ? _nmEntry(compiled.actions, actionId) : null

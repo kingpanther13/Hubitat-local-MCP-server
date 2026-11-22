@@ -265,11 +265,13 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.checkErrors == []
     }
 
-    def "a condition bound by a held trigger's Conditional Trigger is in use; a condTrig left by a trigger the rule no longer holds is not"() {
-        given: "condition 1 is bound by trigger 1's Conditional Trigger, condition 2 only by a condTrig for a trigger 9 the rule does not hold"
-        seed(100, [capabstrue: ['1': 'A turns on'], capabsfalse: ['1': 'C is on', '2': 'D is on']], [:],
-             [setting('isCondTrig.1', 'bool', null, 'true'), setting('condTrig.1', 'enum', null, '1'), setting('condTrig.9', 'enum', null, '2'),
-              setting('tDev1', 'capability.switch', [7]), setting('rDev_1', 'capability.switch', []), setting('rDev_2', 'capability.switch', [])])
+    def "a condition bound by a held trigger's ticked Conditional Trigger is in use; an unticked box or a trigger the rule no longer holds is not"() {
+        given: "condition 1 is bound by trigger 1's Conditional Trigger, condition 2 only by a condTrig for a trigger 9 the rule does not hold, condition 3 by trigger 2's unticked box (the hub keeps condTrig's value)"
+        seed(100, [capabstrue: ['1': 'A turns on', '2': 'B turns on'], capabsfalse: ['1': 'C is on', '2': 'D is on', '3': 'E is on']], [:],
+             [setting('isCondTrig.1', 'bool', null, 'true'), setting('condTrig.1', 'enum', null, '1'), setting('isCondTrig.9', 'bool', null, 'true'),
+              setting('condTrig.9', 'enum', null, '2'), setting('isCondTrig.2', 'bool', null, 'false'), setting('condTrig.2', 'enum', null, '3'),
+              setting('tDev1', 'capability.switch', [7]), setting('tDev2', 'capability.switch', [8]), setting('rDev_1', 'capability.switch', []),
+              setting('rDev_2', 'capability.switch', []), setting('rDev_3', 'capability.switch', [])])
 
         when:
         def h = script._rmCheckRuleHealth(100)

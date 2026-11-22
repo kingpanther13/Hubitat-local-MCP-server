@@ -7957,8 +7957,9 @@ def updated() {}
         try:
             edit_id, edit_doc = self._rm_rule("RHBrokenEdit", [self._rm_switch_trigger(device_id), native_log("dangling edit")])
             assert sorted(edit_doc.get("triggers") or {}) == ["1"], edit_doc
-            # A condition-gated action on the first device, a spare condition on the second that nothing uses, and a
-            # condition on the second that only a Conditional Trigger (on a switch that stays) binds.
+            # A condition-gated action on the first device, a spare condition on the second whose Conditional Trigger
+            # box is unticked (the hub keeps its condTrig value), and a condition on the second that only a ticked
+            # Conditional Trigger (on a switch that stays) binds.
             cond_id, _ = self._rm_rule("RHBrokenCond", [self._rm_switch_condition(device_id), self._rm_switch_condition(second_id),
                                                         self._rm_switch_condition(second_id)])
             cond_rows = self._native_rule_document(cond_id).get("conditions") or {}
@@ -7967,14 +7968,20 @@ def updated() {}
             self._rm_update(cond_id, [native_change("trigger", capability="Switch", fields=[
                 *self._rm_switch_fields(self._ensure_perm_fixture("switch_a"), trigger=True),
                 native_field("isCondTrig.#", "bool", True), native_field("condTrig.#", "enum", bound)])])
+            unticked = self._rm_ids(self._rm_update(cond_id, [native_change("trigger", capability="Switch", fields=[
+                *self._rm_switch_fields(self._ensure_perm_fixture("switch_a"), trigger=True),
+                native_field("isCondTrig.#", "bool", True), native_field("condTrig.#", "enum", spare)])]))[0]
+            self._rm_update(cond_id, [native_change("trigger", id=unticked, capability="Switch", fields=[
+                *self._rm_switch_fields(self._ensure_perm_fixture("switch_a"), trigger=True), native_field("isCondTrig.#", "bool", False)])])
+            assert str(self._rm_values(cond_id).get("condTrig." + unticked)) == spare, "the hub dropped an unticked condTrig"
             cond_actions = self._native_rule_document(cond_id).get("actions")
             assert self._rm_health(app_id).get("broken") is False
             assert self._rm_health(cond_id).get("broken") is False
             self._rm_delete_device(dni)
             self._rm_delete_device(second_dni)
             # Rule Machine's own broken() misses a deleted condition device: health lists the gated condition from
-            # its device setting, and the Conditional Trigger's, and reads broken; the spare condition is in no
-            # action, expression or Conditional Trigger, so not listed.
+            # its device setting, and the ticked Conditional Trigger's, and reads broken; the spare condition is in no
+            # action, expression or ticked Conditional Trigger, so not listed.
             cond_health = self._rm_health(cond_id)
             assert cond_health.get("broken") is True and cond_health.get("ok") is False, cond_health
             assert sorted((row.get("kind"), str(row.get("id")), row.get("setting")) for row in cond_health.get("brokenRows") or []) == \
