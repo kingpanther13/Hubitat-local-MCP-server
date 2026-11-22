@@ -1,0 +1,16 @@
+name: tmp-actionlint
+on:
+  push:
+    branches: [ci/fastci-wfrun-actionlint]
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: |
+          bash <(curl -sSf https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color .github/workflows/hub-e2e.yml .github/workflows/hub-e2e-ephemeral.yml .github/workflows/hub-e2e-ephemeral-request.yml .github/workflows/ephemeral-fast-ci-completed.yml
