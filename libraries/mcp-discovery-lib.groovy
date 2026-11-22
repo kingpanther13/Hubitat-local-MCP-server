@@ -294,14 +294,14 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
 }
 
 def toolGetToolGuide(section, cursor = null, Map apiDocs = null) {
-    // apiDocs: {platform_api_search?, platform_api_page?} -- the hub's own API documentation.
-    if (apiDocs?.platform_api_search != null || apiDocs?.platform_api_page != null) {
-        if (section) throw new IllegalArgumentException("section and platform_api_search / platform_api_page are separate lookups; send one.")
-        if (apiDocs.platform_api_search != null && apiDocs.platform_api_page != null) {
-            throw new IllegalArgumentException("Send platform_api_search or platform_api_page, not both: search first, then open a pageId it returns.")
+    // apiDocs: {platformApiSearch?, platformApiPage?} -- the hub's own API documentation.
+    if (apiDocs?.platformApiSearch != null || apiDocs?.platformApiPage != null) {
+        if (section) throw new IllegalArgumentException("section and platformApiSearch / platformApiPage are separate lookups; send one.")
+        if (apiDocs.platformApiSearch != null && apiDocs.platformApiPage != null) {
+            throw new IllegalArgumentException("Send platformApiSearch or platformApiPage, not both: search first, then open a pageId it returns.")
         }
-        return (apiDocs.platform_api_page != null) ? _platformApiPage(apiDocs.platform_api_page.toString(), cursor)
-                                                    : _platformApiSearch(apiDocs.platform_api_search.toString(), cursor)
+        return (apiDocs.platformApiPage != null) ? _platformApiPage(apiDocs.platformApiPage.toString(), cursor)
+                                                    : _platformApiSearch(apiDocs.platformApiSearch.toString(), cursor)
     }
     def sections = getToolGuideSections()
     def subSections = getToolGuideSubSections()
@@ -356,7 +356,7 @@ private Map _platformApiSearch(String query, cursor) {
     // (several MB) on every call and returns only ranked matches, 25 per page; a class page returns
     // its methods 40 per page. `methods` is read with Map.get: the sandbox blocks it as a property.
     def terms = query.toLowerCase().split(/\s+/).findAll { it }
-    if (!terms) throw new IllegalArgumentException("platform_api_search needs at least one word, e.g. 'eventsBetween' or 'hub variable'.")
+    if (!terms) throw new IllegalArgumentException("platformApiSearch needs at least one word, e.g. 'eventsBetween' or 'hub variable'.")
     def index
     try {
         def raw = hubInternalGet("/developer-docs/index.json", null, 60)
@@ -402,14 +402,14 @@ private Map _platformApiSearch(String query, cursor) {
     hits = hits.sort { -(it.score as int) }.collect { h -> h.findAll { k, v -> k != "score" && v != null } }
     def paged = _paginateList(hits, cursor != null ? cursor : "", 25, "hub_get_tool_guide")
     def out = [success: true, platformApiSearch: query, contentRevision: index.contentRevision, total: hits.size(), matches: paged.page]
-    out.note = hits ? "Open a class with hub_get_tool_guide(platform_api_page=<pageId>) for full method descriptions. Methods the sandbox restricts to system apps are not marked; probe before relying on one." :
+    out.note = hits ? "Open a class with hub_get_tool_guide(platformApiPage=<pageId>) for full method descriptions. Methods the sandbox restricts to system apps are not marked; probe before relying on one." :
                       "No match. Search a method or class name, e.g. 'getHubFiles', 'DeviceWrapper', 'hub variable'."
     if (paged.nextCursor != null) out.nextCursor = paged.nextCursor
     return out
 }
 
 private Map _platformApiPage(String pageId, cursor) {
-    if (!(pageId ==~ /[a-z0-9][a-z0-9-]*/)) throw new IllegalArgumentException("platform_api_page must be a pageId from platform_api_search, e.g. 'api-com-hubitat-app-devicewrapper'.")
+    if (!(pageId ==~ /[a-z0-9][a-z0-9-]*/)) throw new IllegalArgumentException("platformApiPage must be a pageId from platformApiSearch, e.g. 'api-com-hubitat-app-devicewrapper'.")
     def pg
     try {
         def raw = hubInternalGet("/developer-docs/${pageId}.json", null, 30)
@@ -417,7 +417,7 @@ private Map _platformApiPage(String pageId, cursor) {
     } catch (Exception e) {
         mcpLogError("discovery", "API documentation page read failed", e)
         return [success: false, error: "Could not read API documentation page '${pageId}': ${e.message}",
-                note: "Check the pageId with hub_get_tool_guide(platform_api_search=...)." + (_hubFirmwareBefore("2.5.2") ? " The on-hub API documentation needs firmware 2.5.2 or later." : "")]
+                note: "Check the pageId with hub_get_tool_guide(platformApiSearch=...)." + (_hubFirmwareBefore("2.5.2") ? " The on-hub API documentation needs firmware 2.5.2 or later." : "")]
     }
     def pgMethods = (pg instanceof Map) ? pg.get("methods") : null
     if (!(pgMethods instanceof List)) return [success: false, error: "API documentation page '${pageId}' has an unexpected shape."]
@@ -465,14 +465,14 @@ def _getAllToolDefinitions_partDiscovery() {
         // Tool Guide
         [
             name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. hub_admin_write_devices) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (30,000-character pages via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
+            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. hub_admin_write_devices) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (30,000-character pages via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platformApiSearch / platformApiPage read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["set_rule_reference", "set_native_app_reference", "device_authorization", "best_practice_reference", "tool_access", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
                     cursor: [type: "string", description: "Continue a paged payload: pass the prior call's nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."],
-                    platform_api_search: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: search the hub's Groovy API docs, e.g. 'eventsBetween'.[[/FLAT_TRIM]]"],
-                    platform_api_page: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]
+                    platformApiSearch: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: search the hub's Groovy API docs, e.g. 'eventsBetween'.[[/FLAT_TRIM]]"],
+                    platformApiPage: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]
                 ]
             ]
         ],

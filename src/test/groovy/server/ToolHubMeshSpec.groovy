@@ -136,7 +136,7 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.note.contains('hub_list_variables')
     }
 
-    def "hub_get_hub_mesh omits hubMeshToken by default and includes it only with include_token=true"() {
+    def "hub_get_hub_mesh omits hubMeshToken by default and includes it only with includeToken=true"() {
         given:
         hubGet.register('/hub2/hubMeshJson') { params -> MESH_JSON }
 
@@ -147,35 +147,35 @@ class ToolHubMeshSpec extends ToolSpecBase {
         !bare.containsKey('hubMeshToken')
 
         when: 'the opt-in flag is set'
-        def withToken = script.toolGetHubMesh([include_token: true])
+        def withToken = script.toolGetHubMesh([includeToken: true])
 
         then:
         withToken.hubMeshToken == 'tok-abc-123'
     }
 
     @Unroll
-    def "hub_get_hub_mesh rejects a non-boolean include_token (#bad) rather than silently withholding the token"() {
+    def "hub_get_hub_mesh rejects a non-boolean includeToken (#bad) rather than silently withholding the token"() {
         given:
         hubGet.register('/hub2/hubMeshJson') { params -> MESH_JSON }
 
         when:
-        script.toolGetHubMesh([include_token: bad])
+        script.toolGetHubMesh([includeToken: bad])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('include_token')
+        ex.message.contains('includeToken')
         hubGet.calls.isEmpty()   // rejected before the read
 
         where:
         bad << ['true', 1, 'yes']
     }
 
-    def "hub_get_hub_mesh notes when include_token was set but the hub reports no token"() {
+    def "hub_get_hub_mesh notes when includeToken was set but the hub reports no token"() {
         given: 'a payload with no hubMeshToken key'
         hubGet.register('/hub2/hubMeshJson') { params -> '{"hubMeshEnabled": true, "hubList": []}' }
 
         when:
-        def result = script.toolGetHubMesh([include_token: true])
+        def result = script.toolGetHubMesh([includeToken: true])
 
         then: 'the key is present-but-null and the note explains why'
         result.success == true
@@ -299,9 +299,9 @@ class ToolHubMeshSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('enabled')
-        ex.message.contains('full_refresh_interval')
-        ex.message.contains('mode_hub_id')
-        ex.message.contains('peer_hub_id')
+        ex.message.contains('fullRefreshInterval')
+        ex.message.contains('modeHubId')
+        ex.message.contains('peerHubId')
         hubGet.calls.isEmpty()
         posted.isEmpty()
     }
@@ -319,16 +319,16 @@ class ToolHubMeshSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "full_refresh_interval=#bad is rejected before any hub call"() {
+    def "fullRefreshInterval=#bad is rejected before any hub call"() {
         given:
         enableWrite()
 
         when:
-        script.toolUpdateHubMesh([full_refresh_interval: bad])
+        script.toolUpdateHubMesh([fullRefreshInterval: bad])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('full_refresh_interval')
+        ex.message.contains('fullRefreshInterval')
         hubGet.calls.isEmpty()
 
         where:
@@ -362,28 +362,28 @@ class ToolHubMeshSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('peer_')
+        ex.message.contains('peerHubId and peerToken')
         hubGet.calls.isEmpty()
         posted.isEmpty()
 
         where:
         label                       | args
-        'peer_hub_id without token' | [peer_hub_id: '12']
-        'peer_token without id'     | [peer_token: 'tok']
-        'an empty peer_hub_id'      | [peer_hub_id: '  ', peer_token: 'tok']
-        'an empty peer_token'       | [peer_hub_id: '12', peer_token: '']
+        'peerHubId without token' | [peerHubId: '12']
+        'peerToken without id'     | [peerToken: 'tok']
+        'an empty peerHubId'      | [peerHubId: '  ', peerToken: 'tok']
+        'an empty peerToken'       | [peerHubId: '12', peerToken: '']
     }
 
-    def "an empty mode_hub_id is rejected before any hub call"() {
+    def "an empty modeHubId is rejected before any hub call"() {
         given:
         enableWrite()
 
         when:
-        script.toolUpdateHubMesh([mode_hub_id: '   '])
+        script.toolUpdateHubMesh([modeHubId: '   '])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('mode_hub_id')
+        ex.message.contains('modeHubId')
         hubGet.calls.isEmpty()
     }
 
@@ -393,7 +393,7 @@ class ToolHubMeshSpec extends ToolSpecBase {
         hubGet.register('/hub/advanced/enableHubMesh') { params -> "" }
 
         when:
-        script.toolUpdateHubMesh([enabled: true, full_refresh_interval: 42])
+        script.toolUpdateHubMesh([enabled: true, fullRefreshInterval: 42])
 
         then: 'the validation throw fires first, so the enable leg never reached the hub (safe to retry)'
         thrown(IllegalArgumentException)
@@ -441,17 +441,17 @@ class ToolHubMeshSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "full_refresh_interval=#given fires GET /device/setHubMeshFullRefreshInterval/#expected"() {
+    def "fullRefreshInterval=#given fires GET /device/setHubMeshFullRefreshInterval/#expected"() {
         given:
         enableWrite()
         hubGet.register("/device/setHubMeshFullRefreshInterval/${expected}") { params -> "" }
 
         when:
-        def result = script.toolUpdateHubMesh([full_refresh_interval: given])
+        def result = script.toolUpdateHubMesh([fullRefreshInterval: given])
 
         then:
         result.success == true
-        result.applied == ['full_refresh_interval']
+        result.applied == ['fullRefreshInterval']
         hubGet.calls.any { it.path == "/device/setHubMeshFullRefreshInterval/${expected}" }
         // an interval-only call must NOT touch enable/disable
         hubGet.calls.every { !it.path.startsWith('/hub/advanced/') }
@@ -465,31 +465,31 @@ class ToolHubMeshSpec extends ToolSpecBase {
         '300'  | 300     // a string-typed integer is coerced, not rejected
     }
 
-    def "mode_hub_id='none' fires GET /device/followModes/none (back to local modes)"() {
+    def "modeHubId='none' fires GET /device/followModes/none (back to local modes)"() {
         given:
         enableWrite()
         hubGet.register('/device/followModes/none') { params -> "" }
 
         when:
-        def result = script.toolUpdateHubMesh([mode_hub_id: 'none'])
+        def result = script.toolUpdateHubMesh([modeHubId: 'none'])
 
         then:
         result.success == true
-        result.applied == ['mode_hub_id']
+        result.applied == ['modeHubId']
         hubGet.calls.any { it.path == '/device/followModes/none' }
     }
 
-    def "mode_hub_id=<peer hubId> fires GET /device/followModes/<hubId>"() {
+    def "modeHubId=<peer hubId> fires GET /device/followModes/<hubId>"() {
         given:
         enableWrite()
         hubGet.register('/device/followModes/12') { params -> "" }
 
         when:
-        def result = script.toolUpdateHubMesh([mode_hub_id: '12'])
+        def result = script.toolUpdateHubMesh([modeHubId: '12'])
 
         then:
         result.success == true
-        result.applied == ['mode_hub_id']
+        result.applied == ['modeHubId']
         hubGet.calls.any { it.path == '/device/followModes/12' }
     }
 
@@ -498,11 +498,11 @@ class ToolHubMeshSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'peer-tok-9'])
+        def result = script.toolUpdateHubMesh([peerHubId: '12', peerToken: 'peer-tok-9'])
 
         then:
         result.success == true
-        result.applied == ['peer_token']
+        result.applied == ['peerToken']
         posted.path == '/device/setHubMeshToken'
         posted.body.token == 'peer-tok-9'
 
@@ -512,12 +512,12 @@ class ToolHubMeshSpec extends ToolSpecBase {
         !posted.raw.contains('"hubId":"12"')   // and it is NOT quoted as a string
     }
 
-    def "a non-numeric peer_hub_id is posted as a string"() {
+    def "a non-numeric peerHubId is posted as a string"() {
         given:
         enableWrite()
 
         when:
-        def result = script.toolUpdateHubMesh([peer_hub_id: 'hub-a1', peer_token: 'tok'])
+        def result = script.toolUpdateHubMesh([peerHubId: 'hub-a1', peerToken: 'tok'])
 
         then:
         result.success == true
@@ -534,13 +534,13 @@ class ToolHubMeshSpec extends ToolSpecBase {
 
         when:
         def result = script.toolUpdateHubMesh([
-            peer_token: 'tok', peer_hub_id: '13',   // deliberately passed out of order
-            mode_hub_id: 'none', full_refresh_interval: 120, enabled: true
+            peerToken: 'tok', peerHubId: '13',   // deliberately passed out of order
+            modeHubId: 'none', fullRefreshInterval: 120, enabled: true
         ])
 
         then: 'the apply order is the tool\'s own stable order, not the caller\'s map order'
         result.success == true
-        result.applied == ['enabled', 'full_refresh_interval', 'mode_hub_id', 'peer_token']
+        result.applied == ['enabled', 'fullRefreshInterval', 'modeHubId', 'peerToken']
         hubGet.calls*.path == ['/hub/advanced/enableHubMesh',
                                '/device/setHubMeshFullRefreshInterval/120',
                                '/device/followModes/none']
@@ -559,7 +559,7 @@ class ToolHubMeshSpec extends ToolSpecBase {
         hubGet.register('/device/followModes/none') { params -> "" }
 
         when:
-        def result = script.toolUpdateHubMesh([enabled: true, full_refresh_interval: 300, mode_hub_id: 'none'])
+        def result = script.toolUpdateHubMesh([enabled: true, fullRefreshInterval: 300, modeHubId: 'none'])
 
         then: 'structured error, not a throw -- these are independent GETs, so partial apply is real'
         result.success == false
@@ -580,7 +580,7 @@ class ToolHubMeshSpec extends ToolSpecBase {
         hubGet.register('/hub/advanced/disableHubMesh') { params -> throw new RuntimeException('connection refused') }
 
         when:
-        def result = script.toolUpdateHubMesh([enabled: false, full_refresh_interval: 0])
+        def result = script.toolUpdateHubMesh([enabled: false, fullRefreshInterval: 0])
 
         then:
         result.success == false
@@ -598,16 +598,16 @@ class ToolHubMeshSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateHubMesh([mode_hub_id: 'none', peer_hub_id: '12', peer_token: 'tok'])
+        def result = script.toolUpdateHubMesh([modeHubId: 'none', peerHubId: '12', peerToken: 'tok'])
 
         then:
         result.success == false
-        result.applied == ['mode_hub_id']
+        result.applied == ['modeHubId']
         result.error.contains('500 Server Error')
         result.note.contains('peers')
     }
 
-    def "an _unparseable setHubMeshToken body (non-JSON) is a failure -- peer_token is NOT applied"() {
+    def "an _unparseable setHubMeshToken body (non-JSON) is a failure -- peerToken is NOT applied"() {
         given: 'the POST returns the hubInternalPostJson non-JSON sentinel instead of throwing'
         enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
@@ -615,12 +615,12 @@ class ToolHubMeshSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'tok'])
+        def result = script.toolUpdateHubMesh([peerHubId: '12', peerToken: 'tok'])
 
         then: 'treated as a runtime failure -- a 2xx serving a non-JSON body must not count as stored'
         result.success == false
         result.applied == []
-        !result.applied.contains('peer_token')
+        !result.applied.contains('peerToken')
         result.error.contains('Failed to store the peer hub')
         result.note.contains('non-JSON')
 
@@ -635,42 +635,42 @@ class ToolHubMeshSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> return [:] }
 
         when:
-        def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'tok'])
+        def result = script.toolUpdateHubMesh([peerHubId: '12', peerToken: 'tok'])
 
         then:
         result.success == true
-        result.applied == ['peer_token']
+        result.applied == ['peerToken']
     }
 
-    def "a non-Map JSON setHubMeshToken body (e.g. a parsed List) is a failure -- peer_token is NOT applied"() {
+    def "a non-Map JSON setHubMeshToken body (e.g. a parsed List) is a failure -- peerToken is NOT applied"() {
         given: 'hubInternalPostJson returns a parsed JSON List -- not this endpoint proven success shape (a Map)'
         enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> return ['unexpected'] }
 
         when:
-        def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'tok'])
+        def result = script.toolUpdateHubMesh([peerHubId: '12', peerToken: 'tok'])
 
-        then: 'unexpected JSON shape is not proof of a store -> fail-closed, peer_token not recorded, store unconfirmed'
+        then: 'unexpected JSON shape is not proof of a store -> fail-closed, peerToken not recorded, store unconfirmed'
         result.success == false
         result.applied == []
-        !result.applied.contains('peer_token')
+        !result.applied.contains('peerToken')
         result.error.contains('Failed to store the peer hub')
         result.note.contains('unconfirmed')
         result.note.contains('hub_get_hub_mesh peers[]')
     }
 
-    def "a null setHubMeshToken body (dropped/truncated response) is a failure -- peer_token is NOT applied"() {
+    def "a null setHubMeshToken body (dropped/truncated response) is a failure -- peerToken is NOT applied"() {
         given: 'hubInternalPostJson returns null for an EMPTY body -- a dropped write is an unknown commit'
         enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> return null }
 
         when:
-        def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'tok'])
+        def result = script.toolUpdateHubMesh([peerHubId: '12', peerToken: 'tok'])
 
         then: 'fail-closed -- an unconfirmed write must not count as stored'
         result.success == false
         result.applied == []
-        !result.applied.contains('peer_token')
+        !result.applied.contains('peerToken')
         result.error.contains('Failed to store the peer hub')
 
         and: 'the note is case-specific: a dropped/empty body is an UNKNOWN commit'
@@ -678,18 +678,18 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.note.contains('unconfirmed')
     }
 
-    def "an explicit [success:false] setHubMeshToken body is a failure -- peer_token is NOT applied"() {
+    def "an explicit [success:false] setHubMeshToken body is a failure -- peerToken is NOT applied"() {
         given:
         enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> return [success: false] }
 
         when:
-        def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'tok'])
+        def result = script.toolUpdateHubMesh([peerHubId: '12', peerToken: 'tok'])
 
         then:
         result.success == false
         result.applied == []
-        !result.applied.contains('peer_token')
+        !result.applied.contains('peerToken')
         result.error.contains('Failed to store the peer hub')
 
         and: 'the note is case-specific: an explicit success:false is a hub REJECTION'
@@ -697,18 +697,18 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.note.contains('rejected')
     }
 
-    def "an oversized all-digits peer_hub_id passes through as a STRING and earlier legs survive"() {
+    def "an oversized all-digits peerHubId passes through as a STRING and earlier legs survive"() {
         given: 'a mode leg commits first, then a 20+ digit peer id that overflows Long'
         enableWrite()
         hubGet.register('/device/followModes/none') { params -> "" }
         def bigId = '1' * 25   // far beyond Long.MAX_VALUE -- toLong() would throw NumberFormatException
 
         when:
-        def result = script.toolUpdateHubMesh([mode_hub_id: 'none', peer_hub_id: bigId, peer_token: 'tok'])
+        def result = script.toolUpdateHubMesh([modeHubId: 'none', peerHubId: bigId, peerToken: 'tok'])
 
         then: 'no uncaught throw -- the id falls through to a JSON string, and the mode leg still counts'
         result.success == true
-        result.applied == ['mode_hub_id', 'peer_token']
+        result.applied == ['modeHubId', 'peerToken']
         posted.body.hubId == bigId       // sent as a string, not coerced to a (overflowing) number
         posted.body.hubId instanceof String
     }
@@ -738,13 +738,13 @@ class ToolHubMeshSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_get_hub_mesh via dispatch honors include_token (useGateways=#useGateways)"() {
+    def "hub_get_hub_mesh via dispatch honors includeToken (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         hubGet.register('/hub2/hubMeshJson') { params -> MESH_JSON }
 
         when:
-        def response = mcpDriver.callTool('hub_get_hub_mesh', [include_token: true])
+        def response = mcpDriver.callTool('hub_get_hub_mesh', [includeToken: true])
 
         then:
         def inner = mcpDriver.parseInner(response)
@@ -761,12 +761,12 @@ class ToolHubMeshSpec extends ToolSpecBase {
         hubGet.register('/device/setHubMeshFullRefreshInterval/300') { params -> "" }
 
         when:
-        def response = mcpDriver.callTool('hub_update_hub_mesh', [full_refresh_interval: 300])
+        def response = mcpDriver.callTool('hub_update_hub_mesh', [fullRefreshInterval: 300])
 
         then:
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.applied == ['full_refresh_interval']
+        inner.applied == ['fullRefreshInterval']
         hubGet.calls.any { it.path == '/device/setHubMeshFullRefreshInterval/300' }
 
         where:
@@ -797,12 +797,12 @@ class ToolHubMeshSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def response = mcpDriver.callTool('hub_update_hub_mesh', [full_refresh_interval: 42])
+        def response = mcpDriver.callTool('hub_update_hub_mesh', [fullRefreshInterval: 42])
 
         then:
         response.error == null
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('full_refresh_interval')
+        mcpDriver.parseInner(response).error.contains('fullRefreshInterval')
         hubGet.calls.isEmpty()
 
         where:

@@ -303,7 +303,7 @@ private Map _installBundle(String url, boolean installer) {
         Map added = _bundleCodeAdded(codeBefore)
         if (added.items) {
             failure.codeAdded = added.items
-            notes << (r.raw != null ? "The hub added the code in codeAdded to Code before the install failed, and no bundle lists it. Check it before retrying; delete what you do not want with hub_delete_item(type, item_id)."
+            notes << (r.raw != null ? "The hub added the code in codeAdded to Code before the install failed, and no bundle lists it. Check it before retrying; delete what you do not want with hub_delete_item(type, itemId)."
                 : "The code in codeAdded was added to Code during the install.")
         }
         if (added.unverified) {
@@ -443,7 +443,7 @@ Map _sendBundleDelete(String id, String name, String label, List items, List bac
 
     Map code = deleteCode ? _bundleCodeOutcome(items) : null
     String message = code ? "${label} deleted with its code: ${code.codeDeleted.size()} of ${items.size()} delivered item(s) deleted."
-        : "${label} deleted. The apps, drivers and libraries it delivered stay in Code: delete each with hub_delete_item(type, item_id)."
+        : "${label} deleted. The apps, drivers and libraries it delivered stay in Code: delete each with hub_delete_item(type, itemId)."
     def out = [success: true, bundleId: id, name: name, deleteCode: deleteCode,
                lastBackup: formatTimestamp(state.lastBackupTimestamp), message: message]
     if (!code) return out
@@ -479,7 +479,7 @@ private Map _bundleDeletePlan(String id, String label, Map view) {
     }
     if (missing) {
         return [refusal: _bundleRefusal(id, "${label} lists code that is no longer in Code: ${missing.collect { "${it.type} ${it.id}" }.join(', ')}.",
-                "Nothing was deleted. The hub's delete of the bundle with its code fails part-way on such an id. Delete the bundle without deleteCode, then delete each remaining item with hub_delete_item(type, item_id).",
+                "Nothing was deleted. The hub's delete of the bundle with its code fails part-way on such an id. Delete the bundle without deleteCode, then delete each remaining item with hub_delete_item(type, itemId).",
                 [missingCode: missing])]
     }
     return [items: items]
@@ -530,7 +530,7 @@ Map _backupBundleCode(String id, String label, List items) {
     }
     if (bytes > _itemBackupByteBudget()) {
         return [refusal: _bundleRefusal(id, "${label}: the backups of its code take ${bytes} bytes, more than the ${_itemBackupBudgetMb()} MB backup storage budget, so they cannot all be kept.",
-                "Nothing was backed up or deleted. Raise the backup storage budget (backupBudgetMb), or delete the bundle without deleteCode and each item with hub_delete_item(type, item_id).")]
+                "Nothing was backed up or deleted. Raise the backup storage budget (backupBudgetMb), or delete the bundle without deleteCode and each item with hub_delete_item(type, itemId).")]
     }
     List files = []
     for (item in items) {

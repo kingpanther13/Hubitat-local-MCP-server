@@ -103,7 +103,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         script._maxConcurrentWrites() == 0
     }
 
-    def "hub_call_device_replace(list_options) answers the READ master, not the write gates"() {
+    def "hub_call_device_replace(listOptions) answers the READ master, not the write gates"() {
         given: 'writes disabled and the best-practice gate ON -- the read mode must still run'
         settingsMap.enableWrite = false
         settingsMap.enableMandatoryBPS = true
@@ -111,14 +111,14 @@ class RelayBudgetSpec extends ToolSpecBase {
         script.metaClass.toolCallDeviceReplace = { Map a -> ran++; [success: true, listOptions: true, options: []] }
 
         when:
-        def result = script.executeTool('hub_call_device_replace', [old_device_id: '12', list_options: true])
+        def result = script.executeTool('hub_call_device_replace', [oldDeviceId: '12', listOptions: true])
 
         then: 'it executed: no Write-master block, no bestPracticeKey demanded'
         ran == 1
         result.success == true
 
         when: 'the same tool WITHOUT the read mode is still gated as the write it is'
-        script.executeTool('hub_call_device_replace', [old_device_id: '12', new_device_id: '13', confirm: true])
+        script.executeTool('hub_call_device_replace', [oldDeviceId: '12', newDeviceId: '13', confirm: true])
 
         then: 'refused by the Write master -- named, so the best-practice gate cannot stand in for it'
         def ex = thrown(IllegalArgumentException)

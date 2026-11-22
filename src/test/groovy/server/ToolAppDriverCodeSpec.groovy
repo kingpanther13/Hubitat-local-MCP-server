@@ -327,7 +327,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '1', (param): '1', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', itemId: '1', (param): '1', confirm: true])
 
         then:
         response.result.isError == true
@@ -357,17 +357,17 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         where:
         label          | args
-        'missing type' | [item_id: '5', confirm: true]
-        'unknown type' | [type: 'bundle', item_id: '5', confirm: true]
+        'missing type' | [itemId: '5', confirm: true]
+        'unknown type' | [type: 'bundle', itemId: '5', confirm: true]
     }
 
     @spock.lang.Unroll
-    def "hub_delete_item rejects item_id '#badId' before any hub call"() {
+    def "hub_delete_item rejects itemId '#badId' before any hub call"() {
         given:
         enableWrite()
 
         when:
-        script.toolDeleteItem([type: 'driver', item_id: badId, confirm: true])
+        script.toolDeleteItem([type: 'driver', itemId: badId, confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -386,7 +386,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/driver/editor/deleteJson/12') { params -> '{"status":true}' }
 
         when:
-        def result = script.toolDeleteItem([type: 'driver', item_id: '012', confirm: true])
+        def result = script.toolDeleteItem([type: 'driver', itemId: '012', confirm: true])
 
         then:
         result.success == true
@@ -405,7 +405,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/edit/deleteJsonSafe/999') { params -> '{"status":true}' }
 
         when:
-        def result = script.toolDeleteItem([type: 'app', item_id: '999', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', itemId: '999', confirm: true])
 
         then: 'the reused backup skips the source read, and the hub accepts the delete of a missing app'
         result.success == true
@@ -423,7 +423,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/edit/deleteJsonSafe/999') { params -> '{"status":true}' }
 
         when:
-        def inner = mcpDriver.parseInner(mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '999', confirm: true]))
+        def inner = mcpDriver.parseInner(mcpDriver.callTool('hub_delete_item', [type: 'app', itemId: '999', confirm: true]))
 
         then:
         inner.success == false
@@ -442,7 +442,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/driver/editor/deleteJson/999') { params -> '{"status":true}' }
 
         when:
-        def result = script.toolDeleteItem([type: 'driver', item_id: '999', confirm: true])
+        def result = script.toolDeleteItem([type: 'driver', itemId: '999', confirm: true])
 
         then:
         result.success == false
@@ -463,7 +463,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/driver/editor/deleteJson/998') { params -> '{"status":false}' }
 
         when:
-        def result = script.toolDeleteItem([type: 'driver', item_id: '998', confirm: true])
+        def result = script.toolDeleteItem([type: 'driver', itemId: '998', confirm: true])
 
         then:
         result.success == false
@@ -482,7 +482,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/driver/editor/deleteJson/997') { params -> '{"status":true}' }
 
         when:
-        def result = script.toolDeleteItem([type: 'driver', item_id: '997', confirm: true])
+        def result = script.toolDeleteItem([type: 'driver', itemId: '997', confirm: true])
 
         then:
         result.success == false
@@ -499,7 +499,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/library/edit/deleteJson/5') { params -> '{"status":false,"message":"No library found for id 5"}' }
 
         when:
-        def result = script.toolDeleteItem([type: 'library', item_id: '5', confirm: true])
+        def result = script.toolDeleteItem([type: 'library', itemId: '5', confirm: true])
 
         then:
         result.success == false
@@ -520,7 +520,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register(path) { params -> body }
 
         when:
-        def result = script.toolDeleteItem([type: type, item_id: '8', confirm: true])
+        def result = script.toolDeleteItem([type: type, itemId: '8', confirm: true])
 
         then:
         result.success == false
@@ -546,7 +546,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register(path) { params -> groovy.json.JsonOutput.toJson([status: false, (key): message]) }
 
         when:
-        def result = script.toolDeleteItem([type: type, item_id: '8', confirm: true])
+        def result = script.toolDeleteItem([type: type, itemId: '8', confirm: true])
 
         then:
         result.success == false
@@ -3227,7 +3227,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolDeleteItem([type: 'app', item_id: '1'])
+        script.toolDeleteItem([type: 'app', itemId: '1'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -3241,7 +3241,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '1'])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', itemId: '1'])
 
         then:
         response.result.isError == true
@@ -3256,7 +3256,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when:
-        script.executeTool('hub_delete_item', [type: 'app', item_id: '1', confirm: true])
+        script.executeTool('hub_delete_item', [type: 'app', itemId: '1', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -3270,7 +3270,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '1', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', itemId: '1', confirm: true])
 
         then:
         response.error == null
@@ -3281,7 +3281,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_delete_item (app) throws when item_id is missing"() {
+    def "hub_delete_item (app) throws when itemId is missing"() {
         given:
         enableWrite()
 
@@ -3290,11 +3290,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('item_id is required')
+        ex.message.contains('itemId is required')
     }
 
     @spock.lang.Unroll
-    def "hub_delete_item (app) via dispatch returns isError validation result envelope when item_id missing (useGateways=#useGateways)"() {
+    def "hub_delete_item (app) via dispatch returns isError validation result envelope when itemId missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -3304,7 +3304,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('item_id is required')
+        mcpDriver.parseInner(response).error.contains('itemId is required')
 
         where:
         useGateways << [true, false]
@@ -3327,7 +3327,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteItem([type: 'app', item_id: '33', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', itemId: '33', confirm: true])
 
         then:
         result.success == true
@@ -3356,7 +3356,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/edit/deleteJsonSafe/33') { params -> '{"status": "true"}' }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '33', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', itemId: '33', confirm: true])
 
         then:
         response.error == null
@@ -3383,7 +3383,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteItem([type: 'app', item_id: '44', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', itemId: '44', confirm: true])
 
         then: 'the backup failure refuses the delete before it is sent'
         result.success == false
@@ -3403,7 +3403,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/edit/deleteJsonSafe/44') { params -> '{"status": "true"}' }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '44', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', itemId: '44', confirm: true])
 
         then:
         response.error == null
@@ -3430,7 +3430,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteItem([type: 'app', item_id: '55', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', itemId: '55', confirm: true])
 
         then:
         result.success == false
@@ -3452,7 +3452,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '55', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', itemId: '55', confirm: true])
 
         then:
         response.error == null
@@ -3480,7 +3480,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteItem([type: 'driver', item_id: '77', confirm: true])
+        def result = script.toolDeleteItem([type: 'driver', itemId: '77', confirm: true])
 
         then:
         deletePath == '/driver/editor/deleteJson/77'
@@ -3505,7 +3505,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'driver', item_id: '77', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'driver', itemId: '77', confirm: true])
 
         then:
         deletePath == '/driver/editor/deleteJson/77'

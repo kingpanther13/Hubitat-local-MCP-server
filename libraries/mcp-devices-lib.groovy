@@ -3249,26 +3249,26 @@ def toolCreateDevice(args) {
     // Hub Mesh LINK vs driver-based CREATE are two mutually-exclusive shapes of this tool.
     // Validation runs before any hub call so a bad shape can be corrected and retried cleanly.
     // "Wants to link" is decided by a NON-BLANK mesh source value, not key presence: a caller passing
-    // mesh_source_hub_id:null on a normal driver create must not be pushed onto the link path.
-    String meshHubId = args.mesh_source_hub_id?.toString()?.trim()
-    String meshDeviceId = args.mesh_source_device_id?.toString()?.trim()
+    // meshSourceHubId:null on a normal driver create must not be pushed onto the link path.
+    String meshHubId = args.meshSourceHubId?.toString()?.trim()
+    String meshDeviceId = args.meshSourceDeviceId?.toString()?.trim()
     boolean wantsMeshLink = meshHubId || meshDeviceId
     boolean hasType = args.deviceTypeId != null && args.deviceTypeId.toString().trim() != ""
     if (wantsMeshLink) {
         if (hasType) {
             throw new IllegalArgumentException(
-                "Provide EITHER deviceTypeId (driver-based create) OR mesh_source_hub_id + mesh_source_device_id (Hub Mesh link) -- not both.")
+                "Provide EITHER deviceTypeId (driver-based create) OR meshSourceHubId + meshSourceDeviceId (Hub Mesh link) -- not both.")
         }
         // The link form takes only the source pair (+ confirm); create-only fields (label, ...) do not
         // apply to a linked proxy -- its identity mirrors the peer's source device.
         def createOnly = ["label"].findAll { args.get(it) != null && args.get(it).toString().trim() != "" }
         if (createOnly) {
             throw new IllegalArgumentException(
-                "${createOnly.join(', ')} cannot be set when linking a Hub Mesh device -- a linked proxy mirrors the peer's source device. Drop it and pass only mesh_source_hub_id + mesh_source_device_id.")
+                "${createOnly.join(', ')} cannot be set when linking a Hub Mesh device -- a linked proxy mirrors the peer's source device. Drop it and pass only meshSourceHubId + meshSourceDeviceId.")
         }
         if (!meshHubId || !meshDeviceId) {
             throw new IllegalArgumentException(
-                "Linking a Hub Mesh device needs BOTH mesh_source_hub_id and mesh_source_device_id " +
+                "Linking a Hub Mesh device needs BOTH meshSourceHubId and meshSourceDeviceId " +
                 "(the hubId + deviceId of one hub_get_hub_mesh availableLinkedDevices[] row).")
         }
         return _createLinkedMeshDevice(meshHubId, meshDeviceId)
@@ -3276,7 +3276,7 @@ def toolCreateDevice(args) {
 
     def typeId = args.deviceTypeId
     if (typeId == null || typeId.toString().trim() == "") {
-        throw new IllegalArgumentException("deviceTypeId is required -- the driver-type id from hub_list_drivers(include='all') (the 'id' field). To link a device shared by a peer hub instead, pass mesh_source_hub_id + mesh_source_device_id.")
+        throw new IllegalArgumentException("deviceTypeId is required -- the driver-type id from hub_list_drivers(include='all') (the 'id' field). To link a device shared by a peer hub instead, pass meshSourceHubId + meshSourceDeviceId.")
     }
     typeId = typeId.toString().trim()
 
@@ -3507,8 +3507,8 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
                 note: "This is usually transient: Hub Mesh takes time to re-establish a peer connection after that peer " +
                       "reboots or updates, and a link briefly no-ops during that window before clearing itself. Wait a bit " +
                       "and retry. Check the peer in hub_get_hub_mesh peers[] (offline=false, warning=null). If it persists, " +
-                      "confirm this hub holds the peer's mesh token: get it from the peer's OWN hub_get_hub_mesh(include_token=true) " +
-                      "and store it with hub_update_hub_mesh(peer_hub_id, peer_token)."]
+                      "confirm this hub holds the peer's mesh token: get it from the peer's OWN hub_get_hub_mesh(includeToken=true) " +
+                      "and store it with hub_update_hub_mesh(peerHubId, peerToken)."]
     }
 
     // Outcome 3a: the GET errored AND the read-back could not prove it linked -- unknown, not a definite
@@ -3520,8 +3520,8 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
                       "hub_get_hub_mesh before retrying. If it did not take, this is usually transient: Hub Mesh takes " +
                       "time to re-establish a peer connection after that peer reboots or updates. If it persists, confirm " +
                       "the peer in hub_get_hub_mesh peers[] (offline=false, warning=null) and that this hub holds its mesh " +
-                      "token (store it with hub_update_hub_mesh(peer_hub_id, peer_token), read from the peer's OWN " +
-                      "hub_get_hub_mesh(include_token=true))."]
+                      "token (store it with hub_update_hub_mesh(peerHubId, peerToken), read from the peer's OWN " +
+                      "hub_get_hub_mesh(includeToken=true))."]
     }
 
     // Outcome 3b: could not prove linked OR not-linked (mesh list unreadable / ambiguous) -- warn, don't fail.
@@ -3861,11 +3861,11 @@ def toolDeleteDevice(args) {
 
 def toolCallDeviceSwap(args) {
     requireDestructiveConfirm(args?.confirm as Boolean)
-    def fromId = args?.from_device_id?.toString()?.trim()
-    def toId = args?.to_device_id?.toString()?.trim()
-    if (!fromId) throw new IllegalArgumentException("from_device_id is required")
-    if (!toId) throw new IllegalArgumentException("to_device_id is required")
-    if (fromId == toId) throw new IllegalArgumentException("from_device_id and to_device_id must be different devices")
+    def fromId = args?.fromDeviceId?.toString()?.trim()
+    def toId = args?.toDeviceId?.toString()?.trim()
+    if (!fromId) throw new IllegalArgumentException("fromDeviceId is required")
+    if (!toId) throw new IllegalArgumentException("toDeviceId is required")
+    if (fromId == toId) throw new IllegalArgumentException("fromDeviceId and toDeviceId must be different devices")
     boolean fromListed = _requireDeviceToolAccess(fromId)
     boolean toListed = _requireDeviceToolAccess(toId)
     // Resolve both permissions before any native request, and verify bypass-only
@@ -3883,7 +3883,7 @@ def toolCallDeviceSwap(args) {
     // The hub's Swap Device exchanges the two device records' identities (label, name, DNI,
     // state, create time) and leaves every app reference on its id, so verification compares
     // each device's identity before and after the click. The before-count is the reported
-    // blast radius: the apps that referenced from_device_id now drive the replacement.
+    // blast radius: the apps that referenced fromDeviceId now drive the replacement.
     def fromBefore = _deviceSwapSnapshot(fromId)
     def toBefore = _deviceSwapSnapshot(toId)
     // Without both identities the outcome cannot be checked, and an unchecked swap cannot be safely retried.
@@ -3912,12 +3912,12 @@ def toolCallDeviceSwap(args) {
         // virtual device is a child device of this app, so it never appears.
         def oldDevOptions = _deviceSwapEnumOptions(_deviceSwapFindInput(_rmFetchConfigJson(appId, "mainPage"), "oldDev"))
         if (!oldDevOptions.any { it.id == fromId }) {
-            mcpLog("warn", "device-swap", "from_device_id ${fromId} not among ${oldDevOptions.size()} swappable oldDev option(s) -- closing instance ${appId}")
+            mcpLog("warn", "device-swap", "fromDeviceId ${fromId} not among ${oldDevOptions.size()} swappable oldDev option(s) -- closing instance ${appId}")
             _deviceSwapCleanup(appId)
             return [success: false,
                     error: "The hub's Swap Device tool does not offer device ${fromId} as swappable.",
                     oldDevOptionCount: oldDevOptions.size(),
-                    note: "Swap Device only offers devices that are referenced by at least one app AND not owned as another app's child/component device. MCP-created virtual devices (hub_manage_virtual_device) are child devices and are always ineligible. Pick a free-standing from_device_id, or use hub_list_device_dependents(deviceId=${fromId}) to confirm it is referenced by an app. Nothing was swapped; the transient instance was closed."]
+                    note: "Swap Device only offers devices that are referenced by at least one app AND not owned as another app's child/component device. MCP-created virtual devices (hub_manage_virtual_device) are child devices and are always ineligible. Pick a free-standing fromDeviceId, or use hub_list_device_dependents(deviceId=${fromId}) to confirm it is referenced by an app. Nothing was swapped; the transient instance was closed."]
         }
 
         def applied = []
@@ -3937,7 +3937,7 @@ def toolCallDeviceSwap(args) {
         def cfg = _rmFetchConfigJson(appId, "mainPage")
         def options = _deviceSwapEnumOptions(_deviceSwapFindInput(cfg, "newDev"))
         if (!options.any { it.id == toId }) {
-            mcpLog("warn", "device-swap", "to_device_id ${toId} not among ${options.size()} compatible replacement(s) for ${fromId} -- closing instance ${appId}")
+            mcpLog("warn", "device-swap", "toDeviceId ${toId} not among ${options.size()} compatible replacement(s) for ${fromId} -- closing instance ${appId}")
             _deviceSwapCleanup(appId)
             return [success: false,
                     error: options.isEmpty()
@@ -3945,7 +3945,7 @@ def toolCallDeviceSwap(args) {
                         : "Device ${toId} is not a compatible replacement for ${fromId} -- the hub did not offer it.",
                     compatibleOptions: options.take(30),
                     compatibleOptionCount: options.size(),
-                    note: "The Swap Device tool only offers devices with compatible capabilities, and excludes devices owned as another app's child/component device -- to_device_id may be an app child device (every MCP-created virtual device is one). Pick a to_device_id from compatibleOptions${options.size() > 30 ? " (showing first 30 of ${options.size()})" : ""}, or choose free-standing replacement hardware of the same device class. Nothing was swapped."]
+                    note: "The Swap Device tool only offers devices with compatible capabilities, and excludes devices owned as another app's child/component device -- toDeviceId may be an app child device (every MCP-created virtual device is one). Pick a toDeviceId from compatibleOptions${options.size() > 30 ? " (showing first 30 of ${options.size()})" : ""}, or choose free-standing replacement hardware of the same device class. Nothing was swapped."]
         }
 
         _rmWriteSettingOnPage(appId, "mainPage", "newDev", toId, applied, null, skipped)
@@ -4040,12 +4040,12 @@ def toolCallDeviceSwap(args) {
 }
 
 def toolCallDeviceReplace(args) {
-    def oldId = args?.old_device_id?.toString()?.trim()
-    if (!oldId) throw new IllegalArgumentException("old_device_id is required")
-    def newId = args?.new_device_id?.toString()?.trim()
-    if (args?.list_options != true) {
-        if (!newId) throw new IllegalArgumentException("new_device_id is required to replace (or pass list_options=true to list compatible candidates)")
-        if (oldId == newId) throw new IllegalArgumentException("old_device_id and new_device_id must be different devices")
+    def oldId = args?.oldDeviceId?.toString()?.trim()
+    if (!oldId) throw new IllegalArgumentException("oldDeviceId is required")
+    def newId = args?.newDeviceId?.toString()?.trim()
+    if (args?.listOptions != true) {
+        if (!newId) throw new IllegalArgumentException("newDeviceId is required to replace (or pass listOptions=true to list compatible candidates)")
+        if (oldId == newId) throw new IllegalArgumentException("oldDeviceId and newDeviceId must be different devices")
     }
     boolean oldListed = _requireDeviceToolAccess(oldId)
     boolean newListed = newId ? _requireDeviceToolAccess(newId) : true
@@ -4063,7 +4063,7 @@ def toolCallDeviceReplace(args) {
     }
 
     // Read-only mode: list the hub's compatible replacement candidates (no write, no confirm).
-    if (args?.list_options == true) {
+    if (args?.listOptions == true) {
         try {
             def raw = hubInternalGet("/device/getReplacementOptions/${java.net.URLEncoder.encode(oldId, 'UTF-8')}")
             def parsed = raw?.trim() ? new groovy.json.JsonSlurper().parseText(raw) : null
@@ -4074,19 +4074,19 @@ def toolCallDeviceReplace(args) {
             if (!(parsed instanceof List)) {
                 mcpLog("warn", "device-replace", "getReplacementOptions for ${oldId} returned a non-list response: ${raw?.take(200)}")
                 return [success: false, error: "Replacement-options read returned an unexpected (non-list) response.", response: raw?.take(300),
-                        note: "Verify old_device_id (from hub_list_devices) and Hub Security credentials; the hub did not return a candidate list."]
+                        note: "Verify oldDeviceId (from hub_list_devices) and Hub Security credentials; the hub did not return a candidate list."]
             }
             def allowedIds = _bypassEnabled() ? null : (((selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it.id?.toString() } as Set)
             def candidates = allowedIds == null ? parsed : parsed.findAll { it instanceof Map && allowedIds.contains(it.id?.toString()) }
             def options = candidates.collect { [id: it?.id?.toString(), name: it?.name, deviceTypes: it?.deviceTypes] }
             def out = [success: true, listOptions: true, oldDeviceId: oldId, options: options, optionCount: options.size(),
-                    note: options ? "Pick an option's id as new_device_id, then call again with confirm=true to replace." : "No compatible replacement devices found within current MCP device access."]
+                    note: options ? "Pick an option's id as newDeviceId, then call again with confirm=true to replace." : "No compatible replacement devices found within current MCP device access."]
             if (newId) out.compatible = options.any { it.id == newId }
             return out
         } catch (Exception e) {
             mcpLogError("device-replace", "getReplacementOptions for ${oldId} failed", e)
             return [success: false, error: "Could not read replacement options: ${e.message}",
-                    note: "Verify old_device_id (from hub_list_devices) and Hub Security credentials."]
+                    note: "Verify oldDeviceId (from hub_list_devices) and Hub Security credentials."]
         }
     }
 
@@ -4104,7 +4104,7 @@ def toolCallDeviceReplace(args) {
         }
         def errText = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
         return [success: false, error: errText ?: "/device/replace did not report success", response: raw?.take(300),
-                note: "Nothing was replaced. The hub answers \"Incompatible devices\" when the two share no device type, which list_options already checks (with new_device_id it reports compatible); \"Failed to replace device\" is its answer when its own swap of the two devices failed, with no reason given. Its Replace is built for newly paired hardware taking over an existing device."]
+                note: "Nothing was replaced. The hub answers \"Incompatible devices\" when the two share no device type, which listOptions already checks (with newDeviceId it reports compatible); \"Failed to replace device\" is its answer when its own swap of the two devices failed, with no reason given. Its Replace is built for newly paired hardware taking over an existing device."]
     } catch (Exception e) {
         mcpLogError("device-replace", "replace ${oldId} -> ${newId} failed", e)
         return [success: false, error: "Device replace failed: ${e.message}",
@@ -4371,17 +4371,17 @@ PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zi
         ],
         [
             name: "hub_call_device_swap",
-            description: """⚠️ DESTRUCTIVE: Swap a device — apps and rules using from_device_id run on to_device_id's hardware afterwards. Running it again swaps them back.[[FLAT_TRIM]] The hub exchanges the two devices' identities (name, label, network id, driver, room, current state; event history stays): app references stay on both ids, so from_device_id's apps run on the replacement and to_device_id's apps on the old device.[[/FLAT_TRIM]]
+            description: """⚠️ DESTRUCTIVE: Swap a device — apps and rules using fromDeviceId run on toDeviceId's hardware afterwards. Running it again swaps them back.[[FLAT_TRIM]] The hub exchanges the two devices' identities (name, label, network id, driver, room, current state; event history stays): app references stay on both ids, so fromDeviceId's apps run on the replacement and toDeviceId's apps on the old device.[[/FLAT_TRIM]]
 
-Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) hub_list_device_dependents on both ids — from_device_id's apps move to the new hardware, to_device_id's to the old; 3) confirm with the user.""",
+Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) hub_list_device_dependents on both ids — fromDeviceId's apps move to the new hardware, toDeviceId's to the old; 3) confirm with the user.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    from_device_id: [type: "string", description: "Device the apps use today (from hub_list_devices).[[FLAT_TRIM]] Its id keeps every app reference and takes on the replacement's identity.[[/FLAT_TRIM]]"],
-                    to_device_id: [type: "string", description: "Replacement device ID. Must be capability-compatible — on mismatch the error lists the compatible candidates."],
+                    fromDeviceId: [type: "string", description: "Device the apps use today (from hub_list_devices).[[FLAT_TRIM]] Its id keeps every app reference and takes on the replacement's identity.[[/FLAT_TRIM]]"],
+                    toDeviceId: [type: "string", description: "Replacement device ID. Must be capability-compatible — on mismatch the error lists the compatible candidates."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms a hub backup exists (<24h) and the user approved the swap."]
                 ],
-                required: ["from_device_id", "to_device_id", "confirm"]
+                required: ["fromDeviceId", "toDeviceId", "confirm"]
             ]
         ],
         [
@@ -4389,30 +4389,30 @@ Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) hub_list_devi
             description: """⚠️ DESTRUCTIVE: Replace a device's hardware, KEEPING its id + all app/rule references.
 
 [[FLAT_TRIM]]
-Two-step: list_options=true to list candidates (with new_device_id it also reports compatible), then apply with confirm=true. Built for newly paired hardware taking over an existing device.
+Two-step: listOptions=true to list candidates (with newDeviceId it also reports compatible), then apply with confirm=true. Built for newly paired hardware taking over an existing device.
 [[/FLAT_TRIM]]
 Pre-flight: backup <24h (hub_create_backup) + user OK.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    old_device_id: [type: "string", description: "Device to replace; its id is preserved."],
-                    new_device_id: [type: "string", description: "Compatible replacement device."],
-                    list_options: [type: "boolean", description: "Read-only: list compatible replacement candidates (no confirm)."],
-                    confirm: [type: "boolean", description: "REQUIRED to apply (omit for list_options): confirms backup <24h + user approval."]
+                    oldDeviceId: [type: "string", description: "Device to replace; its id is preserved."],
+                    newDeviceId: [type: "string", description: "Compatible replacement device."],
+                    listOptions: [type: "boolean", description: "Read-only: list compatible replacement candidates (no confirm)."],
+                    confirm: [type: "boolean", description: "REQUIRED to apply (omit for listOptions): confirms backup <24h + user approval."]
                 ],
-                required: ["old_device_id"]
+                required: ["oldDeviceId"]
             ]
         ],
         [
             name: "hub_create_device",
-            description: """Create a device from a driver TYPE id. Requires Write master + confirm.[[FLAT_TRIM]] For LAN/integration/software drivers, NOT radio pairing (Z-Wave/Zigbee/Matter); for virtual devices use hub_manage_virtual_device. Or LINK a peer hub's shared device over Hub Mesh: pass mesh_source_hub_id + mesh_source_device_id from hub_get_hub_mesh availableLinkedDevices[] instead of deviceTypeId; see hub_get_tool_guide(section='update_device').[[/FLAT_TRIM]]""",
+            description: """Create a device from a driver TYPE id. Requires Write master + confirm.[[FLAT_TRIM]] For LAN/integration/software drivers, NOT radio pairing (Z-Wave/Zigbee/Matter); for virtual devices use hub_manage_virtual_device. Or LINK a peer hub's shared device over Hub Mesh: pass meshSourceHubId + meshSourceDeviceId from hub_get_hub_mesh availableLinkedDevices[] instead of deviceTypeId; see hub_get_tool_guide(section='update_device').[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
                     deviceTypeId: [type: "string", description: "Driver-type id to instantiate (the 'id' from hub_list_drivers(include='all')).[[FLAT_TRIM]] Omit when linking a Hub Mesh device.[[/FLAT_TRIM]]"],
                     label: [type: "string", description: "Optional display label for the new device.[[FLAT_TRIM]] Driver-based create only.[[/FLAT_TRIM]]"],
-                    mesh_source_hub_id: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedDevices[]; send with mesh_source_device_id, omit deviceTypeId.[[/FLAT_TRIM]]"],
-                    mesh_source_device_id: [type: "string", description: "Hub Mesh: peer device id.[[FLAT_TRIM]] From the same availableLinkedDevices[] row.[[/FLAT_TRIM]]"],
+                    meshSourceHubId: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedDevices[]; send with meshSourceDeviceId, omit deviceTypeId.[[/FLAT_TRIM]]"],
+                    meshSourceDeviceId: [type: "string", description: "Hub Mesh: peer device id.[[FLAT_TRIM]] From the same availableLinkedDevices[] row.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to create the device."]
                 ],
                 required: ["confirm"]

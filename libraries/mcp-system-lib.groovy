@@ -691,12 +691,12 @@ private Map _meshLegFailure(List applied, String whatFailed, detail, String reco
 
 def toolGetHubMesh(args = null) {
     args = args ?: [:]
-    // include_token must be an actual boolean -- a string "true" must not silently return no token
+    // includeToken must be an actual boolean -- a string "true" must not silently return no token
     // (mirror hub_update_hub_mesh's strict boolean handling for `enabled`).
-    if (args.containsKey("include_token") && !(args.include_token instanceof Boolean)) {
-        throw new IllegalArgumentException("include_token must be a boolean (true or false), got: ${args.include_token}")
+    if (args.containsKey("includeToken") && !(args.includeToken instanceof Boolean)) {
+        throw new IllegalArgumentException("includeToken must be a boolean (true or false), got: ${args.includeToken}")
     }
-    boolean includeToken = (args.include_token == true)
+    boolean includeToken = (args.includeToken == true)
 
     // A degraded Hub Mesh read does not throw -- it returns the structured success:false
     // contract below -- and it also logs WHY it degraded at warn: the codebase's level for a handled
@@ -751,7 +751,7 @@ def toolGetHubMesh(args = null) {
     def enabled = (parsed.hubMeshEnabled instanceof Boolean) ? parsed.hubMeshEnabled : null
     def interval = (parsed.fullRefreshInterval instanceof Number) ? parsed.fullRefreshInterval : null
     // The UI maps an absent/null modeHubId to "none" (local modes); mirror that so the value
-    // round-trips straight back into hub_update_hub_mesh(mode_hub_id).
+    // round-trips straight back into hub_update_hub_mesh(modeHubId).
     String modeHubId = parsed.modeHubId ? parsed.modeHubId.toString() : "none"
 
     def privateDevices = _meshList(parsed.privateDevices)
@@ -814,7 +814,7 @@ def toolGetHubMesh(args = null) {
     if (includeToken) {
         result.hubMeshToken = parsed.hubMeshToken?.toString()
         if (result.hubMeshToken == null) {
-            note += " include_token was set but the hub reported no mesh token (hubMeshToken is null)."
+            note += " includeToken was set but the hub reported no mesh token (hubMeshToken is null)."
         }
     }
 
@@ -824,7 +824,7 @@ def toolGetHubMesh(args = null) {
 
 def toolUpdateHubMesh(args) {
     args = args ?: [:]
-    def settable = ["enabled", "full_refresh_interval", "mode_hub_id", "peer_hub_id", "peer_token"]
+    def settable = ["enabled", "fullRefreshInterval", "modeHubId", "peerHubId", "peerToken"]
 
     // VALIDATION FIRST -- every check below runs before ANY hub call, so a validation rejection
     // can be corrected and retried without having half-applied something.
@@ -838,8 +838,8 @@ def toolUpdateHubMesh(args) {
     }
 
     Integer interval = null
-    if (args.containsKey("full_refresh_interval")) {
-        def raw = args.full_refresh_interval
+    if (args.containsKey("fullRefreshInterval")) {
+        def raw = args.fullRefreshInterval
         if (raw instanceof Number) {
             // Reject anything that is not exactly one of the allowed values. `raw != raw.intValue()`
             // catches BOTH a fractional value (300.7, which would otherwise truncate to 300) AND an
@@ -847,7 +847,7 @@ def toolUpdateHubMesh(args) {
             // is framed by the value set rather than "whole number" -- correct for both cases.
             if (raw != raw.intValue()) {
                 throw new IllegalArgumentException(
-                    "full_refresh_interval must be one of ${_meshRefreshIntervals().join(', ')} seconds " +
+                    "fullRefreshInterval must be one of ${_meshRefreshIntervals().join(', ')} seconds " +
                     "(0 = never full-sync), got: ${raw}")
             }
             interval = raw.intValue()
@@ -857,29 +857,29 @@ def toolUpdateHubMesh(args) {
         }
         if (!(interval in _meshRefreshIntervals())) {
             throw new IllegalArgumentException(
-                "full_refresh_interval must be one of ${_meshRefreshIntervals().join(', ')} seconds " +
-                "(0 = never full-sync), got: ${args.full_refresh_interval}")
+                "fullRefreshInterval must be one of ${_meshRefreshIntervals().join(', ')} seconds " +
+                "(0 = never full-sync), got: ${args.fullRefreshInterval}")
         }
     }
 
-    boolean hasPeerId = args.containsKey("peer_hub_id")
-    boolean hasPeerToken = args.containsKey("peer_token")
+    boolean hasPeerId = args.containsKey("peerHubId")
+    boolean hasPeerToken = args.containsKey("peerToken")
     if (hasPeerId != hasPeerToken) {
         throw new IllegalArgumentException(
-            "peer_hub_id and peer_token must be provided TOGETHER (they store one peer hub's mesh auth token). " +
-            "Got only ${hasPeerId ? 'peer_hub_id' : 'peer_token'}.")
+            "peerHubId and peerToken must be provided TOGETHER (they store one peer hub's mesh auth token). " +
+            "Got only ${hasPeerId ? 'peerHubId' : 'peerToken'}.")
     }
-    String peerHubId = args.peer_hub_id?.toString()?.trim()
-    String peerToken = args.peer_token?.toString()?.trim()
+    String peerHubId = args.peerHubId?.toString()?.trim()
+    String peerToken = args.peerToken?.toString()?.trim()
     if (hasPeerId && (!peerHubId || !peerToken)) {
         throw new IllegalArgumentException(
-            "peer_hub_id and peer_token must both be non-empty. Read peer hub ids from hub_get_hub_mesh peers[].hubId.")
+            "peerHubId and peerToken must both be non-empty. Read peer hub ids from hub_get_hub_mesh peers[].hubId.")
     }
 
-    String modeHubId = args.mode_hub_id?.toString()?.trim()
-    if (args.containsKey("mode_hub_id") && !modeHubId) {
+    String modeHubId = args.modeHubId?.toString()?.trim()
+    if (args.containsKey("modeHubId") && !modeHubId) {
         throw new IllegalArgumentException(
-            "mode_hub_id must be a peer hubId from hub_get_hub_mesh peers[].hubId, or 'none' to go back to local modes.")
+            "modeHubId must be a peer hubId from hub_get_hub_mesh peers[].hubId, or 'none' to go back to local modes.")
     }
 
     def applied = []
@@ -901,7 +901,7 @@ def toolUpdateHubMesh(args) {
     if (interval != null) {
         try {
             hubInternalGet("/device/setHubMeshFullRefreshInterval/${interval}")
-            applied << "full_refresh_interval"
+            applied << "fullRefreshInterval"
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_update_hub_mesh full-refresh interval failed", e)
             return _meshLegFailure(applied, "Failed to set the Hub Mesh full-refresh interval", e,
@@ -909,13 +909,13 @@ def toolUpdateHubMesh(args) {
         }
     }
 
-    if (args.containsKey("mode_hub_id")) {
+    if (args.containsKey("modeHubId")) {
         try {
             // URL-encode the segment before it reaches the /device/followModes/<x> path -- the real
             // safety fix, so an unexpected value cannot inject extra path segments (matches repo
             // precedent for interpolated path segments).
             hubInternalGet("/device/followModes/${java.net.URLEncoder.encode(modeHubId, 'UTF-8')}")
-            applied << "mode_hub_id"
+            applied << "modeHubId"
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_update_hub_mesh followModes failed", e)
             return _meshLegFailure(applied, "Failed to set the mode-following hub", e,
@@ -929,7 +929,7 @@ def toolUpdateHubMesh(args) {
         // type for an all-digits id -- a quoted string is a different JSON value to the hub. isLong()
         // (not a \d+ match) so an OVERSIZED all-digits id passes through as a string instead of
         // throwing NumberFormatException after earlier legs have already committed. isLong() also
-        // accepts a leading sign, so peer_hub_id "-12" posts as the JSON number -12 (a strict \d+
+        // accepts a leading sign, so peerHubId "-12" posts as the JSON number -12 (a strict \d+
         // would have kept it a string) -- harmless, hub ids are non-negative and the hub ignores a
         // non-matching id.
         def hubIdValue = peerHubId.isLong() ? peerHubId.toLong() : peerHubId
@@ -940,13 +940,13 @@ def toolUpdateHubMesh(args) {
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken failed", e)
             return _meshLegFailure(applied, "Failed to store the peer hub's mesh token", e,
-                    "The peer token was not stored. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId.")
+                    "The peer token was not stored. Verify peerHubId against hub_get_hub_mesh peers[].hubId.")
         }
         // FAIL-CLOSED on anything that is not a positive commit (repo precedent: the /device/runmethod
         // handler in mcp-devices-lib.groovy). Four non-success branches follow, and only ONE is a proven
         // not-stored: an explicit [success:false] is a hub rejection. The other three are UNKNOWN/
         // unconfirmed commits -- a null (empty/dropped body), an _unparseable Map (non-JSON body), and a
-        // non-null non-Map JSON. None of the four records peer_token. An empty {} / non-error Map IS this
+        // non-null non-Map JSON. None of the four records peerToken. An empty {} / non-error Map IS this
         // endpoint's proven success shape (it returns 200 {} on success), so success is NOT gated on
         // success==true.
         if (postResult == null) {
@@ -958,19 +958,19 @@ def toolUpdateHubMesh(args) {
         }
         if (postResult instanceof Map && postResult._unparseable == true) {
             // Non-JSON body (e.g. an HTML error/login page): the endpoint did not answer as itself, so
-            // the write outcome is UNKNOWN -- fail-closed (do NOT record peer_token), same as the
+            // the write outcome is UNKNOWN -- fail-closed (do NOT record peerToken), same as the
             // empty-body branch above, but the store is unconfirmed rather than proven-not-stored.
             mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken returned a non-JSON body (unconfirmed commit)", null)
             return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
                     "the hub returned a non-JSON response; whether the token was stored is unknown",
-                    "The hub returned an unexpected (non-JSON) body, so the store is unconfirmed. Read hub_get_hub_mesh peers[] to see whether the peer's warning cleared before retrying, and verify peer_hub_id against peers[].hubId.")
+                    "The hub returned an unexpected (non-JSON) body, so the store is unconfirmed. Read hub_get_hub_mesh peers[] to see whether the peer's warning cleared before retrying, and verify peerHubId against peers[].hubId.")
         }
         if (postResult instanceof Map && postResult.success == false) {
             // Explicit rejection: the endpoint parsed and said no (e.g. an unknown peer id).
             mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken was rejected by the hub (success:false)", null)
             return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
                     "the hub rejected the request (success:false)",
-                    "The hub rejected the token store. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId and that the token was read from that PEER via its own hub_get_hub_mesh(include_token=true).")
+                    "The hub rejected the token store. Verify peerHubId against hub_get_hub_mesh peers[].hubId and that the token was read from that PEER via its own hub_get_hub_mesh(includeToken=true).")
         }
         if (!(postResult instanceof Map)) {
             // Non-null, non-Map JSON (e.g. a parsed List or scalar): not this endpoint's proven success
@@ -980,7 +980,7 @@ def toolUpdateHubMesh(args) {
                     "the hub returned an unexpected JSON response shape; whether the token was stored is unknown",
                     "The response was not the expected object shape, so the store is unconfirmed. Read hub_get_hub_mesh peers[] to see whether the peer's warning cleared before retrying.")
         }
-        applied << "peer_token"
+        applied << "peerToken"
     }
 
     // `applied` lists what was SENT to the hub (a 2xx), not read back as changed -- the GET legs
@@ -1674,7 +1674,7 @@ def _getAllToolDefinitions_partSystem() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    include_token: [type: "boolean", description: "Also return this hub's mesh token (a credential; off by default).[[FLAT_TRIM]] A peer hub needs it to reach THIS hub when THIS hub has UI login security.[[/FLAT_TRIM]]"]
+                    includeToken: [type: "boolean", description: "Also return this hub's mesh token (a credential; off by default).[[FLAT_TRIM]] A peer hub needs it to reach THIS hub when THIS hub has UI login security.[[/FLAT_TRIM]]"]
                 ]
             ]
         ],
@@ -1685,10 +1685,10 @@ def _getAllToolDefinitions_partSystem() {
                 type: "object",
                 properties: [
                     enabled: [type: "boolean", description: "Hub Mesh on/off. ⚠️ Needs a hub reboot to take effect."],
-                    full_refresh_interval: [type: "integer", enum: _meshRefreshIntervals(), description: "Full-sync interval in seconds; 0 = never."],
-                    mode_hub_id: [type: "string", description: "Peer hubId whose modes to follow, or 'none' for local modes.[[FLAT_TRIM]] From hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
-                    peer_hub_id: [type: "string", description: "Peer hubId whose mesh token is stored here; send with peer_token.[[FLAT_TRIM]] A UUID (or legacy numeric id) from hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
-                    peer_token: [type: "string", description: "That peer's mesh token; send with peer_hub_id.[[FLAT_TRIM]] Read it on the peer via hub_get_hub_mesh(include_token=true); needed when the peer has UI login security.[[/FLAT_TRIM]]"]
+                    fullRefreshInterval: [type: "integer", enum: _meshRefreshIntervals(), description: "Full-sync interval in seconds; 0 = never."],
+                    modeHubId: [type: "string", description: "Peer hubId whose modes to follow, or 'none' for local modes.[[FLAT_TRIM]] From hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
+                    peerHubId: [type: "string", description: "Peer hubId whose mesh token is stored here; send with peerToken.[[FLAT_TRIM]] A UUID (or legacy numeric id) from hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
+                    peerToken: [type: "string", description: "That peer's mesh token; send with peerHubId.[[FLAT_TRIM]] Read it on the peer via hub_get_hub_mesh(includeToken=true); needed when the peer has UI login security.[[/FLAT_TRIM]]"]
                 ]
             ]
         ],

@@ -253,7 +253,7 @@ def test_device_replace_boundary_requires_access_denial_for_both_positions(denia
 
     def call_tool(name, args):
         assert name == "hub_call_device_replace"
-        assert args.get("list_options") is True or args.get("confirm") is False
+        assert args.get("listOptions") is True or args.get("confirm") is False
         calls.append(args)
         if denial == "accepted":
             return {"success": True}
@@ -264,9 +264,9 @@ def test_device_replace_boundary_requires_access_denial_for_both_positions(denia
     if denial == "access":
         runner._device_replace_boundary_checks("10", "20")
         assert calls == [
-            {"old_device_id": "10", "list_options": True},
-            {"old_device_id": "10", "new_device_id": "20", "confirm": False},
-            {"old_device_id": "20", "new_device_id": "10", "confirm": False},
+            {"oldDeviceId": "10", "listOptions": True},
+            {"oldDeviceId": "10", "newDeviceId": "20", "confirm": False},
+            {"oldDeviceId": "20", "newDeviceId": "10", "confirm": False},
         ]
     else:
         with pytest.raises(AssertionError, match=r"unselected device|reject device access"):
@@ -1540,7 +1540,7 @@ def test_tool_error_payload_recovers_a_structured_refusal_and_tolerates_prose():
 
 def test_plain_failure_helpers_return_only_a_success_false_payload_without_its_own_iserror():
     plain = {"success": False, "error": "App 9 does not exist"}
-    validation = {"success": False, "isError": True, "tool": "hub_delete_item", "error": "item_id is required"}
+    validation = {"success": False, "isError": True, "tool": "hub_delete_item", "error": "itemId is required"}
     # A runtime failure whose tool sets isError itself always raised, and still does.
     self_flagged = {"success": False, "isError": True, "error": "Device metadata fetch failed (/device/fullJson/9)"}
     replies = {"runtime": et.McpToolError("t", json.dumps(plain)),
@@ -2697,7 +2697,7 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
                     "error": "unable to resolve class ClassThatDoesNotExistBatE2eDrv",
                 })
             if (name, tool) == ("hub_manage_code", "hub_delete_item"):
-                assert set(arguments["args"]) == {"type", "item_id", "confirm"}, arguments
+                assert set(arguments["args"]) == {"type", "itemId", "confirm"}, arguments
                 return {"success": True}
             raise AssertionError(f"unexpected direct call: {name} {arguments}")
 
@@ -3362,10 +3362,10 @@ class _BundleHub:
     def write_once(self, gateway, tool, args, label):
         self.write_calls.append((tool, dict(args)))
         if tool == "hub_delete_item":
-            self.app_codes.discard(args["item_id"])
+            self.app_codes.discard(args["itemId"])
             if self.drops_deleted_id:
                 for b in self.bundles.values():
-                    b["codeIds"]["apps"] = [a for a in b["codeIds"]["apps"] if a != args["item_id"]]
+                    b["codeIds"]["apps"] = [a for a in b["codeIds"]["apps"] if a != args["itemId"]]
             return {"success": True}
         assert tool == "hub_delete_bundle", tool
         bundle = self.bundles.pop(args["bundleId"])
@@ -3399,7 +3399,7 @@ def test_delete_bundle_uses_logical_write_helper(monkeypatch):
 
     assert hub.write_calls == [
         ("hub_delete_bundle", {"bundleId": "1", "deleteCode": True, "confirm": True}),
-        ("hub_delete_item", {"type": "app", "item_id": "102", "confirm": True}),
+        ("hub_delete_item", {"type": "app", "itemId": "102", "confirm": True}),
         ("hub_delete_bundle", {"bundleId": "2", "confirm": True}),
     ]
     assert {name for name, _ in hub.refusals} == {"hub_delete_bundle", "hub_export_bundle", "hub_install_bundle"}
