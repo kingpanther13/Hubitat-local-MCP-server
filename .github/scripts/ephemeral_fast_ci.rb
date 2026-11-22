@@ -9,7 +9,8 @@ module EphemeralFastCI
   REQUIRED = %w[unit-tests pr-guard groovy2x-spock].freeze
   FILTERED = %w[groovy24-parse sandbox-lint python-tests ruff self-deploy-recovery
                 lane-gate-test lease-scripts-test dependency-updates-check].freeze
-  # Fast CI takes about five minutes; the gate polls so no second workflow has to wake it.
+  # Fast CI takes about five minutes. workflow_run is not an allowed event here
+  # (docs/ephemeral-hub-e2e.md), so the gate polls. The gate jobs' timeout-minutes must exceed this.
   WAIT_SECONDS = 20 * 60
   POLL_SECONDS = 30
 
@@ -98,6 +99,9 @@ module EphemeralFastCI
       run = runs[workflow_path(name)]
       if !run || run['status'] != 'completed'
         pending << name
+      elsif run['conclusion'] == 'action_required'
+        # A first-time contributor's run is held until a maintainer approves it.
+        pending << "#{name} (awaiting workflow approval)"
       elsif run['conclusion'] != 'success'
         failed << name
       end
@@ -114,43 +118,54 @@ module EphemeralFastCI
           pr.dig('head', 'sha') == head.fetch('sha') && pr.dig('head', 'repo', 'full_name') == head.dig('repo', 'full_name')
   end
 
-  # ['ready'], ['superseded'], ['failed', names] or ['pending', names].
-  def self.check(pr, head)
+  def self.superseded(head)
+    puts "#{head.fetch('sha')} is no longer the current head; hubs not started."
+    'superseded'
+  end
+
+  # The reason output is what the request run relays to the test run.
+  def self.not_started(detail)
+    reason = "Ephemeral hubs not started: #{detail}"
+    puts "::warning title=Ephemeral hubs not started::#{detail}"
+    [ENV['GITHUB_STEP_SUMMARY'], ENV['GITHUB_OUTPUT']].zip([reason, "reason=#{reason}"]) do |file, line|
+      File.open(file, 'a') { |out| out.puts line } if file
+    end
+    'not-started'
+  end
+
+  def self.decision(pr, head)
     number = pr&.fetch('number')
     fresh = current(head, number)
-    return ['superseded'] unless fresh
-    expected_names = ['unit-tests']
+    return superseded(head) unless fresh
+    # The head cannot change during the wait, so the applicable workflows are read once.
+    names = ['unit-tests']
     if pr
       # A re-run gate replays the original event, so read changed_files from the PR as it is now.
       files = pages("pulls/#{Integer(number)}/files?per_page=100").flatten(1)
       # The PR files API lists at most 3000 files.
       raise 'Incomplete PR file list' unless files.size == [fresh.fetch('changed_files'), 3000].min
-      expected_names = expected(fresh, files)
+      names = expected(fresh, files)
     end
-    pending, failed = state(expected_names, runs(head.fetch('sha'), pr ? 'pull_request' : 'push', head, number))
-    return ['failed', failed] unless failed.empty?
-    return ['pending', pending] unless pending.empty?
-    [current(head, number) ? 'ready' : 'superseded']
-  end
-
-  def self.report(detail)
-    puts "::notice title=Ephemeral hubs not started::#{detail}"
-    summary = ENV['GITHUB_STEP_SUMMARY']
-    File.open(summary, 'a') { |out| out.puts "Ephemeral hubs not started: #{detail}" } if summary
-  end
-
-  def self.decision(pr, head)
     clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
-    deadline = clock.call + Integer(ENV.fetch('FAST_CI_WAIT_SECONDS', WAIT_SECONDS))
+    wait = Integer(ENV.fetch('FAST_CI_WAIT_SECONDS', WAIT_SECONDS))
+    deadline = clock.call + wait
     loop do
-      result, names = check(pr, head)
-      return result unless names
-      waiting = result == 'pending' && clock.call < deadline
-      unless waiting
-        report(result == 'failed' ? "fast CI did not pass: #{names.join(', ')}" : "still waiting for #{names.join(', ')}")
-        return 'deferred'
+      expired = clock.call >= deadline
+      begin
+        pending, failed = state(names, runs(head.fetch('sha'), pr ? 'pull_request' : 'push', head, number))
+        return superseded(head) unless current(head, number)
+      rescue RuntimeError => e
+        # One failed read must not end a wait that the next poll can finish.
+        raise if expired
+        warn "#{e.message}; retrying at the next poll"
+        pending = nil
       end
-      puts "Waiting for #{names.join(', ')}"
+      if pending
+        return not_started("fast CI did not pass: #{failed.join(', ')}") unless failed.empty?
+        return 'ready' if pending.empty?
+        return not_started("fast CI not finished after #{wait / 60} minutes: #{pending.join(', ')}") if expired
+        puts "Waiting for #{pending.join(', ')}"
+      end
       sleep Integer(ENV.fetch('FAST_CI_POLL_SECONDS', POLL_SECONDS))
     end
   end

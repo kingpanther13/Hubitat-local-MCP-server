@@ -14,6 +14,7 @@ FORK = {"full_name": "fork/server", "owner": {"login": "fork"}}
 SHA = "a" * 40
 HEAD = {"ref": "feature", "sha": SHA, "repo": FORK}
 PR = {"number": 7, "state": "open", "head": HEAD, "base": {"repo": {"full_name": REPO}}, "changed_files": 1}
+MOVED = {**PR, "head": {**HEAD, "sha": "b" * 40}}
 REQUIRED = ["unit-tests", "pr-guard", "groovy2x-spock"]
 FILES = "pulls/7/files?per_page=100"
 
@@ -32,16 +33,18 @@ def endpoint(event):
 def github(tmp_path):
     gh = tmp_path / "gh"
     # A {"__sequence__": [...]} entry answers each read with the next item, repeating the last.
+    # fail-once fails one read of a path with a retryable 502, refuse-once with a 403.
     gh.write_text(f"#!{sys.executable}\n" + """
 import json, os, sys
 from pathlib import Path
 root = Path(os.environ["FAKE_GITHUB"])
 path = sys.argv[-1].removeprefix("repos/base/server/")
-fault = root / "fail-once"
-if fault.exists() and fault.read_text() == path:
-    fault.unlink()
-    print("gh: Server Error (HTTP 502)", file=sys.stderr)
-    sys.exit(1)
+for name, error in (("fail-once", "Server Error (HTTP 502)"), ("refuse-once", "API rate limit exceeded (HTTP 403)")):
+    fault = root / name
+    if fault.exists() and fault.read_text() == path:
+        fault.unlink()
+        print("gh: " + error, file=sys.stderr)
+        sys.exit(1)
 api = json.loads((root / "api").read_text())
 value = api[path]
 if isinstance(value, dict) and "__sequence__" in value:
@@ -59,11 +62,15 @@ print(json.dumps(value))
     def execute(payload, wait=0):
         (tmp_path / "api").write_text(json.dumps(api))
         (tmp_path / "event").write_text(json.dumps(payload))
+        for name in ("outputs", "summary"):
+            (tmp_path / name).write_text("")
         env = {**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"], "FAKE_GITHUB": str(tmp_path),
                "GITHUB_REPOSITORY": REPO, "GITHUB_EVENT_PATH": str(tmp_path / "event"), "GITHUB_SHA": SHA,
                "GITHUB_OUTPUT": str(tmp_path / "outputs"), "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
                "FAST_CI_WAIT_SECONDS": str(wait), "FAST_CI_POLL_SECONDS": "0"}
-        subprocess.run(["ruby", ".github/scripts/ephemeral_fast_ci.rb"], cwd=ROOT, env=env, check=True)
+        done = subprocess.run(["ruby", ".github/scripts/ephemeral_fast_ci.rb"], cwd=ROOT, env=env, check=True,
+                              capture_output=True, text=True)
+        (tmp_path / "log").write_text(done.stdout + done.stderr)
         return (tmp_path / "outputs").read_text().splitlines()[-1]
     return api, rows, execute
 
@@ -74,12 +81,12 @@ def change_files(api, files):
 
 
 @pytest.mark.parametrize("case,expected", [
-    ("green", "ready"), ("missing-match", "deferred"), ("other-fork", "deferred"),
-    ("older-green", "deferred"), ("cancelled", "deferred"), ("queued", "deferred"),
-    ("stale", "superseded"), ("rename", "deferred"), ("scheduled-red", "deferred"),
-    ("filter-narrowed", "ready"), ("filter-removed", "ready"), ("file-301", "deferred"),
+    ("green", "ready"), ("missing-match", "not-started"), ("other-fork", "not-started"),
+    ("older-green", "not-started"), ("cancelled", "not-started"), ("queued", "not-started"),
+    ("stale", "superseded"), ("rename", "not-started"), ("scheduled-red", "not-started"),
+    ("filter-narrowed", "ready"), ("filter-removed", "ready"), ("file-301", "not-started"),
 ])
-def test_pr_gate(github, case, expected):
+def test_pr_gate(github, tmp_path, case, expected):
     api, rows, execute = github
     parse = rows[3]
     if case == "missing-match":
@@ -93,7 +100,7 @@ def test_pr_gate(github, case, expected):
     elif case == "queued":
         parse.update(status="queued", conclusion=None)
     elif case == "stale":
-        api["pulls/7"] = {**PR, "head": {**HEAD, "sha": "b" * 40}}
+        api["pulls/7"] = MOVED
     elif case == "rename":
         # The old path makes python-tests and ruff applicable; neither ran.
         api[FILES][0][0]["previous_filename"] = "scripts/old.py"
@@ -101,7 +108,7 @@ def test_pr_gate(github, case, expected):
         # GitHub ran a lane the path emulation did not predict, and it failed.
         rows.append(run_row("python-tests", 20, conclusion="failure"))
     elif case in ("filter-narrowed", "filter-removed"):
-        # Python Tests watches every fast workflow file, so it runs for either edit.
+        # Python Tests watches every workflow file, so it runs for either edit.
         rows.append(run_row("python-tests", 20))
         lane = "lane-gate-test" if case == "filter-narrowed" else "lease-scripts-test"
         status = "modified" if case == "filter-narrowed" else "removed"
@@ -113,34 +120,74 @@ def test_pr_gate(github, case, expected):
         change_files(api, [{"filename": f"libraries/f{i}.groovy", "status": "modified"} for i in range(300)]
                      + [{"filename": "tests/test_x.py", "status": "added"}])
     assert execute({"pull_request": PR}) == f"result={expected}"
+    # The request run relays this line to the test run; no other outcome writes one.
+    reasons = [line for line in (tmp_path / "outputs").read_text().splitlines() if line.startswith("reason=")]
+    assert len(reasons) == (expected == "not-started")
+    assert all(line.startswith("reason=Ephemeral hubs not started: fast CI ") for line in reasons)
 
 
-def in_progress(rows):
-    return [{**row, "status": "in_progress", "conclusion": None} if row is rows[0] else row for row in rows]
+def with_first(rows, **change):
+    return [{"workflow_runs": [{**rows[0], **change}, *rows[1:]]}]
 
 
-@pytest.mark.parametrize("case,expected", [
-    ("turns-green", "ready"), ("turns-red", "deferred"), ("head-moves", "superseded"), ("never-finishes", "deferred"),
+@pytest.mark.parametrize("case,expected,reported", [
+    ("turns-green", "ready", ""),
+    ("turns-red", "not-started", "fast CI did not pass: unit-tests"),
+    ("head-moves-while-waiting", "superseded", ""),
+    ("head-moves-after-green", "superseded", ""),
+    ("times-out", "not-started", "fast CI not finished after 0 minutes: unit-tests"),
+    ("red-while-another-runs", "not-started", "fast CI did not pass: pr-guard"),
+    ("approved-then-green", "ready", ""),
+    ("never-approved", "not-started", "unit-tests (awaiting workflow approval)"),
+    ("read-refused-once", "ready", ""),
 ])
-def test_gate_waits_for_running_checks(github, tmp_path, case, expected):
+def test_gate_waits_for_running_checks(github, tmp_path, case, expected, reported):
     api, rows, execute = github
-    waiting = [{"workflow_runs": in_progress(rows)}]
+    runs = endpoint("pull_request")
+    running = with_first(rows, status="in_progress", conclusion=None)
+    held = with_first(rows, conclusion="action_required")
     done = [{"workflow_runs": rows}]
-    red = [{"workflow_runs": [{**rows[0], "conclusion": "failure"}, *rows[1:]]}]
-    api[endpoint("pull_request")] = {"__sequence__": [waiting, waiting, red if case == "turns-red" else done]}
-    if case == "never-finishes":
-        api[endpoint("pull_request")] = waiting
-    if case == "head-moves":
-        api["pulls/7"] = {"__sequence__": [PR, PR, {**PR, "head": {**HEAD, "sha": "b" * 40}}]}
-    assert execute({"pull_request": PR}, wait=0 if case == "never-finishes" else 60) == f"result={expected}"
-    summary = tmp_path / "summary"
-    reported = summary.read_text() if summary.exists() else ""
-    if case == "turns-red":
-        assert "fast CI did not pass: unit-tests" in reported
-    elif case == "never-finishes":
-        assert "still waiting for unit-tests" in reported
+    wait = 60
+    if case == "turns-green":
+        api[runs] = {"__sequence__": [running, running, done]}
+    elif case == "turns-red":
+        api[runs] = {"__sequence__": [running, running, with_first(rows, conclusion="failure")]}
+    elif case == "head-moves-while-waiting":
+        api[runs] = running
+        api["pulls/7"] = {"__sequence__": [PR, PR, MOVED]}
+    elif case == "head-moves-after-green":
+        api["pulls/7"] = {"__sequence__": [PR, MOVED]}
+    elif case == "times-out":
+        # One second of real polling, then the deadline ends the wait.
+        api[runs], wait = running, 1
+    elif case == "red-while-another-runs":
+        api[runs] = [{"workflow_runs": [{**rows[0], "status": "in_progress", "conclusion": None},
+                                        {**rows[1], "conclusion": "failure"}, *rows[2:]]}]
+    elif case == "approved-then-green":
+        api[runs] = {"__sequence__": [held, held, done]}
+    elif case == "never-approved":
+        api[runs], wait = held, 0
+    elif case == "read-refused-once":
+        (tmp_path / "refuse-once").write_text(runs)
+    assert execute({"pull_request": PR}, wait=wait) == f"result={expected}"
+    assert reported in (tmp_path / "summary").read_text()
+    assert bool(reported) == bool((tmp_path / "summary").read_text())
+    log = (tmp_path / "log").read_text()
+    if case in ("turns-green", "turns-red", "head-moves-while-waiting", "times-out"):
+        assert "Waiting for unit-tests" in log
+    elif case == "approved-then-green":
+        assert "Waiting for unit-tests (awaiting workflow approval)" in log
+    elif case == "read-refused-once":
+        assert "retrying at the next poll" in log
     else:
-        assert reported == ""
+        assert "Waiting for" not in log
+
+
+def test_a_refused_read_at_the_deadline_fails_the_gate(github, tmp_path):
+    _, _, execute = github
+    (tmp_path / "refuse-once").write_text(endpoint("pull_request"))
+    with pytest.raises(subprocess.CalledProcessError):
+        execute({"pull_request": PR})
 
 
 def test_incomplete_file_list_fails_the_gate(github):
@@ -154,6 +201,7 @@ def test_transient_workflow_lookup_on_a_green_revision(github, tmp_path):
     _, _, execute = github
     (tmp_path / "fail-once").write_text(endpoint("pull_request"))
     assert execute({"pull_request": PR}) == "result=ready"
+    assert "retrying at the next poll" not in (tmp_path / "log").read_text()
 
 
 def test_main_push_waits_for_its_own_unit_run(github):
@@ -165,17 +213,22 @@ def test_main_push_waits_for_its_own_unit_run(github):
     api[endpoint("push")] = {"__sequence__": [running, [{"workflow_runs": [unit]}]]}
     assert execute({"repository": repo}, wait=60) == "result=ready"
     api[endpoint("push")] = [{"workflow_runs": [{**unit, "conclusion": "failure"}]}]
-    assert execute({"repository": repo}) == "result=deferred"
+    assert execute({"repository": repo}) == "result=not-started"
     api["git/ref/heads/main"] = {"object": {"sha": "b" * 40}}
     assert execute({"repository": repo}) == "result=superseded"
 
 
-def test_gate_can_read_every_fast_workflow():
-    # An unreadable name or filter would fail every PR's gate.
+def test_gate_can_read_every_fast_workflow_and_outlasts_its_wait():
+    # A missing workflow file or an unreadable filter would fail every PR's gate, and a job
+    # timeout at or below the wait would kill the gate before it reports why no hub started.
     subprocess.run(["ruby", "-r", "./.github/scripts/ephemeral_fast_ci", "-e", """
       EphemeralFastCI::REQUIRED.each { |name| File.read(EphemeralFastCI.workflow_path(name)) }
       EphemeralFastCI::FILTERED.each do |name|
         path = EphemeralFastCI.workflow_path(name)
         EphemeralFastCI.pull_request_paths(File.read(path), path) or abort "#{name} lost its pull_request trigger"
+      end
+      %w[hub-e2e-ephemeral hub-e2e-ephemeral-request].each do |name|
+        limit = YAML.safe_load_file(EphemeralFastCI.workflow_path(name)).fetch('jobs').fetch('fast-ci').fetch('timeout-minutes')
+        abort "#{name}: fast-ci timeout too close to the wait" unless limit * 60 >= EphemeralFastCI::WAIT_SECONDS + 240
       end
     """], cwd=ROOT, check=True)

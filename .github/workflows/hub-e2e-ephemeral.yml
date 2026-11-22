@@ -30,18 +30,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Polls until this revision's fast CI finishes (about five minutes), up to 20 minutes.
+  # Pushes to main only: polls until Unit Tests finishes on this revision (about five minutes),
+  # up to 20 minutes. A PR's gate is the request workflow's job of the same name, and its test
+  # run waits for that run; a dispatch has no gate.
   fast-ci:
     name: Fast CI prerequisites
     outputs:
       result: ${{ steps.fast.outputs.result }}
-    if: github.event_name != 'workflow_dispatch'
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
       actions: read
       contents: read
-      pull-requests: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -56,7 +57,7 @@ jobs:
     name: Request ephemeral hub (${{ matrix.kind }})
     # Trusted refs only; PR runs get their hub from hub-e2e-ephemeral-request.yml.
     needs: fast-ci
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && (needs.fast-ci.outputs.result == 'ready' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.fast-ci.outputs.result == 'ready')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -127,7 +128,7 @@ jobs:
 
   e2e:
     needs: fast-ci
-    if: ${{ !cancelled() && (needs.fast-ci.outputs.result == 'ready' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ !cancelled() && (github.event_name != 'push' || needs.fast-ci.outputs.result == 'ready') }}
     name: e2e (ephemeral hub, ${{ matrix.kind }})
     strategy:
       fail-fast: false
@@ -169,8 +170,8 @@ jobs:
           fi
           export SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND" RESULTS="ephemeral-hub-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND"
           export JOB="Request ephemeral hub ($KIND)"
-          # Results or a session within 35 minutes in either mode, with headroom over a suite run.
-          wait=2100
+          # Up to 20 minutes for the request run's fast-CI gate, then 35 with headroom over a suite run.
+          wait=3300
           deadline=$((SECONDS + wait)); first_seen=$((SECONDS + 600)); grace=0; polls=0
           # One artifact read per minute. The request run's state is re-read every poll for the first
           # five, so a lane the request side skips ends within a minute or two, then every fifth.
@@ -213,7 +214,7 @@ jobs:
                   echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
                 fi
                 grace=$((grace + 1))
-                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without results or a session for this attempt. Re-run this job, then right away Request ephemeral hub ($KIND) in the request run, or its Fast CI prerequisites job if that job did not start the hubs (or push a commit or close and reopen the PR); for push or dispatch use Re-run all jobs."; exit 1; }
+                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without results or a session for this attempt. Re-run this job, then right away Request ephemeral hub ($KIND) in the request run, or its Fast CI prerequisites job if that job failed (or push a commit or close and reopen the PR); for push or dispatch use Re-run all jobs."; exit 1; }
               fi
             fi
             [ "$SECONDS" -lt "$deadline" ] || { echo "::error::No hub results or session within $((wait / 60)) minutes."; exit 1; }

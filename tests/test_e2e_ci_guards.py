@@ -402,11 +402,16 @@ def test_ephemeral_pr_code_runs_only_under_pull_request():
     assert "  pull_request:\n    types: [opened, synchronize, reopened]" in triggers and "pull_request_target" not in triggers
     assert set(jobs) == {"fast-ci", "request-hub", "e2e"}
     request, e2e = jobs["request-hub"], jobs["e2e"]
-    assert "github.event_name != 'pull_request'" in request and "contents: write" not in EPHEMERAL
+    assert "contents: write" not in EPHEMERAL
     assert "secrets." not in e2e and "environment:" not in EPHEMERAL and "allow-unsafe-pr-checkout" not in EPHEMERAL
-    for gated in [request, e2e]:
-        assert "    needs: fast-ci\n" in gated
-        assert "needs.fast-ci.outputs.result == 'ready' || github.event_name == 'workflow_dispatch'" in gated
+    # Only a push to main is gated in this workflow: a PR's test job waits for the request run's
+    # gate, and a dispatch runs directly. A PR never requests a hub from here.
+    gate = jobs["fast-ci"]
+    assert "    if: github.event_name == 'push'\n" in gate and "pull-requests:" not in gate and "secrets." not in gate
+    ready = "needs.fast-ci.outputs.result == 'ready'"
+    assert "    needs: fast-ci\n" in request and "    needs: fast-ci\n" in e2e
+    assert f"(github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && {ready}))" in request
+    assert f"(github.event_name != 'push' || {ready})" in e2e
     assert "permissions:\n      contents: read\n      actions: read" in e2e
     assert e2e.index("ephemeral-hub-public-key-") < e2e.index("ephemeral-hub-session-") < e2e.index("actions/checkout")
     assert e2e.index("Mask hub identity") < e2e.index("actions/checkout")
@@ -454,17 +459,24 @@ def test_ephemeral_request_workflow_never_runs_pr_code():
     assert "on:\n  pull_request_target:\n    types: [opened, synchronize, reopened]\n\npermissions:" in head
     assert "\npermissions:\n  contents: read\n" in head
     assert set(jobs) == {"gate", "fast-ci", "approve", "publish", "request-hub"}
-    assert "    needs: gate\n" in jobs["fast-ci"] and "needs.gate.outputs.run == 'true'" in jobs["fast-ci"]
-    assert "    needs: [gate, fast-ci]\n" in jobs["approve"] and "needs.fast-ci.outputs.result == 'ready'" in jobs["approve"]
-    # A deferral keeps both kinds' verdicts pending; the loop's kinds match the request matrix.
-    assert "statuses: write" in jobs["fast-ci"] and "for kind in os jvm; do" in jobs["fast-ci"] and KIND_MATRIX in jobs["request-hub"]
-    assert "secrets." not in jobs["fast-ci"]
+    # Approval comes first, so a first-time contributor's fast CI is running when the gate starts to wait.
+    assert "    needs: gate\n" in jobs["approve"] and "needs.gate.outputs.run == 'true'" in jobs["approve"]
+    gate = jobs["fast-ci"]
+    assert "    needs: [gate, approve]\n" in gate and "needs.gate.outputs.run == 'true'" in gate and "secrets." not in gate
+    # Hubs that are not started leave both kinds' verdicts pending (the loop's kinds match the request
+    # matrix), also when the gate itself failed, and the test run is told why through the artifact it reads.
+    assert "statuses: write" in gate and "for kind in os jvm; do" in gate and KIND_MATRIX in jobs["request-hub"]
+    assert "!cancelled() && steps.fast.outputs.result != 'ready' && steps.fast.outputs.result != 'superseded'" in gate
+    assert "        if: steps.fast.outputs.result == 'not-started'\n        with:\n          name: ephemeral-hub-unavailable\n" in gate
+    ready = "needs.fast-ci.outputs.result == 'ready'"
+    assert ready in jobs["publish"] and ready in jobs["request-hub"]
     # Only contributors with a merged change skip the reviewer-gated environment, and no hub is
     # requested before that job succeeds.
     trusted = """contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.pull_request.author_association)"""
     assert f"      name: ${{{{ {trusted} && 'e2e-auto' || 'e2e-approval' }}}}\n" in jobs["approve"]
     assert "    permissions: {}\n" in jobs["approve"] and "secrets." not in jobs["approve"]
-    assert "    needs: [gate, approve]\n" in jobs["publish"] and "    needs: [gate, approve, publish]\n" in jobs["request-hub"]
+    assert "    needs: [gate, approve, fast-ci]\n" in jobs["publish"]
+    assert "    needs: [gate, approve, fast-ci, publish]\n" in jobs["request-hub"]
     assert "always()" not in jobs["request-hub"] and "needs.approve.result == 'success'" in jobs["request-hub"]
     # The fork head is published once, before either hub kind is requested.
     assert "publish_fork_bundle.sh" in jobs["publish"] and "publish_fork_bundle.sh" not in jobs["request-hub"]
@@ -487,7 +499,8 @@ def test_ephemeral_request_workflow_never_runs_pr_code():
 def test_workflows_use_only_events_the_actions_policy_allows():
     # The repository's Actions policy fails any other event at startup (workflow_run did, after #598).
     allowed = {"pull_request", "pull_request_target", "push", "schedule", "workflow_dispatch"}
-    workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
+    folder = ROOT / ".github/workflows"
+    workflows = sorted([*folder.glob("*.yml"), *folder.glob("*.yaml")])
     assert workflows
     for path in workflows:
         block = re.search(r"^on:\n((?:[ #].*\n|\n)*)", path.read_text(), re.M)
@@ -710,8 +723,8 @@ def test_ephemeral_test_job_waits_for_its_own_session_or_a_skip_reason(event, ba
     ("pull_request", "7 completed success", "ephemeral-hub-results-100-2-os", "true", "ended"),  # another attempt's results
     ("pull_request", "7 completed success", "ephemeral-hub-results-100-1-jvm", "true", "ended"),  # the other kind's results
     ("push", "failure", "", "true", "ended"),
-    ("pull_request", "7 in_progress ", "", "true", "35 minutes"),
-    ("pull_request", "7 in_progress ", "", "false", "35 minutes"),
+    ("pull_request", "7 in_progress ", "", "true", "55 minutes"),
+    ("pull_request", "7 in_progress ", "", "false", "55 minutes"),
 ])
 def test_ephemeral_test_job_takes_provider_run_results(event, request_state, artifacts, run_suite, outcome, tmp_path):
     result, output, _ = _wait_for_hub(tmp_path, event, "present", request_state, artifacts, run_suite)

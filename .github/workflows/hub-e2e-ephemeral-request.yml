@@ -76,12 +76,28 @@ jobs:
           retention-days: 1
           overwrite: true
 
-  # Polls until this revision's fast CI finishes (about five minutes), up to 20 minutes.
+  # pull_request_target runs whatever the fork-approval setting says, so a first-time contributor's
+  # hub waits here until a maintainer approves the e2e-approval deployment.
+  approve:
+    name: Ephemeral lane approval
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    environment:
+      name: ${{ contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.pull_request.author_association) && 'e2e-auto' || 'e2e-approval' }}
+    steps:
+      - run: echo "Ephemeral hub approved for this revision."
+
+  # The only fast-CI gate on a PR: it polls until this revision's fast CI finishes (about five
+  # minutes), up to 20 minutes. It runs after approval, so a first-time contributor's fast CI,
+  # which starts only once a maintainer approves it, is already running when the wait begins.
   fast-ci:
     name: Fast CI prerequisites
     outputs:
       result: ${{ steps.fast.outputs.result }}
-    needs: gate
+    needs: [gate, approve]
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -99,38 +115,34 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ruby .github/scripts/ephemeral_fast_ci.rb
-      # Skipped hub jobs read as "not relevant"; a pending verdict shows the hubs still owe a run.
+      # A finished test run reads as "not relevant"; a pending verdict shows the hubs still owe a run.
       - name: Keep the verdicts pending
-        if: steps.fast.outputs.result == 'deferred'
+        if: ${{ !cancelled() && steps.fast.outputs.result != 'ready' && steps.fast.outputs.result != 'superseded' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
+          REASON: ${{ steps.fast.outputs.reason }}
         run: |
+          mkdir -p "$RUNNER_TEMP/unavailable"; echo "$REASON" > "$RUNNER_TEMP/unavailable/reason.txt"
           for kind in os jvm; do
             gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PUBLIC_SHA" -f state=pending \
               -f context="Ephemeral e2e verdict ($kind)" \
-              -f description="Hubs not started: fast CI is not green. Re-run Fast CI prerequisites once it is." >/dev/null
+              -f description="Hubs not started: fast CI is not green. To retry: docs/ephemeral-hub-e2e.md, Fast CI prerequisites." >/dev/null
           done
-
-  # pull_request_target runs whatever the fork-approval setting says, so a first-time contributor's
-  # hub waits here until a maintainer approves the e2e-approval deployment.
-  approve:
-    name: Ephemeral lane approval
-    needs: [gate, fast-ci]
-    if: needs.fast-ci.outputs.result == 'ready'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    environment:
-      name: ${{ contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.pull_request.author_association) && 'e2e-auto' || 'e2e-approval' }}
-    steps:
-      - run: echo "Ephemeral hub approved for this revision."
+      # The test run reads this reason and ends without waiting for a hub.
+      - uses: actions/upload-artifact@v7
+        if: steps.fast.outputs.result == 'not-started'
+        with:
+          name: ephemeral-hub-unavailable
+          path: ${{ runner.temp }}/unavailable/reason.txt
+          retention-days: 1
+          overwrite: true
 
   # A fork head's release files are published once, for both hub kinds.
   publish:
     name: Publish fork PR release artifact
-    needs: [gate, approve]
-    if: needs.gate.outputs.fork == 'true'
+    needs: [gate, approve, fast-ci]
+    if: needs.gate.outputs.fork == 'true' && needs.fast-ci.outputs.result == 'ready'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -154,9 +166,9 @@ jobs:
 
   request-hub:
     name: Request ephemeral hub (${{ matrix.kind }})
-    needs: [gate, approve, publish]
+    needs: [gate, approve, fast-ci, publish]
     # publish is skipped for a same-repo head; a failed or cancelled publish stops the request.
-    if: ${{ !cancelled() && needs.gate.outputs.run == 'true' && needs.approve.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.gate.outputs.run == 'true' && needs.approve.result == 'success' && needs.fast-ci.outputs.result == 'ready' && (needs.publish.result == 'success' || needs.publish.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
