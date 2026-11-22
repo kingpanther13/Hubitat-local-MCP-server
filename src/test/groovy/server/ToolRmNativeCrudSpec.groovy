@@ -1213,7 +1213,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         result.failedStep == "the closing Done"
         result.note.contains('activate:"_action_update|Done|"')
-        result.note.contains('hub_set_native_app(operation:"form", app_id:362')
+        result.note.contains('hub_set_native_app(operation:"form", appId:362')
         !result.note.contains("button=")
     }
 
@@ -3036,10 +3036,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         when:
-        def response = mcpDriver.callTool('hub_set_native_app', [appId: 100, settings: [origLabel: 'x'], confirm: true])
+        def response = mcpDriver.callTool('hub_set_native_app', [app_id: 100, settings: [origLabel: 'x'], confirm: true])
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('Unknown hub_set_native_app arguments: appId, settings. Nothing was changed. Valid arguments: operation, app_id, args, confirm, bestPracticeKey.')
+        mcpDriver.parseInner(response).error.contains('Unknown hub_set_native_app arguments: app_id, settings. Nothing was changed. Valid arguments: operation, appId, args, confirm, bestPracticeKey.')
         where:
         useGateways << [true, false]
     }
@@ -3348,8 +3348,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "native Rule create has no controller alias while the native app create takes a button_rule controller"() {
         expect:
-        !script._ndOperationSchema('create').properties.containsKey('controller_id')
-        script._naOperationSchema('create').properties.keySet().containsAll(['controller_id', 'button_number', 'event'])
+        !script._ndOperationSchema('create').properties.containsKey('controllerId')
+        script._naOperationSchema('create').properties.keySet().containsAll(['controllerId', 'buttonNumber', 'event'])
     }
 
     def "native create gateway preserves explicit parent and ordered changes"() {
@@ -3615,18 +3615,18 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         when:
         def help = script.toolSetNativeApp([:])
-        def schema = script.toolSetNativeApp([operation: 'update', app_id: 100, args: [fields: [origLabel: 'x']]])
+        def schema = script.toolSetNativeApp([operation: 'update', appId: 100, args: [fields: [origLabel: 'x']]])
         def createSchema = script.toolSetNativeApp([operation: 'create'])
 
         then:
         help.operations == ['create', 'update', 'form']
         help.usage.contains('set_native_app_reference')
         schema.confirm_required == true
-        schema.inputSchema.required == ['operation', 'args', 'confirm', 'app_id']
+        schema.inputSchema.required == ['operation', 'args', 'confirm', 'appId']
         schema.inputSchema.properties.args.required == ['fields']
-        !createSchema.inputSchema.properties.containsKey('app_id')
-        createSchema.inputSchema.properties.args.properties.app_type.enum.containsAll(['basic_rule', 'button_rule', 'notifier'])
-        !createSchema.inputSchema.properties.args.properties.app_type.enum.contains('visual_rule')
+        !createSchema.inputSchema.properties.containsKey('appId')
+        createSchema.inputSchema.properties.args.properties.appType.enum.containsAll(['basic_rule', 'button_rule', 'notifier'])
+        !createSchema.inputSchema.properties.args.properties.appType.enum.contains('visual_rule')
         hubGet.calls.isEmpty()
     }
 
@@ -3647,16 +3647,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         label                         | request                                                                                       | message
         'args without an operation'   | [args: [fields: [a: 1]]]                                                                      | 'Choose an operation'
         'unknown operation'           | [operation: 'walk']                                                                           | 'Unknown native app operation'
-        'unknown args key'            | [operation: 'create', args: [app_type: 'notifier', name: 'n', walkStep: [:]], confirm: true]  | 'Unknown args property'
-        'unknown app_type'            | [operation: 'create', args: [app_type: 'bogus_type', name: 'x'], confirm: true]               | 'Invalid args.app_type'
-        'visual rule create'          | [operation: 'create', args: [app_type: 'visual_rule', name: 'x'], confirm: true]              | 'hub_set_visual_rule'
-        'create with app_id'          | [operation: 'create', app_id: 5, args: [app_type: 'notifier', name: 'x'], confirm: true]      | 'create takes no app_id'
-        'update without app_id'       | [operation: 'update', args: [fields: [a: 1]], confirm: true]                                  | 'app_id is required'
-        'blank name'                  | [operation: 'create', args: [app_type: 'notifier', name: '  '], confirm: true]                | 'Invalid args.name'
-        'button keys on another type' | [operation: 'create', args: [app_type: 'notifier', name: 'n', controller_id: 7], confirm: true] | 'apply only to app_type button_rule'
-        'button_rule with a name'     | [operation: 'create', args: [app_type: 'button_rule', name: 'n', controller_id: 7, button_number: 1, event: 'pushed'], confirm: true] | 'button_rule takes no name'
-        'button_rule without event'   | [operation: 'create', args: [app_type: 'button_rule', controller_id: 7, button_number: 1], confirm: true] | 'button_rule requires event'
-        'invalid button event'        | [operation: 'create', args: [app_type: 'button_rule', controller_id: 7, button_number: 1, event: 'wiggled'], confirm: true] | 'Invalid args.event'
+        'unknown args key'            | [operation: 'create', args: [appType: 'notifier', name: 'n', walkStep: [:]], confirm: true]  | 'Unknown args property'
+        'unknown appType'            | [operation: 'create', args: [appType: 'bogus_type', name: 'x'], confirm: true]               | 'Invalid args.appType'
+        'visual rule create'          | [operation: 'create', args: [appType: 'visual_rule', name: 'x'], confirm: true]              | 'hub_set_visual_rule'
+        'create with appId'          | [operation: 'create', appId: 5, args: [appType: 'notifier', name: 'x'], confirm: true]      | 'create takes no appId'
+        'update without appId'       | [operation: 'update', args: [fields: [a: 1]], confirm: true]                                  | 'appId is required'
+        'blank name'                  | [operation: 'create', args: [appType: 'notifier', name: '  '], confirm: true]                | 'Invalid args.name'
+        'button keys on another type' | [operation: 'create', args: [appType: 'notifier', name: 'n', controllerId: 7], confirm: true] | 'apply only to appType button_rule'
+        'button_rule with a name'     | [operation: 'create', args: [appType: 'button_rule', name: 'n', controllerId: 7, buttonNumber: 1, event: 'pushed'], confirm: true] | 'button_rule takes no name'
+        'button_rule without event'   | [operation: 'create', args: [appType: 'button_rule', controllerId: 7, buttonNumber: 1], confirm: true] | 'button_rule requires event'
+        'invalid button event'        | [operation: 'create', args: [appType: 'button_rule', controllerId: 7, buttonNumber: 1, event: 'wiggled'], confirm: true] | 'Invalid args.event'
     }
 
     def "hub_set_native_app schema is the operation envelope shared with hub_set_rule"() {
@@ -3664,7 +3664,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def def_ = script.getAllToolDefinitions().find { it.name == 'hub_set_native_app' }
 
         then:
-        def_.inputSchema.properties.keySet() == (['operation', 'app_id', 'args', 'confirm', 'bestPracticeKey'] as Set)
+        def_.inputSchema.properties.keySet() == (['operation', 'appId', 'args', 'confirm', 'bestPracticeKey'] as Set)
         def_.inputSchema.properties.operation.enum == ['create', 'update', 'form']
         def_.inputSchema.additionalProperties == false
         !def_.inputSchema.containsKey('required')
