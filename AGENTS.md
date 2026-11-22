@@ -71,7 +71,9 @@ Rule-engine action subtypes (`cancelTimers`, `cancelDelay`, etc. inside native r
 
 ### Parameter naming
 
-Name parameters unambiguously. `device_id`, not `id`. `user_id`, not `user`. Where the parameter takes a complex value, name the parameter after what it semantically IS, not how it's wired. Anthropic's verified guidance: *"instead of a parameter named user, try a parameter named user_id"* — *writing-tools-for-agents*.
+Parameters are camelCase, matching the hub's own MCP tools (`ruleId`, `appId`, `deviceId`); acronyms count as words (`importUrl`, `nodeDsk`). This covers keys inside an object argument that this server defines (a form step's `expectPage`, `hub_set_native_app`'s `args.appType`), but not hub wire names passed through verbatim. `ToolParameterNamingSpec` fails on a snake_case property in any tool's input schema or in the `args` schemas of `hub_set_rule` / `hub_set_native_app`.
+
+Name parameters unambiguously. `deviceId`, not `id`. `userId`, not `user`. Where the parameter takes a complex value, name the parameter after what it semantically IS, not how it's wired. Anthropic's verified guidance: *"instead of a parameter named user, try a parameter named user_id"* — *writing-tools-for-agents* (the guidance is about unambiguous names, not case).
 
 ### Tool consolidation guidelines
 

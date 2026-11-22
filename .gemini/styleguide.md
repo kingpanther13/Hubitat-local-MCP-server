@@ -67,7 +67,7 @@ This check is judgmental and you may misread the diff. That is expected and acce
 When a PR adds or renames an MCP tool, best-effort judgement: does the tool follow the conventions in `AGENTS.md` § Tool design rules? Eight broad areas to look at:
 
 1. **Naming** — `hub_` prefix present; verb from the allowed vocabulary; `manage_` used only for gateways (or the documented flat-multi-action exception).
-2. **Parameter names** — unambiguous (e.g. `device_id` not `id`); semantic over wired.
+2. **Parameter names** — camelCase, matching the hub's own MCP tools, and unambiguous (e.g. `deviceId` not `id`); semantic over wired.
 3. **Annotations** — all four hints (`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`) set explicitly.
 4. **Description quality** — concise first line; usage guidance; write-tool safety warnings present; semantic IDs over opaque UUIDs.
 5. **Consolidation candidates** — verb-pair tools (enable/disable, pause/resume, etc.) suggested for merge into a single `set_<noun>_<attribute>` tool; always-called-in-sequence tools flagged.

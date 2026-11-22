@@ -153,7 +153,7 @@ Every new tool requires changes in exactly three places:
 
 0a. **Tool name follows the design rules** — `hub_` service prefix, verb from the allowed vocabulary, `manage_` only on gateways (or the narrow flat-multi-action exception), verb-noun order.
 0b. **All four annotation hints set explicitly** — `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`. Defaults for unannotated tools are the cautious posture; explicit is safer than implicit.
-0c. **Parameter names are unambiguous** — `device_id` not `id`, `user_id` not `user`. Name parameters after what they semantically are.
+0c. **Parameter names are unambiguous and camelCase** — `deviceId` not `id`, `userId` not `user`. Name parameters after what they semantically are.
 
 **Then the three placement changes:**
 
