@@ -5853,7 +5853,7 @@ def getGatewayConfig() {
                 hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Read master",
                 hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires the Write master",
                 hub_get_device_health: "Check device staleness; run network diagnostics: ICMP-ping arbitrary IPs (router, NAS, server), traceroute to one IPv4, WAN download speedtest; and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), tracerouteHost (IPv4), speedtest (bool), identifyHub",
-                hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + the read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists, Zigbee last-message times, Z-Wave backup jobs, Matter Wi-Fi). Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee), node_id?, include_topology/status/logs/channel_scan/smartstart/firmware/devices?, backup_job_id?. Requires Read master",
+                hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + the read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists, Zigbee last-message times, Z-Wave backup jobs, Matter Wi-Fi). Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee), nodeId?, includeTopology/Status/Logs/ChannelScan/Smartstart/Firmware/Devices?, backupJobId?. Requires Read master",
                 hub_list_captured_states: "List saved device state snapshots",
                 hub_delete_captured_state: "Delete a captured state by stateId, or ALL captured states when stateId is omitted. Args: stateId (optional)"
             ],
@@ -5871,12 +5871,12 @@ def getGatewayConfig() {
             description: "Manage the Z-Wave, Zigbee, and Matter radios: configure (enable/disable, region, channel, power, Z-Wave JS stack) and run lifecycle operations (repair, inclusion/exclusion, node maintenance, replace/remove, Z-Wave JS re-interview/link test/CC commands, Z-Wave network backup and import, Zigbee reboot/rebuild/scan, Matter pair/cancel/window). Reads live in hub_get_radio_details (also in hub_read_diagnostics). DESTRUCTIVE resets + firmware flashes live in hub_manage_destructive_ops (hub_call_destructive_ops).",
             tools: ["hub_get_radio_details", "hub_set_zwave", "hub_set_zigbee", "hub_call_zwave", "hub_call_zigbee", "hub_call_matter"],
             summaries: [
-                hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists, Zigbee last-message times, Z-Wave backup jobs, Matter Wi-Fi). Args: radio?, node_id?, include_topology/status/logs/channel_scan/smartstart/firmware/devices?, backup_job_id?",
-                hub_set_zwave: "Configure the Z-Wave radio: enable/disable, region, long-range channel, or switch the stack to/from Z-Wave JS (reboots). Args: enabled?, region?, long_range_channel?, zwave_js?, confirm (to disable or switch stacks)",
-                hub_set_zigbee: "Configure the Zigbee radio (idempotent): enable/disable, channel + power, radio settings (rebuild-on-reboot, ping-inactive), per-device keep-alive ping. Args: enabled?, channel?, power_level?, rebuild_on_reboot?, ping_inactive?, ping_device?, confirm (to disable)",
-                hub_call_zwave: "Z-Wave lifecycle ops. Args: action (repair_start/cancel, repair_node, inclusion_start/stop, grant_keys/grant_code, exclusion_start/stop ⚠️, node_refresh/rediscover/reinitialize, refresh_stats, node_replace, node_replace_stop, node_remove ⚠️, antenna_test_start/continue, smartstart_delete; Z-Wave JS: reinterview, link_test_start/stop, cc_command ⚠️, local_backup_create/download/import/keys), node_id? (per-node), confirm (exclusion_start/node_remove/link_test_start/cc_command/local_backup_download/local_backup_import)",
+                hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists, Zigbee last-message times, Z-Wave backup jobs, Matter Wi-Fi). Args: radio?, nodeId?, includeTopology/Status/Logs/ChannelScan/Smartstart/Firmware/Devices?, backupJobId?",
+                hub_set_zwave: "Configure the Z-Wave radio: enable/disable, region, long-range channel, or switch the stack to/from Z-Wave JS (reboots). Args: enabled?, region?, longRangeChannel?, zwaveJs?, confirm (to disable or switch stacks)",
+                hub_set_zigbee: "Configure the Zigbee radio (idempotent): enable/disable, channel + power, radio settings (rebuild-on-reboot, ping-inactive), per-device keep-alive ping. Args: enabled?, channel?, powerLevel?, rebuildOnReboot?, pingInactive?, pingDevice?, confirm (to disable)",
+                hub_call_zwave: "Z-Wave lifecycle ops. Args: action (repair_start/cancel, repair_node, inclusion_start/stop, grant_keys/grant_code, exclusion_start/stop ⚠️, node_refresh/rediscover/reinitialize, refresh_stats, node_replace, node_replace_stop, node_remove ⚠️, antenna_test_start/continue, smartstart_delete; Z-Wave JS: reinterview, link_test_start/stop, cc_command ⚠️, local_backup_create/download/import/keys), nodeId? (per-node), confirm (exclusion_start/node_remove/link_test_start/cc_command/local_backup_download/local_backup_import)",
                 hub_call_zigbee: "Zigbee ops. Args: action (radio_reboot, rebuild_network, channel_scan)",
-                hub_call_matter: "Matter ops. Args: action (enable/disable — needs hub reboot, pair, cancel_pair, open_pairing_window), setup_code? + wifi_ssid?/wifi_password? (pair), node_id? (cancel_pair/open_pairing_window), confirm (disable)"
+                hub_call_matter: "Matter ops. Args: action (enable/disable — needs hub reboot, pair, cancel_pair, open_pairing_window), setupCode? + wifiSsid?/wifiPassword? (pair), nodeId? (cancel_pair/open_pairing_window), confirm (disable)"
             ],
             searchHints: [
                 hub_get_radio_details: "zwave zigbee matter thread fabric mesh network firmware channel pan coordinator radio commissioned node topology smartstart status read zwave js interview last message stale wifi backup job",
@@ -11735,33 +11735,33 @@ Dashboards or automations that reference the room may need updating.
 
 - Action groups: repair_start/repair_cancel + repair_node (network rebuild); inclusion_start/inclusion_stop + grant_keys/grant_code (S2 pairing); exclusion_start/exclusion_stop; node_refresh/node_rediscover/node_reinitialize + refresh_stats (per-node maintenance); node_replace + node_replace_stop; node_remove (failed-node removal); antenna_test_start/antenna_test_continue; smartstart_delete.
 - S2 pairing payloads: grant_keys takes the granted security classes, e.g. {S2AccessControl:true, S2Authenticated:true, S2Unauthenticated:false, S0Unauthenticated:false}; grant_code (DSK confirmation) takes e.g. {accept:true, securityCode:'12345'}.
-- Poll repair/operation progress with hub_get_radio_details(include_status=true). (repair_start duration/disruption and off-peak guidance: see the repair_start note above.)
+- Poll repair/operation progress with hub_get_radio_details(includeStatus=true). (repair_start duration/disruption and off-peak guidance: see the repair_start note above.)
 - Related radio tools: enable/disable, region, long-range channel and the Z-Wave JS stack switch via hub_set_zwave; radio reset (unpairs every device), Z-Wave firmware flashes and the Z-Wave network restore via hub_call_destructive_ops.
 - **Z-Wave JS actions** (the hub must run the Z-Wave JS stack; `zwaveJS` in hub_get_radio_details(radio='zwave')):
-  - `reinterview` (node_id): re-runs the node interview; watch `interviewComplete` / `interviewStage` on the node.
-  - `link_test_start` (node_id, link_test={rounds default 10, interval_ms default 1000}) / `link_test_stop` (node_id): the link reliability test. It switches the device on and off and may leave it in a different state. Read results with hub_get_radio_details(radio='zwave', node_id=N) under `linkReliability`.
-  - `cc_command` (node_id, cc={command_class, method_name, endpoint default 0, args}, confirm=true): sends one command-class method, as the node page's command list does. The node's command classes and methods come from hub_get_radio_details(radio='zwave', node_id=N) `nodeDetails`. It talks to the device directly, outside the device allowlist, so it needs confirm and a recent backup.
-- **Z-Wave network backup** (Z-Wave JS plus the Full Local Backup subscription; `status.zwaveLocalBackup` in hub_get_radio_details(include_status=true) shows `available` and `entitled`):
-  1. `local_backup_create` returns a `jobId`; poll hub_get_radio_details(backup_job_id=<jobId>) until `stage` is DONE.
-  2. `local_backup_download` (job_id = the jobId) saves the archive to File Manager as `zwave-backup-<jobId>.tar.gz`.
-  3. To bring a network in: `local_backup_import` (backup_url, confirm=true, 8 MB max; a Hubitat backup, Z-Wave JS UI backup, archive or raw NVM file) returns an `importId`; poll its job until READY and read its `report`. Supply missing keys with `local_backup_keys` (import_id = the importId, security_keys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, long_range: {S2_Authenticated, S2_AccessControl}}, each a 32-hex-digit network key, a 0x prefix stripped; other names or values are refused). Then restore with hub_call_destructive_ops(target='zwave', action='local_backup_restore', import_id=...).
+  - `reinterview` (nodeId): re-runs the node interview; watch `interviewComplete` / `interviewStage` on the node.
+  - `link_test_start` (nodeId, linkTest={rounds default 10, intervalMs default 1000}) / `link_test_stop` (nodeId): the link reliability test. It switches the device on and off and may leave it in a different state. Read results with hub_get_radio_details(radio='zwave', nodeId=N) under `linkReliability`.
+  - `cc_command` (nodeId, cc={commandClass, methodName, endpoint default 0, args}, confirm=true): sends one command-class method, as the node page's command list does. The node's command classes and methods come from hub_get_radio_details(radio='zwave', nodeId=N) `nodeDetails`. It talks to the device directly, outside the device allowlist, so it needs confirm and a recent backup.
+- **Z-Wave network backup** (Z-Wave JS plus the Full Local Backup subscription; `status.zwaveLocalBackup` in hub_get_radio_details(includeStatus=true) shows `available` and `entitled`):
+  1. `local_backup_create` returns a `jobId`; poll hub_get_radio_details(backupJobId=<jobId>) until `stage` is DONE.
+  2. `local_backup_download` (jobId = the jobId) saves the archive to File Manager as `zwave-backup-<jobId>.tar.gz`.
+  3. To bring a network in: `local_backup_import` (backupUrl, confirm=true, 8 MB max; a Hubitat backup, Z-Wave JS UI backup, archive or raw NVM file) returns an `importId`; poll its job until READY and read its `report`. Supply missing keys with `local_backup_keys` (importId = the importId, securityKeys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, longRange: {S2_Authenticated, S2_AccessControl}}, each a 32-hex-digit network key, a 0x prefix stripped; other names or values are refused). Then restore with hub_call_destructive_ops(target='zwave', action='local_backup_restore', importId=...).
 
 ### hub_set_zigbee (configure the Zigbee radio: enable/disable, channel/power, radio settings, per-device ping)
 
 - Idempotent config, one operation per call; read current values first with hub_get_radio_details(radio='zigbee'). Disabling the radio strands every Zigbee device and is confirm-gated (confirm=true + backup <24h).
 - **Channel changes** can drop devices that do not follow the new channel (they may need re-pairing); a channel/power update returns a `warning` describing the disruption.
-- **Radio settings** (rebuild_on_reboot / ping_inactive) MERGE over current values -- an unspecified flag is preserved, so pass only the flag you intend to change.
+- **Radio settings** (rebuildOnReboot / pingInactive) MERGE over current values -- an unspecified flag is preserved, so pass only the flag you intend to change.
 - **Sibling tools:** for reboot / rebuild-network / channel-scan use hub_call_zigbee; for radio reset or firmware flash use hub_call_destructive_ops.
 
 ### hub_call_destructive_ops — firmware-flash action reference
 
 The radio firmware-flash `action` values (the bullet above summarizes these as "a firmware flash"; an interrupted flash can brick hardware — never power-cycle during one):
-- `device_firmware_start` — Z-Wave device firmware OTA. Requires `node_id` + `file_name` (`file_name` comes from hub_get_radio_details(include_firmware=true)); optional `target_index` (the firmware target from `firmware.node.details`) defaults to 0, the device's main firmware.
-- `device_firmware_start_available` — flash the update the hub's firmware service offers for a node. Requires `node_id` + `update_id` (from hub_get_radio_details(include_firmware=true, node_id=N) `firmware.node.available`).
-- `device_firmware_batch_start` / `device_firmware_batch_start_available` (Z-Wave JS) — flash several matching devices in one run: `node_id` is the source node, `batch.node_ids` the nodes to update (from `firmware.node.batchCandidates`), plus `file_name` (and optional `target_index`, default 0) or `update_id`. `batch.inactivity_timeout_seconds` (default 600) gives up on a silent device. Follow the run in `status.zwaveFirmwareBatch` (include_status=true); stop it with `device_firmware_batch_abort`.
-- `device_firmware_abort` — abort an in-progress Z-Wave device flash. Requires `node_id`.
+- `device_firmware_start` — Z-Wave device firmware OTA. Requires `nodeId` + `fileName` (`fileName` comes from hub_get_radio_details(includeFirmware=true)); optional `targetIndex` (the firmware target from `firmware.node.details`) defaults to 0, the device's main firmware.
+- `device_firmware_start_available` — flash the update the hub's firmware service offers for a node. Requires `nodeId` + `updateId` (from hub_get_radio_details(includeFirmware=true, nodeId=N) `firmware.node.available`).
+- `device_firmware_batch_start` / `device_firmware_batch_start_available` (Z-Wave JS) — flash several matching devices in one run: `nodeId` is the source node, `batch.nodeIds` the nodes to update (from `firmware.node.batchCandidates`), plus `fileName` (and optional `targetIndex`, default 0) or `updateId`. `batch.inactivityTimeoutSeconds` (default 600) gives up on a silent device. Follow the run in `status.zwaveFirmwareBatch` (includeStatus=true); stop it with `device_firmware_batch_abort`.
+- `device_firmware_abort` — abort an in-progress Z-Wave device flash. Requires `nodeId`.
 - Firmware 2.5.2 refuses device firmware updates over Remote Admin; the hub's refusal message is returned.
-- `local_backup_restore` (target=zwave) — replaces the hub's Z-Wave network with an imported backup (`import_id` from hub_call_zwave local_backup_import, READY with every key supplied). Z-Wave devices are unavailable while Z-Wave JS restarts; poll the returned `jobId` with hub_get_radio_details(backup_job_id=...).
+- `local_backup_restore` (target=zwave) — replaces the hub's Z-Wave network with an imported backup (`importId` from hub_call_zwave local_backup_import, READY with every key supplied). Z-Wave devices are unavailable while Z-Wave JS restarts; poll the returned `jobId` with hub_get_radio_details(backupJobId=...).
 - `zwave_chip_firmware` — flash the hub's own Z-Wave radio chip (no extra args).
 - `zigbee_firmware` — update the Zigbee radio to the latest firmware (no extra args).
 
@@ -11769,23 +11769,23 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 ### hub_call_matter (Matter radio: enable/disable, pair, cancel_pair, open pairing window)
 
-- `action=pair` (the 11- or 21-digit Matter setup code, or the MT: QR payload) uses the pairing request firmware 2.5.2 introduced, which carries Wi-Fi credentials for Wi-Fi Matter devices. Without `wifi_ssid` the hub's selected network is sent, as the web UI does; when that is the network the hub stores a password for, the hub's own password placeholder keeps the stored password. A network without a stored password needs `wifi_password` (`""` for an open network), and the call is refused when the hub's network cannot be read. Firmware before 2.5.2 pairs with the setup code alone. Thread devices ignore the credentials. Read the stored network with hub_get_radio_details(radio='matter') `wifiCredentials` (the password is never returned).
-- A started pairing returns its `nodeId`; poll it with hub_get_radio_details(radio='matter', node_id=<nodeId>) and stop it with `action=cancel_pair` (node_id). A nodeId of 0 or an `error` means the pairing did not start. Firmware before 2.5.2 pairs with the setup code alone (any Wi-Fi arguments are ignored).
+- `action=pair` (the 11- or 21-digit Matter setup code, or the MT: QR payload) uses the pairing request firmware 2.5.2 introduced, which carries Wi-Fi credentials for Wi-Fi Matter devices. Without `wifiSsid` the hub's selected network is sent, as the web UI does; when that is the network the hub stores a password for, the hub's own password placeholder keeps the stored password. A network without a stored password needs `wifiPassword` (`""` for an open network), and the call is refused when the hub's network cannot be read. Firmware before 2.5.2 pairs with the setup code alone. Thread devices ignore the credentials. Read the stored network with hub_get_radio_details(radio='matter') `wifiCredentials` (the password is never returned).
+- A started pairing returns its `nodeId`; poll it with hub_get_radio_details(radio='matter', nodeId=<nodeId>) and stop it with `action=cancel_pair` (nodeId). A nodeId of 0 or an `error` means the pairing did not start. Firmware before 2.5.2 pairs with the setup code alone (any Wi-Fi arguments are ignored).
 - Matter requires a C-8 / C-8 Pro hub on supported firmware; the failure note repeats this.
-- `action=open_pairing_window` opens a share window for a commissioned node_id; the response carries the setup code to add that device to another fabric.
+- `action=open_pairing_window` opens a share window for a commissioned nodeId; the response carries the setup code to add that device to another fabric.
 - To RESET the Matter fabric (wipes commissioning, unpairs every Matter device) use hub_call_destructive_ops(target='matter', action='reset').
 
 ### hub_set_zwave (configure the Z-Wave radio: enable/disable, region, long-range channel, Z-Wave JS stack)
 
 - Config updates preserve the radio's other current settings: a region or long-range-channel change keeps the current `enabled` and `secureJoin` values. The hub's zwaveDetails update is a full-replacement endpoint (it takes the complete param set, not a partial patch), so the tool reads current state first and overrides only what you changed.
 - Disabling the radio strands every Z-Wave device, so it is confirm-gated (confirm=true plus a hub backup <24h).
-- `zwave_js=true` switches the hub to the Z-Wave JS stack (C-5, C-7, C-8 on firmware 2.5.2+; `zwaveJSAvailable` in hub_get_radio_details(radio='zwave') says whether it is offered) and `zwave_js=false` back to the legacy stack. The hub REBOOTS immediately, so it is confirm-gated and must be sent alone. It reads the running stack first: a hub already on the requested stack is left alone (`changed: false`), and an unreadable stack is refused, so a repeated call never reboots twice. After the reboot, `status.zwaveJs` (include_status=true) shows when the stack is ready and how many nodes still await their interview.
+- `zwaveJs=true` switches the hub to the Z-Wave JS stack (C-5, C-7, C-8 on firmware 2.5.2+; `zwaveJSAvailable` in hub_get_radio_details(radio='zwave') says whether it is offered) and `zwaveJs=false` back to the legacy stack. The hub REBOOTS immediately, so it is confirm-gated and must be sent alone. It reads the running stack first: a hub already on the requested stack is left alone (`changed: false`), and an unreadable stack is refused, so a repeated call never reboots twice. After the reboot, `status.zwaveJs` (includeStatus=true) shows when the stack is ready and how many nodes still await their interview.
 - Scope routing: for repair / inclusion (join + S2 grants) / exclusion / per-node maintenance use hub_call_zwave; for radio reset or firmware flash use hub_call_destructive_ops.
 
 ### hub_call_zigbee (non-idempotent Zigbee radio ops)
 - Actions: radio_reboot (restart the Zigbee chip), rebuild_network (rebuild the mesh), channel_scan (trigger an energy scan). No confirm gate, but the Write master applies.
 - rebuild_network takes time; Zigbee devices may be briefly unresponsive during the rebuild.
-- Read channel_scan results with hub_get_radio_details(include_channel_scan=true).
+- Read channel_scan results with hub_get_radio_details(includeChannelScan=true).
 - For enable/disable, channel, or power use hub_set_zigbee (idempotent config); for radio reset or firmware flash use hub_call_destructive_ops.
 
 
@@ -12413,16 +12413,16 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 - Covers radio details (firmware, home/PAN ID, channel, device nodes), mesh topology, per-node state, lifecycle status pollers, channel scan, SmartStart entries, and firmware-eligible devices.
 - Pairs with the write tools in hub_manage_radio (hub_set_zwave / hub_set_zigbee / hub_call_zwave / hub_call_zigbee / hub_call_matter) and the destructive resets/firmware in hub_call_destructive_ops.
-- include_topology shape (Z-Wave/Zigbee only): Z-Wave returns nodes+connectors plus the raw route table; Zigbee returns children+neighbors+routes.
-- node_id result location: Z-Wave node state lands under result.nodeState (plain text; 'Done' when idle); Matter commissioning status (radio='matter') lands under result.matterPairStatus.
-- include_status (result.status) contents: Z-Wave repair stage, heal-running flag, exclusion status, join discovery, antenna-test progress, node-replace status/info, and Zigbee network status (panId/extendedPanId/networkState). Matter commissioning status is per-node instead: radio='matter' + node_id.
-- include_channel_scan: run a fresh scan with hub_call_zigbee action='channel_scan' first, then read result.channelScan.
-- include_smartstart: each entry's nodeDSK feeds hub_call_zwave action='smartstart_delete'.
-- include_firmware: shape {devices:[{nodeId,label}], files}; feeds hub_call_destructive_ops firmware actions. With node_id it adds `firmware.node`: `details` (the device's firmware targets), `available` (updates the hub's firmware service offers, each with an updateId), `progress`, and `batchCandidates` (other nodes a batch run can include, Z-Wave JS).
-- include_status also carries `zwaveJs` (Z-Wave JS readiness, version and interview progress), `zwaveLocalBackup` ({available, entitled, firmwareVersion, zwaveJSVersion}) and `zwaveFirmwareBatch` (a batch firmware run; "requires Z-Wave JS" on the legacy stack).
-- node_id on a Z-Wave JS hub also returns `nodeDetails` (interview state and the node's command classes with their methods, which feed hub_call_zwave cc_command) and `linkReliability` (the link test status).
-- include_devices (Zigbee): every Zigbee device with `lastMessage` (the last radio message the hub received) and `minutesSinceLastMessage`; silent devices sort first. Use it to find Zigbee devices that have dropped off the mesh.
-- backup_job_id: the stage, percent and report of a Z-Wave backup, import or restore job (`zwaveBackupJob`).
+- includeTopology shape (Z-Wave/Zigbee only): Z-Wave returns nodes+connectors plus the raw route table; Zigbee returns children+neighbors+routes.
+- nodeId result location: Z-Wave node state lands under result.nodeState (plain text; 'Done' when idle); Matter commissioning status (radio='matter') lands under result.matterPairStatus.
+- includeStatus (result.status) contents: Z-Wave repair stage, heal-running flag, exclusion status, join discovery, antenna-test progress, node-replace status/info, and Zigbee network status (panId/extendedPanId/networkState). Matter commissioning status is per-node instead: radio='matter' + nodeId.
+- includeChannelScan: run a fresh scan with hub_call_zigbee action='channel_scan' first, then read result.channelScan.
+- includeSmartstart: each entry's nodeDSK feeds hub_call_zwave action='smartstart_delete'.
+- includeFirmware: shape {devices:[{nodeId,label}], files}; feeds hub_call_destructive_ops firmware actions. With nodeId it adds `firmware.node`: `details` (the device's firmware targets), `available` (updates the hub's firmware service offers, each with an updateId), `progress`, and `batchCandidates` (other nodes a batch run can include, Z-Wave JS).
+- includeStatus also carries `zwaveJs` (Z-Wave JS readiness, version and interview progress), `zwaveLocalBackup` ({available, entitled, firmwareVersion, zwaveJSVersion}) and `zwaveFirmwareBatch` (a batch firmware run; "requires Z-Wave JS" on the legacy stack).
+- nodeId on a Z-Wave JS hub also returns `nodeDetails` (interview state and the node's command classes with their methods, which feed hub_call_zwave cc_command) and `linkReliability` (the link test status).
+- includeDevices (Zigbee): every Zigbee device with `lastMessage` (the last radio message the hub received) and `minutesSinceLastMessage`; silent devices sort first. Use it to find Zigbee devices that have dropped off the mesh.
+- backupJobId: the stage, percent and report of a Z-Wave backup, import or restore job (`zwaveBackupJob`).
 - radio='matter' also returns `wifiCredentials`: the networks the hub sees, the selected and stored SSID, and whether a password is stored (never the password).
 
 ### hub_get_device_health (device-staleness check + LAN/WAN network probes)

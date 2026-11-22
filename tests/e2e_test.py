@@ -3337,33 +3337,33 @@ class TestRunner:
 
     @test("diagnostics")
     def test_radio_details_include_topology(self) -> None:
-        # Item 3 (#257): include_topology folds the read-only mesh route map into hub_get_radio_details.
-        # The helper always returns a topology object (with at least `endpoint`) when include_topology
+        # Item 3 (#257): includeTopology folds the read-only mesh route map into hub_get_radio_details.
+        # The helper always returns a topology object (with at least `endpoint`) when includeTopology
         # is set. With the radio online the route fetch must succeed, so topology.error or missing route
         # data fails; a radio the hub reports disabled or unhealthy may only answer unavailable, and skips.
-        # Combined with include_status + include_firmware: one call returns every fold object, so the
+        # Combined with includeStatus + includeFirmware: one call returns every fold object, so the
         # three former separate zwave-radio tests share a single round-trip, each keeping its assertion.
         result = self.client.call_tool("hub_get_radio_details", {
-            "radio": "zwave", "include_topology": True, "include_status": True, "include_firmware": True})
+            "radio": "zwave", "includeTopology": True, "includeStatus": True, "includeFirmware": True})
         assert isinstance(result, dict), "hub_get_radio_details did not return an object"
         topo = result.get("topology")
-        assert topo is not None, "include_topology=true did not return a topology object"
+        assert topo is not None, "includeTopology=true did not return a topology object"
         assert "getChildAndRouteInfoJson" in str(topo.get("endpoint", "")), \
-            f"include_topology topology missing the route endpoint: {topo}"
-        # include_status fold must not error the call (its former standalone assertion).
+            f"includeTopology topology missing the route endpoint: {topo}"
+        # includeStatus fold must not error the call (its former standalone assertion).
         assert "error" not in result or isinstance(result.get("error"), str), \
-            f"include_status unexpected error shape: {result}"
-        # 2.5.2: Z-Wave JS readiness, Z-Wave local backup and batch firmware pollers ride include_status.
+            f"includeStatus unexpected error shape: {result}"
+        # 2.5.2: Z-Wave JS readiness, Z-Wave local backup and batch firmware pollers ride includeStatus.
         status = result.get("status") or {}
         for key in ("zwaveJs", "zwaveLocalBackup", "zwaveFirmwareBatch"):
-            assert key in status, f"include_status is missing the {key} poller: {sorted(status)}"
+            assert key in status, f"includeStatus is missing the {key} poller: {sorted(status)}"
         if "error" in topo and _zwave_radio_offline(result):
             assert _radio_unavailable_error(topo["error"]), \
                 f"offline Z-Wave radio's route fetch failed with something other than unavailable: {topo['error']}"
             raise SkipTest("Z-Wave radio offline on this hub")
-        assert "error" not in topo, f"include_topology route fetch errored (regression): {topo.get('error')}"
+        assert "error" not in topo, f"includeTopology route fetch errored (regression): {topo.get('error')}"
         assert "routes" in topo or "rawRoutes" in topo, \
-            f"include_topology returned no route data: {topo}"
+            f"includeTopology returned no route data: {topo}"
 
     @test("diagnostics")
     def test_radio_details_matter(self) -> None:
@@ -3377,7 +3377,7 @@ class TestRunner:
         # radio='matter' also reads the Wi-Fi network the hub gives Matter devices -- never a password.
         assert "wifiCredentials" in result, f"radio='matter' did not attach wifiCredentials: {sorted(result)}"
         assert '"password"' not in json.dumps(result.get("wifiCredentials")), "Matter Wi-Fi read leaked a password field"
-        self._expect_tool_refusal("hub_call_matter", {"action": "cancel_pair"}, "cancel_pair requires node_id")
+        self._expect_tool_refusal("hub_call_matter", {"action": "cancel_pair"}, "cancel_pair requires nodeId")
         source = result.get("source")
         assert source in ("hub_api", "hub_api_raw", "sdk_only"), \
             f"radio='matter' did not set a recognized source (fold path didn't fire?): {result}"
@@ -3550,16 +3550,16 @@ class TestRunner:
         # The 2.5.2 Z-Wave writes refuse bad shapes before anything reaches the radio.
         # No confirm on the stack switch and cc_command: if their shape check regressed, the confirm
         # gate still refuses. local_backup_keys has no confirm gate; its key check alone refuses it.
-        self._expect_tool_refusal("hub_set_zwave", {"zwave_js": True, "region": "US"}, "send it on its own call")
-        self._expect_tool_refusal("hub_call_zwave", {"action": "cc_command", "node_id": "abc",
-                                                     "cc": {"command_class": 37, "method_name": "get"}},
+        self._expect_tool_refusal("hub_set_zwave", {"zwaveJs": True, "region": "US"}, "send it on its own call")
+        self._expect_tool_refusal("hub_call_zwave", {"action": "cc_command", "nodeId": "abc",
+                                                     "cc": {"commandClass": 37, "methodName": "get"}},
                                   "decimal Z-Wave node number")
-        self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_keys", "import_id": "x"}, "security_keys")
+        self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_keys", "importId": "x"}, "securityKeys")
         # local_backup_import fetches a URL: confirm first, and never the hub's own admin endpoints.
-        self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_import", "backup_url": "https://example.com/z.tar.gz"},
+        self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_import", "backupUrl": "https://example.com/z.tar.gz"},
                                   "confirm=true")
         self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_import", "confirm": True,
-                                                     "backup_url": "http://127.0.0.1:8080/hub/zwave2/enable"},
+                                                     "backupUrl": "http://127.0.0.1:8080/hub/zwave2/enable"},
                                   "points at this hub")
 
     @test("diagnostics")
@@ -3568,10 +3568,10 @@ class TestRunner:
         # hub without a Zigbee radio (structured error / 5xx tolerated). Config read-back after.
         assert self._resilient_radio_write(
             "hub_set_zigbee", {"enabled": True}, "hub_set_zigbee(enabled=true)")
-        details = self.client.call_tool("hub_get_radio_details", {"radio": "zigbee", "include_devices": True})
+        details = self.client.call_tool("hub_get_radio_details", {"radio": "zigbee", "includeDevices": True})
         assert isinstance(details, dict), f"hub_get_radio_details read-back did not return an object: {details}"
         devs = details.get("zigbeeDevices") or {}
-        assert "error" in devs or isinstance(devs.get("devices"), list), f"include_devices returned nothing usable: {devs}"
+        assert "error" in devs or isinstance(devs.get("devices"), list), f"includeDevices returned nothing usable: {devs}"
         assert all("minutesSinceLastMessage" in d for d in devs.get("devices") or []), f"Zigbee activity rows lack their age: {devs}"
         # The Hub object has no zigbeeChannel on current firmware; the details JSON's channel fills it.
         # Channel 0 means no assigned channel, so it is reported as "unavailable" by design.
@@ -3608,16 +3608,16 @@ class TestRunner:
 
     @test("diagnostics")
     def test_radio_details_matter_node_status(self) -> None:
-        # node_id is radio-aware: with radio='matter' it polls /hub/matterPairDeviceStatus for
+        # nodeId is radio-aware: with radio='matter' it polls /hub/matterPairDeviceStatus for
         # that node and attaches result.matterPairStatus (a _radioGetSafe read, so the key is
         # always present -- parsed status on a Matter hub, a structured {error} on a hub without
         # Matter / without that node). The load-bearing assertion is that the matter branch fired
         # (matterPairStatus attached, NOT the Z-Wave nodeState branch).
         result = self.client.call_tool(
-            "hub_get_radio_details", {"radio": "matter", "node_id": "1"})
-        assert isinstance(result, dict), f"matter node_id read did not return an object: {result}"
+            "hub_get_radio_details", {"radio": "matter", "nodeId": "1"})
+        assert isinstance(result, dict), f"matter nodeId read did not return an object: {result}"
         assert "matterPairStatus" in result, \
-            f"radio='matter' + node_id did not attach matterPairStatus (matter branch didn't fire?): {result}"
+            f"radio='matter' + nodeId did not attach matterPairStatus (matter branch didn't fire?): {result}"
         assert "nodeState" not in result, \
             f"radio='matter' wrongly took the Z-Wave nodeState branch: {result}"
 
@@ -3643,14 +3643,14 @@ class TestRunner:
         rebuild = zd.get("rebuildNetworkOnReboot")
         ping = zd.get("inactiveDevicePingEnabled")
         if isinstance(rebuild, bool):
-            args["rebuild_on_reboot"] = rebuild
+            args["rebuildOnReboot"] = rebuild
         if isinstance(ping, bool):
-            args["ping_inactive"] = ping
+            args["pingInactive"] = ping
         if not args:
             # Hub did not expose the flags (Zigbee-less / older firmware) -- pass BOTH explicitly so
             # the settings dispatch still fires (the merge-refuse guard only triggers on an omitted,
             # unreadable flag). Values are arbitrary here; the no-device hub has nothing to disrupt.
-            args = {"rebuild_on_reboot": False, "ping_inactive": False}
+            args = {"rebuildOnReboot": False, "pingInactive": False}
         assert self._resilient_radio_write(
             "hub_set_zigbee", args, f"hub_set_zigbee(settings {args})")
 
@@ -3661,22 +3661,22 @@ class TestRunner:
         # device's keep-alive setting. Positive endpoint routing is covered in Spock.
         # The refusal itself is asserted (not just that the dispatch fired): with bypass ON the
         # gate passes and the native identity read must refuse; with bypass OFF the gate refuses.
-        args = {"ping_device": {"device_id": "0", "enabled": False}}
+        args = {"pingDevice": {"deviceId": "0", "enabled": False}}
         try:
             result = self.client.call_tool("hub_set_zigbee", args)
         except McpToolError as exc:
             assert "0" in str(exc) and ("identity is unavailable" in str(exc) or "Device not found" in str(exc)), \
-                f"hub_set_zigbee(ping_device) failed for a reason other than the missing device: {exc}"
+                f"hub_set_zigbee(pingDevice) failed for a reason other than the missing device: {exc}"
         except McpError as exc:
             error = exc.rpc_error or {}
             assert error.get("code") == -32602 and "Device not found: 0" in error.get("message", ""), \
-                f"hub_set_zigbee(ping_device) failed for a reason other than the missing device: {exc}"
+                f"hub_set_zigbee(pingDevice) failed for a reason other than the missing device: {exc}"
         except requests.HTTPError as exc:
             if not any(code in str(exc) for code in ("502", "503", "504")):
                 raise
-            print("    hub_set_zigbee(ping_device): response lost to relay 5xx (acceptable; dispatch reached the hub)")
+            print("    hub_set_zigbee(pingDevice): response lost to relay 5xx (acceptable; dispatch reached the hub)")
         else:
-            raise AssertionError(f"hub_set_zigbee(ping_device) must refuse device 0 with isError, got: {result}")
+            raise AssertionError(f"hub_set_zigbee(pingDevice) must refuse device 0 with isError, got: {result}")
 
     @test("diagnostics")
     def test_call_destructive_ops_requires_confirm(self) -> None:
@@ -3704,7 +3704,7 @@ class TestRunner:
             f"hub_call_destructive_ops reset without confirm must be refused by the safety gate, got: {detail}"
         # A batch firmware run without its target nodes is refused before anything is flashed.
         self._expect_tool_refusal("hub_call_destructive_ops", {"target": "zwave", "action": "device_firmware_batch_start",
-                                                               "node_id": "4", "confirm": True}, "batch.node_ids")
+                                                               "nodeId": "4", "confirm": True}, "batch.nodeIds")
 
     @test("native_apps")
     def test_set_native_app_guide_meta_call_via_gateway(self) -> None:

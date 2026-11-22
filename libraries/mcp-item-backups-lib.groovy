@@ -1234,7 +1234,7 @@ private Map _restoreFullFromBytes(String location, byte[] bytes, String fileName
         out.note = "Nothing was restored. Update the hub's Z-Wave radio firmware first, or restore with restoreZwave false."
     } else if (r instanceof Map && r.zwaveStackMismatch) {
         out.error = r.zwaveStackMismatchMessage ?: "The backup was made on a different Z-Wave stack (${r.backupZWaveStack}) than the hub runs (${r.activeZWaveStack})."
-        out.note = "Nothing was restored. Switch the Z-Wave stack with hub_set_zwave(zwave_js=...) first, or restore with restoreZwave false."
+        out.note = "Nothing was restored. Switch the Z-Wave stack with hub_set_zwave(zwaveJs=...) first, or restore with restoreZwave false."
     } else {
         out.error = (r instanceof Map) ? (r.message ?: "the hub did not report success") : "unexpected response"
         out.note = "The backup uploaded but the restore did not confirm — verify hub state."
