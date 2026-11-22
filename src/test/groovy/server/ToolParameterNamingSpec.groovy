@@ -36,7 +36,7 @@ class ToolParameterNamingSpec extends ToolSpecBase {
         when:
         List<String> offenders = []
         ['read', 'create', 'update', 'form'].each { op ->
-            offenders.addAll(snakeKeys("hub_set_rule(${op}).args", script._ndOperationSchema(op, 'hub_set_rule')))
+            offenders.addAll(snakeKeys("hub_set_rule(${op}).args", script._ndOperationSchema(op)))
         }
         ['create', 'update', 'form'].each { op ->
             offenders.addAll(snakeKeys("hub_set_native_app(${op}).args", script._naOperationSchema(op)))

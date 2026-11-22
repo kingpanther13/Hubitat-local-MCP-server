@@ -3240,9 +3240,9 @@ private void _writeAuditLog(Map audit, String phase, Map extra) {
 }
 
 private List _writeTargetKeys() {
-    return ["appId", "nativeAppId", "ruleId", "deviceId", "device_id",
-        "driverId", "roomId", "room_id", "variableName", "name", "id", "jobId", "type", "action", "scope",
-        "backupKey", "ref", "mode", "fileName", "filename", "path"]
+    return ["appId", "nativeAppId", "ruleId", "deviceId",
+        "driverId", "roomId", "variableName", "name", "id", "jobId", "type", "action", "scope",
+        "backupKey", "ref", "mode", "fileName", "path"]
 }
 
 // Identifier-shaped arguments only, from a fixed allowlist; anything that could carry a
