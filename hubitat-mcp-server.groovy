@@ -12645,7 +12645,7 @@ Every action on a Rule Machine rule drives the rule's own page buttons (`runActi
 
 - `localVariables`: `[{name, type, value}]`, the rule's own list, including a value the running rule just set. `type` is Rule Machine's token (integer, bigdecimal, string, boolean, datetime), the value a hub_set_rule variable change takes. A credential-named variable's value is hidden (`redacted:true`) while credential hiding is on. Hub globals are read with hub_list_variables.
 - If the local variables alone cannot be read, `localVariables` is null and `localVariablesError` says why; the health and the requested sections still return.
-- If the rule cannot be identified but its status page answers, `health` still returns, with `localVariables: null`, no document sections and `documentError` saying why.
+- If the rule cannot be identified but its health can still be read, that health returns with `localVariables: null` and no document sections: as `success:false` with the reason in `error` when sections were requested, and with the reason in `documentError` for `sections: []`.
 - The read does not open the app's page or change its configuration, so it never runs the app's page code; a Rule Machine 5.1 rule's or Button Rule's own broken() check can refresh its stored broken flag. A read that fails returns `success:false` with `error` and `note`; retrying it once is safe.
 
 `health` has the same shape here, in hub_set_rule's read and in the update pre-check:

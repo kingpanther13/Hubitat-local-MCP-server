@@ -5,7 +5,7 @@ def _getAllToolDefinitions_partNativeRM() {
         // Native Rule Machine runtime and administrative tools.
         [
             name: "hub_list_rules",
-            description: "List the Rule Machine 5.x rules, with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. Status reflects Rule Machine's name decoration (refreshed after an MCP stop, start, pause or resume); a decorated rule's paused/stopped come from its own state, and a row marked statusSource:'name' fell back to the decoration because that state could not be read. A stop made outside MCP may show only after the rule's page is next opened, which hub_get_app_config(appId) does. For ONE rule's state, call hub_get_rule(ruleId) instead of listing every rule — its health returns that rule's paused/disabled/stopped/broken directly. Button Rules, Basic Rules and other classic apps (Room Lighting, Notifier, Button Controllers) are not listed here: `hub_list_apps` (scope='instances') lists them with their enabled/disabled state (nameFilter:'Button Rule' finds Button Rules), and hub_get_visual_rule lists Visual Rules. Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
+            description: "List the Rule Machine 5.x rules, with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. Status reflects Rule Machine's name decoration (refreshed after an MCP stop, start, pause or resume); a decorated rule's paused/stopped come from its own state, and a row marked statusSource:'name' fell back to the decoration for one flag or both because that state could not be fully read. A stop made outside MCP may show only after the rule's page is next opened, which hub_get_app_config(appId) does. For ONE rule's state, call hub_get_rule(ruleId) instead of listing every rule — its health returns that rule's paused/disabled/stopped/broken directly. Button Rules, Basic Rules and other classic apps (Room Lighting, Notifier, Button Controllers) are not listed here: `hub_list_apps` (scope='instances') lists them with their enabled/disabled state (nameFilter:'Button Rule' finds Button Rules), and hub_get_visual_rule lists Visual Rules. Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -682,7 +682,7 @@ private Map _rmToggleButton(Integer ruleId, String action, String flag, String b
         return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: the ${button} click was accepted, but the rule's ${flag} state then read ${seen}, not ${target}".toString(),
                 note: "Another change to the rule may have run at the same time. Read it with hub_get_rule, then send the action again if it is still needed: a rule already in the target state is left alone. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
     }
-    if (renderError != null) out.note = "The rule's ${flag} state changed, but re-rendering its page failed (${renderError}), so hub_list_rules may show the old status until the rule's page is next opened; hub_get_app_config(appId: ${ruleId}) opens it. hub_get_rule reads the rule's own state.".toString()
+    if (renderError != null) out.note = "The rule's ${flag} state changed, but re-rendering its page failed (${renderError}), so hub_list_rules may show the old status until the rule's page next renders without an error; hub_get_app_config(appId: ${ruleId}) opens it. hub_get_rule reads the rule's own state.".toString()
     return out
 }
 
@@ -2676,9 +2676,10 @@ def toolGetNativeRule(args) {
         // The health check takes the app's type from its App Status page when the lookup fails, so it can still answer.
         Map health = _rmCheckRuleHealth(id as Integer)
         if (health.unreadable == true) return [success: false, ruleId: id, error: "Rule ${id} could not be read: ${why}".toString(), note: retry]
-        return [ruleId: id, health: health, localVariables: null,
-                documentError: "Rule ${id} could not be identified (${why}), so its document and local variables were not read; its health was read from its status page.".toString(),
-                note: retry]
+        String unread = "Rule ${id} could not be identified (${why}), so its document and local variables were not read; its health was read without it.".toString()
+        // A requested section that did not come back is a failed read; a health-only read (sections:[]) still succeeded.
+        if (read.sections) return [success: false, ruleId: id, error: unread, health: health, localVariables: null, note: retry]
+        return [ruleId: id, health: health, localVariables: null, documentError: unread, note: retry]
     }
     if (target == null) throw new IllegalArgumentException(_rmMissingAppText(id))
     String typeName = target.appType?.name?.toString()

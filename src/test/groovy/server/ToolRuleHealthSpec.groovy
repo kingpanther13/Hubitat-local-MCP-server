@@ -1125,16 +1125,53 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         when:
         def result = script.toolGetNativeRule([ruleId: 100, sections: ['actions']])
 
-        then: 'health is read without the page; nothing of the document is returned'
-        !result.containsKey('success')
+        then: 'the requested section did not come back, so the read failed, with the health it could read attached'
+        result.success == false
+        result.error == 'Rule 100 could not be identified (lookup failed), so its document and local variables were not read; its health was read without it.'
         result.health.ruleFormat == 'rm'
         result.health.unreadable == false
         result.health.checkErrors.any { it.contains('could not be identified (lookup failed)') }
         result.localVariables == null
         !result.containsKey('actions')
-        result.documentError == 'Rule 100 could not be identified (lookup failed), so its document and local variables were not read; its health was read from its status page.'
+        !result.containsKey('documentError')
         result.note.contains('retrying once is safe')
         count('/installedapp/configure/json/100') == 0
+    }
+
+    def "a failed app lookup on a health-only read succeeds, with the document marked unread"() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
+        seed(100)
+
+        when:
+        def result = script.toolGetNativeRule([ruleId: 100, sections: []])
+
+        then:
+        !result.containsKey('success')
+        result.health.ruleFormat == 'rm'
+        result.localVariables == null
+        result.documentError == 'Rule 100 could not be identified (lookup failed), so its document and local variables were not read; its health was read without it.'
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_rule via dispatch reports a failed read when a requested section could not come back (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
+        seed(100)
+
+        when:
+        def response = mcpDriver.callTool('hub_get_rule', [ruleId: 100])
+
+        then:
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.health.ruleFormat == 'rm'
+        inner.error.contains('could not be identified (lookup failed)')
+
+        where:
+        useGateways << [true, false]
     }
 
     @spock.lang.Unroll
