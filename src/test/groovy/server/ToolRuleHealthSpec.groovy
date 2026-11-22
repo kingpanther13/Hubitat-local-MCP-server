@@ -265,6 +265,48 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.checkErrors == []
     }
 
+    def "a condition bound by a held trigger's Conditional Trigger is in use; a condTrig left by a trigger the rule no longer holds is not"() {
+        given: "condition 1 is bound by trigger 1's Conditional Trigger, condition 2 only by a condTrig for a trigger 9 the rule does not hold"
+        seed(100, [capabstrue: ['1': 'A turns on'], capabsfalse: ['1': 'C is on', '2': 'D is on']], [:],
+             [setting('isCondTrig.1', 'bool', null, 'true'), setting('condTrig.1', 'enum', null, '1'), setting('condTrig.9', 'enum', null, '2'),
+              setting('tDev1', 'capability.switch', [7]), setting('rDev_1', 'capability.switch', []), setting('rDev_2', 'capability.switch', [])])
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.broken == true
+        h.brokenRows == [[kind: 'condition', id: '1', setting: 'rDev_1', text: 'C is on']]
+        h.checkErrors == []
+    }
+
+    @spock.lang.Unroll
+    def "a status page #label reads brokenRows #expected"() {
+        given:
+        Map state = ruleState(capabsfalse: ['1': 'C is on'], actionList: ['1'], actions: ['1': [method: 'getLogMsg', cond: '1']])
+        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson(state) }
+        hubGet.register('/installedapp/statusJson/100') {
+            JsonOutput.toJson([installedApp: [label: 'BAT-RH-test', disabled: false, appType: [name: 'Rule-5.1', namespace: 'hubitat']],
+                               eventSubscriptions: [], scheduledJobs: [], appState: [[name: 'paused', value: false]]] + body)
+        }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.brokenRows == expected
+        h.paused == false
+        h.ok == (expected != null)
+        h.checkErrors.any { it == "the rule's settings went unread, so brokenRows was not listed" } == (expected == null)
+        h.checkErrors.any { it.contains('expression 0 was not checked') } == (expected == null)
+
+        where:
+        label                                  | body                  | expected
+        'with no appSettings key'              | [:]                   | null
+        'with appSettings null'                | [appSettings: null]   | null
+        'with an empty appSettings list'       | [appSettings: []]     | []
+    }
+
     def "a Rule Machine 5.1 rule whose App Status read fails reads brokenRows null, not an empty list, with a checkErrors entry"() {
         given: "broken() says false, as it does for a deleted condition device, and the settings cannot be read"
         hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson(ruleState(capabsfalse: ['1': 'C is on'], actionList: ['1'], actions: ['1': [method: 'getLogMsg', cond: '1']])) }

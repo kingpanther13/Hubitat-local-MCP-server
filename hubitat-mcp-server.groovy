@@ -10425,7 +10425,8 @@ Boolean _appStateFlag(Object value) {
  * One read of an app's App Status page (/installedapp/statusJson/<id>): appState as [{name, value}],
  * eventSubscriptions and scheduledJobs, an absent section reading as an empty list (appStateMissing marks an
  * absent appState: a gone app answers {}, which must not read as a rule with no flags). appSettings carries each
- * setting as {name, type, value, deviceIds}, a device picker's devices in deviceIds (its value is null), and
+ * setting as {name, type, value, deviceIds}, a device picker's devices in deviceIds (its value is null), reading empty
+ * with appSettingsMalformed set when the page's list is absent or not a list, and
  * installedApp the app's label, red-X flag and type; the page's own installedApp also holds the app type's OAuth
  * secret, so nothing else of it is kept. With Hide
  * passwords and credentials on, an appState value whose name looks like a credential reads as the
@@ -10446,7 +10447,8 @@ Map _appStatusRead(Integer appId) {
         if (value != null && !(value instanceof List)) throw new IllegalStateException("App ${appId}'s status page returned ${key} in an unexpected shape")
     }
     // Only brokenRows reads the settings, so a malformed list reads empty and is flagged rather than failing the read.
-    boolean settingsMalformed = status.appSettings != null && !(status.appSettings instanceof List)
+    // An absent list is flagged too: it is settings that went unread, not an app with none ([]).
+    boolean settingsMalformed = !(status.appSettings instanceof List)
     sections.appSettings = settingsMalformed ? null : status.appSettings
     boolean maskTokens = _redactsAccessTokens()
     [appStateMissing: rawState == null, appSettingsMalformed: settingsMalformed, appState: appState.findAll { it instanceof Map }.collect { row ->
@@ -10796,9 +10798,9 @@ boolean _rmIsEditableRuleType(namespace, name) {
 // The rows a Rule Machine rule can no longer resolve, read from its settings rather than its page: a
 // device setting whose device was deleted keeps its row but lists no device. The setting's suffix is the native
 // row id (tDev<id> or reltDevice<id> a trigger, rDev_<id> or relDevice_<id> a condition, <name>.<id> an action).
-// Only rows in use count: a trigger the rule holds, an action in its action list, and a condition an action or the
-// Required Expression references. A picker left empty while a row is being built, or a spare condition, is not a
-// deleted device.
+// Only rows in use count: a trigger the rule holds, an action in its action list, and a condition an action, the
+// Required Expression or a held trigger's Conditional Trigger references. A picker left empty while a row is being
+// built, or a spare condition, is not a deleted device.
 private List _rmBrokenRows(Map compiled, List appSettings) {
     def kinds = ['trigger', 'condition', 'action']
     def stores = [trigger: compiled.capabstrue, condition: compiled.capabsfalse, action: compiled.actions]
@@ -10806,6 +10808,10 @@ private List _rmBrokenRows(Map compiled, List appSettings) {
     def evals = compiled.eval instanceof Map ? compiled.eval : [:]
     def expressionIds = appSettings.any { it.name == 'useST' && it.value?.toString() == 'true' } ? ['0'] : []
     def used = []
+    // A Conditional Trigger binds its condition through a condTrig.<trigger id> setting, not the compiled state.
+    appSettings.each { setting ->
+        if (setting.name?.startsWith('condTrig.') && setting.value != null && stores.trigger instanceof Map && stores.trigger.containsKey(setting.name.substring(9))) used << setting.value.toString()
+    }
     order.each { actionId ->
         def action = compiled.actions instanceof Map ? _nmEntry(compiled.actions, actionId) : null
         if (!(action instanceof Map)) return
@@ -12638,7 +12644,7 @@ Every action on a Rule Machine rule drives the rule's own page buttons (`runActi
 `health` has the same shape here, in hub_set_rule's read and in the update pre-check:
 
 - `ruleFormat` says what was inspected: `rm` (any Rule Machine rule or Button Rule) / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
-- **Rule Machine**: `broken` comes from the rule's own broken() check (a Rule Machine 5.1 rule or Button Rule; an older rule type reports its stored flag), so a rule whose trigger device was deleted reads broken without anyone opening it. That check misses a condition whose device was deleted, so a Rule Machine 5.1 rule or Button Rule with any `brokenRows` entry also reads `broken:true` and `ok:false`, and an issue says Rule Machine's own check does not flag it. `brokenRows` (`[{kind: trigger|action|condition, id, setting, text?}]`) lists each row in use (a trigger, an action in the action list, or a condition an action or the Required Expression uses) whose device setting no longer names a device: `id` is the row's native id, the one hub_set_rule changes and operation:'form' use (trigger 2 is `tDev2`), `setting` the setting that lost its device, and `text` the trigger's or condition's stored description. A row that is broken for another reason (a deleted variable) is not listed, so `broken:true` with no rows means the broken row has no device setting. `brokenRows` is null when it was not listed because the rule's compiled state or settings went unread; checkErrors says which. `disabledActions` and `disabledTriggers` (native ids of rows switched off; `[]` when none), `structuralIssues` (the IF/Repeat block and expression check hub_set_rule runs) and `privateBoolean`.
+- **Rule Machine**: `broken` comes from the rule's own broken() check (a Rule Machine 5.1 rule or Button Rule; an older rule type reports its stored flag), so a rule whose trigger device was deleted reads broken without anyone opening it. That check misses a condition whose device was deleted, so a Rule Machine 5.1 rule or Button Rule with any `brokenRows` entry also reads `broken:true` and `ok:false`, and an issue says Rule Machine's own check does not flag it. `brokenRows` (`[{kind: trigger|action|condition, id, setting, text?}]`) lists each row in use (a trigger, an action in the action list, or a condition an action, the Required Expression or a trigger's Conditional Trigger uses) whose device setting no longer names a device: `id` is the row's native id, the one hub_set_rule changes and operation:'form' use (trigger 2 is `tDev2`), `setting` the setting that lost its device, and `text` the trigger's or condition's stored description. A row that is broken for another reason (a deleted variable) is not listed, so `broken:true` with no rows means the broken row has no device setting. `brokenRows` is null when it was not listed because the rule's compiled state or settings went unread; checkErrors says which. `disabledActions` and `disabledTriggers` (native ids of rows switched off; `[]` when none), `structuralIssues` (the IF/Repeat block and expression check hub_set_rule runs) and `privateBoolean`.
 - **Visual Rules Builder**: the engine's own verdict, a graph rule's `validationErrors` (broken when non-empty), and its pause state from its builder, with the rule's own name as `label`.
 - **Other apps** (Basic Rule, Button Controller, Room Lighting, user and community apps): label, red-X flag and the state flags below; `broken` is null.
 - `paused`, `stopped` and `privateBoolean` come from the app's state on its App Status page. A Rule Machine rule with no `paused` or `stopped` entry reads `false`, and so does a Basic Rule with no `paused` entry; for an app whose state has no flag, or when the status page cannot be read, the name's "(Paused)" or "(Stopped)" decoration is used. `privateBoolean` has no such fallback. An entry stored as neither true nor false reads null with a `checkErrors` entry; neither the compiled state nor the name's decoration replaces it. `label` has the decoration removed. `disabled` is the red-X flag.

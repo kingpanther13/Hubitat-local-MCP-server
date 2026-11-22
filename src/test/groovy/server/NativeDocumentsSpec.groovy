@@ -725,6 +725,44 @@ class NativeDocumentsSpec extends ToolSpecBase {
         renders.isEmpty()
     }
 
+    def 'a condition only a Conditional Trigger binds is in use: its deleted device refuses the update before its backup and any change'() {
+        given: "trigger 5's Conditional Trigger binds condition 4, which no action or expression uses; its picker lists no device"
+        def backups = backupsOn()
+        statusSettings = [[name: 'isCondTrig.5', type: 'bool', value: 'true', deviceIdsForDeviceList: [], deviceList: null],
+                          [name: 'condTrig.5', type: 'enum', value: '4', deviceIdsForDeviceList: [], deviceList: null],
+                          [name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.broken == true
+        result.brokenRows == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
+        result.error == "Rule 42 is already broken: condition 4 ('Switch is on'); no change was written."
+        backups.isEmpty()
+        events.empty
+        renders.isEmpty()
+    }
+
+    def 'an update whose status page carries no appSettings is refused before its backup and any write, as settings that went unread'() {
+        given: "the status page answers without an appSettings list, so condition 4's picker was never read"
+        def backups = backupsOn()
+        nativeState.actions = ['3': [method: 'getLogMsg', cond: '4'], '1': [method: 'getLogMsg']]
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [[name: 'switch']], scheduledJobs: [],
+            installedApp: [id: 42, label: 'Doc rule', disabled: false, installed: true, appType: [name: 'Rule-5.1', namespace: 'hubitat']],
+            appState: (nativeState + lifecycle).collect { k, v -> [name: k, value: v] }]) }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.broken == false
+        result.error == "Rule 42's device settings could not be read before the write, so a row whose device was deleted would go unnoticed; no change was written."
+        result.checkErrors.any { it == "the rule's settings went unread, so brokenRows was not listed" }
+        backups.isEmpty()
+        events.empty
+    }
+
     def 'the document read reports a deleted condition device as broken although the rule\'s own check says false'() {
         given: "condition 4 is in use through the Required Expression"
         typedSettings.useST = true
@@ -955,7 +993,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         List jobs = scheduled ? [[handler: 'allHandlerT', status: 'PENDING',
                                  nextRunTime: '2026-10-21T03:59:00+0000']] : []
         hubGet.register('/installedapp/statusJson/42') { q ->
-            JsonOutput.toJson([installedApp: [id: 42, installed: true],
+            JsonOutput.toJson([installedApp: [id: 42, installed: true], appSettings: [],
                               eventSubscriptions: null, scheduledJobs: jobs])
         }
         when:
@@ -980,7 +1018,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.hasPredicate = true
         nativeState.stPrimed = false
         hubGet.register('/installedapp/statusJson/42') { q ->
-            JsonOutput.toJson([installedApp: [id: 42, installed: true],
+            JsonOutput.toJson([installedApp: [id: 42, installed: true], appSettings: [],
                               eventSubscriptions: subscriptions, scheduledJobs: []])
         }
         when:
@@ -1001,7 +1039,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.hasPredicate = predicate
         nativeState.stPrimed = primed
         hubGet.register('/installedapp/statusJson/42') { q ->
-            JsonOutput.toJson([installedApp: [id: 42, installed: true],
+            JsonOutput.toJson([installedApp: [id: 42, installed: true], appSettings: [],
                               eventSubscriptions: [], scheduledJobs: []])
         }
         when:
@@ -1663,7 +1701,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         Map health = [broken: false, stopped: false, paused: false]
         health.put(flag, malformed)
         hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(nativeState + health) }
-        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [], scheduledJobs: [],
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [], scheduledJobs: [], appSettings: [],
             appState: health.collect { k, v -> [name: k, value: v] }]) }
         when:
         def document = script.toolGetRuleDocument([ruleId: 42, sections: ['actions']])
@@ -1705,7 +1743,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
     def 'absent native lifecycle flags retain the platform false default'() {
         given:
         hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson([broken: false]) }
-        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [[name: 'switch']], scheduledJobs: [], appState: []]) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [[name: 'switch']], scheduledJobs: [], appSettings: [], appState: []]) }
         when:
         def document = script.toolGetRuleDocument([ruleId: 42, sections: ['actions']])
         then:
@@ -1757,7 +1795,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
     def 'explicit null activation collections are empty only for the verified installed rule'() {
         given:
         nativeState.capabstrue = [:]
-        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([installedApp: [id: 42, installed: true], eventSubscriptions: null, scheduledJobs: null]) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([installedApp: [id: 42, installed: true], appSettings: [], eventSubscriptions: null, scheduledJobs: null]) }
         when:
         def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
@@ -1767,7 +1805,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'null activation collections cannot stand in for missing or mismatched rule identity'() {
         given:
-        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([installedApp: [id: 99, installed: true], eventSubscriptions: null, scheduledJobs: null]) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([installedApp: [id: 99, installed: true], appSettings: [], eventSubscriptions: null, scheduledJobs: null]) }
         when:
         def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
@@ -1811,7 +1849,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState = [actionList: [], actions: [:], capabsfalse: [:], capabstrue: [:],
                        eval: [:], allLocalVars: [:]]
         hubGet.register('/installedapp/statusJson/42') { q ->
-            JsonOutput.toJson([installedApp: [id: 42, installed: true],
+            JsonOutput.toJson([installedApp: [id: 42, installed: true], appSettings: [],
                               eventSubscriptions: [], scheduledJobs: []])
         }
         when:

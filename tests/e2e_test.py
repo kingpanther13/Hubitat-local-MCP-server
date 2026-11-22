@@ -7957,22 +7957,28 @@ def updated() {}
         try:
             edit_id, edit_doc = self._rm_rule("RHBrokenEdit", [self._rm_switch_trigger(device_id), native_log("dangling edit")])
             assert sorted(edit_doc.get("triggers") or {}) == ["1"], edit_doc
-            # A condition-gated action on the first device, and a spare condition on the second that nothing uses.
-            cond_id, _ = self._rm_rule("RHBrokenCond", [self._rm_switch_condition(device_id), self._rm_switch_condition(second_id)])
+            # A condition-gated action on the first device, a spare condition on the second that nothing uses, and a
+            # condition on the second that only a Conditional Trigger (on a switch that stays) binds.
+            cond_id, _ = self._rm_rule("RHBrokenCond", [self._rm_switch_condition(device_id), self._rm_switch_condition(second_id),
+                                                        self._rm_switch_condition(second_id)])
             cond_rows = self._native_rule_document(cond_id).get("conditions") or {}
-            gone, spare = sorted(cond_rows, key=int)
+            gone, spare, bound = sorted(cond_rows, key=int)
             self._rm_update(cond_id, [native_log("gated by a deleted device", condition=gone)])
+            self._rm_update(cond_id, [native_change("trigger", capability="Switch", fields=[
+                *self._rm_switch_fields(self._ensure_perm_fixture("switch_a"), trigger=True),
+                native_field("isCondTrig.#", "bool", True), native_field("condTrig.#", "enum", bound)])])
             cond_actions = self._native_rule_document(cond_id).get("actions")
             assert self._rm_health(app_id).get("broken") is False
             assert self._rm_health(cond_id).get("broken") is False
             self._rm_delete_device(dni)
             self._rm_delete_device(second_dni)
             # Rule Machine's own broken() misses a deleted condition device: health lists the gated condition from
-            # its device setting and reads broken; the spare condition is in no action or expression, so not listed.
+            # its device setting, and the Conditional Trigger's, and reads broken; the spare condition is in no
+            # action, expression or Conditional Trigger, so not listed.
             cond_health = self._rm_health(cond_id)
             assert cond_health.get("broken") is True and cond_health.get("ok") is False, cond_health
-            assert [(row.get("kind"), str(row.get("id")), row.get("setting")) for row in cond_health.get("brokenRows") or []] == \
-                [("condition", str(gone), f"rDev_{gone}")], (spare, cond_health)
+            assert sorted((row.get("kind"), str(row.get("id")), row.get("setting")) for row in cond_health.get("brokenRows") or []) == \
+                sorted([("condition", str(gone), f"rDev_{gone}"), ("condition", str(bound), f"rDev_{bound}")]), (spare, cond_health)
             cond_backups = self._rm_backup_keys(cond_id)
             cond_refused = self._rm_call({"operation": "update", "ruleId": int(cond_id),
                                           "args": {"changes": [native_log("not written")]}, "confirm": True})
