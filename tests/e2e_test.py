@@ -8991,7 +8991,7 @@ def updated() {}
             assert all(next(iter(page)) == "health" and page["health"].get("ruleFormat") == "rm" for page in pages), \
                 [list(page)[:2] for page in pages]
             rows = [row for page in pages for row in page.get("localVariables") or []]
-            assert sorted(row["name"] for row in rows) == sorted(names + ["refLocal"]), [row["name"] for row in rows]
+            assert sorted(row["name"] for row in rows) == sorted([*names, "refLocal"]), [row["name"] for row in rows]
             assert all(len(str(row.get("value"))) == 10000 for row in rows if row["name"] in names), "a paged local was cut short"
             self._rm_update(app_id, [native_change("variable", operation="delete", name=name) for name in names])
             ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id})
