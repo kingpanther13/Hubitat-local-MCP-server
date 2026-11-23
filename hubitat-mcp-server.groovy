@@ -10801,16 +10801,20 @@ boolean _rmIsEditableRuleType(namespace, name) {
 // the rule broken: only broken() does, since it drives the *BROKEN* name the Automations list and the hub's own rule
 // tools go by. The marker gives the kind; an emptied device picker (tDev<id> or reltDevice<id>, rDev_<id> or
 // relDevice_<id>, <name>.<id>) only finds the row's id within it. A condition counts while Rule Machine lists it in
-// state.inUseConds or a ticked Conditional Trigger uses it. The list is read before the labels run, which can rebuild
-// it in memory without the Required Expression's conditions, since none of them draws that label. A marked kind with no such picker (a
-// deleted variable, or an action gated on a marked condition) is listed once with id null. marks counts each
-// kind's markers.
+// state.inUseConds, the Required Expression names it, or a ticked Conditional Trigger uses it. The labels rebuild the
+// list, so it is read after them (a list read before is stale once a batch has retargeted an action), but none of
+// them draws the Required Expression, so its conditions are added from eval 0 while useST is on. A marked kind with
+// no such picker (a deleted variable, or an action gated on a marked condition) is listed once with id null. marks
+// counts each kind's markers.
 Map _rmMarkedRows(handle, Map compiled, List settings) {
-    def state = handle.getState()
-    List inUse = state instanceof Map && state.inUseConds != null ? state.inUseConds.toString().findAll(/\d+/) : []
     Map marks = [trigger: handle.triggerLabel(), condition: handle.conditionLabel(), action: handle.actionLabel()].collectEntries { kind, text ->
         [(kind): text == null ? 0 : text.toString().findAll(/<span\b[^>]*>\s*\*\*Broken [^*]+\*\*\s*<\/span>/).size()]
     }
+    def state = handle.getState()
+    List inUse = state instanceof Map && state.inUseConds != null ? state.inUseConds.toString().findAll(/\d+/) : []
+    boolean required = settings.any { it.name == 'useST' && it.value?.toString() == 'true' }
+    if (required) required = compiled.eval instanceof Map && compiled.eval.get('0') instanceof List
+    if (required) inUse.addAll(compiled.eval.get('0').collect { it.toString() }.findAll { it ==~ /\d+/ })
     // inUseConds leaves out a condition only a Conditional Trigger uses, though its label still marks it, so a
     // ticked Conditional Trigger on a held trigger adds its condition (an unticked box keeps condTrig's value).
     settings.each { setting ->

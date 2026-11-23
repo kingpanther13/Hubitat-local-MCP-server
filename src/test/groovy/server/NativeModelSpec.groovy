@@ -1056,6 +1056,21 @@ class NativeModelSpec extends ToolSpecBase {
         'Rule Machine leaves it out'             | false
     }
 
+    def 'a condition the labels drop from a stale inUseConds deletes: the list is read after they rebuild it'() {
+        given: "an earlier change in the batch moved the only action off condition 1; the stored list still names it until the labels run"
+        nativeState.inUseConds = ['1', '2']
+        nativeState.actions = ['1': [method: 'getLogMsg', cond: '2']]
+        nativeState.actionList = ['1']
+        settings.put('rCapab_1', [type: 'enum', value: 'Switch'])
+        nativeRule.conditionLabel = { -> nativeState.inUseConds = ['2']; '' }
+        nativeRule.selectConditions = { Map params -> nativeState.capabsfalse.remove('1'); settings.remove('rCapab_1'); nativeState.remove('deleteCon') }
+        when:
+        def result = script._nmDeleteRow(42L, 'condition', '1')
+        then:
+        result.success
+        !nativeState.capabsfalse.containsKey('1')
+    }
+
     def 'a condition only an unticked Conditional Trigger names deletes, while a ticked one holds it (ticked=#ticked)'() {
         given: "the hub keeps condTrig's value after its box is unticked, and inUseConds never lists a condition only a Conditional Trigger uses"
         nativeState.capabstrue = ['3': 'Switch C on']
