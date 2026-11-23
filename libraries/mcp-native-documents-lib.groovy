@@ -366,12 +366,33 @@ private void _ndPreflight(Long id, List changes) {
     boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
-    Set batchNamed = [] as Set
-    boolean freed = false
+    // For a batch that deletes a condition: the references the batch projects (its actions' conditions and expressions,
+    // the Required Expression while it is on, ticked Conditional Triggers), and the ones its earlier changes removed.
+    boolean deletes = changes.any { it.part == 'delete' && it.value?.part == 'condition' }
+    Map condTrigs = null
+    boolean requiredOn = false
+    Set freed = [] as Set
     List inUse = null
+    Closure references = { unused ->
+        List names = requiredOn && expressions.get('0') instanceof List ? expressions.get('0')*.toString() : []
+        projectedOrder.each { actionId ->
+            def action = projectedActions.get(actionId)
+            def tokens = action instanceof Map ? (action.containsKey('tokens') ? action.tokens : expressions.get(action.rule?.toString())) : null
+            if (action instanceof Map && action.cond != null) names << action.cond.toString()
+            if (tokens instanceof List) names.addAll(tokens*.toString())
+        }
+        names + condTrigs.values().findAll { it.ticked && it.cond != null }*.cond
+    }
     changes.eachWithIndex { change, index ->
         try {
             Map value = change.value
+            if (deletes && condTrigs == null) {
+                condTrigs = [:]
+                Map inventory = id == null ? [:] : _nmSettingsInventory(id)
+                triggers.keySet().each { trigger -> condTrigs.put(trigger.toString(), [ticked: inventory.get('isCondTrig.' + trigger)?.value?.toString() == 'true', cond: inventory.get('condTrig.' + trigger)?.value?.toString()]) }
+                requiredOn = id != null && _nrHandle(id).getSetting('useST') == true
+            }
+            List was = deletes ? references(null) : []
             if (change.part in ['condition', 'trigger'] && value.containsKey('id')) _ndKnownRow(rows.get(change.part), value.id.toString(), 'Native row does not exist')
             if (change.part == 'action' && value.containsKey('id') && _ndKnownRow(rows.action, value.id.toString(), 'Native action does not exist')) {
                 def prior = projectedActions.get(value.id.toString())
@@ -382,7 +403,6 @@ private void _ndPreflight(Long id, List changes) {
             List named = change.part in ['expression', 'required'] ? value.tokens :
                 (change.part == 'action' ? (value.expression instanceof List ? value.expression : []) + (value.containsKey('condition') ? [value.condition] : []) : [])
             named.findAll { it != null && it.toString().isInteger() }.each { token -> _ndKnownRow(rows.condition, token.toString(), 'Expression references an unknown condition') }
-            batchNamed.addAll(named.findAll { it != null }*.toString())
             if (change.part == 'variable') {
                 if (locals == null) {
                     def fresh = _nrHandle(id).getAllLocalVars()
@@ -408,8 +428,11 @@ private void _ndPreflight(Long id, List changes) {
                 if (newRow) projectedOrder << actionId
                 String method = change.part == 'terminator' ? ND_TERMINATOR_METHODS.get(value.subtype) : value.subtype
                 def prior = projectedActions.get(actionId)
-                // Merge over the prior record so a second edit of the same existing row still sees its wait events.
-                projectedActions.put(actionId, (prior instanceof Map ? [:] + prior : [:]) + [method: method])
+                // Merge over the prior record so a second edit of the same existing row still sees its wait events and condition.
+                Map record = (prior instanceof Map ? [:] + prior : [:]) + [method: method]
+                if (change.part == 'action' && value.containsKey('condition')) record.cond = value.condition.toString()
+                if (change.part == 'action' && value.expression instanceof List) record.tokens = value.expression
+                projectedActions.put(actionId, record)
             }
             if (change.part == 'order') {
                 if (appendedActions) throw new IllegalArgumentException('Action order cannot follow new actions in the same batch; add the actions first and order them in a later call')
@@ -425,32 +448,40 @@ private void _ndPreflight(Long id, List changes) {
                 projectedActions.remove(target)
                 actionOrder = actionOrder.findAll { it != target }
             }
+            if (change.part in ['expression', 'required']) {
+                String evalId = change.part == 'required' ? '0' : value.id.toString()
+                expressions.put(evalId, value.tokens)
+                if (change.part == 'required') requiredOn = true
+                // The newest write to an eval entry wins: an action edited earlier in the batch reads its expression from here.
+                projectedActions.each { key, action ->
+                    if (action instanceof Map && action.containsKey('tokens') && action.rule?.toString() == evalId) projectedActions.put(key, action.findAll { it.key != 'tokens' })
+                }
+            }
+            if (change.part == 'trigger' && deletes) {
+                String trigger = value.containsKey('id') ? value.id.toString() : "new${index}".toString()
+                Map binding = condTrigs.get(trigger) ?: [ticked: false, cond: null]
+                value.get('fields').each { field ->
+                    String name = field?.name?.toString()
+                    if (name?.startsWith('isCondTrig')) binding.ticked = field.value?.toString() == 'true'
+                    if (name?.startsWith('condTrig')) binding.cond = field.value?.toString()
+                }
+                condTrigs.put(trigger, binding)
+            }
+            if (change.part == 'delete' && value.part == 'trigger' && deletes) condTrigs.remove(value.id.toString())
             if (change.part == 'required' && !hasRequired) { counters.put('condition', _ndCounter(counters.get('condition'), !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty())) + 1); hasRequired = true }
             if (change.part == 'delete' && value.part == 'condition') {
                 String target = value.id.toString()
                 _ndKnownRow(rows.condition, target, 'Native row does not exist')
-                // A condition is in use while Rule Machine lists it in state.inUseConds, as health reads it, or the rule's
-                // expressions or conditional actions name it. That is refused here only when no earlier change in the batch
-                // can have freed the condition; otherwise the delete itself checks as things stand then. A condition the
-                // batch itself names is in use.
-                if (id != null && inUse == null) inUse = _rmMarkedRows(_nrHandle(id), before, []).inUse + _nmNamedConditions(before, _nrHandle(id).getSetting('useST') == true)
-                boolean held = !freed && inUse != null && target in inUse
-                if (held || target in batchNamed) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
-                // A ticked Conditional Trigger is not in inUseConds but still uses its condition; see _nmDeleteRow.
-                if (id != null && !freed && _nmCondTrigUses(_nmSettingsInventory(id), before.capabstrue, target)) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
+                // Refused before anything is written while the batch's projected rows still reference the condition, or
+                // Rule Machine lists it in use (state.inUseConds) and no earlier change in the batch removed a reference
+                // to it. The delete itself checks again as things stand then.
+                if (target in condTrigs.values().findAll { it.ticked }*.cond) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
+                if (id != null && inUse == null) inUse = _rmMarkedRows(_nrHandle(id), before, []).inUse
+                boolean held = target in references(null) || (inUse != null && target in inUse && !(target in freed))
+                if (held) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
                 _ndDropRow(rows.condition, target, 'Native row does not exist')
             }
-            // Only a change that can detach a condition frees one for a later delete in the batch; any other change
-            // leaves the delete to this check, so its refusal still fires before anything is written.
-            boolean frees = change.part in ['expression', 'required'] || (change.part == 'delete' && value.part in ['action', 'trigger'])
-            if (change.part == 'trigger') frees = value.get('fields').any { field -> field?.name?.toString()?.startsWith('isCondTrig') || field?.name?.toString()?.startsWith('condTrig') }
-            def priorAction = change.part == 'action' && value.containsKey('id') ? projectedActions.get(value.id.toString()) : null
-            if (priorAction instanceof Map) {
-                frees = value.containsKey('condition') && value.condition?.toString() != priorAction.cond?.toString()
-                def priorTokens = priorAction.rule != null ? expressions.get(priorAction.rule.toString()) : null
-                frees = frees || (value.expression instanceof List && value.expression*.toString() != (priorTokens instanceof List ? priorTokens*.toString() : null))
-            }
-            if (frees) freed = true
+            if (deletes) freed.addAll(was - references(null))
             if (change.part == 'delete' && value.part == 'trigger') _ndDropRow(rows.trigger, value.id.toString(), 'Native row does not exist')
         } catch (IllegalArgumentException failure) {
             throw new IllegalArgumentException("changes[${index}]: ${failure.message}".toString())

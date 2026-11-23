@@ -503,13 +503,15 @@ Map _nmUpsertAction(Long ruleId, Map row) {
         Map echoed = _nrSettings(ruleId, settings.collect { it.name })
         boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
         if (!(listed && ordered && compiled && persisted && expressionVerified && waitsVerified && conditionVerified)) return reject.call([error: 'Native action compilation or input verification failed', settingsVerified: persisted, expressionVerified: expressionVerified, waitsVerified: waitsVerified, conditionVerified: conditionVerified])
-        // An action that already named a condition Rule Machine marks (its simple condition, or its IF or wait
-        // expression) was marked before the edit, which the Hubitat UI allows to stay; any other broken label is new.
+        // A broken label stays only when a condition Rule Machine marks explains it, both before and after the edit (its
+        // simple condition, or its IF or wait expression): the row was already marked, as the Hubitat UI allows. Any
+        // other broken label is new, and the edit is rolled back.
         boolean marked = !_nmActionLabel(ruleId, id)
-        List named = marked && editing ? _nmNamedConditions([actionList: [id], actions: baseline.actions, eval: baseline.eval], false) : []
-        boolean kept = !named.isEmpty()
-        if (kept) kept = _ndMarkedNow(ruleId).rows.any { it.kind == 'condition' && it.id in named }
-        boolean allowed = kept || !marked
+        // Checked in a closure, whose class carries its call sites: the server class sits at the constant-pool limit.
+        boolean allowed = !marked || (editing && { unused ->
+            List markedIds = _ndMarkedNow(ruleId).rows.findAll { it.kind == 'condition' }*.id
+            [baseline, after].every { state -> _nmNamedConditions([actionList: [id], actions: state.actions, eval: state.eval], false).any { it in markedIds } }
+        }.call(null))
         if (!allowed) return reject.call([error: 'Native action label is missing or broken'])
         [success: true, id: id, action: action, partial: false, settingsVerified: true, expressionVerified: true, waitsVerified: true, conditionVerified: true]
     } catch (Exception failure) {

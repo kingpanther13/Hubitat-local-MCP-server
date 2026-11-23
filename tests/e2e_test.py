@@ -9116,7 +9116,7 @@ def updated() {}
     @test("native_apps")
     def test_set_rule_required_expression_multi_condition(self) -> None:
         # Flat AND and grouped (A OR B) AND C Required Expressions over three conditions render as RM renders them.
-        # A condition only the Required Expression uses refuses its delete.
+        # A condition only the Required Expression uses refuses its delete, alone or after a trigger delete in the batch.
         temp_a, temp_b = self.get_test_temperature_ids()
         rows = [native_change("condition", capability="Temperature", fields=self._rm_temperature_fields(device, op, value))
                 for device, op, value in ((temp_a, ">", 70), (temp_b, "<", 80), (temp_a, ">=", 65))]
@@ -9133,6 +9133,10 @@ def updated() {}
                     error = self._rm_refuse(app_id, [native_delete("condition", ids[2])])
                     assert "Referenced native conditions must be detached before deletion" in error, error
                     assert ids[2] in (self._native_rule_document(app_id).get("conditions") or {}), "a refused delete removed the condition"
+                    # Deleting a trigger first frees nothing the Required Expression uses: the whole batch is refused
+                    # before its backup, and the trigger stays too.
+                    trigger = self._rm_ids(self._rm_update(app_id, [self._rm_switch_trigger(self._ensure_perm_fixture("switch_a"))]))[0]
+                    self._rm_refuse_all(app_id, [[native_delete("trigger", trigger), native_delete("condition", ids[2])]])
                 page = self._rm_page(app_id)
                 assert page.lower().count("temperature of") >= 3 and ("OR" if grouped else "AND") in page and "< 80" in page, page[:800]
             finally:

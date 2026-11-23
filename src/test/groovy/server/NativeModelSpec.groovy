@@ -571,7 +571,7 @@ class NativeModelSpec extends ToolSpecBase {
         true    | false
     }
 
-    def 'an action already marked before the edit may be edited and stay marked; any other broken label is refused (#label)'() {
+    def 'a broken label stays only while a marked condition explains it before and after the edit; any other is refused and rolled back (#label)'() {
         given: "condition 2's device was deleted: Rule Machine marks it, lists it in use, and an action naming it draws the marker"
         if (editing) {
             nativeState.actions = ['1': prior]
@@ -581,7 +581,7 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.inUseConds = ['2']
         settings.put('rDev_2', [type: 'capability.switch', value: null, deviceList: null])
         nativeRule.conditionLabel = { -> "<span class='text-hubitat-danger'>**Broken Condition**</span>" }
-        nativeRule.thisActionLabel = { Object actionId -> "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'" }
+        nativeRule.thisActionLabel = { Object actionId -> brokenAfter ? "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'" : "Log: 'edited'" }
         List buttons = []
         nativeRule.doActPage = { ->
             if (editing) nativeState.hasCondition = true
@@ -599,7 +599,7 @@ class NativeModelSpec extends ToolSpecBase {
             buttons << name
             if (name == 'hasAll') nativeState.hasCondition = true
             if (name == 'actionDone') {
-                nativeState.actions = ['1': [method: 'getLogMsg', cond: editing ? nativeState.doActN.tokenize('.')[1] : settings.'useCondNdx.1'.value]]
+                nativeState.actions = ['1': (prior ?: [:]) + [method: 'getLogMsg', cond: editing ? nativeState.doActN.tokenize('.')[1] : settings.'useCondNdx.1'.value]]
                 nativeState.actionList = ['1']
             }
         }
@@ -613,13 +613,14 @@ class NativeModelSpec extends ToolSpecBase {
         allowed || result.error == 'Native action label is missing or broken'
         allowed || buttons.contains('actionCancel')
         where:
-        label                                                        | editing | prior                                  | condition | allowed
-        'an edit kept on the marked condition'                       | true    | [method: 'getLogMsg', cond: '2']       | '2'       | true
-        'an edit of an action gated on it, moved elsewhere'          | true    | [method: 'getLogMsg', cond: '2']       | '1'       | true
-        'an edit of an action whose expression names it'             | true    | [method: 'getLogMsg', rule: '3']       | null      | true
-        'a new action gated on the marked one'                       | false   | null                                   | '2'       | false
-        'an edit of an action that named no marked condition'        | true    | [method: 'getLogMsg', cond: '1']       | '2'       | false
-        'an edit of an action whose expression names no marked one'  | true    | [method: 'getLogMsg', rule: '4']       | null      | false
+        label                                                           | editing | prior                             | condition | brokenAfter | allowed
+        'an edit kept on the marked condition'                          | true    | [method: 'getLogMsg', cond: '2']  | '2'       | true        | true
+        'an edit moved to a healthy condition with a clean label'       | true    | [method: 'getLogMsg', cond: '2']  | '1'       | false       | true
+        'an edit moved to a healthy condition, its label still broken'  | true    | [method: 'getLogMsg', cond: '2']  | '1'       | true        | false
+        'an edit of an action whose expression names it'                | true    | [method: 'getLogMsg', rule: '3']  | null      | true        | true
+        'a new action gated on the marked one'                          | false   | null                              | '2'       | true        | false
+        'an edit of an action that named no marked condition'           | true    | [method: 'getLogMsg', cond: '1']  | '2'       | true        | false
+        'an edit of an action whose expression names no marked one'     | true    | [method: 'getLogMsg', rule: '4']  | null      | true        | false
     }
 
     def 'unknown simple action condition refuses before native editor or settings mutation'() {

@@ -818,6 +818,43 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.brokenRowsBefore == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
     }
 
+    def 'deleting a trigger does not free a condition the Required Expression still uses: the batch is refused before any backup or write'() {
+        given: 'the Required Expression is on and names condition 4; trigger 5 has no Conditional Trigger'
+        def backups = backupsOn()
+        typedSettings.useST = true
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'delete', value: [part: 'trigger', id: '5']],
+                                                                          [part: 'delete', value: [part: 'condition', id: '4']]], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.error == 'changes[1]: Referenced native conditions must be detached before deletion'
+        backups.isEmpty()
+        events.empty
+    }
+
+    def 'deleting the trigger whose ticked Conditional Trigger names a condition frees it for a delete later in the batch'() {
+        given: "Rule Machine lists condition 8 in use only through trigger 5's ticked Conditional Trigger"
+        nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
+        nativeState.inUseConds = ['4', '8']
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [[name: 'isCondTrig.5', type: 'bool', multiple: false, value: true],
+                                                                                         [name: 'condTrig.5', type: 'enum', multiple: false, value: '8']]]) }
+        when: 'the condition alone'
+        script._ndPreflight(42L, script._ndChanges([[part: 'delete', value: [part: 'condition', id: '8']]]))
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'changes[0]: Referenced trigger conditions must be detached before deletion'
+        when: 'the trigger first, then the condition'
+        script._ndPreflight(42L, script._ndChanges([[part: 'delete', value: [part: 'trigger', id: '5']], [part: 'delete', value: [part: 'condition', id: '8']]]))
+        then:
+        noExceptionThrown()
+        when: 'the trigger first, then a condition another reference still holds'
+        script._ndPreflight(42L, script._ndChanges([[part: 'delete', value: [part: 'trigger', id: '5']], [part: 'delete', value: [part: 'condition', id: '4']]]))
+        then:
+        def held = thrown(IllegalArgumentException)
+        held.message == 'changes[1]: Referenced native conditions must be detached before deletion'
+    }
+
     def 'a batch that writes something else and then deletes a condition in use is refused before anything is written'() {
         given:
         def backups = backupsOn()
