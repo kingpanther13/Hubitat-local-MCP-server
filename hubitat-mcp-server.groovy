@@ -5553,7 +5553,7 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_set_rule":
             return "operation:'read': page one section, args:{sections:['actions'], cursor:'', limit:50}, and follow nextCursor. A create/update/form write was applied before its response was measured: do NOT resend it. Find a created rule with hub_list_rules(labelFilter:<name>); confirm what landed with hub_set_rule(operation:'read', ruleId, args:{sections:[...]}). An update's pre-edit backup, when pre-edit backups are on, is listed by hub_list_backups(scope:'source'). Smaller batches keep write responses under the cap."
         case "hub_get_rule":
-            return "Page one section at a time, localVariables included: sections:['localVariables'], cursor:'', limit:20, then follow nextCursor; a smaller limit returns fewer rows per page. health returns with every page."
+            return "For a Rule Machine rule or Button Rule, page one section at a time, localVariables included: sections:['localVariables'], cursor:'', limit:20, then follow nextCursor; a smaller limit returns fewer rows per page, and health returns with every page. A Basic Rule's settings come back whole: read them with hub_get_app_config(appId, includeSettings: true)."
         case "hub_get_hub_mesh":
             return "This tool has no filters or pagination -- the payload is driven by the shared/linked device and hub-variable lists on a large multi-hub mesh. Read the full device inventory via hub_list_devices (which does paginate) instead; note include_token is off by default and does not affect size."
         default:
@@ -10797,18 +10797,20 @@ boolean _rmIsEditableRuleType(namespace, name) {
 }
 
 // The rows Rule Machine's own label methods mark with a status span (**Broken Trigger**, **Broken Condition**,
-// **Broken Action**; text a user typed has no span), called without rendering the page. A marked row never makes the rule broken: only broken() does, since it drives
-// the *BROKEN* name the Automations list and the hub's own rule tools go by. The marker gives the kind; an emptied
-// device picker (tDev<id> or reltDevice<id>, rDev_<id> or relDevice_<id>, <name>.<id>) only finds the row's id within
-// it, and a condition counts only while Rule Machine lists it in state.inUseConds, which its label code builds, so
-// the labels are called before the list is read, or a ticked Conditional Trigger uses it. A marked kind with no such picker (a deleted variable, or an action
-// gated on a marked condition) is listed once with id null. marks counts each kind's markers.
+// **Broken Action**; text a user typed has no span), called without rendering the page. A marked row never makes
+// the rule broken: only broken() does, since it drives the *BROKEN* name the Automations list and the hub's own rule
+// tools go by. The marker gives the kind; an emptied device picker (tDev<id> or reltDevice<id>, rDev_<id> or
+// relDevice_<id>, <name>.<id>) only finds the row's id within it. A condition counts while Rule Machine lists it in
+// state.inUseConds or a ticked Conditional Trigger uses it. The list is read before the labels run, which can rebuild
+// it in memory without the Required Expression's conditions, since none of them draws that label. A marked kind with no such picker (a
+// deleted variable, or an action gated on a marked condition) is listed once with id null. marks counts each
+// kind's markers.
 Map _rmMarkedRows(handle, Map compiled, List settings) {
+    def state = handle.getState()
+    List inUse = state instanceof Map && state.inUseConds != null ? state.inUseConds.toString().findAll(/\d+/) : []
     Map marks = [trigger: handle.triggerLabel(), condition: handle.conditionLabel(), action: handle.actionLabel()].collectEntries { kind, text ->
         [(kind): text == null ? 0 : text.toString().findAll(/<span\b[^>]*>\s*\*\*Broken [^*]+\*\*\s*<\/span>/).size()]
     }
-    def state = handle.getState()
-    List inUse = state instanceof Map && state.inUseConds != null ? state.inUseConds.toString().findAll(/\d+/) : []
     // inUseConds leaves out a condition only a Conditional Trigger uses, though its label still marks it, so a
     // ticked Conditional Trigger on a held trigger adds its condition (an unticked box keeps condTrig's value).
     settings.each { setting ->
@@ -12631,7 +12633,7 @@ Every action on a Rule Machine rule drives the rule's own page buttons (`runActi
 
 ### hub_get_rule
 
-`hub_get_rule(ruleId, sections?, cursor?, limit?)` reads one Rule Machine rule, Button Rule or Basic Rule. It returns `health` (first), `ruleId`, `localVariables` and, for a Rule Machine 5.1 rule or Button Rule, the document hub_set_rule(operation='read') returns: `actions`, `conditions`, `triggers`, `expressions` and `settings`, all by default, or the ones named in `sections`; `sections: []` returns the health and local variables alone. Page one section, `localVariables` included, with `cursor` ("" first, then each `nextCursor`) and `limit` (1-100, default 50), exactly as the hub_set_rule read does (see set_rule_reference); a page of another section leaves `localVariables` out. A read that would pass the response size cap still returns `health`, then the parts that fit whole; the first part that does not fit comes back as a page (`pagedSection`, `page`, `nextCursor`: continue with `sections: [<pagedSection>]` and that cursor), any part after it is listed in `omittedSections` (read each with `sections: [<name>]`, `cursor: ""`), and `note` says so. Nothing in the document is readable only through a write tool. A Basic Rule returns `health`, `localVariables: null` and its `settings` (the same `[{name, type, multiple, value, deviceIds}]` rows; whole, so `cursor` and `limit` are refused). Requested settings that cannot be read return `success:false` with `error`, `settingsError` and the health. Any other app returns `health`, `localVariables: null` and a `note`: a Visual Rule's definition is read with hub_get_visual_rule, any other app's configuration and App Status with hub_get_app_config(includeStatus: true).
+`hub_get_rule(ruleId, sections?, cursor?, limit?)` reads one Rule Machine rule, Button Rule or Basic Rule. It returns `health` (first), `ruleId`, `localVariables` and, for a Rule Machine 5.1 rule or Button Rule, the document hub_set_rule(operation='read') returns: `actions`, `conditions`, `triggers`, `expressions` and `settings`, all by default, or the ones named in `sections`; `sections: []` returns the health and local variables alone. Page one section, `localVariables` included, with `cursor` ("" first, then each `nextCursor`) and `limit` (1-100, default 50), exactly as the hub_set_rule read does (see set_rule_reference); a page of another section leaves `localVariables` out. A read that would pass the response size cap still returns `health`, then the parts that fit whole; the first part that does not fit comes back as a page (`pagedSection`, `page`, `nextCursor`: continue with `sections: [<pagedSection>]` and that cursor), any other part that does not fit is listed in `omittedSections` (read each with `sections: [<name>]`, `cursor: ""`), and `note` says so; a single row too large to send beside the health alone returns `success:false` with the health. Nothing in the document is readable only through a write tool. A Basic Rule returns `health`, `localVariables: null` and its `settings` (the same `[{name, type, multiple, value, deviceIds}]` rows; whole, so `cursor` and `limit` are refused). Requested settings that cannot be read return `success:false` with `error`, `settingsError` and the health. Any other app returns `health`, `localVariables: null` and a `note`: a Visual Rule's definition is read with hub_get_visual_rule, any other app's configuration and App Status with hub_get_app_config(includeStatus: true).
 
 - `localVariables`: `[{name, type, value}]`, the rule's own list, including a value the running rule just set. `type` is Rule Machine's token (integer, bigdecimal, string, boolean, datetime), the value a hub_set_rule variable change takes. A credential-named variable's value is hidden (`redacted:true`) while credential hiding is on. Hub globals are read with hub_list_variables.
 - If the local variables alone cannot be read, `localVariables` is null and `localVariablesError` says why; the health and the requested sections still return.

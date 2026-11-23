@@ -571,11 +571,12 @@ class NativeModelSpec extends ToolSpecBase {
         true    | false
     }
 
-    def 'an action Rule Machine already marks may be edited while it stays on its marked condition; any other broken label is refused (#label)'() {
-        given: "condition 2's device was deleted: Rule Machine marks it, lists it in use, and the action gated on it draws the marker"
+    def 'an action already marked before the edit may be edited and stay marked; any other broken label is refused (#label)'() {
+        given: "condition 2's device was deleted: Rule Machine marks it, lists it in use, and an action naming it draws the marker"
         if (editing) {
-            nativeState.actions = ['1': [method: 'getLogMsg', cond: '2']]
+            nativeState.actions = ['1': prior]
             nativeState.actionList = ['1']
+            nativeState.eval = ['0': ['1'], '3': ['NOT', '2'], '4': ['1']]
         }
         nativeState.inUseConds = ['2']
         settings.put('rDev_2', [type: 'capability.switch', value: null, deviceList: null])
@@ -603,7 +604,8 @@ class NativeModelSpec extends ToolSpecBase {
             }
         }
         when:
-        def row = [type: 'messageActs', subtype: 'getLogMsg', condition: condition, fields: [[name: 'logmsg.#', type: 'text', value: 'edited']]]
+        def row = [type: 'messageActs', subtype: 'getLogMsg', fields: [[name: 'logmsg.#', type: 'text', value: 'edited']]]
+        if (condition != null) row.condition = condition
         if (editing) row.id = '1'
         def result = script._nmUpsertAction(42L, row)
         then:
@@ -611,10 +613,13 @@ class NativeModelSpec extends ToolSpecBase {
         allowed || result.error == 'Native action label is missing or broken'
         allowed || buttons.contains('actionCancel')
         where:
-        label                                      | editing | condition | allowed
-        'an edit kept on the marked condition'     | true    | '2'       | true
-        'a new action gated on the marked one'     | false   | '2'       | false
-        'an edit moved to another condition'       | true    | '1'       | false
+        label                                                        | editing | prior                                  | condition | allowed
+        'an edit kept on the marked condition'                       | true    | [method: 'getLogMsg', cond: '2']       | '2'       | true
+        'an edit of an action gated on it, moved elsewhere'          | true    | [method: 'getLogMsg', cond: '2']       | '1'       | true
+        'an edit of an action whose expression names it'             | true    | [method: 'getLogMsg', rule: '3']       | null      | true
+        'a new action gated on the marked one'                       | false   | null                                   | '2'       | false
+        'an edit of an action that named no marked condition'        | true    | [method: 'getLogMsg', cond: '1']       | '2'       | false
+        'an edit of an action whose expression names no marked one'  | true    | [method: 'getLogMsg', rule: '4']       | null      | false
     }
 
     def 'unknown simple action condition refuses before native editor or settings mutation'() {
@@ -1027,6 +1032,28 @@ class NativeModelSpec extends ToolSpecBase {
         'condition' | '99'
         'action'    | '99'
         'trigger'   | '0'
+    }
+
+    def 'a condition only the Required Expression names is refused for deletion, even when the labels rebuild inUseConds without it (#label)'() {
+        given: "conditions 1 and 2, the Required Expression on and naming 1 (live: inUseConds ['1'], yet the delete was let through)"
+        nativeState.eval = ['0': ['1']]
+        nativeState.inUseConds = listed ? ['1'] : []
+        settings.put('useST', [type: 'bool', value: true])
+        settings.put('rCapab_1', [type: 'enum', value: 'Switch'])
+        // The labels rebuild the list in memory without the Required Expression's conditions.
+        nativeRule.conditionLabel = { -> nativeState.inUseConds = []; '' }
+        nativeRule.selectConditions = { Map params -> nativeState.capabsfalse.remove('1'); settings.remove('rCapab_1'); nativeState.remove('deleteCon') }
+        when:
+        script._nmDeleteRow(42L, 'condition', '1')
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'Referenced native conditions must be detached before deletion'
+        writes.empty
+        nativeState.capabsfalse.containsKey('1')
+        where:
+        label                                    | listed
+        'Rule Machine lists it'                  | true
+        'Rule Machine leaves it out'             | false
     }
 
     def 'a condition only an unticked Conditional Trigger names deletes, while a ticked one holds it (ticked=#ticked)'() {

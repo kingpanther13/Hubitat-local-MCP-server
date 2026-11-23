@@ -195,16 +195,18 @@ class NativeDocumentsSpec extends ToolSpecBase {
         pages.collect { it.page.revision }.unique().size() == 1
     }
 
-    def 'one oversized native row refuses explicitly without mutation or truncation'() {
+    def 'one oversized native row fails the read with its health, without mutation or truncation'() {
         given:
         nativeState.capabsfalse = ['1': '\u263a"\\' * 2000]
         script.metaClass._responseSizeLimitBytes = { -> 5000 }
         def before = JsonOutput.toJson(nativeState)
         when:
-        script.toolSetRule([operation: 'read', ruleId: 42, args: [sections: ['conditions'], cursor: '', limit: 1]])
+        def result = script.toolSetRule([operation: 'read', ruleId: 42, args: [sections: ['conditions'], cursor: '', limit: 1]])
         then:
-        def failure = thrown(IllegalArgumentException)
-        failure.message.contains('exceeds the response size limit')
+        result.success == false
+        result.health.ruleFormat == 'rm'
+        result.error.contains('exceeds the response size limit')
+        !result.containsKey('conditions')
         JsonOutput.toJson(nativeState) == before
         events.empty
     }
@@ -290,6 +292,40 @@ class NativeDocumentsSpec extends ToolSpecBase {
         pages.size() > 1
         pages.every { it.health != null && script._ndEnvelopeBytes(it) <= script._responseSizeLimitBytes() - 1024 }
         pages.collectMany { it.localVariables*.name } == (1..12).collect { n -> String.format('big%02d', n) }
+    }
+
+    def 'over the cap, a row that does not fit beside the parts kept whole leaves those out too, and the health still comes first'() {
+        given: 'a cap of 20 KB: the locals fit on their own, but no settings row fits beside them'
+        script.metaClass._responseSizeLimitBytes = { -> 20000 }
+        nativeState.allLocalVars = [big: [type: 'string', value: 'x' * 12000]]
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: (1..4).collect { n -> [name: "text${n}".toString(), type: 'text', multiple: false, value: 'y' * 7000] }]) }
+        when:
+        def first = script.toolGetNativeRule([ruleId: 42])
+        then:
+        first.keySet().first() == 'health'
+        first.success != false
+        first.pagedSection == 'settings'
+        first.omittedSections == ['localVariables']
+        !first.containsKey('localVariables')
+        first.settings.size() >= 1
+        script._ndEnvelopeBytes(first) <= 20000 - 1024
+    }
+
+    def 'a row too large to send beside the health alone fails the read with the health kept (#how)'() {
+        given:
+        script.metaClass._responseSizeLimitBytes = { -> 20000 }
+        nativeState.allLocalVars = [huge: [type: 'string', value: 'x' * 30000]]
+        when:
+        def result = script.toolGetNativeRule(args)
+        then:
+        result.success == false
+        result.health.ruleFormat == 'rm'
+        result.section == 'localVariables'
+        result.error.contains('exceeds the response size limit')
+        where:
+        how                | args
+        'an unpaged read'  | [ruleId: 42]
+        'an explicit page' | [ruleId: 42, sections: ['localVariables'], cursor: '', limit: 5]
     }
 
     def 'a part after the paged one that does not fit either is listed in omittedSections, through the dispatcher (useGateways=#useGateways)'() {
@@ -714,7 +750,12 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script.metaClass.getAppByAppId = { Long id -> [id: 42L, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Button Rule-5.1'], installed: true] }
         nativeState.actNdx = 8
         Map before = [:] + nativeState
-        script.metaClass._nrHandle = { Long id -> new NativeDocumentButtonChild(events, lifecycle, nativeState, typedSettings, brokenEditor) }
+        script.metaClass._nrHandle = { Long id ->
+            def child = new NativeDocumentButtonChild(events, lifecycle, nativeState, typedSettings, brokenEditor)
+            // A broken action editor breaks the rule by Rule Machine's own check, not only its stored flag.
+            child.brokenCheck = { -> lifecycle.broken == true }
+            child
+        }
 
         when:
         def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'action', value: [id: '3', type: 'messageActs', subtype: 'getLogMsg', fields: []]]], confirm: true])
@@ -759,6 +800,50 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
         renders.isEmpty()
         nativeState.actionList == ['3', '1']
+    }
+
+    def 'brokenRowsBefore lists a marked condition only a ticked Conditional Trigger uses, which inUseConds leaves out'() {
+        given: "trigger 5's ticked Conditional Trigger uses condition 4, whose device is gone; Rule Machine's list is empty"
+        nativeState.inUseConds = []
+        labels.condition = marker('Condition')
+        List rows = [[name: 'isCondTrig.5', type: 'bool', value: true, deviceIdsForDeviceList: [], deviceList: null],
+                     [name: 'condTrig.5', type: 'enum', value: '4', deviceIdsForDeviceList: [], deviceList: null],
+                     [name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        statusSettings = rows
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: rows]) }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == true
+        result.brokenRowsBefore == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
+    }
+
+    def 'a batch that writes something else and then deletes a condition in use is refused before anything is written'() {
+        given:
+        def backups = backupsOn()
+        nativeState.inUseConds = ['4']
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange(), [part: 'delete', value: [part: 'condition', id: '4']]], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.error == 'changes[1]: Referenced native conditions must be detached before deletion'
+        events.empty
+        backups.isEmpty()
+    }
+
+    def 'a condition only the Required Expression names is refused for deletion up front, even when Rule Machine\'s list leaves it out'() {
+        given: 'the Required Expression is on and names condition 4'
+        typedSettings.useST = true
+        nativeState.eval = ['0': ['4']]
+        nativeState.inUseConds = []
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'delete', value: [part: 'condition', id: '4']]], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.error == 'changes[0]: Referenced native conditions must be detached before deletion'
+        events.empty
     }
 
     def 'a rule whose page marks a condition (its device deleted) is updated, reporting the rows marked before the write'() {
@@ -1003,6 +1088,20 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.documentOmitted == true
         !result.containsKey('document')
         result.note.contains('written and verified') && result.note.contains('Do not send them again') && result.note.contains('nextCursor')
+    }
+
+    def 'a verified write whose read-back comes back paged leaves the document out rather than passing on its read-on note'() {
+        given:
+        script.metaClass._responseSizeLimitBytes = { -> 20000 }
+        nativeState.allLocalVars = (1..6).collectEntries { n -> [("big${n}".toString()): [type: 'string', value: 'x' * 5000]] }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == true
+        result.documentOmitted == true
+        !result.containsKey('document')
+        !result.containsKey('pagedSection') && !result.containsKey('nextCursor')
+        result.note.contains('Do not send them again')
     }
 
     def 'a verified write whose document fits returns it inline'() {
@@ -1734,9 +1833,13 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !events.any { it instanceof Map }
     }
 
-    def "Rule Machine's broken flag blocks Done, and a user's text that reads like its marker does not"() {
-        given:
-        script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, true) }
+    def "Rule Machine's own broken() blocks Done once the write breaks the rule, and a user's text that reads like its marker does not"() {
+        given: 'the render breaks the rule, and broken() says so'
+        script.metaClass._nrHandle = { Long id ->
+            def child = new NativeDocumentDiagnosticChild(events, lifecycle, true)
+            child.brokenCheck = { -> lifecycle.broken == true }
+            child
+        }
         when:
         def failed = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
@@ -1752,6 +1855,18 @@ class NativeDocumentsSpec extends ToolSpecBase {
         def passed = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         passed.success
+    }
+
+    def 'a stored broken flag the render leaves true does not fail the write while the rule\'s own broken() says false'() {
+        given: 'editing an action gated on a marked condition renders it, which raises the stored flag; broken() stays false'
+        script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, true) }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        lifecycle.broken == true
+        result.success == true
+        result.broken == false
+        events.any { it instanceof Map && it.path == '/installedapp/update/json' }
     }
 
     def 'an unrelated edit succeeds while an action Rule Machine marked before the write stays marked, and typed text is no marker (#markup)'() {

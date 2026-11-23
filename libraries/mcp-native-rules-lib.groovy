@@ -50,7 +50,7 @@ def _getAllToolDefinitions_partNativeRM() {
                 type: "object",
                 properties: [
                     ruleId: [type: "integer", minimum: 1, description: "The rule's installed-app id, from hub_list_rules (a Button Rule's or Basic Rule's from hub_list_apps(scope:'instances'), a Visual Rule's from hub_get_visual_rule)."],
-                    sections: [type: "array", items: [type: "string", enum: ["actions", "conditions", "triggers", "expressions", "settings", "localVariables"]], description: "Document sections to return; default all. health always returns first and localVariables with every read but a page of another section, so [] returns them alone. A read too large for one response pages the first part that does not fit (pagedSection, nextCursor) and lists the rest in omittedSections."],
+                    sections: [type: "array", items: [type: "string", enum: ["actions", "conditions", "triggers", "expressions", "settings", "localVariables"]], description: "Document sections to return; default all. health always returns first and localVariables with every read but a page of another section, so [] returns them alone. A read too large for one response pages the first part that does not fit (pagedSection, nextCursor) and lists the other parts that do not fit in omittedSections."],
                     cursor: [type: "string", description: "Page one section, localVariables included: pass \"\" for the first page, then each nextCursor. Requires exactly one section."],
                     limit: [type: "integer", minimum: 1, maximum: 100, description: "Rows per page when paging (default 50)."]
                 ],

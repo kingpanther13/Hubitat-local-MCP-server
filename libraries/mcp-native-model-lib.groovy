@@ -503,11 +503,12 @@ Map _nmUpsertAction(Long ruleId, Map row) {
         Map echoed = _nrSettings(ruleId, settings.collect { it.name })
         boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
         if (!(listed && ordered && compiled && persisted && expressionVerified && waitsVerified && conditionVerified)) return reject.call([error: 'Native action compilation or input verification failed', settingsVerified: persisted, expressionVerified: expressionVerified, waitsVerified: waitsVerified, conditionVerified: conditionVerified])
-        // An edit that keeps an action on a condition Rule Machine marks leaves a row that was already marked, which the
-        // Hubitat UI allows; any other broken label is new.
+        // An action that already named a condition Rule Machine marks (its simple condition, or its IF or wait
+        // expression) was marked before the edit, which the Hubitat UI allows to stay; any other broken label is new.
         boolean marked = !_nmActionLabel(ruleId, id)
-        boolean kept = marked && editing && conditionId != null && conditionId == prior.cond?.toString()
-        if (kept) kept = _ndMarkedNow(ruleId).rows.any { it.kind == 'condition' && it.id == conditionId }
+        List named = marked && editing ? _nmNamedConditions([actionList: [id], actions: baseline.actions, eval: baseline.eval], false) : []
+        boolean kept = !named.isEmpty()
+        if (kept) kept = _ndMarkedNow(ruleId).rows.any { it.kind == 'condition' && it.id in named }
         boolean allowed = kept || !marked
         if (!allowed) return reject.call([error: 'Native action label is missing or broken'])
         [success: true, id: id, action: action, partial: false, settingsVerified: true, expressionVerified: true, waitsVerified: true, conditionVerified: true]
@@ -618,6 +619,22 @@ boolean _nmCondTrigUses(Map settings, Object triggers, String conditionId) {
     }
 }
 
+// The conditions the rule's own expressions still name: the Required Expression while it is on, each IF or wait
+// expression of an action in the action list, and each simple conditional action. Kept beside inUseConds, which a
+// delete was seen to pass for a condition only the Required Expression used.
+List _nmNamedConditions(Map state, boolean required) {
+    Map eval = state.eval instanceof Map ? state.eval : [:]
+    Map actions = state.actions instanceof Map ? state.actions : [:]
+    List named = required && _nmEntry(eval, '0') instanceof List ? _nmEntry(eval, '0')*.toString() : []
+    (state.actionList instanceof List ? state.actionList : []).each { actionId ->
+        def action = _nmEntry(actions, actionId.toString())
+        if (action instanceof Map && action.cond != null) named << action.cond.toString()
+        def tokens = action instanceof Map && action.rule != null ? _nmEntry(eval, action.rule.toString()) : null
+        if (tokens instanceof List) named.addAll(tokens*.toString())
+    }
+    named
+}
+
 Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     if (!(part in ['action', 'condition', 'trigger'])) throw new IllegalArgumentException('Unsupported native row collection')
     String id = _nmId(rowId)
@@ -625,11 +642,13 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     String collection = part == 'action' ? 'actions' : (part == 'trigger' ? 'capabstrue' : 'capabsfalse')
     Map rows = before.get(collection) instanceof Map ? [:] + before.get(collection) : [:]
     if (!rows.keySet().any { it.toString() == id }) throw new IllegalArgumentException('Native row does not exist')
-    // A condition is in use exactly while Rule Machine lists it in state.inUseConds, the list health reads.
-    boolean inUse = part == 'condition' && id in _rmMarkedRows(_nrHandle(ruleId), before, []).inUse
-    if (inUse) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
     List oldOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
     Map settingsBefore = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(_nmSettingsInventory(ruleId))) as Map
+    // A condition is in use while Rule Machine lists it in state.inUseConds, the list health reads, or one of the
+    // rule's expressions or conditional actions names it.
+    boolean inUse = part == 'condition' && id in _rmMarkedRows(_nrHandle(ruleId), before, []).inUse
+    inUse = inUse || (part == 'condition' && id in _nmNamedConditions(before, settingsBefore.useST?.value?.toString() == 'true'))
+    if (inUse) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
     // inUseConds leaves out a condition only a Conditional Trigger uses, and deleting it leaves that trigger naming a
     // condition that no longer exists, unmarked. So a ticked Conditional Trigger on a held trigger keeps it in use.
     if (part == 'condition' && _nmCondTrigUses(settingsBefore, before.capabstrue, id)) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
