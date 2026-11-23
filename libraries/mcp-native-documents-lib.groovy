@@ -421,6 +421,8 @@ private void _ndPreflight(Long id, List changes) {
                 if (id != null && inUse == null) inUse = _rmMarkedRows(_nrHandle(id), before, []).inUse
                 boolean held = !freed && inUse != null && target in inUse
                 if (held || target in batchNamed) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
+                // A ticked Conditional Trigger is not in inUseConds but still uses its condition; see _nmDeleteRow.
+                if (id != null && !freed && _nmCondTrigUses(_nmSettingsInventory(id), before.capabstrue, target)) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
                 _ndDropRow(rows.condition, target, 'Native row does not exist')
             }
             if (!(change.part in ['condition', 'variable'] || value.part == 'condition')) freed = true

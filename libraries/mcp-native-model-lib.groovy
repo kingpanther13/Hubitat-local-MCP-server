@@ -608,6 +608,16 @@ private Map _nmSettingsInventory(Long ruleId) {
     inventory
 }
 
+boolean _nmCondTrigUses(Map settings, Object triggers, String conditionId) {
+    if (!(triggers instanceof Map)) return false
+    settings.any { name, setting ->
+        boolean binds = name.startsWith('condTrig.') && setting?.value?.toString() == conditionId
+        String triggerId = binds ? name.substring(9) : null
+        if (binds) binds = triggers.containsKey(triggerId) && settings.get('isCondTrig.' + triggerId)?.value?.toString() == 'true'
+        binds
+    }
+}
+
 Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     if (!(part in ['action', 'condition', 'trigger'])) throw new IllegalArgumentException('Unsupported native row collection')
     String id = _nmId(rowId)
@@ -620,6 +630,9 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     if (inUse) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
     List oldOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
     Map settingsBefore = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(_nmSettingsInventory(ruleId))) as Map
+    // inUseConds leaves out a condition only a Conditional Trigger uses, and deleting it leaves that trigger naming a
+    // condition that no longer exists, unmarked. So a ticked Conditional Trigger on a held trigger keeps it in use.
+    if (part == 'condition' && _nmCondTrigUses(settingsBefore, before.capabstrue, id)) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
     List requiredRemoved = part == 'action' ? settingsBefore.keySet().findAll { it.endsWith(".${id}".toString()) }.toList() :
         [part == 'trigger' ? "tCapab${id}".toString() : "rCapab_${id}".toString()]
     if (part == 'action') {

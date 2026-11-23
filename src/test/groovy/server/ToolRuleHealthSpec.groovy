@@ -326,11 +326,12 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.checkErrors == []
     }
 
-    def "a condition counts only while Rule Machine lists it in state.inUseConds, whatever its Conditional Trigger settings say"() {
-        given: "Rule Machine lists condition 1 (trigger 1's ticked Conditional Trigger), not condition 3 (trigger 2's unticked box, whose condTrig value the hub keeps)"
+    def "a condition only a ticked Conditional Trigger on a held trigger uses counts, though inUseConds leaves it out"() {
+        given: "inUseConds is empty, as the hub leaves it for Conditional Triggers; trigger 1's box is ticked for condition 1, trigger 2's unticked box keeps condTrig = 3, and condTrig.9 names a trigger the rule no longer holds"
         labels.condition = marker('Condition') + ' ' + marker('Condition')
-        seed(100, [capabstrue: ['1': 'A turns on', '2': 'B turns on'], capabsfalse: ['1': 'C is on', '3': 'E is on'], inUseConds: ['1']], [:],
-             [setting('isCondTrig.1', 'bool', null, 'true'), setting('condTrig.1', 'enum', null, '1'),
+        seed(100, [capabstrue: ['1': 'A turns on', '2': 'B turns on'], capabsfalse: ['1': 'C is on', '3': 'E is on', '4': 'F is on'], inUseConds: []], [:],
+             [setting('isCondTrig.9', 'bool', null, 'true'), setting('condTrig.9', 'enum', null, '4'), setting('rDev_4', 'capability.switch', []),
+              setting('isCondTrig.1', 'bool', null, 'true'), setting('condTrig.1', 'enum', null, '1'),
               setting('isCondTrig.2', 'bool', null, 'false'), setting('condTrig.2', 'enum', null, '3'),
               setting('tDev1', 'capability.switch', [7]), setting('tDev2', 'capability.switch', [8]), setting('rDev_1', 'capability.switch', []),
               setting('rDev_3', 'capability.switch', [])])

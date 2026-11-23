@@ -10801,7 +10801,7 @@ boolean _rmIsEditableRuleType(namespace, name) {
 // the *BROKEN* name the Automations list and the hub's own rule tools go by. The marker gives the kind; an emptied
 // device picker (tDev<id> or reltDevice<id>, rDev_<id> or relDevice_<id>, <name>.<id>) only finds the row's id within
 // it, and a condition counts only while Rule Machine lists it in state.inUseConds, which its label code builds, so
-// the labels are called before the list is read. A marked kind with no such picker (a deleted variable, or an action
+// the labels are called before the list is read, or a ticked Conditional Trigger uses it. A marked kind with no such picker (a deleted variable, or an action
 // gated on a marked condition) is listed once with id null. marks counts each kind's markers.
 Map _rmMarkedRows(handle, Map compiled, List settings) {
     Map marks = [trigger: handle.triggerLabel(), condition: handle.conditionLabel(), action: handle.actionLabel()].collectEntries { kind, text ->
@@ -10809,6 +10809,16 @@ Map _rmMarkedRows(handle, Map compiled, List settings) {
     }
     def state = handle.getState()
     List inUse = state instanceof Map && state.inUseConds != null ? state.inUseConds.toString().findAll(/\d+/) : []
+    // inUseConds leaves out a condition only a Conditional Trigger uses, though its label still marks it, so a
+    // ticked Conditional Trigger on a held trigger adds its condition (an unticked box keeps condTrig's value).
+    settings.each { setting ->
+        String name = setting.name?.toString()
+        boolean binds = name?.startsWith('condTrig.') && setting.value != null
+        String triggerId = binds ? name.substring(9) : null
+        if (binds) binds = compiled.capabstrue instanceof Map && compiled.capabstrue.containsKey(triggerId)
+        if (binds) binds = settings.any { it.name == 'isCondTrig.' + triggerId && it.value?.toString() == 'true' }
+        if (binds) inUse << setting.value.toString()
+    }
     def rows = []
     settings.each { setting ->
         if (!setting.type?.startsWith('capability') || setting.deviceIds) return

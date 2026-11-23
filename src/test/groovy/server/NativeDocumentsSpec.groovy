@@ -1681,6 +1681,19 @@ class NativeDocumentsSpec extends ToolSpecBase {
         noExceptionThrown()
     }
 
+    def 'a condition only a ticked Conditional Trigger uses is refused by the batch check, though inUseConds leaves it out'() {
+        given: "trigger 5 is held and its box is ticked with condTrig.5 = 8; Rule Machine lists only condition 4"
+        nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
+        nativeState.capabstrue = ['5': 'Switch B on']
+        nativeState.inUseConds = ['4']
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [[name: 'isCondTrig.5', type: 'bool', value: true], [name: 'condTrig.5', type: 'enum', value: '8']]]) }
+        when:
+        script._ndPreflight(42L, script._ndChanges([[part: 'delete', value: [part: 'condition', id: '8']]]))
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == 'changes[0]: Referenced trigger conditions must be detached before deletion'
+    }
+
     def 'a condition Rule Machine lists as in use is refused for deletion before any change or render'() {
         given:
         nativeState.inUseConds = ['4']

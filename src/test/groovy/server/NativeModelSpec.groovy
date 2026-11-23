@@ -1029,10 +1029,10 @@ class NativeModelSpec extends ToolSpecBase {
         'trigger'   | '0'
     }
 
-    def 'a condition only an unticked Conditional Trigger names deletes, while a ticked one holds it: inUseConds decides (ticked=#ticked)'() {
-        given: "the hub keeps condTrig's value after its box is unticked; Rule Machine lists the condition only while it is ticked"
+    def 'a condition only an unticked Conditional Trigger names deletes, while a ticked one holds it (ticked=#ticked)'() {
+        given: "the hub keeps condTrig's value after its box is unticked, and inUseConds never lists a condition only a Conditional Trigger uses"
         nativeState.capabstrue = ['3': 'Switch C on']
-        nativeState.inUseConds = ticked ? ['1', '2'] : ['1']
+        nativeState.inUseConds = ['1']
         settings.put('isCondTrig.3', [type: 'bool', value: ticked])
         settings.put('condTrig.3', [type: 'enum', value: '2'])
         settings.put('rCapab_2', [type: 'enum', value: 'Switch'])
@@ -1046,7 +1046,7 @@ class NativeModelSpec extends ToolSpecBase {
         Exception failure = null
         try { result = script._nmDeleteRow(42L, 'condition', '2') } catch (IllegalArgumentException e) { failure = e }
         then:
-        ticked ? failure?.message == 'Referenced native conditions must be detached before deletion' && writes.empty : failure == null && result.success
+        ticked ? failure?.message == 'Referenced trigger conditions must be detached before deletion' && writes.empty : failure == null && result.success
         nativeState.capabsfalse.containsKey('2') == ticked
         where:
         ticked << [false, true]

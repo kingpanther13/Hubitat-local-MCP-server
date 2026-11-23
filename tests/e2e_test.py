@@ -7980,8 +7980,8 @@ def updated() {}
             self._rm_delete_device(dni)
             self._rm_delete_device(second_dni)
             # Rule Machine does not call a rule broken for a condition whose device was deleted: broken() stays false.
-            # Its label methods mark the row, and its own list of conditions in use holds the gated condition and the
-            # ticked Conditional Trigger's, not the spare one the unticked box still names.
+            # Its label methods mark the row; the gated condition is in its own list of conditions in use, and the
+            # ticked Conditional Trigger's condition counts too, but not the spare one the unticked box still names.
             cond_health = self._rm_health(cond_id)
             assert cond_health.get("broken") is False and cond_health.get("ok") is False, cond_health
             marked_rows = cond_health.get("brokenRows") or []
@@ -8006,10 +8006,10 @@ def updated() {}
                 assert self._native_rule_document(cond_id).get("actions") == before_gate, "a newly marked action was left behind"
             else:
                 assert "The write adds rows Rule Machine marks broken: action" in gate_error, gated
-            # Rule Machine lists a condition as in use only while its Conditional Trigger box is ticked: the bound
-            # condition is refused, and the spare one only the unticked box names deletes.
+            # Rule Machine's inUseConds leaves out a condition only a Conditional Trigger uses, but a ticked box still
+            # uses it: the bound condition is refused, and the spare one only the unticked box names deletes.
             bound_error = self._rm_refuse(cond_id, [native_delete("condition", bound)])
-            assert "Referenced native conditions must be detached before deletion" in bound_error, bound_error
+            assert "Referenced trigger conditions must be detached before deletion" in bound_error, bound_error
             freed = self._rm_update(cond_id, [native_delete("condition", spare)])
             assert str(spare) not in ((freed.get("document") or {}).get("conditions") or {}), freed
             assert str(bound) in (self._native_rule_document(cond_id).get("conditions") or {}), "the refused delete removed the bound condition"
