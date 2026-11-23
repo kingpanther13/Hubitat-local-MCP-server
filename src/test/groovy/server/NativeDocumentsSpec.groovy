@@ -834,9 +834,9 @@ class NativeDocumentsSpec extends ToolSpecBase {
     }
 
     def 'deleting the trigger whose ticked Conditional Trigger names a condition frees it for a delete later in the batch'() {
-        given: "Rule Machine lists condition 8 in use only through trigger 5's ticked Conditional Trigger"
+        given: "condition 8 is in use only through trigger 5's ticked Conditional Trigger, which inUseConds never lists; Rule Machine lists 4"
         nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
-        nativeState.inUseConds = ['4', '8']
+        nativeState.inUseConds = ['4']
         hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [[name: 'isCondTrig.5', type: 'bool', multiple: false, value: true],
                                                                                          [name: 'condTrig.5', type: 'enum', multiple: false, value: '8']]]) }
         when: 'the condition alone'
@@ -854,6 +854,30 @@ class NativeDocumentsSpec extends ToolSpecBase {
         def held = thrown(IllegalArgumentException)
         held.message == 'changes[1]: Referenced native conditions must be detached before deletion'
     }
+
+    def 'a trigger edit or append in the batch moves what its Conditional Trigger holds before a later condition delete (#label)'() {
+        given: "trigger 5's ticked Conditional Trigger names condition 8; Rule Machine lists 4"
+        nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
+        nativeState.inUseConds = ['4']
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [[name: 'isCondTrig.5', type: 'bool', multiple: false, value: true],
+                                                                                         [name: 'condTrig.5', type: 'enum', multiple: false, value: '8']]]) }
+        when:
+        Exception failure = null
+        try { script._ndPreflight(42L, script._ndChanges(batch + [[part: 'delete', value: [part: 'condition', id: '8']]])) }
+        catch (IllegalArgumentException e) { failure = e }
+        then:
+        failure?.message == refusal
+        where:
+        label                                                     | batch                                                                                                 | refusal
+        'trigger 5 unticked'                                      | [trigger('5', [field('isCondTrig.#', 'bool', false)])]                                                | null
+        'trigger 5 moved to condition 4'                          | [trigger('5', [field('condTrig.#', 'enum', '4')])]                                                     | null
+        'a new trigger ticking condition 8'                       | [trigger(null, [field('isCondTrig.#', 'bool', true), field('condTrig.#', 'enum', '8')]), trigger('5', [field('isCondTrig.#', 'bool', false)])] | 'changes[2]: Referenced trigger conditions must be detached before deletion'
+        'a new trigger ticking 8, then unticked by its predicted id' | [trigger(null, [field('isCondTrig.#', 'bool', true), field('condTrig.#', 'enum', '8')]), trigger('6', [field('isCondTrig.#', 'bool', false)]), trigger('5', [field('isCondTrig.#', 'bool', false)])] | null
+    }
+
+    private static Map field(String name, String type, Object value) { [name: name, type: type, value: value] }
+
+    private static Map trigger(String id, List fields) { [part: 'trigger', value: (id ? [id: id] : [:]) + [capability: 'Switch', fields: fields]] }
 
     def 'a batch that writes something else and then deletes a condition in use is refused before anything is written'() {
         given:

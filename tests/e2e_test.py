@@ -7965,10 +7965,10 @@ def updated() {}
                                                         self._rm_switch_condition(second_id)])
             cond_rows = self._native_rule_document(cond_id).get("conditions") or {}
             gone, spare, bound = sorted(cond_rows, key=int)
-            self._rm_update(cond_id, [native_log("gated by a deleted device", condition=gone)])
-            self._rm_update(cond_id, [native_change("trigger", capability="Switch", fields=[
+            gated_action = self._rm_ids(self._rm_update(cond_id, [native_log("gated by a deleted device", condition=gone)]))[0]
+            bound_trigger = self._rm_ids(self._rm_update(cond_id, [native_change("trigger", capability="Switch", fields=[
                 *self._rm_switch_fields(self._ensure_perm_fixture("switch_a"), trigger=True),
-                native_field("isCondTrig.#", "bool", True), native_field("condTrig.#", "enum", bound)])])
+                native_field("isCondTrig.#", "bool", True), native_field("condTrig.#", "enum", bound)])]))[0]
             unticked = self._rm_ids(self._rm_update(cond_id, [native_change("trigger", capability="Switch", fields=[
                 *self._rm_switch_fields(self._ensure_perm_fixture("switch_a"), trigger=True),
                 native_field("isCondTrig.#", "bool", True), native_field("condTrig.#", "enum", spare)])]))[0]
@@ -8006,6 +8006,14 @@ def updated() {}
                 assert self._native_rule_document(cond_id).get("actions") == before_gate, "a newly marked action was left behind"
             else:
                 assert "The write adds rows Rule Machine marks broken: action" in gate_error, gated
+            # Moving the gated action to a condition on a live switch is written, and its label is no longer marked.
+            # (Editing it while it keeps the marked condition would make broken() call the rule broken, so this comes
+            # while broken() still calls it healthy.)
+            healthy = self._rm_ids(self._rm_update(cond_id, [self._rm_switch_condition(self._ensure_perm_fixture("switch_a"))]))[0]
+            moved = self._rm_update(cond_id, [native_log("moved to a live switch", id=gated_action, condition=healthy)])
+            assert moved.get("broken") is False, moved
+            moved_health = self._rm_health(cond_id)
+            assert not any(row.get("kind") == "action" for row in moved_health.get("brokenRows") or []), moved_health
             # Rule Machine's inUseConds leaves out a condition only a Conditional Trigger uses, but a ticked box still
             # uses it: the bound condition is refused, and the spare one only the unticked box names deletes.
             bound_error = self._rm_refuse(cond_id, [native_delete("condition", bound)])
@@ -8013,6 +8021,11 @@ def updated() {}
             freed = self._rm_update(cond_id, [native_delete("condition", spare)])
             assert str(spare) not in ((freed.get("document") or {}).get("conditions") or {}), freed
             assert str(bound) in (self._native_rule_document(cond_id).get("conditions") or {}), "the refused delete removed the bound condition"
+            # Unticking the bound trigger's box and deleting its condition can share one batch.
+            released = self._rm_update(cond_id, [native_change("trigger", id=bound_trigger, capability="Switch", fields=[
+                *self._rm_switch_fields(self._ensure_perm_fixture("switch_a"), trigger=True), native_field("isCondTrig.#", "bool", False)]),
+                native_delete("condition", bound)])
+            assert str(bound) not in ((released.get("document") or {}).get("conditions") or {}), released
             health = self._rm_health(app_id)
             assert health.get("broken") is True and health.get("ok") is False and health.get("ruleFormat") == "rm", health
             rows = health.get("brokenRows") or []
@@ -9133,10 +9146,14 @@ def updated() {}
                     error = self._rm_refuse(app_id, [native_delete("condition", ids[2])])
                     assert "Referenced native conditions must be detached before deletion" in error, error
                     assert ids[2] in (self._native_rule_document(app_id).get("conditions") or {}), "a refused delete removed the condition"
-                    # Deleting a trigger first frees nothing the Required Expression uses: the whole batch is refused
-                    # before its backup, and the trigger stays too.
+                    # Deleting a trigger first frees nothing the Required Expression uses: the batch is refused at the
+                    # condition before its backup or any write, so the trigger stays too.
                     trigger = self._rm_ids(self._rm_update(app_id, [self._rm_switch_trigger(self._ensure_perm_fixture("switch_a"))]))[0]
-                    self._rm_refuse_all(app_id, [[native_delete("trigger", trigger), native_delete("condition", ids[2])]])
+                    backups = self._rm_backup_keys(app_id)
+                    error = self._rm_refuse(app_id, [native_delete("trigger", trigger), native_delete("condition", ids[2])])
+                    assert "changes[1]: Referenced native conditions must be detached before deletion" in error, error
+                    assert trigger in (self._native_rule_document(app_id).get("triggers") or {}), "the refused batch deleted the trigger"
+                    assert self._rm_backup_keys(app_id) == backups, "a refused batch took a backup"
                 page = self._rm_page(app_id)
                 assert page.lower().count("temperature of") >= 3 and ("OR" if grouped else "AND") in page and "< 80" in page, page[:800]
             finally:

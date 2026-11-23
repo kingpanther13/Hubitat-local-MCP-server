@@ -420,7 +420,7 @@ private void _ndPreflight(Long id, List changes) {
                     } else locals.remove(value.name)
                 }
             }
-            if (change.part in ['condition', 'trigger'] && !value.containsKey('id')) _ndPredictAppend(rows, counters, change.part)
+            String appended = change.part in ['condition', 'trigger'] && !value.containsKey('id') ? _ndPredictAppend(rows, counters, change.part) : null
             if (change.part in ['action', 'terminator']) {
                 boolean newRow = !value.containsKey('id')
                 String actionId = newRow ? _ndPredictAppend(rows, counters, 'action') : value.id.toString()
@@ -458,7 +458,8 @@ private void _ndPreflight(Long id, List changes) {
                 }
             }
             if (change.part == 'trigger' && deletes) {
-                String trigger = value.containsKey('id') ? value.id.toString() : "new${index}".toString()
+                // A trigger the batch appends is keyed by the id it will take, so a later change can name it.
+                String trigger = value.containsKey('id') ? value.id.toString() : appended
                 Map binding = condTrigs.get(trigger) ?: [ticked: false, cond: null]
                 value.get('fields').each { field ->
                     String name = field?.name?.toString()
