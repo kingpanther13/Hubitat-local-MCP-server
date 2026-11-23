@@ -30,19 +30,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Pushes to main only: polls until Unit Tests finishes on this revision (about five minutes),
-  # up to 20 minutes. A PR's gate is the request workflow's job of the same name, and its test
-  # run waits for that run; a dispatch has no gate.
+  # Renaming this job or its Defer step stops deferred runs from resuming; tests pin both names.
   fast-ci:
     name: Fast CI prerequisites
     outputs:
       result: ${{ steps.fast.outputs.result }}
-    if: github.event_name == 'push'
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 5
     permissions:
       actions: read
       contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -52,16 +51,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ruby .github/scripts/ephemeral_fast_ci.rb
-      # A green run with skipped hub jobs would hide that this push went untested.
-      - name: Fail when fast CI kept the hubs from starting
-        if: steps.fast.outputs.result == 'not-started'
-        run: exit 1
+      - name: Defer hubs until fast CI passes
+        if: steps.fast.outputs.result == 'deferred'
+        run: echo "Ephemeral hubs skipped until all applicable fast checks pass." >> "$GITHUB_STEP_SUMMARY"
 
   request-hub:
     name: Request ephemeral hub (${{ matrix.kind }})
     # Trusted refs only; PR runs get their hub from hub-e2e-ephemeral-request.yml.
     needs: fast-ci
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.fast-ci.outputs.result == 'ready')) }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && (needs.fast-ci.outputs.result == 'ready' || github.event_name == 'workflow_dispatch') }}
     strategy:
       fail-fast: false
       matrix:
@@ -132,7 +130,7 @@ jobs:
 
   e2e:
     needs: fast-ci
-    if: ${{ !cancelled() && (github.event_name != 'push' || needs.fast-ci.outputs.result == 'ready') }}
+    if: ${{ !cancelled() && (needs.fast-ci.outputs.result == 'ready' || github.event_name == 'workflow_dispatch') }}
     name: e2e (ephemeral hub, ${{ matrix.kind }})
     strategy:
       fail-fast: false
@@ -174,9 +172,8 @@ jobs:
           fi
           export SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND" RESULTS="ephemeral-hub-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND"
           export JOB="Request ephemeral hub ($KIND)"
-          # Fail fast: up to 20 minutes for the request run's fast-CI gate, then 35 for a hub to boot
-          # and run the suite (about 20). A slower run is failed here and re-run, not waited out.
-          wait=3300
+          # Results or a session within 35 minutes in either mode, with headroom over a suite run.
+          wait=2100
           deadline=$((SECONDS + wait)); first_seen=$((SECONDS + 600)); grace=0; polls=0
           # One artifact read per minute. The request run's state is re-read every poll for the first
           # five, so a lane the request side skips ends within a minute or two, then every fifth.
@@ -216,12 +213,10 @@ jobs:
                   gh run download "$src" --repo "$GITHUB_REPOSITORY" --name "$unavailable" --dir "$RUNNER_TEMP/unavailable"
                   reason="$(head -n1 "$RUNNER_TEMP/unavailable/reason.txt")"
                   echo "$reason"; echo "$reason" >> "$GITHUB_STEP_SUMMARY"
-                  # Hubs that fast CI kept from starting still owe a run: say so on this green check.
-                  [[ "$reason" != "Ephemeral hubs not started: "* ]] || echo "::warning title=Ephemeral hubs not started::${reason#*: }"
                   echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
                 fi
                 grace=$((grace + 1))
-                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without results or a session for this attempt. Re-run this job, then right away Request ephemeral hub ($KIND) in the request run; if that run's Fast CI prerequisites job failed, re-run it first, then this job (or push a commit or close and reopen the PR); for push or dispatch use Re-run all jobs."; exit 1; }
+                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without results or a session for this attempt. Re-run this job, then right away Request ephemeral hub ($KIND) in the request run, or its Fast CI prerequisites job if that run deferred the hubs (or push a commit or close and reopen the PR); for push or dispatch use Re-run all jobs."; exit 1; }
               fi
             fi
             [ "$SECONDS" -lt "$deadline" ] || { echo "::error::No hub results or session within $((wait / 60)) minutes."; exit 1; }
