@@ -32,6 +32,11 @@ class NativeModelSpec extends ToolSpecBase {
         nativeRule.checkTokens = { Object id -> '' }
         nativeRule.thisActionLabel = { Object actionId -> 'Native action ' + actionId }
         nativeRule.actionLabelText = { -> '' }
+        // Rule Machine's own label methods, which mark rows and build state.inUseConds, as the hub reads them.
+        nativeRule.triggerLabel = { -> '' }
+        nativeRule.conditionLabel = { -> '' }
+        nativeRule.actionLabel = { -> '' }
+        nativeRule.getState = { -> nativeState }
         nativeRule.broken = { -> nativeState.broken = false; false }
         nativeRule.selectActions = { Map params -> nativeState.broken = false; nativeForm([]) }
         nativeRule.getLocalVar = { String name -> locals.get(name) }
@@ -566,6 +571,52 @@ class NativeModelSpec extends ToolSpecBase {
         true    | false
     }
 
+    def 'an action Rule Machine already marks may be edited while it stays on its marked condition; any other broken label is refused (#label)'() {
+        given: "condition 2's device was deleted: Rule Machine marks it, lists it in use, and the action gated on it draws the marker"
+        if (editing) {
+            nativeState.actions = ['1': [method: 'getLogMsg', cond: '2']]
+            nativeState.actionList = ['1']
+        }
+        nativeState.inUseConds = ['2']
+        settings.put('rDev_2', [type: 'capability.switch', value: null, deviceList: null])
+        nativeRule.conditionLabel = { -> "<span class='text-hubitat-danger'>**Broken Condition**</span>" }
+        nativeRule.thisActionLabel = { Object actionId -> "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'" }
+        List buttons = []
+        nativeRule.doActPage = { ->
+            if (editing) nativeState.hasCondition = true
+            List inputs = [
+                [name: 'actType.1', type: 'enum', options: ['condActs', 'messageActs'], submitOnChange: true],
+                [name: 'actSubType.1', type: 'enum', options: ['getCondAct', 'getLogMsg'], submitOnChange: true]
+            ]
+            if (settings.'actSubType.1'?.value == 'getCondAct') {
+                inputs << [name: 'useCond.1', type: 'bool', submitOnChange: true]
+                if (settings.'useCond.1'?.value == true) inputs << [name: 'useCondNdx.1', type: 'enum', options: ['1', '2'], submitOnChange: true]
+            } else if (nativeState.hasCondition) inputs << [name: 'logmsg.1', type: 'text']
+            nativeForm(inputs)
+        }
+        nativeRule.appButtonHandler = { String name ->
+            buttons << name
+            if (name == 'hasAll') nativeState.hasCondition = true
+            if (name == 'actionDone') {
+                nativeState.actions = ['1': [method: 'getLogMsg', cond: editing ? nativeState.doActN.tokenize('.')[1] : settings.'useCondNdx.1'.value]]
+                nativeState.actionList = ['1']
+            }
+        }
+        when:
+        def row = [type: 'messageActs', subtype: 'getLogMsg', condition: condition, fields: [[name: 'logmsg.#', type: 'text', value: 'edited']]]
+        if (editing) row.id = '1'
+        def result = script._nmUpsertAction(42L, row)
+        then:
+        result.success == allowed
+        allowed || result.error == 'Native action label is missing or broken'
+        allowed || buttons.contains('actionCancel')
+        where:
+        label                                      | editing | condition | allowed
+        'an edit kept on the marked condition'     | true    | '2'       | true
+        'a new action gated on the marked one'     | false   | '2'       | false
+        'an edit moved to another condition'       | true    | '1'       | false
+    }
+
     def 'unknown simple action condition refuses before native editor or settings mutation'() {
         when:
         script._nmUpsertAction(42L, [type: 'messageActs', subtype: 'getLogMsg', condition: '999', fields: []])
@@ -788,8 +839,9 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.eval == ['0': ['1']]
     }
 
-    def 'a condition only an orphan eval entry names deletes while a live IF expression still holds it'() {
-        given:
+    def 'a condition deletes unless Rule Machine lists it in state.inUseConds: an orphan eval entry does not hold it, a live IF does'() {
+        given: 'Rule Machine lists a condition a live IF uses (as numbers here), not one only an orphan eval entry names'
+        nativeState.inUseConds = liveIf ? [2] : []
         nativeState.eval = ['0': ['1'], '3': ['2']]
         nativeState.actionList = ['5']
         nativeState.actions = ['5': [method: liveIf ? 'getIfThen' : 'getLogMsg', rule: liveIf ? 3 : null]]
@@ -960,8 +1012,9 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.capabsfalse.containsKey('2')
     }
 
-    def 'referenced conditions and missing rows refuse before any native write'() {
+    def 'a condition Rule Machine lists as in use, and missing rows, refuse before any native write'() {
         given:
+        nativeState.inUseConds = ['1']
         nativeRule.deleteCapab = { Object deletedId, Object trigger, Object action -> writes << 'unexpected' }
         when:
         script._nmDeleteRow(42L, part, id)
@@ -974,6 +1027,29 @@ class NativeModelSpec extends ToolSpecBase {
         'condition' | '99'
         'action'    | '99'
         'trigger'   | '0'
+    }
+
+    def 'a condition only an unticked Conditional Trigger names deletes, while a ticked one holds it: inUseConds decides (ticked=#ticked)'() {
+        given: "the hub keeps condTrig's value after its box is unticked; Rule Machine lists the condition only while it is ticked"
+        nativeState.capabstrue = ['3': 'Switch C on']
+        nativeState.inUseConds = ticked ? ['1', '2'] : ['1']
+        settings.put('isCondTrig.3', [type: 'bool', value: ticked])
+        settings.put('condTrig.3', [type: 'enum', value: '2'])
+        settings.put('rCapab_2', [type: 'enum', value: 'Switch'])
+        nativeRule.selectConditions = { Map params ->
+            nativeState.capabsfalse.remove('2')
+            settings.remove('rCapab_2')
+            nativeState.remove('deleteCon')
+        }
+        when:
+        def result = null
+        Exception failure = null
+        try { result = script._nmDeleteRow(42L, 'condition', '2') } catch (IllegalArgumentException e) { failure = e }
+        then:
+        ticked ? failure?.message == 'Referenced native conditions must be detached before deletion' && writes.empty : failure == null && result.success
+        nativeState.capabsfalse.containsKey('2') == ticked
+        where:
+        ticked << [false, true]
     }
 
     def 'action order requires exact permutation before state writes'() {

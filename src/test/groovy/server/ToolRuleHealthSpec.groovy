@@ -21,14 +21,31 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
     Object ruleBroken
     List handles
+    // The text Rule Machine's label methods return per kind, markers included, and the rule's live state.
+    Map labels
+    Map liveState
 
     def setup() {
         settingsMap.enableRead = true
         appType('Rule-5.1')
         ruleBroken = false
         handles = []
-        script.metaClass._nrHandle = { Long id -> handles << id; new Expando(broken: { -> ruleBroken instanceof Closure ? ruleBroken() : ruleBroken }) }
+        labels = [:]
+        liveState = [:]
+        script.metaClass._nrHandle = { Long id ->
+            handles << id
+            new Expando(broken: { -> ruleBroken instanceof Closure ? ruleBroken() : ruleBroken },
+                        triggerLabel: { -> label('trigger') }, conditionLabel: { -> label('condition') }, actionLabel: { -> label('action') },
+                        getState: { -> liveState })
+        }
     }
+
+    private Object label(String kind) {
+        def text = labels.get(kind)
+        text instanceof Closure ? text() : text
+    }
+
+    private static String marker(String kind) { "<span class='text-hubitat-danger'>**Broken ${kind}**</span>".toString() }
 
     // ---------- fixtures ----------
 
@@ -63,6 +80,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
     /** One rule whose compiled state and App Status page carry the same state, as on a hub. */
     private void seed(int id, Map stateOverrides = [:], Map app = [:], List settings = []) {
         Map state = ruleState(stateOverrides)
+        liveState = state
         hubGet.register("/app/ruleBuilderJson/${id}".toString()) { JsonOutput.toJson(state) }
         hubGet.register("/installedapp/statusJson/${id}".toString()) { statusJson(id, state, app, settings) }
     }
@@ -121,8 +139,9 @@ class ToolRuleHealthSpec extends ToolSpecBase {
     }
 
     def "a rule whose own broken check says broken is reported broken while its compiled flag still reads false"() {
-        given: "a trigger device was deleted and no one opened the rule, so only broken() knows"
+        given: "a trigger device was deleted and no one opened the rule, so only broken() knows; its trigger label carries the marker"
         ruleBroken = true
+        labels.trigger = marker('Trigger')
         seed(100, [broken: false, capabstrue: ['1': 'Porch turns on']], [:], [setting('tCapab1', 'enum', null, 'Switch'), setting('tDev1', 'capability.switch', [])])
 
         when:
@@ -132,14 +151,15 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.broken == true
         h.ok == false
         h.brokenRows == [[kind: 'trigger', id: '1', setting: 'tDev1', text: 'Porch turns on']]
-        h.issues.any { it.contains('marks this rule broken') && it.contains('brokenRows') && !it.contains('hub_set_rule') }
+        h.issues == ["Rule Machine marks this rule broken: a trigger, condition or action refers to something that is gone; brokenRows lists the rows its page marks."]
         count('/installedapp/configure/json/100') == 0
     }
 
-    def "brokenRows name every row whose device is gone by native id, the OR between triggers taking no row"() {
+    def "brokenRows name each row Rule Machine's labels mark by native id, found from its emptied picker; the OR between triggers takes no row"() {
         given: "the live rule: a condition (id 1), two Switch triggers (ids 2 and 3, the page joins them with OR), a conditional switch action and a log action, all devices deleted"
         ruleBroken = true
-        seed(100, [capabstrue: ['2': 'A turns on', '3': 'B turns on'], capabsfalse: ['1': 'C is on'],
+        labels.putAll(trigger: marker('Trigger') + ' OR ' + marker('Trigger'), condition: marker('Condition'), action: 'IF (' + marker('Condition') + ') ' + marker('Action'))
+        seed(100, [capabstrue: ['2': 'A turns on', '3': 'B turns on'], capabsfalse: ['1': 'C is on'], inUseConds: ['1'],
                    actionList: ['1', '2'], actions: ['1': [quick: false, method: 'getOnOffSwitch', indent: '', cond: '1'], '2': [quick: true, method: 'getLogMsg', indent: '']]],
              [:], [setting('tCapab2', 'enum', null, 'Switch'), setting('tDev2', 'capability.switch', []), setting('tstate2', 'enum', null, 'on'),
                    setting('tCapab3', 'enum', null, 'Switch'), setting('tDev3', 'capability.switch', []), setting('tstate3', 'enum', null, 'on'),
@@ -157,21 +177,22 @@ class ToolRuleHealthSpec extends ToolSpecBase {
                  [kind: 'action', id: '1', setting: 'onOffSwitch.1']]
     }
 
-    def "a device setting that still names a device, or names a row the rule does not hold, is not a broken row"() {
+    def "a device setting that still names a device, or names a row the rule does not hold, is not a marked row"() {
         given:
         ruleBroken = true
+        labels.trigger = marker('Trigger')
         seed(100, [capabstrue: ['1': 'A turns on', '2': 'B turns on']], [:],
              [setting('tDev1', 'capability.switch', [9]), setting('tDev2', 'capability.switch', []), setting('tDev7', 'capability.switch', []),
               setting('relDevice_4', 'capability.switch', []), setting('notify', 'capability.notification', [])])
 
-        expect: "only the dead picker of a row the rule holds counts"
+        expect: "only the dead picker of a row the rule holds, in a kind its labels mark, counts"
         script._rmCheckRuleHealth(100).brokenRows == [[kind: 'trigger', id: '2', setting: 'tDev2', text: 'B turns on']]
     }
 
     def "an action setting whose base name holds digits or underscores is an action, and an unknown name is no trigger"() {
-        given: "action ids 3 and 4 and trigger 2 are held, action 3 is gated by condition 2; notify2 and switches_2 name no known trigger or condition prefix"
-        ruleBroken = true
-        seed(100, [capabstrue: ['2': 'B turns on'], capabsfalse: ['2': 'C is on'], actionList: ['3', '4'],
+        given: "action ids 3 and 4 and trigger 2 are held, condition 2 is in use; notify2 and switches_2 name no known trigger or condition prefix"
+        labels.putAll(condition: marker('Condition'), action: marker('Action'))
+        seed(100, [capabstrue: ['2': 'B turns on'], capabsfalse: ['2': 'C is on'], actionList: ['3', '4'], inUseConds: [2],
                    actions: ['3': [method: 'getOnOffSwitch', cond: '2'], '4': [method: 'getOnOffSwitch']]], [:],
              [setting('foo2.3', 'capability.switch', []), setting('a_b.4', 'capability.switch', []),
               setting('notify2', 'capability.notification', []), setting('switches_2', 'capability.switch', []),
@@ -181,6 +202,44 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         script._rmCheckRuleHealth(100).brokenRows == [[kind: 'condition', id: '2', setting: 'relDevice_2', text: 'C is on'],
                                                       [kind: 'action', id: '3', setting: 'foo2.3'],
                                                       [kind: 'action', id: '4', setting: 'a_b.4']]
+    }
+
+    def "an emptied picker in a kind Rule Machine's labels do not mark is not listed: a row being built, or a spare condition"() {
+        given: "a trigger picker left empty while its row is built, and a condition whose device is gone that no label marks"
+        seed(100, [capabstrue: ['1': 'A turns on'], capabsfalse: ['2': 'C is on'], inUseConds: ['2']], [:],
+             [setting('tDev1', 'capability.switch', []), setting('rDev_2', 'capability.switch', [])])
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.brokenRows == []
+        h.ok == true
+        h.issues == []
+    }
+
+    def "a marked kind with no emptied picker is listed once with id null"() {
+        given: "an action gated on a marked condition carries the marker in the action labels, with no picker of its own"
+        labels.action = 'IF (' + marker('Condition') + ') Log: gated'
+        seed(100, [actionList: ['1'], actions: ['1': [method: 'getLogMsg', cond: '1']]], [:], [setting('logmsg.1', 'textarea', null, 'gated')])
+
+        expect:
+        script._rmCheckRuleHealth(100).brokenRows == [[kind: 'action', id: null]]
+    }
+
+    def "a label method that fails leaves brokenRows null with a checkErrors entry, so an update is refused"() {
+        given:
+        labels.condition = { -> throw new IllegalStateException('label down') }
+        seed(100)
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.broken == false
+        h.brokenRows == null
+        h.ok == false
+        h.checkErrors == ["the rule's label methods failed (label down), so brokenRows was not listed"]
     }
 
     def "a malformed appSettings reads as no settings: paused, stopped and the counts still come back"() {
@@ -240,6 +299,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
     def "a row with two dead pickers is listed once per setting, and the list is deduplicated on the whole row"() {
         given:
         ruleBroken = true
+        labels.trigger = marker('Trigger')
         seed(100, [capabstrue: ['1': 'Temp above Other']], [:],
              [setting('tDev1', 'capability.temperatureMeasurement', []), setting('reltDevice1', 'capability.temperatureMeasurement', []),
               setting('tDev1', 'capability.temperatureMeasurement', [])])
@@ -249,35 +309,37 @@ class ToolRuleHealthSpec extends ToolSpecBase {
                                                       [kind: 'trigger', id: '1', setting: 'tDev1', text: 'Temp above Other']]
     }
 
-    def "a condition whose device was deleted makes the rule broken although Rule Machine's own check says false"() {
-        given: "broken() misses a deleted condition device; the condition's picker lists no device"
-        seed(100, [capabsfalse: ['1': 'C is on'], actionList: ['1'], actions: ['1': [method: 'getLogMsg', cond: '1']]], [:],
+    def "a condition whose device was deleted is a marked row, not a broken rule: broken stays Rule Machine's own false"() {
+        given: "broken() says false for a deleted condition device; the condition and the action it gates carry the marker"
+        labels.putAll(condition: marker('Condition'), action: 'IF (' + marker('Condition') + ") Log: 'gated'")
+        seed(100, [capabsfalse: ['1': 'C is on'], inUseConds: ['1'], actionList: ['1'], actions: ['1': [method: 'getLogMsg', cond: '1']]], [:],
              [setting('rCapab_1', 'enum', null, 'Switch'), setting('rDev_1', 'capability.switch', []), setting('state_1', 'enum', null, 'on')])
 
         when:
         def h = script._rmCheckRuleHealth(100)
 
         then:
-        h.broken == true
+        h.broken == false
         h.ok == false
-        h.brokenRows == [[kind: 'condition', id: '1', setting: 'rDev_1', text: 'C is on']]
-        h.issues == ["the rule refers to 1 row(s) whose device was deleted, which Rule Machine's own check does not flag; brokenRows lists them."]
+        h.brokenRows == [[kind: 'condition', id: '1', setting: 'rDev_1', text: 'C is on'], [kind: 'action', id: null]]
+        h.issues == ["Rule Machine marks 2 row(s) on the rule's page (brokenRows) but does not call the rule broken; an update that marks no new row is allowed."]
         h.checkErrors == []
     }
 
-    def "a condition bound by a held trigger's ticked Conditional Trigger is in use; an unticked box or a trigger the rule no longer holds is not"() {
-        given: "condition 1 is bound by trigger 1's Conditional Trigger, condition 2 only by a condTrig for a trigger 9 the rule does not hold, condition 3 by trigger 2's unticked box (the hub keeps condTrig's value)"
-        seed(100, [capabstrue: ['1': 'A turns on', '2': 'B turns on'], capabsfalse: ['1': 'C is on', '2': 'D is on', '3': 'E is on']], [:],
-             [setting('isCondTrig.1', 'bool', null, 'true'), setting('condTrig.1', 'enum', null, '1'), setting('isCondTrig.9', 'bool', null, 'true'),
-              setting('condTrig.9', 'enum', null, '2'), setting('isCondTrig.2', 'bool', null, 'false'), setting('condTrig.2', 'enum', null, '3'),
+    def "a condition counts only while Rule Machine lists it in state.inUseConds, whatever its Conditional Trigger settings say"() {
+        given: "Rule Machine lists condition 1 (trigger 1's ticked Conditional Trigger), not condition 3 (trigger 2's unticked box, whose condTrig value the hub keeps)"
+        labels.condition = marker('Condition') + ' ' + marker('Condition')
+        seed(100, [capabstrue: ['1': 'A turns on', '2': 'B turns on'], capabsfalse: ['1': 'C is on', '3': 'E is on'], inUseConds: ['1']], [:],
+             [setting('isCondTrig.1', 'bool', null, 'true'), setting('condTrig.1', 'enum', null, '1'),
+              setting('isCondTrig.2', 'bool', null, 'false'), setting('condTrig.2', 'enum', null, '3'),
               setting('tDev1', 'capability.switch', [7]), setting('tDev2', 'capability.switch', [8]), setting('rDev_1', 'capability.switch', []),
-              setting('rDev_2', 'capability.switch', []), setting('rDev_3', 'capability.switch', [])])
+              setting('rDev_3', 'capability.switch', [])])
 
         when:
         def h = script._rmCheckRuleHealth(100)
 
         then:
-        h.broken == true
+        h.broken == false
         h.brokenRows == [[kind: 'condition', id: '1', setting: 'rDev_1', text: 'C is on']]
         h.checkErrors == []
     }
@@ -310,7 +372,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
     }
 
     def "a Rule Machine 5.1 rule whose App Status read fails reads brokenRows null, not an empty list, with a checkErrors entry"() {
-        given: "broken() says false, as it does for a deleted condition device, and the settings cannot be read"
+        given: "broken() says false and the settings cannot be read"
         hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson(ruleState(capabsfalse: ['1': 'C is on'], actionList: ['1'], actions: ['1': [method: 'getLogMsg', cond: '1']])) }
         hubGet.register('/installedapp/statusJson/100') { throw new IOException('timed out') }
 
@@ -325,20 +387,23 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.checkErrors.any { it == "the rule's settings went unread, so brokenRows was not listed" }
     }
 
-    def "an older Rule Machine type is not scanned for dead pickers unless its own flag says broken"() {
+    def "an older Rule Machine type has no label methods here, so its brokenRows is empty whatever its own flag says (broken=#flag)"() {
         given:
         appType('Rule-4.1')
-        seed(100, [capabsfalse: ['1': 'C is on']], [typeName: 'Rule-4.1'], [setting('rDev_1', 'capability.switch', [])])
+        seed(100, [broken: flag, capabsfalse: ['1': 'C is on']], [typeName: 'Rule-4.1'], [setting('rDev_1', 'capability.switch', [])])
 
         when:
         def h = script._rmCheckRuleHealth(100)
 
         then:
-        h.broken == false
+        h.broken == flag
         h.brokenRows == []
+        handles == []
+
+        where:
+        flag << [false, true]
     }
 
-    @spock.lang.Unroll
     def "privateBoolean reads the stored private flag #stored as #expected, an entry that is not a flag being a failed check"() {
         given:
         seed(100, [private: stored])
@@ -1068,19 +1133,44 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         refused.message.contains("A Basic Rule's settings are returned whole")
     }
 
-    def "a Basic Rule whose settings cannot be read keeps its health and names the failure"() {
-        given:
+    def "a Basic Rule whose requested settings cannot be read is a failed read that keeps its health and names the failure"() {
+        given: "the rule was deleted, or its settings page failed, between the health read and the settings read"
         appType('Basic Rule-1.0')
         hubGet.register('/installedapp/statusJson/100') { statusJson(100, [:], [typeName: 'Basic Rule-1.0']) }
-        hubGet.register('/installedapp/settings/100') { throw new IOException('settings timeout') }
+        hubGet.register('/installedapp/settings/100') { throw new IOException('status code: 404') }
 
         when:
         def result = script.toolGetNativeRule([ruleId: 100])
 
         then:
+        result.success == false
         result.health.ruleFormat == 'basic-rule'
         result.settings == null
-        result.settingsError.contains('settings timeout')
+        result.settingsError == 'status code: 404'
+        result.error == 'Rule 100 could not be read: status code: 404'
+        result.note.contains('retrying once is safe')
+    }
+
+    def "a Basic Rule settings failure reaches the client as isError with its health, through the dispatcher (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        appType('Basic Rule-1.0')
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100, [:], [typeName: 'Basic Rule-1.0']) }
+        hubGet.register('/installedapp/settings/100') { throw new IOException('status code: 404') }
+
+        when:
+        def response = useGateways ? mcpDriver.callTool('hub_read_rules', [tool: 'hub_get_rule', args: [ruleId: 100, sections: ['settings']]]) :
+            mcpDriver.callTool('hub_get_rule', [ruleId: 100, sections: ['settings']])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        response.result.isError == true
+        inner.success == false
+        inner.health.ruleFormat == 'basic-rule'
+        inner.settingsError == 'status code: 404'
+
+        where:
+        useGateways << [false, true]
     }
 
     def "hub_get_rule names a missing app as a validation error before any read"() {

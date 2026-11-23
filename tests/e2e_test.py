@@ -7946,8 +7946,9 @@ def updated() {}
     def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
         # Deleting a trigger's device leaves the rule broken while its compiled flag still reads false until its
         # page renders. Nothing renders it here: hub_get_rule and the hub_set_rule update ask the rule's own
-        # broken() check, and name each broken row by its native id from the device settings. The two-trigger
-        # rule's page joins its triggers with an OR line, which must not shift the ids.
+        # broken() check, and name each row Rule Machine's label methods mark by its native id from the device
+        # settings. The two-trigger rule's page joins its triggers with an OR line, which must not shift the ids.
+        # A deleted condition device is marked without making the rule broken, so its rule stays editable.
         device_id, dni, _ = self._rm_disposable_switch("RHBrokenDev")
         second_id, second_dni, _ = self._rm_disposable_switch("RHBrokenDev2")
         app_id, _ = self._rm_rule("RHBroken", [self._rm_switch_trigger(device_id), self._rm_switch_trigger(second_id),
@@ -7974,26 +7975,44 @@ def updated() {}
             self._rm_update(cond_id, [native_change("trigger", id=unticked, capability="Switch", fields=[
                 *self._rm_switch_fields(self._ensure_perm_fixture("switch_a"), trigger=True), native_field("isCondTrig.#", "bool", False)])])
             assert str(self._rm_values(cond_id).get("condTrig." + unticked)) == spare, "the hub dropped an unticked condTrig"
-            cond_actions = self._native_rule_document(cond_id).get("actions")
             assert self._rm_health(app_id).get("broken") is False
             assert self._rm_health(cond_id).get("broken") is False
             self._rm_delete_device(dni)
             self._rm_delete_device(second_dni)
-            # Rule Machine's own broken() misses a deleted condition device: health lists the gated condition from
-            # its device setting, and the ticked Conditional Trigger's, and reads broken; the spare condition is in no
-            # action, expression or ticked Conditional Trigger, so not listed.
+            # Rule Machine does not call a rule broken for a condition whose device was deleted: broken() stays false.
+            # Its label methods mark the row, and its own list of conditions in use holds the gated condition and the
+            # ticked Conditional Trigger's, not the spare one the unticked box still names.
             cond_health = self._rm_health(cond_id)
-            assert cond_health.get("broken") is True and cond_health.get("ok") is False, cond_health
-            assert sorted((row.get("kind"), str(row.get("id")), row.get("setting")) for row in cond_health.get("brokenRows") or []) == \
+            assert cond_health.get("broken") is False and cond_health.get("ok") is False, cond_health
+            marked_rows = cond_health.get("brokenRows") or []
+            assert sorted((row.get("kind"), str(row.get("id")), row.get("setting")) for row in marked_rows if row.get("kind") == "condition") == \
                 sorted([("condition", str(gone), f"rDev_{gone}"), ("condition", str(bound), f"rDev_{bound}")]), (spare, cond_health)
-            cond_backups = self._rm_backup_keys(cond_id)
-            cond_refused = self._rm_call({"operation": "update", "ruleId": int(cond_id),
-                                          "args": {"changes": [native_log("not written")]}, "confirm": True})
-            cond_error = self._rm_refused(cond_refused)
-            assert f"already broken: condition {gone} (" in cond_error and "no change was written" in cond_error \
-                and cond_refused.get("partial") is False, cond_refused
-            assert self._rm_backup_keys(cond_id) == cond_backups, "a refused update took a backup"
-            assert self._native_rule_document(cond_id).get("actions") == cond_actions, "a refused update changed the actions"
+            # The action gated on the marked condition has no device of its own, so it is listed without an id.
+            assert all(row.get("id") is None for row in marked_rows if row.get("kind") == "action"), cond_health
+            assert any("does not call the rule broken" in str(issue) for issue in cond_health.get("issues") or []), cond_health
+            # The Hubitat UI edits such a rule, so the update goes ahead and reports the rows already marked.
+            edited = self._rm_update(cond_id, [native_log("written beside marked rows")])
+            assert edited.get("broken") is False, edited
+            assert sorted((row.get("kind"), str(row.get("id"))) for row in edited.get("brokenRowsBefore") or []) == \
+                sorted((row.get("kind"), str(row.get("id"))) for row in marked_rows), (marked_rows, edited)
+            # Gating one more action on the marked condition adds a row Rule Machine marks, so that write fails.
+            before_gate = self._native_rule_document(cond_id).get("actions")
+            gated = self._rm_call({"operation": "update", "ruleId": int(cond_id),
+                                   "args": {"changes": [native_log("newly gated", condition=gone)]}, "confirm": True})
+            gate_error = self._rm_refused(gated)
+            if "Native action label is missing or broken" in gate_error:
+                # Refused at the action itself, which is rolled back.
+                assert gated.get("partial") is False, gated
+                assert self._native_rule_document(cond_id).get("actions") == before_gate, "a newly marked action was left behind"
+            else:
+                assert "The write adds rows Rule Machine marks broken: action" in gate_error, gated
+            # Rule Machine lists a condition as in use only while its Conditional Trigger box is ticked: the bound
+            # condition is refused, and the spare one only the unticked box names deletes.
+            bound_error = self._rm_refuse(cond_id, [native_delete("condition", bound)])
+            assert "Referenced native conditions must be detached before deletion" in bound_error, bound_error
+            freed = self._rm_update(cond_id, [native_delete("condition", spare)])
+            assert str(spare) not in ((freed.get("document") or {}).get("conditions") or {}), freed
+            assert str(bound) in (self._native_rule_document(cond_id).get("conditions") or {}), "the refused delete removed the bound condition"
             health = self._rm_health(app_id)
             assert health.get("broken") is True and health.get("ok") is False and health.get("ruleFormat") == "rm", health
             rows = health.get("brokenRows") or []
@@ -8873,6 +8892,7 @@ def updated() {}
         # Running the rule's actions sets its local variable, which hub_get_rule reads back at once.
         # Every refusal below (an action outside the enum, the Rule Machine parent app, an id with
         # no app, a batch holding one) runs nothing, so the variable keeps its value until the run.
+        # Twelve 10 KB string locals, too large for one response, read through hub_get_rule's paging.
         # Deleting a local variable an action still uses is applied (RM allows it) but reported as
         # leaving the rule broken, as the editor shows.
         app_id, _ = self._rm_rule("RefLocal", [
@@ -8954,6 +8974,26 @@ def updated() {}
             assert self._rm_health(app_id).get("ruleFormat") == "rm", "a refused delete removed the rule"
             assert local_value() == 0, "a refused call changed the rule's local variable"
             assert self._rm_health(app_id).get("privateBoolean") is True, "a refused batch set the rule's private boolean"
+            # A rule whose string locals are too large for one response still reads on its own: health comes first,
+            # the locals page with the cursor convention, and the pages together hold every local once.
+            names = [f"bigLocal{n:02d}" for n in range(1, 13)]
+            for batch in range(0, len(names), 3):
+                self._rm_update(app_id, [native_change("variable", operation="create", name=name, type="string", value="x" * 10000)
+                                         for name in names[batch:batch + 3]])
+            pages = [self.client.call_tool("hub_get_rule", {"ruleId": int(app_id)})]
+            first = pages[0]
+            assert first.get("pagedSection") == "localVariables" and first.get("nextCursor"), \
+                {key: first.get(key) for key in ("pagedSection", "omittedSections", "page", "nextCursor", "note")}
+            assert "sections:[]" not in str(first.get("note")), first.get("note")
+            while pages[-1].get("nextCursor"):
+                pages.append(self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": ["localVariables"],
+                                                                    "cursor": pages[-1]["nextCursor"]}))
+            assert all(next(iter(page)) == "health" and page["health"].get("ruleFormat") == "rm" for page in pages), \
+                [list(page)[:2] for page in pages]
+            rows = [row for page in pages for row in page.get("localVariables") or []]
+            assert sorted(row["name"] for row in rows) == sorted(names + ["refLocal"]), [row["name"] for row in rows]
+            assert all(len(str(row.get("value"))) == 10000 for row in rows if row["name"] in names), "a paged local was cut short"
+            self._rm_update(app_id, [native_change("variable", operation="delete", name=name) for name in names])
             ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id})
             assert ran.get("success") is True and ran.get("rmAction") == "runAction button", ran
             self._rm_wait(lambda: local_value() == 9, what="refLocal=9 after the rule's actions ran")
@@ -9123,28 +9163,25 @@ def updated() {}
             after = self._rm_update(app_id, [native_delete("condition", unused)])["document"]
             for section in ("conditions", "actions", "expressions"):
                 assert after[section] == before[section], section
-            # Once a conditional action's device is deleted its condition renders "**Broken Condition**"; an edit
-            # of that action is refused and leaves the rule as it was.
+            # Once a conditional action's device is deleted its condition renders "**Broken Condition**", which
+            # Rule Machine does not call broken: the rule stays editable, as in the Hubitat UI.
             gone_id, gone_dni, _ = self._rm_disposable_switch("CondGone")
             gone = self._rm_ids(self._rm_update(app_id, [self._rm_switch_condition(gone_id)]))[0]
             gated = self._rm_ids(self._rm_update(app_id, [native_log("gated by a deleted device", condition=gone)]))[0]
             self._rm_delete_device(gone_dni)
-            # Read before anything renders the page: Rule Machine's own broken() misses a deleted condition device,
-            # so health lists the condition from its device setting and reads broken from that.
+            # Read before anything renders the page: broken() stays false, and the label methods mark the condition.
             health = self._rm_health(app_id)
-            assert health.get("broken") is True and health.get("ok") is False, health
+            assert health.get("broken") is False and health.get("ok") is False, health
             assert ("condition", str(gone), f"rDev_{gone}") in \
                 [(row.get("kind"), str(row.get("id")), row.get("setting")) for row in health.get("brokenRows") or []], health
             assert "Broken Condition" in self._rm_page(app_id), "deleting the device did not break its condition"
-            self._rm_refuse_all(app_id, [[native_log("gated edit", id=gated, condition=gone)]])
-            # An unrelated edit is refused before anything is written, because the condition's device is gone.
-            actions_before = self._native_rule_document(app_id).get("actions")
-            unrelated = self._rm_call({"operation": "update", "ruleId": int(app_id),
-                                       "args": {"changes": [native_log("unrelated")]}, "confirm": True})
-            error = str(unrelated.get("error"))
-            assert unrelated.get("success") is False and unrelated.get("partial") is False \
-                and "is already broken" in error and "no change was written" in error, unrelated
-            assert self._native_rule_document(app_id).get("actions") == actions_before, "a refused update changed the actions"
+            # Editing the gated action while it stays on the marked condition leaves a row that was already marked.
+            kept = self._rm_update(app_id, [native_log("gated edit", id=gated, condition=gone)])
+            assert any(row.get("kind") == "condition" and str(row.get("id")) == str(gone) for row in kept.get("brokenRowsBefore") or []), kept
+            # An unrelated edit is written too, and reports the rows already marked before it.
+            unrelated = self._rm_update(app_id, [native_log("unrelated")])
+            assert any(str(row.get("id")) == str(gone) for row in unrelated.get("brokenRowsBefore") or []), unrelated
+            assert "unrelated" in self._rm_values(app_id).values(), "the unrelated edit was not written"
         finally:
             self._delete_native(app_id)
 

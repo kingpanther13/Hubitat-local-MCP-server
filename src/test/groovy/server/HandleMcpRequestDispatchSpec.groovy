@@ -755,8 +755,13 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         'hub_get_info'        | 'subsection'
         'hub_get_source'      | 'File Manager'
         'hub_set_rule'        | 'do NOT resend it'
-        'hub_get_rule'        | 'sections:[]'
+        'hub_get_rule'        | "sections:['localVariables']"
         'unknown_tool_xyz'    | 'narrow your query'
+    }
+
+    def "_responseTooLargeSuggestion for hub_get_rule never suggests the health-only read, which a rule with large locals cannot fit"() {
+        expect:
+        !script._responseTooLargeSuggestion('hub_get_rule').contains('sections:[]')
     }
 
     def "tools/call hub_list_rooms flows through render with an MCP content envelope"() {

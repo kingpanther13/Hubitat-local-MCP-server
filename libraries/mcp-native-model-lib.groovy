@@ -503,7 +503,13 @@ Map _nmUpsertAction(Long ruleId, Map row) {
         Map echoed = _nrSettings(ruleId, settings.collect { it.name })
         boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
         if (!(listed && ordered && compiled && persisted && expressionVerified && waitsVerified && conditionVerified)) return reject.call([error: 'Native action compilation or input verification failed', settingsVerified: persisted, expressionVerified: expressionVerified, waitsVerified: waitsVerified, conditionVerified: conditionVerified])
-        if (!_nmActionLabel(ruleId, id)) return reject.call([error: 'Native action label is missing or broken'])
+        // An edit that keeps an action on a condition Rule Machine marks leaves a row that was already marked, which the
+        // Hubitat UI allows; any other broken label is new.
+        boolean marked = !_nmActionLabel(ruleId, id)
+        boolean kept = marked && editing && conditionId != null && conditionId == prior.cond?.toString()
+        if (kept) kept = _ndMarkedNow(ruleId).rows.any { it.kind == 'condition' && it.id == conditionId }
+        boolean allowed = kept || !marked
+        if (!allowed) return reject.call([error: 'Native action label is missing or broken'])
         [success: true, id: id, action: action, partial: false, settingsVerified: true, expressionVerified: true, waitsVerified: true, conditionVerified: true]
     } catch (Exception failure) {
         mcpLogError('rm-native', "Native action change failed for rule ${ruleId}: ${failure.message}".toString(), failure)
@@ -609,17 +615,11 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     String collection = part == 'action' ? 'actions' : (part == 'trigger' ? 'capabstrue' : 'capabsfalse')
     Map rows = before.get(collection) instanceof Map ? [:] + before.get(collection) : [:]
     if (!rows.keySet().any { it.toString() == id }) throw new IllegalArgumentException('Native row does not exist')
-    if (part == 'condition') {
-        // Rule Machine keeps the eval entry of a deleted IF; only the Required Expression and live actions' expressions count.
-        Set liveExpressionIds = (['0'] + (before.actions instanceof Map ? before.actions.values().findAll { it instanceof Map && it.rule != null }.collect { it.rule.toString() } : [])) as Set
-        boolean referenced = before.eval instanceof Map && before.eval.any { key, tokens -> key.toString() in liveExpressionIds && tokens instanceof List && tokens.any { token -> token?.toString() == id } }
-        referenced = referenced || (before.predCapabs instanceof List && before.predCapabs.any { it.toString() == id })
-        referenced = referenced || (before.actions instanceof Map && before.actions.values().any { it instanceof Map && it.cond?.toString() == id })
-        if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
-    }
+    // A condition is in use exactly while Rule Machine lists it in state.inUseConds, the list health reads.
+    boolean inUse = part == 'condition' && id in _rmMarkedRows(_nrHandle(ruleId), before, []).inUse
+    if (inUse) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
     List oldOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
     Map settingsBefore = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(_nmSettingsInventory(ruleId))) as Map
-    if (part == 'condition' && settingsBefore.any { name, setting -> name.startsWith('condTrig.') && setting.value?.toString() == id }) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
     List requiredRemoved = part == 'action' ? settingsBefore.keySet().findAll { it.endsWith(".${id}".toString()) }.toList() :
         [part == 'trigger' ? "tCapab${id}".toString() : "rCapab_${id}".toString()]
     if (part == 'action') {

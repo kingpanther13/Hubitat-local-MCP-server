@@ -5553,7 +5553,7 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_set_rule":
             return "operation:'read': page one section, args:{sections:['actions'], cursor:'', limit:50}, and follow nextCursor. A create/update/form write was applied before its response was measured: do NOT resend it. Find a created rule with hub_list_rules(labelFilter:<name>); confirm what landed with hub_set_rule(operation:'read', ruleId, args:{sections:[...]}). An update's pre-edit backup, when pre-edit backups are on, is listed by hub_list_backups(scope:'source'). Smaller batches keep write responses under the cap."
         case "hub_get_rule":
-            return "Pass sections:[] for the rule's health and local variables alone, or page one section, sections:['actions'], cursor:'', limit:50, and follow nextCursor."
+            return "Page one section at a time, localVariables included: sections:['localVariables'], cursor:'', limit:20, then follow nextCursor; a smaller limit returns fewer rows per page. health returns with every page."
         case "hub_get_hub_mesh":
             return "This tool has no filters or pagination -- the payload is driven by the shared/linked device and hub-variable lists on a large multi-hub mesh. Read the full device inventory via hub_list_devices (which does paginate) instead; note include_token is off by default and does not affect size."
         default:
@@ -10796,41 +10796,21 @@ boolean _rmIsEditableRuleType(namespace, name) {
     return namespace?.toString() == 'hubitat' && name?.toString() in ['Rule-5.1', 'Button Rule-5.1']
 }
 
-// The rows a Rule Machine rule can no longer resolve, read from its settings rather than its page: a
-// device setting whose device was deleted keeps its row but lists no device. The setting's suffix is the native
-// row id (tDev<id> or reltDevice<id> a trigger, rDev_<id> or relDevice_<id> a condition, <name>.<id> an action).
-// Only rows in use count: a trigger the rule holds, an action in its action list, and a condition an action, the
-// Required Expression or a held trigger's Conditional Trigger references. A picker left empty while a row is being
-// built, or a spare condition, is not a deleted device.
-private List _rmBrokenRows(Map compiled, List appSettings) {
-    def kinds = ['trigger', 'condition', 'action']
-    def stores = [trigger: compiled.capabstrue, condition: compiled.capabsfalse, action: compiled.actions]
-    def order = compiled.actionList instanceof List ? compiled.actionList.collect { it.toString() } : []
-    def evals = compiled.eval instanceof Map ? compiled.eval : [:]
-    def expressionIds = appSettings.any { it.name == 'useST' && it.value?.toString() == 'true' } ? ['0'] : []
-    def used = []
-    // A Conditional Trigger binds its condition through a condTrig.<trigger id> setting, not the compiled state.
-    // Unticking isCondTrig.<trigger id> keeps condTrig's value, so only a ticked box on a held trigger counts.
-    def ticked = appSettings.findAll { it.name?.startsWith('isCondTrig.') && it.value?.toString() == 'true' }.collect { it.name.substring(11) }
-    if (!(stores.trigger instanceof Map)) ticked = []
-    appSettings.each { setting ->
-        boolean binds = setting.name?.startsWith('condTrig.') && setting.value != null
-        if (binds) binds = setting.name.substring(9) in ticked && stores.trigger.containsKey(setting.name.substring(9))
-        if (binds) used << setting.value.toString()
+// The rows Rule Machine's own label methods mark with a status span (**Broken Trigger**, **Broken Condition**,
+// **Broken Action**; text a user typed has no span), called without rendering the page. A marked row never makes the rule broken: only broken() does, since it drives
+// the *BROKEN* name the Automations list and the hub's own rule tools go by. The marker gives the kind; an emptied
+// device picker (tDev<id> or reltDevice<id>, rDev_<id> or relDevice_<id>, <name>.<id>) only finds the row's id within
+// it, and a condition counts only while Rule Machine lists it in state.inUseConds, which its label code builds, so
+// the labels are called before the list is read. A marked kind with no such picker (a deleted variable, or an action
+// gated on a marked condition) is listed once with id null. marks counts each kind's markers.
+Map _rmMarkedRows(handle, Map compiled, List settings) {
+    Map marks = [trigger: handle.triggerLabel(), condition: handle.conditionLabel(), action: handle.actionLabel()].collectEntries { kind, text ->
+        [(kind): text == null ? 0 : text.toString().findAll(/<span\b[^>]*>\s*\*\*Broken [^*]+\*\*\s*<\/span>/).size()]
     }
-    order.each { actionId ->
-        def action = compiled.actions instanceof Map ? _nmEntry(compiled.actions, actionId) : null
-        if (!(action instanceof Map)) return
-        if (action.cond != null) used << action.cond.toString()
-        if (action.rule != null) expressionIds << action.rule.toString()
-    }
-    expressionIds.each { expressionId ->
-        def tokens = _nmEntry(evals, expressionId)
-        if (tokens instanceof List) used.addAll(tokens.collect { it.toString() })
-    }
-    def inUse = [trigger: null, condition: used, action: order]
+    def state = handle.getState()
+    List inUse = state instanceof Map && state.inUseConds != null ? state.inUseConds.toString().findAll(/\d+/) : []
     def rows = []
-    appSettings.each { setting ->
+    settings.each { setting ->
         if (!setting.type?.startsWith('capability') || setting.deviceIds) return
         String kind = null
         String id = null
@@ -10839,16 +10819,18 @@ private List _rmBrokenRows(Map compiled, List appSettings) {
             if (match.matches()) { kind = k; id = match.group(1) }
             kind != null
         }
-        if (kind == null) return
-        def stored = stores.get(kind)
-        if (!(stored instanceof Map) || !stored.containsKey(id)) return
-        def listed = inUse.get(kind)
-        if (listed != null && !(id in listed)) return
+        if (kind == null || !marks.get(kind)) return
+        def stored = [trigger: compiled.capabstrue, condition: compiled.capabsfalse, action: compiled.actions].get(kind)
+        def held = kind == 'condition' ? inUse : (kind == 'action' ? compiled.actionList : (stored instanceof Map ? stored.keySet() : null))
+        if (!(id in (held ?: [])*.toString())) return
         Map row = [kind: kind, id: id, setting: setting.name]
-        if (stored.get(id) instanceof String) row.text = stored.get(id)
+        if (stored instanceof Map && stored.get(id) instanceof String) row.text = stored.get(id)
         rows << row
     }
-    rows.unique().sort { a, b -> kinds.indexOf(a.kind) <=> kinds.indexOf(b.kind) ?: a.id.toInteger() <=> b.id.toInteger() ?: a.setting <=> b.setting }
+    marks.each { kind, count -> if (count && !rows.any { it.kind == kind }) rows << [kind: kind, id: null] }
+    def kinds = ['trigger', 'condition', 'action']
+    [rows: rows.unique().sort { a, b -> kinds.indexOf(a.kind) <=> kinds.indexOf(b.kind) ?: (a.id ?: '0').toInteger() <=> (b.id ?: '0').toInteger() ?: a.setting <=> b.setting },
+     marks: marks, inUse: inUse]
 }
 
 // A disabled-row list from a rule's state: absent means none, a list reads as native ids, anything else is malformed.
@@ -10864,8 +10846,8 @@ private List _rmDisabledRowIds(Map compiled, String key, List checkErrors) {
  * Health report for one installed app, read without rendering its page: a Rule Machine page's code rewrites the
  * rule's state on every render, so a read must not run it. A Rule Machine 5.1 rule or Button Rule answers broken
  * from its own broken() check (the one Rule Machine runs before it marks a label *BROKEN*), which sees a deleted
- * trigger device at once but not a deleted condition device; its brokenRows come from its device settings, and a
- * listed row makes it broken whatever broken() said. Another Rule Machine type reports its
+ * trigger device at once; its brokenRows are the rows its label methods mark, which never make it broken (Rule
+ * Machine marks a condition whose device was deleted without calling the rule broken). Another Rule Machine type reports its
  * compiled flag and a Visual Rule its engine's verdict. One App Status read supplies the label, the red-X flag,
  * paused, stopped, privateBoolean, the settings and the live subscription and job counts. checkErrors records a
  * read that failed, or a flag stored in a form that is not a flag: neither is evidence about the rule, but ok
@@ -10946,40 +10928,38 @@ Map _rmCheckRuleHealth(Integer appId) {
     }
     boolean brokenNoted = false
     boolean editable = _rmIsEditableRuleType(namespace, typeName)
+    def handle = null
     // The compiled flag stays false after a trigger device is deleted until the page next renders; the rule's own
     // check does not wait for that, and runs without the page.
     if (editable) {
         result.broken = null
         try {
-            def flag = _nrHandle(appId as Long).broken()
+            handle = _nrHandle(appId as Long)
+            def flag = handle.broken()
             if (flag instanceof Boolean) result.broken = flag
             else { brokenNoted = true; checkErrors << "the rule's broken() check returned ${flag}, not true or false".toString() }
         } catch (Exception brokenErr) {
             brokenNoted = true
             checkErrors << "the rule's broken() check failed (${brokenErr.message ?: brokenErr.toString()})".toString()
         }
+        // Unread rows are unknown, not none, so hub_set_rule refuses to update a rule whose rows went unread.
+        String rowsUnread = compiled == null ? "the rule's compiled state went unread" : (status == null || status.appSettingsMalformed ? "the rule's settings went unread" : null)
+        if (rowsUnread == null) {
+            try { result.brokenRows = _rmMarkedRows(handle, compiled, status.appSettings).rows }
+            catch (Exception labelErr) { rowsUnread = "the rule's label methods failed (${labelErr.message ?: labelErr.toString()})".toString() }
+        }
+        if (rowsUnread != null) {
+            result.brokenRows = null
+            checkErrors << "${rowsUnread}, so brokenRows was not listed".toString()
+        }
     }
-    boolean nativeBroken = result.broken == true
-    // Rule Machine's broken() stays false for a condition whose device was deleted (it flags a deleted trigger
-    // device), so a Rule Machine 5.1 rule's or Button Rule's dead pickers are read whatever it answers, and make it broken.
-    boolean scanRows = compiled != null && status != null && (nativeBroken || editable)
-    if (scanRows) result.brokenRows = _rmBrokenRows(compiled, status.appSettings)
-    // Unscanned rows are unknown, not none: broken() misses a deleted condition device, so an editable rule whose
-    // settings or compiled state went unread reads brokenRows null and hub_set_rule refuses to update it.
-    boolean rowsUnread = (editable || nativeBroken) && result.ruleFormat == "rm" && (!scanRows || status.appSettingsMalformed)
-    if (rowsUnread) {
-        result.brokenRows = null
-        checkErrors << (compiled == null ? "the rule's compiled state went unread, so brokenRows was not listed" : "the rule's settings went unread, so brokenRows was not listed").toString()
-    }
-    if (result.brokenRows) result.broken = true
-    if (result.ruleFormat == "rm" && result.broken == null && !brokenNoted) checkErrors << "the rule's broken flag could not be read, so whether it is broken is unknown".toString()
-    if (labelBroken && result.broken == null) issues << "label contains *BROKEN* marker, a hint that the rule has a malformed trigger or action; no broken verdict could be read to confirm it".toString()
+    boolean brokenUnread = result.ruleFormat == "rm" && result.broken == null && !brokenNoted
+    if (brokenUnread) checkErrors << "the rule's broken flag could not be read, so whether it is broken is unknown".toString()
+    boolean labelHint = labelBroken && result.broken == null
+    if (labelHint) issues << "label contains *BROKEN* marker, a hint that the rule has a malformed trigger or action; no broken verdict could be read to confirm it".toString()
     boolean rmBroken = result.ruleFormat == "rm" && result.broken == true
-    if (rmBroken) {
-        int deadRows = (result.brokenRows ?: []).collect { [it.kind, it.id] }.unique().size()
-        issues << (nativeBroken ? "Rule Machine marks this rule broken: a trigger, condition or action refers to something that is gone; brokenRows lists the rows whose device is gone." :
-            "the rule refers to ${deadRows} row(s) whose device was deleted, which Rule Machine's own check does not flag; brokenRows lists them.").toString()
-    }
+    if (rmBroken) issues << "Rule Machine marks this rule broken: a trigger, condition or action refers to something that is gone; brokenRows lists the rows its page marks."
+    else if (result.brokenRows) issues << "Rule Machine marks ${result.brokenRows.size()} row(s) on the rule's page (brokenRows) but does not call the rule broken; an update that marks no new row is allowed.".toString()
     if (compiled != null) {
         result.disabledActions = _rmDisabledRowIds(compiled, "disabledActions", checkErrors)
         result.disabledTriggers = _rmDisabledRowIds(compiled, "disabledTriggers", checkErrors)
@@ -12641,7 +12621,7 @@ Every action on a Rule Machine rule drives the rule's own page buttons (`runActi
 
 ### hub_get_rule
 
-`hub_get_rule(ruleId, sections?, cursor?, limit?)` reads one Rule Machine rule, Button Rule or Basic Rule. It returns `ruleId`, `health`, `localVariables` and, for a Rule Machine 5.1 rule or Button Rule, the document hub_set_rule(operation='read') returns: `actions`, `conditions`, `triggers`, `expressions` and `settings`, all by default, or the ones named in `sections`; `sections: []` returns the health and local variables alone. A long rule's whole document can exceed the response size cap, so read its health with `sections: []` and its rows one section at a time. Page one section with `cursor` ("" first, then each `nextCursor`) and `limit` (1-100, default 50), exactly as the hub_set_rule read does (see set_rule_reference). A Basic Rule returns `health`, `localVariables: null` and its `settings` (the same `[{name, type, multiple, value, deviceIds}]` rows; whole, so `cursor` and `limit` are refused; `settingsError` says why when they cannot be read). Any other app returns `health`, `localVariables: null` and a `note`: a Visual Rule's definition is read with hub_get_visual_rule, any other app's configuration and App Status with hub_get_app_config(includeStatus: true).
+`hub_get_rule(ruleId, sections?, cursor?, limit?)` reads one Rule Machine rule, Button Rule or Basic Rule. It returns `health` (first), `ruleId`, `localVariables` and, for a Rule Machine 5.1 rule or Button Rule, the document hub_set_rule(operation='read') returns: `actions`, `conditions`, `triggers`, `expressions` and `settings`, all by default, or the ones named in `sections`; `sections: []` returns the health and local variables alone. Page one section, `localVariables` included, with `cursor` ("" first, then each `nextCursor`) and `limit` (1-100, default 50), exactly as the hub_set_rule read does (see set_rule_reference); a page of another section leaves `localVariables` out. A read that would pass the response size cap still returns `health`, then the parts that fit whole; the first part that does not fit comes back as a page (`pagedSection`, `page`, `nextCursor`: continue with `sections: [<pagedSection>]` and that cursor), any part after it is listed in `omittedSections` (read each with `sections: [<name>]`, `cursor: ""`), and `note` says so. Nothing in the document is readable only through a write tool. A Basic Rule returns `health`, `localVariables: null` and its `settings` (the same `[{name, type, multiple, value, deviceIds}]` rows; whole, so `cursor` and `limit` are refused). Requested settings that cannot be read return `success:false` with `error`, `settingsError` and the health. Any other app returns `health`, `localVariables: null` and a `note`: a Visual Rule's definition is read with hub_get_visual_rule, any other app's configuration and App Status with hub_get_app_config(includeStatus: true).
 
 - `localVariables`: `[{name, type, value}]`, the rule's own list, including a value the running rule just set. `type` is Rule Machine's token (integer, bigdecimal, string, boolean, datetime), the value a hub_set_rule variable change takes. A credential-named variable's value is hidden (`redacted:true`) while credential hiding is on. Hub globals are read with hub_list_variables.
 - If the local variables alone cannot be read, `localVariables` is null and `localVariablesError` says why; the health and the requested sections still return.
@@ -12651,14 +12631,14 @@ Every action on a Rule Machine rule drives the rule's own page buttons (`runActi
 `health` has the same shape here, in hub_set_rule's read and in the update pre-check:
 
 - `ruleFormat` says what was inspected: `rm` (any Rule Machine rule or Button Rule) / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
-- **Rule Machine**: `broken` comes from the rule's own broken() check (a Rule Machine 5.1 rule or Button Rule; an older rule type reports its stored flag), so a rule whose trigger device was deleted reads broken without anyone opening it. That check misses a condition whose device was deleted, so a Rule Machine 5.1 rule or Button Rule with any `brokenRows` entry also reads `broken:true` and `ok:false`, and an issue says Rule Machine's own check does not flag it. `brokenRows` (`[{kind: trigger|action|condition, id, setting, text?}]`) lists each row in use (a trigger, an action in the action list, or a condition an action, the Required Expression or a trigger's Conditional Trigger uses) whose device setting no longer names a device: `id` is the row's native id, the one hub_set_rule changes and operation:'form' use (trigger 2 is `tDev2`), `setting` the setting that lost its device, and `text` the trigger's or condition's stored description. A row that is broken for another reason (a deleted variable) is not listed, so `broken:true` with no rows means the broken row has no device setting. `brokenRows` is null when it was not listed because the rule's compiled state or settings went unread; checkErrors says which. `disabledActions` and `disabledTriggers` (native ids of rows switched off; `[]` when none), `structuralIssues` (the IF/Repeat block and expression check hub_set_rule runs) and `privateBoolean`.
+- **Rule Machine**: `broken` comes from the rule's own broken() check alone (a Rule Machine 5.1 rule or Button Rule; an older rule type reports its stored flag): the check behind the `*BROKEN*` name the Automations list shows once the rule's page is opened, so a rule whose trigger device was deleted reads broken without anyone opening it. `brokenRows` (`[{kind: trigger|action|condition, id, setting, text?}]`, Rule Machine 5.1 rules and Button Rules; `[]` for other types) lists the rows Rule Machine's own label methods mark (`**Broken Condition**` and the like), read without opening the page. A marked row does not make the rule broken: Rule Machine marks a condition whose device was deleted without calling the rule broken, so such a rule reads `broken:false`, `ok:false` and an issue naming the marked rows. The marker gives the row's kind; `id` is its native id, the one hub_set_rule changes and operation:'form' use (trigger 2 is `tDev2`), found from the device setting that lost its device (`setting`); `text` is the trigger's or condition's stored description. A condition counts only while Rule Machine lists it as in use. A marked kind with no emptied device setting (a deleted variable, or an action gated on a marked condition) is listed once as `{kind, id: null}`. `brokenRows` is null when it was not listed because the rule's compiled state, settings or label methods went unread; checkErrors says which. `disabledActions` and `disabledTriggers` (native ids of rows switched off; `[]` when none), `structuralIssues` (the IF/Repeat block and expression check hub_set_rule runs) and `privateBoolean`.
 - **Visual Rules Builder**: the engine's own verdict, a graph rule's `validationErrors` (broken when non-empty), and its pause state from its builder, with the rule's own name as `label`.
 - **Other apps** (Basic Rule, Button Controller, Room Lighting, user and community apps): label, red-X flag and the state flags below; `broken` is null.
 - `paused`, `stopped` and `privateBoolean` come from the app's state on its App Status page. A Rule Machine rule with no `paused` or `stopped` entry reads `false`, and so does a Basic Rule with no `paused` entry; for an app whose state has no flag, or when the status page cannot be read, the name's "(Paused)" or "(Stopped)" decoration is used. `privateBoolean` has no such fallback. An entry stored as neither true nor false reads null with a `checkErrors` entry; neither the compiled state nor the name's decoration replaces it. `label` has the decoration removed. `disabled` is the red-X flag.
 - `eventSubscriptionCount` and `scheduledJobCount` count the app's live subscriptions and scheduled jobs from the same read; the lists themselves come from hub_get_app_config(includeStatus=true).
 - A value the hub does not return reads null.
 
-`ok:true` means everything was read and nothing is wrong. `ok:false` with `unreadable:false` means `issues` names a problem or `checkErrors` names a read that failed, leaving part of the rule unchecked; `unreadable:true` means nothing could be read, which is not evidence of breakage. A `checkErrors` entry is not evidence about the rule either. A Rule Machine rule whose `broken` could not be read always has a `checkErrors` entry, so `broken:null` never reads `ok:true`; hub_set_rule(operation='update') refuses a rule with `broken:null`, whose compiled state went unread (`disabledActions:null`), or whose settings went unread (`brokenRows:null`, since Rule Machine's own check misses a deleted condition device), before any backup or write. A structural issue is expected while a block is built across several calls; finish it with a hub_set_rule(operation='update') terminator change, and compare with hub_get_rule(sections=['actions']) before considering a restore. hub_set_rule(operation='update') refuses a rule that is already broken before any backup or write, naming each broken row by kind and native id.
+`ok:true` means everything was read and nothing is wrong. `ok:false` with `unreadable:false` means `issues` names a problem or `checkErrors` names a read that failed, leaving part of the rule unchecked; `unreadable:true` means nothing could be read, which is not evidence of breakage. A `checkErrors` entry is not evidence about the rule either. A Rule Machine rule whose `broken` could not be read always has a `checkErrors` entry, so `broken:null` never reads `ok:true`; hub_set_rule(operation='update') refuses a rule with `broken:null`, whose compiled state went unread (`disabledActions:null`), or whose marked rows went unread (`brokenRows:null`), before any backup or write. A structural issue is expected while a block is built across several calls; finish it with a hub_set_rule(operation='update') terminator change, and compare with hub_get_rule(sections=['actions']) before considering a restore. hub_set_rule(operation='update') refuses a rule that is already broken before any backup or write, naming each marked row by kind and native id. A rule with marked rows that is not broken can be updated, as in the Hubitat UI: the result lists the rows already marked before the write in `brokenRowsBefore`, and the write fails only if it adds a row Rule Machine newly marks.
 
 ### hub_delete_native_app
 

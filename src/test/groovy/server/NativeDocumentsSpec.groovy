@@ -19,9 +19,11 @@ class NativeDocumentsSpec extends ToolSpecBase {
     Map lifecycle
     Map typedSettings
     List statusSettings
+    Map labels
 
     void setup() {
         statusSettings = []
+        labels = [:]
         events = []
         renders = []
         pageBody = null
@@ -44,6 +46,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
             def child = new NativeDocumentChild(events, lifecycle, nativeState.allLocalVars, typedSettings)
             // The rule's own broken() check, which health reads in place of the compiled flag.
             child.brokenCheck = { -> spec.broken }
+            child.labelText = { String kind -> def text = spec.labels.get(kind); (text instanceof Closure ? text() : text) ?: '' }
+            child.stateOf = { -> spec.nativeState }
             child
         }
         script.metaClass._nrState = { Long id -> [:] + nativeState }
@@ -250,15 +254,62 @@ class NativeDocumentsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def 'hub_get_rule pages one section and still returns its local variables'() {
+    def 'hub_get_rule pages one section with its health first, leaving the local variables to a page of their own'() {
         when:
         def first = script.toolGetNativeRule([ruleId: 42, sections: ['actions'], cursor: '', limit: 1])
         def second = script.toolGetNativeRule([ruleId: 42, sections: ['actions'], cursor: first.nextCursor, limit: 1])
+        def locals = script.toolGetNativeRule([ruleId: 42, sections: ['localVariables'], cursor: '', limit: 10])
         then:
         first.actions*.id == ['3']
         second.actions*.id == ['1']
         second.nextCursor == null
-        [first, second].every { it.localVariables*.name == ['counter'] && it.health != null && !it.containsKey('conditions') }
+        [first, second].every { it.keySet().first() == 'health' && !it.containsKey('localVariables') && !it.containsKey('conditions') }
+        locals.keySet().first() == 'health'
+        locals.localVariables*.name == ['counter']
+        locals.page.total == 1 && locals.nextCursor == null
+        !locals.containsKey('actions')
+    }
+
+    def 'hub_get_rule over the response cap keeps health first, pages the first part that does not fit and returns the rest whole'() {
+        given: "twelve 10 KB string locals, more than one response holds"
+        nativeState.allLocalVars = (1..12).collectEntries { n -> [(String.format('big%02d', n)): [type: 'string', value: 'x' * 10000]] }
+        when:
+        def first = script.toolGetNativeRule([ruleId: 42])
+        List pages = [first]
+        while (pages[-1].nextCursor != null) pages << script.toolGetNativeRule([ruleId: 42, sections: ['localVariables'], cursor: pages[-1].nextCursor])
+        then: 'health comes first and the small parts after the locals still come back whole'
+        first.keySet().first() == 'health'
+        first.health.ok == true
+        first.pagedSection == 'localVariables'
+        first.omittedSections == []
+        first.actions*.id == ['3', '1']
+        first.settings*.name == ['flag', 'count']
+        first.note.contains('pagedSection') && !first.note.contains('sections:[]')
+        first.localVariables.size() < 12
+        and: 'every page carries the health and fits the cap, and the pages together hold every local once, in order'
+        pages.size() > 1
+        pages.every { it.health != null && script._ndEnvelopeBytes(it) <= script._responseSizeLimitBytes() - 1024 }
+        pages.collectMany { it.localVariables*.name } == (1..12).collect { n -> String.format('big%02d', n) }
+    }
+
+    def 'a part after the paged one that does not fit either is listed in omittedSections, through the dispatcher (useGateways=#useGateways)'() {
+        given: 'the locals and the settings are each too large to send with the other'
+        settingsMap.enableRead = true
+        settingsMap.useGateways = useGateways
+        nativeState.allLocalVars = (1..12).collectEntries { n -> [("big${n}".toString()): [type: 'string', value: 'x' * 10000]] }
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: (1..12).collect { n -> [name: "text${n}".toString(), type: 'text', multiple: false, value: 'y' * 10000] }]) }
+        when:
+        def response = useGateways ? mcpDriver.callTool('hub_read_rules', [tool: 'hub_get_rule', args: [ruleId: 42]]) : mcpDriver.callTool('hub_get_rule', [ruleId: 42])
+        def first = mcpDriver.parseInner(response)
+        then:
+        first.keySet().first() == 'health'
+        first.pagedSection == 'localVariables'
+        first.omittedSections == ['settings']
+        !first.containsKey('settings')
+        first.actions*.id == ['3', '1']
+        !first.containsKey('response_too_large')
+        where:
+        useGateways << [false, true]
     }
 
     // A long rule's whole document can exceed the response cap, so its health must stay readable on its own.
@@ -268,7 +319,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         when:
         def inner = mcpDriver.parseInner(mcpDriver.callTool('hub_get_rule', [ruleId: 42, sections: []]))
         then:
-        inner.keySet() == ['ruleId', 'health', 'localVariables'] as Set
+        inner.keySet() as List == ['health', 'ruleId', 'localVariables']
         inner.health.ok == true
         inner.localVariables*.name == ['counter']
     }
@@ -330,6 +381,9 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.error.contains('Native state is unavailable')
         !result.note.contains('Nothing was changed')
     }
+
+    // Rule Machine's broken-row marker, as its label methods and page draw it.
+    private static String marker(String kind) { "<span class='text-hubitat-danger'>**Broken ${kind}**</span>".toString() }
 
     // Pre-write refusals run with pre-edit backups on, so a check moved below the backup fails here.
     private List backupsOn() {
@@ -684,6 +738,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given: "two triggers whose devices were deleted; the compiled flag still reads false, the rule's own check true"
         def backups = backupsOn()
         broken = true
+        labels.trigger = marker('Trigger')
         nativeState.capabstrue = ['5': 'Porch switch turns on', '6': 'Hall switch turns on']
         statusSettings = [[name: 'tDev5', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null],
                           [name: 'tDev6', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null],
@@ -706,42 +761,64 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.actionList == ['3', '1']
     }
 
-    def 'a rule whose condition device was deleted is refused as already broken before its backup and any change, though its own broken check says false'() {
-        given: "Rule Machine's broken() misses a deleted condition device; the condition's picker lists no device"
+    def 'a rule whose page marks a condition (its device deleted) is updated, reporting the rows marked before the write'() {
+        given: "Rule Machine's broken() says false; the condition and the action it gates carry the marker, as the Hubitat UI shows them"
         def backups = backupsOn()
+        labels.putAll(condition: marker('Condition'), action: 'IF (' + marker('Condition') + ") Log: 'gated'")
+        nativeState.inUseConds = ['4']
         nativeState.actions = ['3': [method: 'getLogMsg', cond: '4'], '1': [method: 'getLogMsg']]
-        statusSettings = [[name: 'rCapab_4', type: 'enum', value: 'Switch', deviceIdsForDeviceList: [], deviceList: null],
-                          [name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        Map picker = [name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]
+        statusSettings = [picker]
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [picker]]) }
         when:
         def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
-        !result.success
-        !result.partial
-        result.broken == true
-        result.brokenRows == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
-        result.error == "Rule 42 is already broken: condition 4 ('Switch is on'); no change was written."
-        backups.isEmpty()
-        events.empty
-        renders.isEmpty()
+        result.success == true
+        result.broken == false
+        result.brokenRowsBefore == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on'], [kind: 'action', id: null]]
+        backups == [42]
+        events.contains('action')
     }
 
-    def 'a condition only a Conditional Trigger binds is in use: its deleted device refuses the update before its backup and any change'() {
-        given: "trigger 5's Conditional Trigger binds condition 4, which no action or expression uses; its picker lists no device"
+    def 'an update that adds a row Rule Machine newly marks fails after the write, naming the kind and its marks'() {
+        given: "the condition is already marked; the write gates one more action on it, so the action labels carry one more marker"
         def backups = backupsOn()
-        statusSettings = [[name: 'isCondTrig.5', type: 'bool', value: 'true', deviceIdsForDeviceList: [], deviceList: null],
-                          [name: 'condTrig.5', type: 'enum', value: '4', deviceIdsForDeviceList: [], deviceList: null],
-                          [name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        labels.putAll(condition: marker('Condition'), action: { -> events.contains('action') ? marker('Condition') + marker('Condition') : marker('Condition') })
+        nativeState.inUseConds = ['4']
         when:
         def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
-        !result.partial
-        result.broken == true
-        result.brokenRows == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
-        result.error == "Rule 42 is already broken: condition 4 ('Switch is on'); no change was written."
-        backups.isEmpty()
-        events.empty
-        renders.isEmpty()
+        result.partial
+        result.error.contains('The write adds rows Rule Machine marks broken: action (2 marked, 1 before)')
+        result.brokenRowsBefore == [[kind: 'condition', id: null], [kind: 'action', id: null]]
+        backups == [42]
+        !events.any { it instanceof Map && it.path == '/installedapp/update/json' }
+    }
+
+    def 'a row newly marked within a kind is named by its id even when the kind keeps its marker count'() {
+        given: "before the write condition 4's picker is empty; after it, condition 4 is repaired and condition 2's device is gone"
+        nativeState.capabsfalse = ['4': 'Switch is on', '2': 'Lamp is on']
+        nativeState.inUseConds = ['2', '4']
+        labels.condition = marker('Condition')
+        Closure picker = { String id -> [name: "rDev_${id}".toString(), type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null] }
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [events.contains('action') ? picker('2') : picker('4')]]) }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        result.error.contains('The write adds rows Rule Machine marks broken: condition 2')
+    }
+
+    def 'a create whose rule Rule Machine marks fails, since a new rule has no marked rows before it'() {
+        given:
+        labels.action = marker('Action')
+        when:
+        def result = script.toolCreateRuleDocument([parentId: 28, name: 'Marked', changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        result.partial
+        result.error.contains('The write adds rows Rule Machine marks broken: action (1 marked, 0 before)')
     }
 
     def 'an update whose status page carries no appSettings is refused before its backup and any write, as settings that went unread'() {
@@ -757,24 +834,24 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !result.success
         !result.partial
         result.broken == false
-        result.error == "Rule 42's device settings could not be read before the write, so a row whose device was deleted would go unnoticed; no change was written."
+        result.error == "Rule 42's marked rows could not be read before the write, so a newly marked row would go unnoticed; no change was written."
         result.checkErrors.any { it == "the rule's settings went unread, so brokenRows was not listed" }
         backups.isEmpty()
         events.empty
     }
 
-    def 'the document read reports a deleted condition device as broken although the rule\'s own check says false'() {
-        given: "condition 4 is in use through the Required Expression"
-        typedSettings.useST = true
+    def 'the document read reports a condition Rule Machine marks without calling the rule broken'() {
+        given: "condition 4 is in Rule Machine's list of conditions in use, and its labels mark it"
+        labels.condition = marker('Condition')
+        nativeState.inUseConds = ['4']
         statusSettings = [[name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
         when:
         def health = script.toolGetRuleDocument([ruleId: 42, sections: []]).health
         then:
-        health.broken == true
+        health.broken == false
         health.ok == false
         health.brokenRows == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
-        health.issues.any { it.contains('1 row(s) whose device was deleted') && it.contains("Rule Machine's own check does not flag") }
-        !health.issues.any { it.contains('marks this rule broken') }
+        health.issues == ["Rule Machine marks 1 row(s) on the rule's page (brokenRows) but does not call the rule broken; an update that marks no new row is allowed."]
         renders.isEmpty()
     }
 
@@ -796,15 +873,15 @@ class NativeDocumentsSpec extends ToolSpecBase {
         'an action row outside the action list'            | 'onOffSwitch.8'
     }
 
-    def 'a condition an action uses through an expression is in use, and a null device list reads as no devices'() {
+    def 'a condition Rule Machine lists as in use is found from its emptied picker, a null device list reading as no devices'() {
         given:
-        nativeState.actions = ['3': [method: 'getIfThen', rule: '2'], '1': [method: 'getLogMsg']]
-        nativeState.eval = ['0': [], '2': ['NOT', '4']]
+        labels.condition = marker('Condition')
+        nativeState.inUseConds = [4]
         statusSettings = [[name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: null, deviceList: null]]
         when:
         def health = script.toolGetRuleDocument([ruleId: 42, sections: []]).health
         then:
-        health.broken == true
+        health.broken == false
         health.brokenRows == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
     }
 
@@ -835,7 +912,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !result.success
         !result.partial
         result.broken == false
-        result.error == "Rule 42's device settings could not be read before the write, so a row whose device was deleted would go unnoticed; no change was written."
+        result.error == "Rule 42's marked rows could not be read before the write, so a newly marked row would go unnoticed; no change was written."
         result.checkErrors.any { it == "the rule's settings went unread, so brokenRows was not listed" }
         result.note.contains('brokenRows')
         backups.isEmpty()
@@ -1393,7 +1470,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
     }
 
     def 'an IF retargeted to another condition frees the old condition for deletion in the same batch'() {
-        given:
+        given: 'Rule Machine lists condition 1 in use before the batch; the delete itself checks the list as it stands then'
+        nativeState.inUseConds = ['1']
         nativeState.capabsfalse = ['1': 'Switch 789 on', '2': 'Switch 746 on']
         nativeState.actionList = ['1', '2', '3']
         nativeState.actions = ['1': [method: 'getIfThen', rule: 1], '2': [method: 'getLogMsg'], '3': [method: 'getEndIf']]
@@ -1418,6 +1496,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'an existing conditional action moved to another condition lets the batch delete the old one'() {
         given:
+        nativeState.inUseConds = ['8']
         nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
         nativeState.actions = ['3': [method: 'getLogMsg'], '1': [method: 'getOnOffSwitch', cond: '8']]
         when:
@@ -1446,8 +1525,9 @@ class NativeDocumentsSpec extends ToolSpecBase {
         error.message == 'changes[2]: Referenced native conditions must be detached before deletion'
     }
 
-    def 'a condition only a deleted IF expression names can be deleted while a remaining IF still holds its condition'() {
+    def 'a condition freed by deleting its IF earlier in the batch deletes; alone, while Rule Machine lists it in use, it is refused'() {
         given:
+        nativeState.inUseConds = ['4', '8']
         nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
         nativeState.actionList = ['1', '2', '3']
         nativeState.actions = ['1': [method: 'getIfThen', rule: 1], '2': [method: 'getLogMsg'], '3': [method: 'getEndIf']]
@@ -1590,7 +1670,20 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
-    def 'referenced condition deletion is refused before any change or render'() {
+    def 'a condition Rule Machine does not list as in use passes the batch check, whatever an unticked Conditional Trigger still names'() {
+        given: "trigger 5's unticked box keeps condTrig.5 = 8; Rule Machine lists only condition 4"
+        nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
+        nativeState.inUseConds = ['4']
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [[name: 'isCondTrig.5', type: 'bool', value: false], [name: 'condTrig.5', type: 'enum', value: '8']]]) }
+        when:
+        script._ndPreflight(42L, script._ndChanges([[part: 'delete', value: [part: 'condition', id: '8']]]))
+        then:
+        noExceptionThrown()
+    }
+
+    def 'a condition Rule Machine lists as in use is refused for deletion before any change or render'() {
+        given:
+        nativeState.inUseConds = ['4']
         when:
         def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'delete', value: [part: 'condition', id: '4']]], confirm: true])
         then:
@@ -1648,25 +1741,21 @@ class NativeDocumentsSpec extends ToolSpecBase {
         passed.success
     }
 
-    def 'an unrelated edit does not report success while an existing conditional action is broken'() {
-        given: 'action 1 is gated by condition 4, whose label RM can no longer draw'
+    def 'an unrelated edit succeeds while an action Rule Machine marked before the write stays marked, and typed text is no marker (#markup)'() {
+        given: 'action 1 is gated by condition 4, whose label Rule Machine can no longer draw'
         nativeState.actions['1'] = [method: 'getLogMsg', cond: 4]
-        script.metaClass._nrStatePatch = { Long id, Map put, List remove = [] -> remove.each { nativeState.remove(it) }; nativeState.putAll(put); [:] }
-        script.metaClass._nrHandle = { Long id -> new NativeDocumentConditionalChild(events, lifecycle, conditionLabel) }
+        nativeState.inUseConds = ['4']
+        labels.action = "IF (${markup}) Log: 'gated'".toString()
         when:
         def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
-        result.success == !refused
-        if (refused) {
-            assert result.partial
-            assert result.error.contains('Native action 1 is broken')
-            assert !events.any { it instanceof Map }
-        }
+        result.success == true
+        result.brokenRowsBefore == (marked ? [[kind: 'action', id: null]] : null)
         where:
-        conditionLabel                                                                     | refused
-        "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'"  | true
-        "IF (<span style='color:red'>**Broken Condition**</span>) Log: 'gated'"            | true
-        "IF (Switch is on) Log: '**Broken Condition** typed by the user'"                  | false
+        markup                                                        | marked
+        "<span class='text-hubitat-danger'>**Broken Condition**</span>" | true
+        "<span style='color:red'>**Broken Condition**</span>"           | true
+        "Switch is on) Log: '**Broken Condition** typed by the user'"   | false
     }
 
     def 'a broken marker on the rendered page does not block Done while the rule state reports healthy'() {
@@ -1941,6 +2030,14 @@ class NativeDocumentChild {
     Map typedSettings
     NativeDocumentChild(List events, Map lifecycle, Map locals = [:], Map typedSettings = [:]) { this.events = events; this.lifecycle = lifecycle; this.locals = locals; this.typedSettings = typedSettings }
     Closure brokenCheck = { -> false }
+    // Rule Machine's own label methods (the text its page shows, markers included) and its state, where its label
+    // code keeps inUseConds.
+    Closure labelText = { String kind -> '' }
+    Closure stateOf = { -> [:] }
+    Object triggerLabel() { labelText('trigger') }
+    Object conditionLabel() { labelText('condition') }
+    Object actionLabel() { labelText('action') }
+    Object getState() { stateOf() }
     Object getSetting(String name) { typedSettings.get(name) }
     Map getAllLocalVars() { locals }
     Object broken() { brokenCheck() }
@@ -1969,12 +2066,6 @@ class NativeDocumentDiagnosticChild extends NativeDocumentChild {
     }
 }
 
-class NativeDocumentConditionalChild extends NativeDocumentChild {
-    String conditionLabel
-    NativeDocumentConditionalChild(List events, Map lifecycle, String conditionLabel) { super(events, lifecycle); this.conditionLabel = conditionLabel }
-    Object thisActionLabel(Object actionId) { actionId.toString() == '1' ? conditionLabel : "Log: 'row ${actionId}'" }
-}
-
 class NativeDocumentButtonChild extends NativeDocumentChild {
     Map nativeState
     boolean brokenEditor
@@ -1986,6 +2077,7 @@ class NativeDocumentButtonChild extends NativeDocumentChild {
     Object mainPage() { events << 'mainPage'; null }
     Object selectActions(Map params) { events << 'selectActionsWithParams'; null }
     Object selectActions() { events << 'selectActions'; [name: 'selectActions', sections: [[body: []]]] }
+    Object getState() { nativeState }
     Object selectActionsX() {
         events << 'selectActionsX'
         if (nativeState.actNdx == null && !nativeState.actions && !nativeState.actionList) nativeState.actNdx = 1

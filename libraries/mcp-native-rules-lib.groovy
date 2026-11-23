@@ -45,13 +45,13 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_get_rule",
-            description: """Read one Rule Machine rule, Button Rule or Basic Rule: its health and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; for a Basic Rule, its settings. Any other installed app returns its health alone.[[FLAT_TRIM]] The rule's page is not opened and its configuration is not changed: broken comes from the rule's own check, which can refresh the rule's stored broken flag, and is also true when a row's device is gone. health carries broken, brokenRows (each row whose device is gone, by kind and native id), paused, stopped, privateBoolean, disabledActions, disabledTriggers, structuralIssues, the red-X disabled flag and the live eventSubscriptionCount and scheduledJobCount; the raw subscription and job lists come from hub_get_app_config(includeStatus: true).[[/FLAT_TRIM]] health.ok=false with unreadable=false means issues names a problem or checkErrors names a failed read; unreadable=true means nothing could be read, which is not evidence of breakage. Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the full health reference.""",
+            description: """Read one Rule Machine rule, Button Rule or Basic Rule: its health and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; for a Basic Rule, its settings. Any other installed app returns its health alone.[[FLAT_TRIM]] The rule's page is not opened and its configuration is not changed: broken comes from the rule's own check, which can refresh the rule's stored broken flag. health carries broken, brokenRows (the rows Rule Machine's page marks broken, by kind and native id; a marked row alone does not make the rule broken), paused, stopped, privateBoolean, disabledActions, disabledTriggers, structuralIssues, the red-X disabled flag and the live eventSubscriptionCount and scheduledJobCount; the raw subscription and job lists come from hub_get_app_config(includeStatus: true).[[/FLAT_TRIM]] health.ok=false with unreadable=false means issues names a problem or checkErrors names a failed read; unreadable=true means nothing could be read, which is not evidence of breakage. Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the full health reference.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     ruleId: [type: "integer", minimum: 1, description: "The rule's installed-app id, from hub_list_rules (a Button Rule's or Basic Rule's from hub_list_apps(scope:'instances'), a Visual Rule's from hub_get_visual_rule)."],
-                    sections: [type: "array", items: [type: "string", enum: ["actions", "conditions", "triggers", "expressions", "settings"]], description: "Document sections to return; default all. localVariables and health are always returned, so [] returns them alone; a long rule's whole document can exceed the response cap."],
-                    cursor: [type: "string", description: "Page one section: pass \"\" for the first page, then each nextCursor. Requires exactly one section."],
+                    sections: [type: "array", items: [type: "string", enum: ["actions", "conditions", "triggers", "expressions", "settings", "localVariables"]], description: "Document sections to return; default all. health always returns first and localVariables with every read but a page of another section, so [] returns them alone. A read too large for one response pages the first part that does not fit (pagedSection, nextCursor) and lists the rest in omittedSections."],
+                    cursor: [type: "string", description: "Page one section, localVariables included: pass \"\" for the first page, then each nextCursor. Requires exactly one section."],
                     limit: [type: "integer", minimum: 1, maximum: 100, description: "Rows per page when paging (default 50)."]
                 ],
                 required: ["ruleId"]
@@ -2666,7 +2666,7 @@ def toolGetNativeRule(args) {
     Long id = normalizeRuleId(raw) as Long
     Map docArgs = [ruleId: id, localVariables: true]
     ['sections', 'cursor', 'limit'].each { key -> if (args.containsKey(key)) docArgs.put(key, args.get(key)) }
-    Map read = _ndDocumentArgs(docArgs, ['actions', 'conditions', 'triggers', 'expressions', 'settings'], 'hub_get_rule')
+    Map read = _ndDocumentArgs(docArgs, ['actions', 'conditions', 'triggers', 'expressions', 'settings', 'localVariables'], 'hub_get_rule')
     def target
     try { target = getAppByAppId(id) }
     catch (Exception lookup) {
@@ -2678,8 +2678,8 @@ def toolGetNativeRule(args) {
         if (health.unreadable == true) return [success: false, ruleId: id, error: "Rule ${id} could not be read: ${why}".toString(), note: retry]
         String unread = "Rule ${id} could not be identified (${why}), so its document and local variables were not read; its health was read without it.".toString()
         // A requested section that did not come back is a failed read; a health-only read (sections:[]) still succeeded.
-        if (read.sections) return [success: false, ruleId: id, error: unread, health: health, localVariables: null, note: retry]
-        return [ruleId: id, health: health, localVariables: null, documentError: unread, note: retry]
+        if (read.sections) return [success: false, health: health, ruleId: id, error: unread, localVariables: null, note: retry]
+        return [health: health, ruleId: id, localVariables: null, documentError: unread, note: retry]
     }
     if (target == null) throw new IllegalArgumentException(_rmMissingAppText(id))
     String typeName = target.appType?.name?.toString()
@@ -2688,11 +2688,17 @@ def toolGetNativeRule(args) {
     boolean basicRule = namespace == 'hubitat' && _classicAppFormat(typeName) == 'basic-rule'
     // A Basic Rule's settings are short and come back whole, so there is nothing to page.
     if (basicRule && read.paged) throw new IllegalArgumentException("A Basic Rule's settings are returned whole; omit cursor and limit.")
-    Map result = [ruleId: id, health: _rmCheckRuleHealth(id as Integer), localVariables: null]
+    Map result = [health: _rmCheckRuleHealth(id as Integer), ruleId: id, localVariables: null]
     if (basicRule) {
         if ('settings' in read.sections) {
             try { result.settings = _ndSettings(id) }
-            catch (Exception settingsFailure) { result.settings = null; result.settingsError = (settingsFailure.message ?: settingsFailure.toString()).toString() }
+            catch (Exception settingsFailure) {
+                // A requested section that did not come back is a failed read, as on the Rule Machine path; the health stays.
+                String why = (settingsFailure.message ?: settingsFailure.toString()).toString()
+                return [success: false, health: result.health, ruleId: id, settings: null, settingsError: why, localVariables: null,
+                        error: "Rule ${id} could not be read: ${why}".toString(),
+                        note: "The read does not open the rule's page or change its configuration, so retrying once is safe. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+            }
         }
         return result
     }
