@@ -9171,7 +9171,7 @@ def updated() {}
             for section in ("conditions", "actions", "expressions"):
                 assert after[section] == before[section], section
             # Once a conditional action's device is deleted its condition renders "**Broken Condition**", which
-            # Rule Machine does not call broken: the rule stays editable, as in the Hubitat UI.
+            # Rule Machine does not call broken: the rule stays editable, until an edit of the gated action itself.
             gone_id, gone_dni, _ = self._rm_disposable_switch("CondGone")
             gone = self._rm_ids(self._rm_update(app_id, [self._rm_switch_condition(gone_id)]))[0]
             gated = self._rm_ids(self._rm_update(app_id, [native_log("gated by a deleted device", condition=gone)]))[0]
@@ -9182,13 +9182,21 @@ def updated() {}
             assert ("condition", str(gone), f"rDev_{gone}") in \
                 [(row.get("kind"), str(row.get("id")), row.get("setting")) for row in health.get("brokenRows") or []], health
             assert "Broken Condition" in self._rm_page(app_id), "deleting the device did not break its condition"
-            # Editing the gated action while it stays on the marked condition leaves a row that was already marked.
-            kept = self._rm_update(app_id, [native_log("gated edit", id=gated, condition=gone)])
-            assert any(row.get("kind") == "condition" and str(row.get("id")) == str(gone) for row in kept.get("brokenRowsBefore") or []), kept
-            # An unrelated edit is written too, and reports the rows already marked before it.
+            # An unrelated edit is written, and reports the rows already marked before it.
             unrelated = self._rm_update(app_id, [native_log("unrelated")])
             assert any(str(row.get("id")) == str(gone) for row in unrelated.get("brokenRowsBefore") or []), unrelated
             assert "unrelated" in self._rm_values(app_id).values(), "the unrelated edit was not written"
+            # Editing the gated action itself turns Rule Machine's own broken() true, though the rule's name gains no
+            # *BROKEN* marker; broken() decides, so the write reports that, and the rule is then refused as broken.
+            kept = self._rm_call({"operation": "update", "ruleId": int(app_id), "confirm": True,
+                                  "args": {"changes": [native_log("gated edit", id=gated, condition=gone)]}})
+            kept_error = self._rm_refused(kept)
+            assert "Rule Machine's own broken() check now calls rule" in kept_error and kept.get("partial") is True \
+                and kept.get("broken") is True, kept
+            assert any(row.get("kind") == "condition" and str(row.get("id")) == str(gone) for row in kept.get("brokenRowsBefore") or []), kept
+            assert self._rm_health(app_id).get("broken") is True
+            later = self._rm_call({"operation": "update", "ruleId": int(app_id), "confirm": True, "args": {"changes": [native_log("after broken")]}})
+            assert "is already broken" in self._rm_refused(later) and later.get("partial") is False, later
         finally:
             self._delete_native(app_id)
 

@@ -1846,7 +1846,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !failed.success
         failed.partial
         failed.broken == true
-        failed.error.contains('health is broken')
+        failed.error == "The change was written, but Rule Machine's own broken() check now calls rule 42 broken, so Done was not pressed"
         !events.any { it instanceof Map }
         when:
         events.clear()
@@ -1858,7 +1858,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
     }
 
     def 'a stored broken flag the render leaves true does not fail the write while the rule\'s own broken() says false'() {
-        given: 'editing an action gated on a marked condition renders it, which raises the stored flag; broken() stays false'
+        given: 'the render raises the stored flag, but the rule\'s own broken() says false, and broken() decides'
         script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, true) }
         when:
         def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])

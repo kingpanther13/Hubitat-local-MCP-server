@@ -522,11 +522,12 @@ private Map _ndApply(Long id, List changes, boolean created, Map before = null) 
         }
         if (added) structuralIssues << "The write adds rows Rule Machine marks broken: ${added.join('; ')}".toString()
         if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
-        // The verdict is the rule's own broken(): editing an action gated on a marked condition leaves the stored flag
-        // true after the render, though Rule Machine does not call the rule broken.
+        // The verdict is the rule's own broken(), not the stored flag. Editing an action gated on a condition whose
+        // device was deleted turns broken() true, though the rule's name gains no *BROKEN* marker; broken() decides.
         def flag = _nrHandle(id).broken()
         boolean healthy = health instanceof Map && flag == false
-        if (!healthy) return [success: false, partial: true, ruleId: id, created: created, results: outcomes, broken: flag, error: 'Native rule health is broken or unverified', note: _ndFailureNote(true, created)]
+        String unhealthy = flag == true ? "The change was written, but Rule Machine's own broken() check now calls rule ${id} broken, so Done was not pressed".toString() : 'Native rule health is broken or unverified'
+        if (!healthy) return [success: false, partial: true, ruleId: id, created: created, results: outcomes, broken: flag, error: unhealthy, note: _ndFailureNote(true, created)]
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
         def doneStatus = done instanceof Map ? done.get('status') : null
         if (doneStatus != null && doneStatus.toString().isInteger() && doneStatus.toInteger() >= 400) throw new IllegalStateException('Native Done was rejected')
