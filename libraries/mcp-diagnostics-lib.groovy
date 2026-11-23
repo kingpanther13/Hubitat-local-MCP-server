@@ -92,7 +92,7 @@ private void _attachRadioIncludes(result, args) {
     if (args?.includeChannelScan) result.channelScan = _radioGetSafe("/hub/zigbeeChannelScanJson")
 
     // SmartStart provisioning entries (cache-bust the list like the UI does).
-    if (args?.includeSmartstart) result.smartStart = _radioGetSafe("/mobileapi/zwave/smartstart/list", [t: now()])
+    if (args?.includeSmartStart) result.smartStart = _radioGetSafe("/mobileapi/zwave/smartstart/list", [t: now()])
 
     // Firmware-eligible Z-Wave devices + available files.
     if (args?.includeFirmware) {
@@ -2358,7 +2358,7 @@ def toolCallZwave(args) {
                         message: "Security keys saved for the imported backup.",
                         note: "Restore it with hub_call_destructive_ops(target='zwave', action='local_backup_restore', importId=...)."]
             case "smartstart_delete":
-                if (!args.nodeDsk) throw new IllegalArgumentException("smartstart_delete requires nodeDsk (the DSK from hub_get_radio_details(includeSmartstart=true)).")
+                if (!args.nodeDsk) throw new IllegalArgumentException("smartstart_delete requires nodeDsk (the DSK from hub_get_radio_details(includeSmartStart=true)).")
                 resp = _radioPost("/mobileapi/zwave/smartstart/delete", groovy.json.JsonOutput.toJson([nodeDSK: args.nodeDsk.toString()]))
                 return [success: true, action: action, message: "SmartStart entry deleted.", response: resp]
             default:
@@ -3031,7 +3031,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     includeStatus: [type: "boolean", description: "Attach lifecycle status pollers under result.status. Default false.[[FLAT_TRIM]] Repair, join, exclude, antenna test, node replace, Zigbee, Z-Wave JS readiness, Z-Wave local backup, batch firmware.[[/FLAT_TRIM]]"],
                     includeLogs: [type: "boolean", description: "Matter chip-tool logs under result.matterLogs.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
                     includeChannelScan: [type: "boolean", description: "Zigbee channel-scan results under result.channelScan.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
-                    includeSmartstart: [type: "boolean", description: "Z-Wave SmartStart list under result.smartStart.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
+                    includeSmartStart: [type: "boolean", description: "Z-Wave SmartStart list under result.smartStart.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
                     includeFirmware: [type: "boolean", description: "Attach firmware-eligible Z-Wave devices + files under result.firmware. Default false.[[FLAT_TRIM]] With nodeId also that node's targets, offered updates (updateId), progress, and batch candidates.[[/FLAT_TRIM]]"],
                     includeDevices: [type: "boolean", description: "[[FLAT_TRIM]]Attach Zigbee devices with their last-message time under result.zigbeeDevices. Default false.[[/FLAT_TRIM]]"],
                     backupJobId: [type: "string", description: "[[FLAT_TRIM]]Z-Wave backup/import/restore job id to read under result.zwaveBackupJob.[[/FLAT_TRIM]]"]
@@ -3086,7 +3086,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     nodeId: [type: "string", description: "Z-Wave node id for the per-node actions."],
                     securityKeys: [type: "object", description: "grant_keys: S2 grant booleans; local_backup_keys: the network keys as hex.[[FLAT_TRIM]] grant_keys e.g. {S2Authenticated:true}; local_backup_keys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, longRange: {S2_Authenticated, S2_AccessControl}}.[[/FLAT_TRIM]]"],
                     securityCode: [type: "object", description: "grant_code only: S2 DSK, e.g. {accept:true, securityCode:'12345'}."],
-                    nodeDsk: [type: "string", description: "smartstart_delete only: the DSK from hub_get_radio_details(includeSmartstart=true)."],
+                    nodeDsk: [type: "string", description: "smartstart_delete only: the DSK from hub_get_radio_details(includeSmartStart=true)."],
                     backupUrl: [type: "string", description: "[[FLAT_TRIM]]local_backup_import: http(s) URL of the backup (8 MB max).[[/FLAT_TRIM]]"],
                     linkTest: [type: "object", description: "[[FLAT_TRIM]]link_test_start (confirm=true): {rounds? (10), intervalMs? (1000)}.[[/FLAT_TRIM]]"],
                     cc: [type: "object", description: "[[FLAT_TRIM]]cc_command: {commandClass (decimal or 0x hex), methodName, endpoint?, args?}.[[/FLAT_TRIM]]"],

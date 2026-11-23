@@ -594,7 +594,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         hubGet.register('/mobileapi/zwave/smartstart/list') { p -> JsonOutput.toJson([]) }
 
         when:
-        script.toolGetRadioDetails([radio: 'zwave', includeSmartstart: true])
+        script.toolGetRadioDetails([radio: 'zwave', includeSmartStart: true])
 
         then: 'the key carries a t= param (its value is now(), fixed by the harness)'
         hubGet.calls*.key.any { it.startsWith('/mobileapi/zwave/smartstart/list?t=') }

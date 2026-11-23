@@ -14034,6 +14034,11 @@ def updated() {}
         assert "hubMeshToken" in with_token, \
             "hub_get_hub_mesh(includeToken=true) did not surface the hubMeshToken key"
 
+        # Parameters were renamed to camelCase with no aliases: a client still sending the old
+        # snake_case name must be refused and pointed at the new one, not silently ignored.
+        refusal = self._expect_tool_refusal("hub_get_hub_mesh", {"include_token": True}, "include_token")
+        assert "includeToken" in refusal, f"old-name refusal does not name includeToken: {refusal[:300]}"
+
     @test("system_tools")
     def test_hub_mesh_update_validation(self) -> None:
         # NO state-changing Hub Mesh write is ever made against the shared CI hub: enable/disable
