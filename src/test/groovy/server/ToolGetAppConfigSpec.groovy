@@ -924,6 +924,35 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
     }
 
+    // Live (C-7): the rule page's locals table also rides in a control's title as HTML, and the page prints it whether
+    // or not includeStatus read the app's state.
+    @spock.lang.Unroll
+    def "a Rule Machine rule's credential-named local is masked in page text and control titles (includeStatus=#withStatus)"() {
+        given:
+        settingsMap.enableRead = true
+        String table = '<style>.mdl-data-table tbody tr:hover{background-color:inherit}</style><table class="mdl-data-table"><tr><td>e2eSessionCookie</td><td>String</td><td>e2e-cookie-value</td></tr></table>'
+        def sections = [[title: '', input: [[element: 'input', name: 'localVars', type: 'button', title: table]], body: [
+            [element: 'paragraph', description: 'NameTypeValuePrivate BooleanBooleantrue%value%Value0e2eSessionCookieStringe2e-cookie-value']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null, sections: sections]])
+        }
+        registerAppStatus([[name: 'paused', value: false]])
+        script.metaClass._nrState = { Long id -> [:] }
+        script.metaClass._nrHandle = { Long id -> [getAllLocalVars: { -> [e2eSessionCookie: [type: 'string', value: 'e2e-cookie-value'], count: [type: 'integer', value: 12345]] }] as Expando }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: withStatus])
+        String text = JsonOutput.toJson(result)
+
+        then:
+        !text.contains('e2e-cookie-value')
+        result.page.sections[0].paragraphs == ['NameTypeValuePrivate BooleanBooleantrue%value%Value0e2eSessionCookieString***redacted (password)***']
+        result.controls.find { it.name == 'localVars' }.title.endsWith('e2eSessionCookieString***redacted (password)***')
+
+        where:
+        withStatus << [false, true]
+    }
+
     def "a value masked in settings is masked in the page text too"() {
         given:
         settingsMap.enableRead = true

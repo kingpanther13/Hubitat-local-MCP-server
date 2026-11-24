@@ -724,8 +724,20 @@ def toolGetAppConfig(args) {
         def rawState = fetched.status instanceof Map ? fetched.status.appState : null
         Map rawRows = rawState instanceof Map ? rawState : (rawState instanceof List ? rawState.findAll { it instanceof Map }.collectEntries { [(it.name?.toString()): it.value] } : [:])
         (result.appState instanceof List ? result.appState : []).each { row -> _appConfigMaskedLeaves(rawRows.get(row?.name?.toString()), row?.value, hidden) }
+        // A rule's page prints its locals whether or not includeStatus read them, so a Rule Machine rule's locals are read
+        // in-process, as hub_get_rule does (no render, no status read), and the credential-named ones are scrubbed too.
+        if (typeNames.any { _rmIsEditableRuleType(appTypeNamespace, it) }) {
+            try {
+                def locals = _nrHandle(appIdStr as Long).getAllLocalVars()
+                (locals instanceof Map ? locals : [:]).each { name, row ->
+                    def value = row instanceof Map ? row.value : row
+                    if (_appConfigMasksSetting(name?.toString(), row instanceof Map && row.type?.toString() == 'boolean' ? 'bool' : 'text', value) && value?.toString()?.size() >= 4) hidden << value.toString()
+                }
+            } catch (Exception unread) { mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: local variables unreadable (${unread.message}); page text not checked for them") }
+        }
         hidden = hidden.unique()
-        if (hidden) result.page = _ruleSecretsMasked(result.page, [names: [], codes: [], texts: hidden])
+        // Everything but the parts already masked: the page, and the controls whose titles carry the same tables.
+        if (hidden) result.keySet().findAll { !(it in ['settings', 'appState']) }.each { key -> result.put(key, _ruleSecretsMasked(result.get(key), [names: [], codes: [], texts: hidden])) }
 
         return result
     }.call(null)

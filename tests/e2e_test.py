@@ -7937,6 +7937,9 @@ def updated() {}
             locals_row = next((row for row in masked.get("appState") or [] if row.get("name") == "allLocalVars"), None)
             assert locals_row is not None and "e2e-cookie-value" not in json.dumps(masked), masked.get("appState")
             assert (locals_row.get("value") or {}).get("e2eSessionCookie") == "***redacted (password)***", locals_row
+            # The rule's page prints its locals table whether or not includeStatus read the state.
+            plain = self.client.call_tool("hub_get_app_config", {"appId": str(app_id)})
+            assert "e2e-cookie-value" not in json.dumps(plain), "the cookie local leaked through the rule's page"
             local_rows = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
             assert [(row.get("name"), row.get("redacted")) for row in local_rows] == [("e2eSessionCookie", True)], local_rows
             # An HTTP Get action keeps its URL, query string included, as a setting: a secret-named query value reads masked.
