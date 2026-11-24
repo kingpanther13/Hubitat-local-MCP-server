@@ -1422,6 +1422,22 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.note.startsWith('Every change was written, but a check after the write failed, so Done was not pressed. Do not send the changes again')
     }
 
+    def 'moving an action off a marked condition keeps that condition marked without an id, which is not a new row'() {
+        given: "before the write the action is gated on marked condition 4; after it nothing uses 4 (Rule Machine's list is rebuilt by the labels)"
+        labels.condition = { -> if (events.contains('action')) nativeState.inUseConds = []; marker('Condition') }
+        labels.action = { -> events.contains('action') ? "Log: 'moved'" : 'IF (' + marker('Condition') + ") Log: 'gated'" }
+        nativeState.inUseConds = ['4']
+        nativeState.actions = ['3': [method: 'getLogMsg', cond: '4'], '1': [method: 'getLogMsg']]
+        Map picker = [name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]
+        statusSettings = [picker]
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [picker]]) }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == true
+        result.brokenRowsBefore == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on'], [kind: 'action', id: null, text: "IF (**Broken Condition**) Log: 'gated'"]]
+    }
+
     def 'an update reads the rule labels once before its write and runs no second health check for its read-back'() {
         given:
         int labelReads = 0

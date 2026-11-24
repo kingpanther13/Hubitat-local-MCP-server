@@ -590,8 +590,11 @@ private Map _ndApply(Long id, List changes, boolean created, Map before = null) 
             List grown = []
             after.marks.each { kind, count -> if (count > (marks.marks.get(kind) ?: 0)) { grown << kind; added << "${kind} (${count} marked, ${marks.marks.get(kind) ?: 0} before)".toString() } }
             // An id-less row is compared by kind and text too, so repairing one and adding another of the same kind shows.
+            // A row loses its id once nothing uses it (an action moved off a marked condition, C-7), so an id-less row of
+            // a kind that lost an id'd row is that row, not a new one.
             List was = marks.rows.findAll { it.id == null }.collect { "${it.kind} ('${it.text}')".toString() }
-            after.rows.findAll { it.id == null && !(it.kind in grown) }.each { row -> String key = "${row.kind} ('${row.text}')".toString(); if (!was.remove(key)) added << key }
+            List lost = marks.rows.findAll { row -> row.id != null && !after.rows.any { it.kind == row.kind && it.id == row.id } }*.kind
+            after.rows.findAll { it.id == null && !(it.kind in grown) }.each { row -> String key = "${row.kind} ('${row.text}')".toString(); if (!was.remove(key) && !lost.remove(row.kind)) added << key }
         }
         if (added) structuralIssues << "The write adds rows Rule Machine marks broken: ${added.join('; ')}".toString()
         if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
