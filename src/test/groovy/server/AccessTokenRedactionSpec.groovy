@@ -112,4 +112,23 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
         then:
         out == [accessToken: [value: "x?access_token=${MARKER}".toString()], list: ["a", 1, null]]
     }
+
+    @spock.lang.Unroll
+    def "an accessToken held as a {name, value} row inside a state value follows the toggle (redactAccessTokens=#on)"() {
+        given:
+        settingsMap.redactAccessTokens = on
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                               appState: [[name: 'cache', value: [[name: 'accessToken', value: TOKEN], [name: 'room', value: 'den']]]]])
+        }
+
+        when:
+        def rows = script._appStatusRead(35).appState.find { it.name == 'cache' }.value
+
+        then:
+        rows == [[name: 'accessToken', value: on ? MARKER : TOKEN], [name: 'room', value: 'den']]
+
+        where:
+        on << [true, false]
+    }
 }

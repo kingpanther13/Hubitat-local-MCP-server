@@ -1290,6 +1290,30 @@ class NativeDocumentsSpec extends ToolSpecBase {
         'required'   | [part: 'required', value: [tokens: ['NOT', '4']]]
     }
 
+    def 'a batch that gives a gone condition a device again may then name it in the Required Expression'() {
+        given: "condition 4's device picker lost its device"
+        Map marked = [inUse: [], emptied: ['4']]
+        def repair = [part: 'condition', value: [id: '4', capability: 'Switch', fields: [
+            [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        def required = [part: 'required', value: [tokens: ['4']]]
+        when:
+        script._ndPreflight(42L, script._ndChanges([repair, required]), marked)
+        then:
+        noExceptionThrown()
+        when: 'the repair comes after the expression, or supplies no device'
+        script._ndPreflight(42L, script._ndChanges(batch), marked)
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.endsWith('Expression names condition 4, whose device is gone, so Rule Machine would mark it broken; repair or delete that condition first')
+        where:
+        batch << [
+            [[part: 'required', value: [tokens: ['4']]], [part: 'condition', value: [id: '4', capability: 'Switch', fields: [
+                [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]],
+            [[part: 'condition', value: [id: '4', capability: 'Switch', fields: [
+                [name: 'rDev_#', type: 'capability.switch', value: []], [name: 'state_#', type: 'enum', value: 'on']]]], [part: 'required', value: [tokens: ['4']]]]
+        ]
+    }
+
     def 'a change refused by its own arguments leaves the update unwritten; any other failure of the first change may have written'() {
         given:
         script.metaClass._nmUpsertAction = { Long id, Map value -> events << 'action'; throw failure }
@@ -1316,7 +1340,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         then:
         !result.success
         result.partial
-        result.error == 'Native Done was rejected'
+        result.error == "Native Done was rejected; the rule's stopped and paused state was verified unchanged"
         result.note.startsWith('Every change was written and Done was sent, but it may or may not have taken, or a check after it failed.')
         events.count { it == 'stopRule' } == 1
         events.count { it == 'pausRule' } == 1
@@ -1426,8 +1450,69 @@ class NativeDocumentsSpec extends ToolSpecBase {
         then:
         !result.success
         result.partial
-        result.error == 'connection reset'
+        result.error == "connection reset; the rule's stopped and paused state was verified unchanged"
         result.note.startsWith('Every change was written and Done was sent, but it may or may not have taken, or a check after it failed. Do not send the changes again: read the rule with hub_get_rule before anything else.')
+    }
+
+    def 'a Done that lands and then throws, or answers a body that is not JSON, still puts a stopped and paused rule back, once (#why)'() {
+        given:
+        lifecycle.stopped = true
+        lifecycle.paused = true
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean retry = false ->
+            events << [path: path, body: body]; lifecycle.stopped = false; lifecycle.paused = false
+            if (answer == null) throw new IOException('connection reset')
+            answer
+        }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        result.partial
+        result.error.startsWith(error)
+        result.error.endsWith("; the rule's stopped and paused state was verified unchanged")
+        events.count { it instanceof Map && it.path == '/installedapp/update/json' } == 1
+        events.count { it == 'stopRule' } == 1
+        events.count { it == 'pausRule' } == 1
+        lifecycle.stopped && lifecycle.paused
+        where:
+        why            | answer                              | error
+        'transport'    | null                                | 'connection reset'
+        'not JSON'     | [status: 200, data: '<html>oops']   | 'Native form returned unreadable JSON'
+        'rejected'     | [status: 200, data: [status: 'error']] | 'Native form rejected the request'
+    }
+
+    def 'a Done that throws with the lifecycle unreadable after it says the restore was not verified'() {
+        given:
+        lifecycle.paused = true
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean retry = false ->
+            events << [path: path, body: body]; throw new IOException('connection reset') }
+        hubGet.register('/app/ruleBuilderJson/42') { q ->
+            boolean done = events.any { it instanceof Map && it.path == '/installedapp/update/json' }
+            if (done) throw new IOException('hub busy')
+            JsonOutput.toJson(nativeState + [broken: broken] + lifecycle)
+        }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        result.partial
+        result.error == "connection reset; the rule's stopped and paused state could not be verified unchanged: check it with hub_get_rule"
+        !events.contains('pausRule') && !events.contains('stopRule')
+    }
+
+    def 'a paused flag that reads but is not a flag after Done fails the update rather than passing as unpaused'() {
+        given:
+        hubGet.register('/app/ruleBuilderJson/42') { q ->
+            boolean done = events.any { it instanceof Map && it.path == '/installedapp/update/json' }
+            JsonOutput.toJson(nativeState + [broken: broken] + lifecycle + (done ? [paused: 'unknown'] : [:]))
+        }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        result.partial
+        result.error == 'Native stopped or paused state could not be read after Done'
+        !events.contains('pausRule') && !events.contains('stopRule')
     }
 
     def 'repairing one id-less marked row and adding another of the same kind is caught by its text'() {
@@ -1920,8 +2005,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
     }
 
     def 'an IF retargeted to another condition frees the old condition for deletion in the same batch'() {
-        given: 'Rule Machine lists condition 1 in use before the batch; the delete itself checks the list as it stands then'
-        nativeState.inUseConds = ['1']
+        given: 'the health check lists condition 1 in use before the batch; the delete itself checks the list as it stands then'
+        Map marked = [inUse: ['1']]
         nativeState.capabsfalse = ['1': 'Switch 789 on', '2': 'Switch 746 on']
         nativeState.actionList = ['1', '2', '3']
         nativeState.actions = ['1': [method: 'getIfThen', rule: 1], '2': [method: 'getLogMsg'], '3': [method: 'getEndIf']]
@@ -1930,32 +2015,42 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script._ndPreflight(42L, script._ndChanges([
             [part: 'action', value: [id: '1', type: 'condActs', subtype: 'getIfThen', fields: [], expression: ['2']]],
             [part: 'delete', value: [part: 'condition', id: '1']]
-        ]))
+        ]), marked)
         then:
         noExceptionThrown()
+        when: 'the same delete without the retarget'
+        script._ndPreflight(42L, script._ndChanges([[part: 'delete', value: [part: 'condition', id: '1']]]), marked)
+        then:
+        def held = thrown(IllegalArgumentException)
+        held.message == 'changes[0]: Referenced native conditions must be detached before deletion'
         when: 'a conditional action moved off a condition and then deleted no longer holds either condition'
         nativeState.actions['2'] = [method: 'getLogMsg', cond: '2']
         script._ndPreflight(42L, script._ndChanges([
             [part: 'action', value: [id: '2', type: 'messageActs', subtype: 'getLogMsg', condition: '1', fields: []]],
             [part: 'delete', value: [part: 'action', id: '2']],
             [part: 'delete', value: [part: 'condition', id: '2']]
-        ]))
+        ]), marked)
         then:
         noExceptionThrown()
     }
 
     def 'an existing conditional action moved to another condition lets the batch delete the old one'() {
-        given:
-        nativeState.inUseConds = ['8']
+        given: 'the health check lists condition 8 in use'
+        Map marked = [inUse: ['8']]
         nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
         nativeState.actions = ['3': [method: 'getLogMsg'], '1': [method: 'getOnOffSwitch', cond: '8']]
         when:
         script._ndPreflight(42L, script._ndChanges([
             [part: 'action', value: [id: '1', type: 'switchActs', subtype: 'getOnOffSwitch', condition: '4', fields: []]],
             [part: 'delete', value: [part: 'condition', id: '8']]
-        ]))
+        ]), marked)
         then:
         noExceptionThrown()
+        when: 'the same delete with the action still on it'
+        script._ndPreflight(42L, script._ndChanges([[part: 'delete', value: [part: 'condition', id: '8']]]), marked)
+        then:
+        def held = thrown(IllegalArgumentException)
+        held.message == 'changes[0]: Referenced native conditions must be detached before deletion'
     }
 
     def 'an expression written after an action edit in the same batch is the one a condition delete is checked against'() {

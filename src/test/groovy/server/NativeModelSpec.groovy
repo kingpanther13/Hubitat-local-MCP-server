@@ -583,6 +583,7 @@ class NativeModelSpec extends ToolSpecBase {
         settings.put('rDev_2', [type: 'capability.switch', value: null, deviceList: null])
         nativeRule.conditionLabel = { -> "<span class='text-hubitat-danger'>**Broken Condition**</span>" }
         nativeRule.thisActionLabel = { Object actionId -> brokenAfter == 'empty' ? '' : (brokenAfter ? "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'" : "Log: 'edited'") }
+        nativeRule.removeSetting = { String name -> settings.remove(name) }
         List buttons = []
         nativeRule.doActPage = { ->
             if (editing) nativeState.hasCondition = true
@@ -613,6 +614,7 @@ class NativeModelSpec extends ToolSpecBase {
         result.success == allowed
         allowed || result.error == 'Rule Machine marks this action broken or draws no label for it, so the change was rolled back. If it is gated on a condition Rule Machine marks, move it to another condition, or repair or delete that condition first'
         allowed || buttons.contains('actionCancel')
+        allowed || result.rolledBack == true
         where:
         label                                                           | editing | prior                             | condition | brokenAfter | allowed
         'an edit kept on the marked condition'                          | true    | [method: 'getLogMsg', cond: '2']  | '2'       | true        | false
@@ -623,6 +625,37 @@ class NativeModelSpec extends ToolSpecBase {
         'an edit of an action that named no marked condition'           | true    | [method: 'getLogMsg', cond: '1']  | '2'       | true        | false
         'an edit of an action whose expression names no marked one'     | true    | [method: 'getLogMsg', rule: '4']  | null      | true        | false
         'an edit kept on the marked condition whose label draws nothing' | true   | [method: 'getLogMsg', cond: '2']  | '2'       | 'empty'     | false
+    }
+
+    def 'a marked action label says the change was rolled back only when the rollback verified (rolledBack=#verified)'() {
+        given: "action 1 stays gated on condition 2, whose device was deleted"
+        nativeState.actions = ['1': [method: 'getLogMsg', cond: '2']]
+        nativeState.actionList = ['1']
+        nativeState.inUseConds = ['2']
+        settings.put('rDev_2', [type: 'capability.switch', value: null, deviceList: null])
+        nativeRule.thisActionLabel = { Object actionId -> "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'" }
+        nativeRule.doActPage = { ->
+            nativeState.hasCondition = true
+            nativeForm([[name: 'actType.1', type: 'enum', options: ['messageActs'], submitOnChange: true],
+                        [name: 'actSubType.1', type: 'enum', options: ['getLogMsg'], submitOnChange: true],
+                        [name: 'logmsg.1', type: 'text']])
+        }
+        nativeRule.appButtonHandler = { String name ->
+            if (name == 'actionDone') nativeState.actions = ['1': [method: 'getLogMsg', cond: nativeState.doActN.tokenize('.')[1]]]
+        }
+        // The rollback removes the settings the edit added; a rule that refuses that leaves the rollback unverified.
+        if (verified) nativeRule.removeSetting = { String name -> settings.remove(name) }
+        when:
+        def result = script._nmUpsertAction(42L, [id: '1', type: 'messageActs', subtype: 'getLogMsg', condition: '2', fields: [[name: 'logmsg.#', type: 'text', value: 'edited']]])
+        then:
+        result.success == false
+        result.rolledBack == verified
+        result.partial == !verified
+        result.error == (verified ?
+            'Rule Machine marks this action broken or draws no label for it, so the change was rolled back. If it is gated on a condition Rule Machine marks, move it to another condition, or repair or delete that condition first' :
+            'Rule Machine marks this action broken or draws no label for it, and the rollback did not verify: read the rule and repair it or restore the backup')
+        where:
+        verified << [true, false]
     }
 
     // The row step alone is covered above; this runs it through the whole update, as the review asked: preflight, the

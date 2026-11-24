@@ -1025,6 +1025,65 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         rows.find { it.name == 'greeting' }.value == 'hello'
     }
 
+    def "a state value masked in an oversized status is still masked in the page text after the status is trimmed"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass._responseSizeLimitBytes = { -> 12000 }
+        def sections = [[title: '', input: [], body: [[element: 'paragraph', description: 'Broker login: hunter22secret (saved)']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'App', install: true, refreshInterval: null, sections: sections]])
+        }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                               appState: [[name: 'piston', value: 'x' * 20000], [name: 'mqttPassword', value: 'hunter22secret']]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.statusTruncated == true
+        result.appState == [[name: 'piston'], [name: 'mqttPassword']]
+        result.page.sections[0].paragraphs == ['Broker login: ***redacted (password)*** (saved)']
+        !JsonOutput.toJson(result).contains('hunter22secret')
+    }
+
+    def "a failed status read is not repeated in the same call, and its note is unchanged"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params -> throw new IOException('status timeout') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true, includeStatus: true])
+
+        then:
+        result.success == true
+        hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
+        !result.containsKey('appState')
+        result.statusNote == "The app's status page could not be read (status timeout), so appState, eventSubscriptions and scheduledJobs are omitted. Retry; the rest of this read is unaffected."
+        result.settingsNote.contains('withheld')
+    }
+
+    def "a sub-page link's page name is kept when a masked value appears in it"() {
+        given:
+        settingsMap.enableRead = true
+        def sections = [[title: '', input: [], body: [[element: 'paragraph', description: 'Broker login: hunter22 (saved)'],
+                                                     [element: 'href', page: 'hunter22Page', title: 'Open hunter22']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'App', install: true, refreshInterval: null, sections: sections], settings: [brokerPassword: 'hunter22']])
+        }
+        registerStatusJson([brokerPassword: 'text'])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.page.sections[0].paragraphs == ['Broker login: ***redacted (password)*** (saved)']
+        result.page.hrefs[0].page == 'hunter22Page'
+        result.page.hrefs[0].title == 'Open ***redacted (password)***'
+    }
+
     def "includeSettings and includeStatus together read the status page once"() {
         given:
         settingsMap.enableRead = true
@@ -1087,10 +1146,15 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'auth_token'   | true
         'token'        | true
         'Password'     | true
+        // Named as credential settings are: the setting classifier covers them.
+        'psw'          | true
+        'authToken'    | true
+        'clientSecret' | true
         'monkey'       | false
         'hotkey'       | false
         'oauth'        | false
         'access_token' | false
+        'accessToken'  | false
         outcome = masked ? 'masked' : 'kept'
     }
 

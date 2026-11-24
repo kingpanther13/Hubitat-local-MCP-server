@@ -23,7 +23,7 @@ def _getAllToolDefinitions_partNativeRM() {
                 type: "object",
                 properties: [
                     ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules (a Button Rule's from hub_list_apps(nameFilter:'Button Rule'), a Visual Rule's from hub_get_visual_rule), or an array of rule IDs to act on in one call"],
-                    action: [type: "string", enum: ["actions", "stop", "start", "pause", "resume"], description: "Required. actions runs the rule's actions at once, without checking its conditions or Required Expression; stop/start stop or restart a Rule Machine rule; pause/resume pause or resume the rule."],
+                    action: [type: "string", enum: ["actions", "stop", "start", "pause", "resume"], description: "Required. actions runs the rule's actions at once (a Rule Machine rule skips its conditions and Required Expression; a Visual Rule Builder 2.0 rule's conditions still pick the branch); stop/start stop or restart a Rule Machine rule; pause/resume pause or resume the rule."],
                 ],
                 required: ["ruleId", "action"]
             ]
@@ -467,7 +467,7 @@ def toolRunRmRule(args) {
     // No default: a call that leaves action out must not run every action, skipping the rule's conditions.
     def action = args?.action
     if (!(action in ["actions", "stop", "start", "pause", "resume"])) {
-        throw new IllegalArgumentException("${action == null ? 'action is required' : "Invalid action '${action}'"}: 'actions' (runs every action without checking conditions or the Required Expression), 'stop', 'start', 'pause' or 'resume'. Nothing was dispatched.")
+        throw new IllegalArgumentException("${action == null ? 'action is required' : "Invalid action '${action}'"}: 'actions' (runs the rule's actions; Rule Machine skips its conditions and Required Expression), 'stop', 'start', 'pause' or 'resume'. Nothing was dispatched.")
     }
     ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
     Map guard = _rmRequireRuleTargets(ruleIds, "hub_call_rule", true)

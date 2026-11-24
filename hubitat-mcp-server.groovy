@@ -5475,12 +5475,14 @@ private boolean _appConfigQualifiedSuffix(String word, Set qualifiers) {
 private def _redactAccessTokens(value) {
     String marker = _accessTokenRedactedMarker()
     if (value instanceof Map) {
+        // A {name, value} row (app state, a status list) carries its key as the row's name.
+        boolean tokenRow = value.name?.toString() ==~ /(?i)access_?token/ && value.containsKey('value')
         return value.collectEntries { k, v ->
             // clientTokens (per-client tokens: id -> [label, token]): mask each token, keep the name.
             if (k?.toString() == "clientTokens" && v instanceof Map) {
                 return [(k): v.collectEntries { id, c -> [(id): (c instanceof Map) ? c + [token: marker] : marker] }]
             }
-            boolean tokenKey = k?.toString() ==~ /(?i)access_?token/
+            boolean tokenKey = k?.toString() ==~ /(?i)access_?token/ || (tokenRow && k == 'value')
             [(k): (tokenKey && v instanceof CharSequence) ? marker : _redactAccessTokens(v)]
         }
     }
@@ -10526,7 +10528,12 @@ private Object _ruleSecretsMasked(Object value, Map lock) {
         if (node instanceof Map) return node.collectEntries { k, v -> [(k): walk.call(v, k == 'value' && row != null ? row : k?.toString())] }
         if (node instanceof List) return node.collect { walk.call(it, key) }
         if (!(node instanceof CharSequence)) return node
-        String text = node.toString().replaceAll(/(?i)([?&](?!access_?token=)(?:[\w.\-]*[_.\-])?(?:api_?key|key|token|secret|pass|passwd|password|pwd|auth|sig|signature|pin)=)(?!\*\*\*redacted)[^&\s"'<>#]+/, '$1' + marker)
+        // A parameter is secret by the short URL names below or by the credential-name test settings use
+        // (psw, authToken, clientSecret).
+        String text = node.toString().replaceAll(/([?&])([^=&\s"'<>#]+)=([^&\s"'<>#]*)/) { all, sep, name, val ->
+            boolean secret = !(name ==~ /(?i)access_?token/) && (name ==~ /(?i)(?:[\w.\-]*[_.\-])?(?:api_?key|key|token|secret|pass|passwd|password|pwd|auth|sig|signature|pin)/ || _appConfigSecretName(name))
+            secret && val && !val.startsWith('***redacted') ? "${sep}${name}=${marker}".toString() : all
+        }
         // In page text, where a PIN sits among other words.
         if (text =~ /\s/) lock.codes.each { code -> text = text.replaceAll('(?<![\\w.])' + java.util.regex.Pattern.quote(code) + '(?![\\w.])', marker) }
         // Values masked elsewhere in the same response, which a page can print run together with other text.
@@ -12725,7 +12732,7 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 `action` (required; a call without it is refused) selects what to do:
 
-- **`actions`**: run the rule's actions directly, without checking its conditions or Required Expression. A Rule Machine rule's Run Actions button (`runAction`) is clicked; a Visual Rule Builder 2.0 rule runs through its builder's run endpoint, whose conditions still pick the branch, and a run the hub declines comes back as success:false with the hub's own message. A Visual Rule Builder 1.0 rule has no run button, so `actions` naming one refuses the whole call before anything runs; pause and resume work on it.
+- **`actions`**: run the rule's actions directly. A Rule Machine rule's Run Actions button (`runAction`) is clicked, which runs every action without checking its conditions or Required Expression; a Visual Rule Builder 2.0 rule runs through its builder's run endpoint, which still evaluates its conditions to pick the branch, and a run the hub declines comes back as success:false with the hub's own message. A Visual Rule Builder 1.0 rule has no run button, so `actions` naming one refuses the whole call before anything runs; pause and resume work on it.
 - **`stop`**: halt the rule's in-progress actions (Rule Machine only).
 - **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged; Rule Machine only).
 - **`pause`** / **`resume`**: pause or resume the rule; a paused rule does not fire on its triggers. A Rule Machine rule's Pause button (`pausRule`) is clicked; a Visual Rule is paused through its builder's pause endpoint, and its paused state is read again afterwards, so an endpoint success that left it unchanged returns success:false.

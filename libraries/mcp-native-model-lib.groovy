@@ -509,7 +509,13 @@ Map _nmUpsertAction(Long ruleId, Map row) {
             if (!(listed && ordered && compiled && persisted && expressionVerified && waitsVerified && conditionVerified)) return reject.call([error: 'Native action compilation or input verification failed', settingsVerified: persisted, expressionVerified: expressionVerified, waitsVerified: waitsVerified, conditionVerified: conditionVerified])
             // An action left gated on a condition Rule Machine marks turns the rule's own broken() true (C-7), so the write
             // could only end unfinished, with every later update refused: a marked or empty label is always rolled back.
-            if (_nmActionLabel(ruleId, id) != null) return reject.call([error: 'Rule Machine marks this action broken or draws no label for it, so the change was rolled back. If it is gated on a condition Rule Machine marks, move it to another condition, or repair or delete that condition first'])
+            if (_nmActionLabel(ruleId, id) != null) {
+                Map rejected = reject.call([:])
+                rejected.error = rejected.rolledBack == true ?
+                    'Rule Machine marks this action broken or draws no label for it, so the change was rolled back. If it is gated on a condition Rule Machine marks, move it to another condition, or repair or delete that condition first' :
+                    'Rule Machine marks this action broken or draws no label for it, and the rollback did not verify: read the rule and repair it or restore the backup'
+                return rejected
+            }
             [success: true, id: id, action: action, partial: false, settingsVerified: true, expressionVerified: true, waitsVerified: true, conditionVerified: true]
         } catch (Exception failure) {
             mcpLogError('rm-native', "Native action change failed for rule ${ruleId}: ${failure.message}".toString(), failure)

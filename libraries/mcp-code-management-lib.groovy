@@ -712,18 +712,20 @@ def toolGetAppConfig(args) {
         } else if (settingsCount > 0) {
             result.settingsNote = "Raw settings omitted; pass includeSettings=true to include them."
         }
-        if (includeStatus && fetched.status == null) {
+        // A failed status read is not repeated in the same call: a slow failure would wait again each time.
+        if (includeStatus && fetched.status == null && fetched.statusError == null) {
             try { fetched.status = _rmFetchStatusJson(appIdStr as Integer) }
-            catch (Exception unread) { mcpLog("debug", "hub-admin", "hub_get_app_config app ${appIdStr}: status read deferred (${unread.message})") }
+            catch (Exception unread) { fetched.statusError = unread }
         }
-        if (includeStatus) _appConfigAttachStatus(result, appIdStr as Integer, fetched.status)
+        if (includeStatus) _appConfigAttachStatus(result, appIdStr as Integer, fetched.statusError ?: fetched.status)
         // A rule's page prints its local variables and other stored values as plain text (the locals table), so a value
         // masked in this response's settings or appState is masked in the page too.
         List hidden = []
         _appConfigMaskedLeaves(parsed.settings, result.settings, hidden)
         def rawState = fetched.status instanceof Map ? fetched.status.appState : null
         Map rawRows = rawState instanceof Map ? rawState : (rawState instanceof List ? rawState.findAll { it instanceof Map }.collectEntries { [(it.name?.toString()): it.value] } : [:])
-        (result.appState instanceof List ? result.appState : []).each { row -> _appConfigMaskedLeaves(rawRows.get(row?.name?.toString()), row?.value, hidden) }
+        // From the full state, not result.appState: fitting an oversized status drops its values.
+        if (result.appState instanceof List) rawRows.each { name, raw -> _appConfigMaskedLeaves(raw, _appStateMasked(name?.toString(), raw), hidden) }
         // A rule's page prints its locals whether or not includeStatus read them, so a Rule Machine rule's locals are read
         // in-process, as hub_get_rule does (no render, no status read), and the credential-named ones are scrubbed too.
         if (typeNames.any { _rmIsEditableRuleType(appTypeNamespace, it) }) {
@@ -737,7 +739,12 @@ def toolGetAppConfig(args) {
         }
         hidden = hidden.unique()
         // Everything but the parts already masked: the page, and the controls whose titles carry the same tables.
-        if (hidden) result.keySet().findAll { !(it in ['settings', 'appState']) }.each { key -> result.put(key, _ruleSecretsMasked(result.get(key), [names: [], codes: [], texts: hidden])) }
+        if (hidden) {
+            // A sub-page link's page name is what the caller passes back as pageName, so it is never rewritten.
+            List hrefPages = (result.page?.hrefs ?: []).collect { it instanceof Map ? it.page : null }
+            result.keySet().findAll { !(it in ['settings', 'appState']) }.each { key -> result.put(key, _ruleSecretsMasked(result.get(key), [names: [], codes: [], texts: hidden])) }
+            hrefPages.eachWithIndex { page, i -> if (page != null) result.page.hrefs[i].page = page }
+        }
 
         return result
     }.call(null)
@@ -756,8 +763,10 @@ private void _appConfigMaskedLeaves(Object raw, Object masked, List out) {
 }
 
 // includeStatus: the app's App Status lists from the one shared read. A failed read leaves the rest of the result standing.
+// fetched: the shared read, or the exception it already failed with.
 private void _appConfigAttachStatus(Map result, Integer appId, Object fetched = null) {
     try {
+        if (fetched instanceof Exception) throw fetched
         Map status = _appStatusRead(appId, fetched)
         result.appState = status.appState
         result.eventSubscriptions = status.eventSubscriptions
@@ -866,6 +875,7 @@ private Map _appConfigSettingTypes(Integer appId, Map fetched = [:]) {
         status = _rmFetchStatusJson(appId)
         fetched.status = status
     } catch (Exception e) {
+        fetched.statusError = e
         mcpLog("warn", "hub-admin", "hub_get_app_config: statusJson read for app ${appId} failed (${e.message}); raw settings withheld")
         return null
     }

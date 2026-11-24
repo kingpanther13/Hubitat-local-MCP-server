@@ -377,6 +377,9 @@ private void _ndDropRow(Map rows, String rowId, String missing) {
 // marked: _rmMarkedRows as the update's health check read it (the conditions in use, and those whose device is gone).
 private void _ndPreflight(Long id, List changes, Map marked = null) {
     List inUse = marked?.inUse
+    // A condition the batch gives a device again stops counting as gone for its later changes; the condition write
+    // checks its own settings, and the update's after-write health check catches a repair that did not take.
+    List emptied = (marked?.emptied ?: []).collect { it.toString() }
     Map before = id == null ? [:] : _nrState(id)
     Map conditions = before.capabsfalse instanceof Map ? [:] + before.capabsfalse : [:]
     Map triggers = before.capabstrue instanceof Map ? [:] + before.capabstrue : [:]
@@ -430,8 +433,9 @@ private void _ndPreflight(Long id, List changes, Map marked = null) {
                 (change.part == 'action' ? (value.expression instanceof List ? value.expression : []) + (value.containsKey('condition') ? [value.condition] : []) : [])
             named.findAll { it != null && it.toString().isInteger() }.each { token -> _ndKnownRow(rows.condition, token.toString(), 'Expression references an unknown condition') }
             // Rule Machine marks a condition whose device is gone once an expression names it, which would fail the write after it lands.
-            def gone = change.part in ['expression', 'required'] ? named.find { it?.toString() in (marked?.emptied ?: []) } : null
+            def gone = change.part in ['expression', 'required'] ? named.find { it?.toString() in emptied } : null
             if (gone != null) throw new IllegalArgumentException("Expression names condition ${gone}, whose device is gone, so Rule Machine would mark it broken; repair or delete that condition first".toString())
+            if (change.part == 'condition' && value.containsKey('id') && value.get('fields')?.any { it.type?.toString()?.startsWith('capability') && it.value }) emptied.remove(value.id.toString())
             if (change.part == 'variable') {
                 if (locals == null) {
                     def fresh = _nrHandle(id).getAllLocalVars()
@@ -606,27 +610,46 @@ private Map _ndApply(Long id, List changes, boolean created, Map before = null) 
         if (!healthy) return [success: false, partial: true, ruleId: id, created: created, results: outcomes, broken: flag, error: unhealthy, note: _ndFailureNote(true, created, 1)]
         // Set before the POST: one that throws in transport may still have landed.
         stage = 2
-        def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
-        def doneStatus = done instanceof Map ? done.get('status') : null
-        String failed = doneStatus != null && doneStatus.toString().isInteger() && doneStatus.toInteger() >= 400 ? 'Native Done was rejected' : null
-        def doneBody = done instanceof Map ? done.get('data') : null
-        if (failed == null && (doneBody instanceof Map || (doneBody != null && doneBody.toString().trim()))) _nfJson(doneBody)
+        String failed = null
+        // A Done that throws or answers an unreadable body may still have landed and restarted the rule, so its error is
+        // kept and the lifecycle below is still put back. Done is never sent twice.
+        try {
+            def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
+            def doneStatus = done instanceof Map ? done.get('status') : null
+            failed = doneStatus != null && doneStatus.toString().isInteger() && doneStatus.toInteger() >= 400 ? 'Native Done was rejected' : null
+            def doneBody = done instanceof Map ? done.get('data') : null
+            if (failed == null && (doneBody instanceof Map || (doneBody != null && doneBody.toString().trim()))) _nfJson(doneBody)
+        } catch (Exception doneError) { failed = doneError.message ?: doneError.toString() }
+        boolean doneFailed = failed != null
         // A stopped or paused rule that Done restarted is put back before any check below can fail. Its flags are
         // trusted only beside a readable broken flag: a partial read would have a button pressed on a guess.
-        def finalHealth = _ndRuleHealth(id)
-        boolean readable = finalHealth instanceof Map && finalHealth.broken instanceof Boolean
-        if (!created && readable) {
-            Boolean nowStopped = _ndNativeFlag(finalHealth, 'stopped')
-            Boolean nowPaused = _ndNativeFlag(finalHealth, 'paused')
-            if (nowStopped != null && nowStopped != wasStopped) _nrHandle(id).appButtonHandler('stopRule')
-            if (nowPaused != null && nowPaused != wasPaused) _nrHandle(id).appButtonHandler('pausRule')
+        def finalHealth = null
+        boolean readable = false
+        try {
             finalHealth = _ndRuleHealth(id)
             readable = finalHealth instanceof Map && finalHealth.broken instanceof Boolean
+            if (!created && readable) {
+                Boolean nowStopped = _ndNativeFlag(finalHealth, 'stopped')
+                Boolean nowPaused = _ndNativeFlag(finalHealth, 'paused')
+                if (nowStopped != null && nowStopped != wasStopped) _nrHandle(id).appButtonHandler('stopRule')
+                if (nowPaused != null && nowPaused != wasPaused) _nrHandle(id).appButtonHandler('pausRule')
+                finalHealth = _ndRuleHealth(id)
+                readable = finalHealth instanceof Map && finalHealth.broken instanceof Boolean
+            }
+        } catch (Exception unread) {
+            if (!doneFailed) throw unread
+            readable = false
         }
-        boolean stopped = readable && _ndNativeFlag(finalHealth, 'stopped') == true
-        boolean paused = readable && _ndNativeFlag(finalHealth, 'paused') == true
+        // Null: present but not a flag, which proves nothing either way (an absent flag reads false).
+        Boolean finalStopped = readable ? _ndNativeFlag(finalHealth, 'stopped') : null
+        Boolean finalPaused = readable ? _ndNativeFlag(finalHealth, 'paused') : null
+        boolean stopped = finalStopped == true
+        boolean paused = finalPaused == true
+        boolean lifecycleKept = finalStopped != null && finalPaused != null && wasStopped == stopped && wasPaused == paused
+        if (doneFailed && !created) failed += lifecycleKept ? "; the rule's stopped and paused state was verified unchanged" : "; the rule's stopped and paused state could not be verified unchanged: check it with hub_get_rule"
         if (failed == null && !(readable && _nrHandle(id).broken() == false)) failed = 'Native rule health failed after Done'
-        if (failed == null && !created && (wasStopped != stopped || wasPaused != paused)) failed = 'Native stopped or paused state was not preserved'
+        if (failed == null && (finalStopped == null || finalPaused == null)) failed = 'Native stopped or paused state could not be read after Done'
+        if (failed == null && !created && !lifecycleKept) failed = 'Native stopped or paused state was not preserved'
         if (failed != null) throw new IllegalStateException(failed)
         def status = _ndJson(hubInternalGet("/installedapp/statusJson/${id}"))
         if (!(status instanceof Map) || !status.containsKey('eventSubscriptions') || !status.containsKey('scheduledJobs')) throw new IllegalStateException('Native activation status is unavailable')
@@ -904,7 +927,7 @@ Read hub_set_rule(operation:"read",ruleId,args:{sections:[...]}) before editing 
 
 For large rules, read one section with args:{sections:["settings"],cursor:"",limit:50}. Paging requires exactly one section; limit is 1..100 (default 50). The section keeps its usual map or list shape. Pass the returned top-level nextCursor into args.cursor until nextCursor is null. page returns offset, limit, total and revision, a hash of the complete section; restart if revision changes. Pages may contain fewer than limit rows to fit the response size cap; a row too large to send beside the health alone returns success:false with the health, never truncated. Actions retain native order, settings sort by name, and map sections sort by string key. Omit cursor and limit for an unpaged read; one too large for the response cap returns health and the parts that fit whole, pages the first part that does not (pagedSection, nextCursor) and lists the other parts that do not fit in omittedSections.
 
-Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",ruleId,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parentId,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine; parentId is the installed Rule Machine app's id, which hub_list_apps(scope:"instances") lists. A failed creation can leave a native child: inspect returned ruleId and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting. An update first reads the same health and, before any backup or write, refuses a rule that is already broken (its own broken() check), naming each marked row by kind and native id (trigger 2), or a rule whose broken flag, compiled state or marked rows cannot be read, with checkErrors saying why: repair broken rows with operation:"form" or in the Hubitat UI. A rule whose page marks rows without being broken (a condition whose device was deleted) is updated: brokenRowsBefore lists the rows marked before the write, and the write fails only if it adds a newly marked row, so it can also repair them. An action change whose action comes back marked or with no label is rolled back, even when it was marked before: an action left gated on a marked condition turns the rule's own broken() check true, so move the action to another condition, or repair or delete that condition, first. After a check that follows the writes fails, every change is on the rule: do not send them again, read the rule and repair it or restore the backup.
+Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",ruleId,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parentId,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine; parentId is the installed Rule Machine app's id, which hub_list_apps(scope:"instances") lists. A failed creation can leave a native child: inspect returned ruleId and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting. An update first reads the same health and, before any backup or write, refuses a rule that is already broken (its own broken() check), naming each marked row by kind and native id (trigger 2), or a rule whose broken flag, compiled state or marked rows cannot be read, with checkErrors saying why: repair broken rows with operation:"form" or in the Hubitat UI. A rule whose page marks rows without being broken (a condition whose device was deleted) is updated: brokenRowsBefore lists the rows marked before the write, and the write fails only if it adds a newly marked row, so it can also repair them. An action change whose action comes back marked or with no label is refused and rolled back (rolledBack:true), even when it was marked before: an action left gated on a marked condition turns the rule's own broken() check true, so move the action to another condition, or repair or delete that condition, first. If that rollback does not verify (rolledBack:false, partial:true), read the rule and repair it or restore the backup. After a check that follows the writes fails, every change is on the rule: do not send them again, read the rule and repair it or restore the backup.
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.
