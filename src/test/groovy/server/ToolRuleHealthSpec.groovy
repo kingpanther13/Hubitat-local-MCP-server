@@ -218,13 +218,44 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.issues == []
     }
 
-    def "a marked kind with no emptied picker is listed once with id null"() {
+    def "a marked row with no emptied picker is listed with id null and its line's text"() {
         given: "an action gated on a marked condition carries the marker in the action labels, with no picker of its own"
         labels.action = 'IF (' + marker('Condition') + ') Log: gated'
         seed(100, [actionList: ['1'], actions: ['1': [method: 'getLogMsg', cond: '1']]], [:], [setting('logmsg.1', 'textarea', null, 'gated')])
 
         expect:
-        script._rmCheckRuleHealth(100).brokenRows == [[kind: 'action', id: null]]
+        script._rmCheckRuleHealth(100).brokenRows == [[kind: 'action', id: null, text: 'IF (**Broken Condition**) Log: gated']]
+    }
+
+    def "each marked line with no emptied picker is its own row, so two of one kind are told apart"() {
+        given: "two actions gated on marked conditions, one line each in the action labels, and one unmarked line"
+        labels.action = 'IF (' + marker('Condition') + ') Log: first<br>Log: clean<br>\nIF (' + marker('Condition') + ') Log: second'
+        seed(100, [actionList: ['1', '2', '3'], actions: ['1': [method: 'getLogMsg', cond: '1'], '2': [method: 'getLogMsg'], '3': [method: 'getLogMsg', cond: '2']]])
+
+        expect:
+        script._rmCheckRuleHealth(100).brokenRows == [[kind: 'action', id: null, text: 'IF (**Broken Condition**) Log: first'],
+                                                      [kind: 'action', id: null, text: 'IF (**Broken Condition**) Log: second']]
+    }
+
+    @spock.lang.Unroll
+    def "a marked row's text masks a secret URL parameter and a lock code while Hide passwords and credentials is #state"() {
+        given: "an HTTP action with a key in its URL and a setCode custom action carrying a PIN, both gated on a marked condition"
+        settingsMap.redactCredentials = redact
+        labels.action = 'IF (' + marker('Condition') + ') GET http://x.test/api?apikey=SECRETKEY&mode=on<br>IF (' + marker('Condition') + ') Lock: setCode(1, 482913, Guest)'
+        seed(100, [actionList: ['1', '2'], actions: ['1': [method: 'getHttp', cond: '1'], '2': [method: 'getDefinedAction', cond: '1']]], [:],
+             [setting('httper.1', 'text', null, 'http://x.test/api?apikey=SECRETKEY&mode=on'), setting('cCmd.2', 'enum', null, 'setCode'),
+              setting('cpVal1.2', 'text', null, '1'), setting('cpVal2.2', 'text', null, '482913')])
+
+        when:
+        List texts = script._rmCheckRuleHealth(100).brokenRows*.text
+
+        then:
+        texts == expected
+
+        where:
+        state | redact | expected
+        'on'  | null   | ['IF (**Broken Condition**) GET http://x.test/api?apikey=***redacted (password)***&mode=on', 'IF (**Broken Condition**) Lock: setCode(1, ***redacted (password)***, Guest)']
+        'off' | false  | ['IF (**Broken Condition**) GET http://x.test/api?apikey=SECRETKEY&mode=on', 'IF (**Broken Condition**) Lock: setCode(1, 482913, Guest)']
     }
 
     def "a label method that fails leaves brokenRows null with a checkErrors entry, so an update is refused"() {
@@ -321,7 +352,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         then:
         h.broken == false
         h.ok == false
-        h.brokenRows == [[kind: 'condition', id: '1', setting: 'rDev_1', text: 'C is on'], [kind: 'action', id: null]]
+        h.brokenRows == [[kind: 'condition', id: '1', setting: 'rDev_1', text: 'C is on'], [kind: 'action', id: null, text: "IF (**Broken Condition**) Log: 'gated'"]]
         h.issues == ["Rule Machine marks 2 row(s) on the rule's page (brokenRows) but does not call the rule broken; an update that marks no new row is allowed."]
         h.checkErrors == []
     }

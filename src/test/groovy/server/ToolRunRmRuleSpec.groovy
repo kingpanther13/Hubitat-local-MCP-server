@@ -72,6 +72,86 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         posts.findAll { it.path == '/installedapp/btn' && it.body.name == button }
     }
 
+    // The per-app busy map a hub_set_rule update or native form step holds while it runs.
+    private Map busyMap() {
+        def field = script.class.getDeclaredField('NATIVE_FORM_BUSY')
+        field.accessible = true
+        field.get(null) as Map
+    }
+
+    // The render after a toggle click would clear an open form operation's in-progress state, so a toggle refuses
+    // while one holds the rule, and holds the rule itself while it runs.
+    @spock.lang.Unroll
+    def "action=#action refuses while a native form operation holds the rule: no read, no click, no render"() {
+        given:
+        rule(900, false, false)
+        String key = script._nfKey(900L)
+        busyMap()[key] = true
+        int reads = 0
+        hubGet.register('/installedapp/statusJson/900') { params -> reads++; statusJson(900, false, false) }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 900, action: action])
+
+        then:
+        result.success == false
+        result.error == "hub_call_rule action=${action}: This rule already has an active native editing operation, so nothing was clicked.".toString()
+        result.note.contains('Send the action again once it has finished')
+        reads == 0
+        posts.isEmpty()
+        busyMap()[key] == true
+
+        cleanup:
+        busyMap().remove(key)
+
+        where:
+        action << ['stop', 'start', 'pause', 'resume']
+    }
+
+    def "a toggle holds the rule's busy key while it runs and releases it after"() {
+        given:
+        rule(901, false, false)
+        String key = script._nfKey(901L)
+        Boolean heldDuringClick = null
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            heldDuringClick = busyMap().containsKey(key)
+            posts << [path: path, body: body]
+            toggle(path, body)
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 901, action: 'pause'])
+
+        then:
+        result.success == true
+        heldDuringClick == true
+        !busyMap().containsKey(key)
+    }
+
+    @spock.lang.Unroll
+    def "hub_call_rule via dispatch stop while a form operation holds the rule is an isError failure that clicks nothing (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        rule(902, false, false)
+        String key = script._nfKey(902L)
+        busyMap()[key] = true
+
+        when:
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 902, action: 'stop'])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('This rule already has an active native editing operation')
+        posts.isEmpty()
+
+        cleanup:
+        busyMap().remove(key)
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "throws when Write master is disabled"() {
         given:
         settingsMap.enableWrite = false
@@ -127,9 +207,54 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "the default action runs the rule's actions through the runAction button, not RMUtils"() {
+    // action has no default: a client that leaves it out must not run every action, skipping the rule's conditions.
+    @spock.lang.Unroll
+    def "action #label is refused before any lookup or click"() {
+        given:
+        boolean looked = false
+        script.metaClass.getAppByAppId = { Long id -> looked = true; [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
+
         when:
-        def result = script.toolRunRmRule([ruleId: 102])
+        script.toolRunRmRule(args)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains(message)
+        e.message.contains("'actions' (runs every action without checking conditions or the Required Expression)")
+        e.message.endsWith('Nothing was dispatched.')
+        !looked
+        posts.isEmpty()
+        rmUtils.calls.isEmpty()
+
+        where:
+        label       | args                          | message
+        'left out'  | [ruleId: 102]                 | 'action is required'
+        'empty'     | [ruleId: 102, action: '']     | "Invalid action ''"
+        'false'     | [ruleId: 102, action: false]  | "Invalid action 'false'"
+        'zero'      | [ruleId: 102, action: 0]      | "Invalid action '0'"
+    }
+
+    @spock.lang.Unroll
+    def "hub_call_rule via dispatch without action is an isError refusal that clicks nothing (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 102])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('action is required')
+        posts.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "action:'actions' runs the rule's actions through the runAction button, not RMUtils"() {
+        when:
+        def result = script.toolRunRmRule([ruleId: 102, action: 'actions'])
 
         then: "the Run Actions page button is the route the hub UI takes"
         result.success == true
@@ -546,7 +671,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def "String ruleId is coerced to Integer before dispatch"() {
         when:
-        def result = script.toolRunRmRule([ruleId: '202'])
+        def result = script.toolRunRmRule([ruleId: '202', action: 'actions'])
 
         then:
         result.success == true
@@ -560,7 +685,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_call_rule', [ruleId: '202'])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: '202', action: 'actions'])
 
         then:
         response.error == null

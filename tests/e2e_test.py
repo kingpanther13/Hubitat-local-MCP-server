@@ -7564,9 +7564,10 @@ def updated() {}
                 # The pause re-renders the rule's page, so the list shows it at once.
                 assert self._rm_listed(app_id).get("paused") is paused
                 assert self._rm_health(app_id).get("label") == label
-            # Two pauses sent at once on the unpaused rule: each reads the flag, clicks the toggle and reads the flag
-            # again, so when both click, the second click unpauses the rule. The read-back then reports the mismatch
-            # instead of a success; a call that reports success saw the rule paused.
+            # Two pauses sent at once on the unpaused rule: a toggle holds the rule while it reads, clicks and reads
+            # again, so one that overlaps it is refused with nothing clicked. Should both still click, the second
+            # click unpauses the rule and the read-back reports the mismatch instead of a success; a call that
+            # reports success saw the rule paused.
             race: list[Any] = [None, None]
             gate = threading.Barrier(2)
 
@@ -7588,7 +7589,10 @@ def updated() {}
             assert all(isinstance(r, dict) for r in race), f"a concurrent pause call raised: {race}"
             mismatched = [r for r in race if r.get("success") is False
                           and "click was accepted, but the rule's paused state then read" in str(r.get("error"))]
-            assert all(r.get("success") is True or r in mismatched for r in race), race
+            busy = [r for r in race if r.get("success") is False
+                    and "This rule already has an active native editing operation, so nothing was clicked" in str(r.get("error"))]
+            assert all(r.get("success") is True or r in mismatched or r in busy for r in race), race
+            assert len(busy) < 2, f"both overlapping pauses were refused, so neither ran: {race}"
             final_paused = self._rm_health(app_id).get("paused")
             print(f"    concurrent pause: results={[r.get('rmAction') or r.get('error') for r in race]} final paused={final_paused}")
             # With no mismatch reported, every call said paused, and the rule is paused.
@@ -7928,6 +7932,15 @@ def updated() {}
             assert all(isinstance(status.get(key), list) for key in ("appState", "eventSubscriptions", "scheduledJobs")), status
             assert len(status["eventSubscriptions"]) == health.get("eventSubscriptionCount") \
                 and len(status["scheduledJobs"]) == health.get("scheduledJobCount"), (status, health)
+            # A cookie-named value is a live login: a local named like one reads masked in the App Status appState
+            # (nested under allLocalVars) and in hub_get_rule's localVariables.
+            self._rm_update(app_id, [native_change("variable", operation="create", name="e2eSessionCookie", type="string", value="e2e-cookie-value")])
+            masked = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeStatus": True})
+            locals_row = next((row for row in masked.get("appState") or [] if row.get("name") == "allLocalVars"), None)
+            assert locals_row is not None and "e2e-cookie-value" not in json.dumps(masked), masked.get("appState")
+            assert (locals_row.get("value") or {}).get("e2eSessionCookie") == "***redacted (password)***", locals_row
+            local_rows = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
+            assert [(row.get("name"), row.get("redacted")) for row in local_rows] == [("e2eSessionCookie", True)], local_rows
             # The tool takes ruleId; a client still sending appId is told so.
             try:
                 stale = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "appId": int(app_id)})
@@ -8001,7 +8014,7 @@ def updated() {}
             gated = self._rm_call({"operation": "update", "ruleId": int(cond_id),
                                    "args": {"changes": [native_log("newly gated", condition=gone)]}, "confirm": True})
             gate_error = self._rm_refused(gated)
-            if "Native action label is missing or broken" in gate_error:
+            if "Rule Machine marks this action broken" in gate_error:
                 # Refused at the action itself, which is rolled back.
                 assert gated.get("partial") is False, gated
                 assert self._native_rule_document(cond_id).get("actions") == before_gate, "a newly marked action was left behind"
@@ -8930,6 +8943,13 @@ def updated() {}
             # 'rule' is no longer an action, so it is refused.
             gone_action = refused("hub_call_rule", {"ruleId": app_id, "action": "rule"})
             assert "Invalid action 'rule'" in str(gone_action.get("error")), gone_action
+            # action has no default: leaving it out, or sending an empty or false one, runs nothing.
+            no_action = refused("hub_call_rule", {"ruleId": app_id})
+            assert "action is required" in str(no_action.get("error")) or "Missing required parameter for hub_call_rule: action" in str(no_action.get("error")), no_action
+            for blank in ("", False, 0):
+                blank_action = refused("hub_call_rule", {"ruleId": app_id, "action": blank})
+                assert "Invalid action" in str(blank_action.get("error")) and "Nothing was dispatched" in str(blank_action.get("error")), (blank, blank_action)
+            assert local_value() == 0, "a call without a valid action ran the rule's actions"
             # The Rule Machine parent app is not a rule: running its actions is refused, and reading it returns
             # its health with no local variables.
             parent_id = self._native_rule_parent_id()
@@ -8953,7 +8973,7 @@ def updated() {}
                 in str(set_parent.get("error")), set_parent
             # The runtime tools refuse an id with no app, alone or in a batch with a real rule, before
             # anything is dispatched: the batch's real rule does not run either.
-            for tool, args in (("hub_call_rule", {"ruleId": 999999999}),
+            for tool, args in (("hub_call_rule", {"ruleId": 999999999, "action": "actions"}),
                                ("hub_call_rule", {"ruleId": [int(app_id), 999999999], "action": "actions"}),
                                ("hub_set_rule_private_boolean", {"ruleId": 999999999, "value": True}),
                                ("hub_set_rule_private_boolean", {"ruleId": [int(app_id), 999999999], "value": False})):
@@ -9008,7 +9028,7 @@ def updated() {}
             assert sorted(row["name"] for row in rows) == sorted([*names, "refLocal"]), [row["name"] for row in rows]
             assert all(len(str(row.get("value"))) == 10000 for row in rows if row["name"] in names), "a paged local was cut short"
             self._rm_update(app_id, [native_change("variable", operation="delete", name=name) for name in names])
-            ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id})
+            ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "actions"})
             assert ran.get("success") is True and ran.get("rmAction") == "runAction button", ran
             self._rm_wait(lambda: local_value() == 9, what="refLocal=9 after the rule's actions ran")
             assert self._native_rule_document(app_id)["variables"]["refLocal"]["value"] == 9
@@ -9031,6 +9051,12 @@ def updated() {}
             self._rm_update(app_id, [native_change("required", tokens=[on])])
             replaced = self._rm_update(app_id, [native_change("required", tokens=[off])])
             assert replaced["document"]["expressions"]["0"] == [off], replaced["document"]["expressions"]
+            # Expression 0 is the Required Expression: an expression change there would leave the conditions Rule Machine
+            # binds to it behind, so it is refused before anything is written, pointing at a required change.
+            before_zero = self._rm_snapshot(app_id)
+            zero_error = self._rm_refuse(app_id, [native_change("expression", id=0, tokens=[on])])
+            assert "Expression 0 is the Required Expression" in zero_error and "part:'required'" in zero_error, zero_error
+            assert self._rm_snapshot(app_id) == before_zero, "a refused expression 0 change changed the rule"
             assert "is off" in self._rm_page(app_id).lower()
             self._rm_refuse_all(app_id, [
                 [self._rm_switch_condition(switch, "definitely_not_a_valid_state", id=off)],
@@ -9208,17 +9234,18 @@ def updated() {}
             unrelated = self._rm_update(app_id, [native_log("unrelated")])
             assert any(str(row.get("id")) == str(gone) for row in unrelated.get("brokenRowsBefore") or []), unrelated
             assert "unrelated" in self._rm_values(app_id).values(), "the unrelated edit was not written"
-            # Editing the gated action itself turns Rule Machine's own broken() true, though the rule's name gains no
-            # *BROKEN* marker; broken() decides, so the write reports that, and the rule is then refused as broken.
+            # Editing the gated action while it stays on the marked condition would turn Rule Machine's own broken()
+            # true, so the edit is rolled back at the action: the rule is unchanged, not partial, and still editable.
+            before_kept = self._native_rule_document(app_id).get("actions")
             kept = self._rm_call({"operation": "update", "ruleId": int(app_id), "confirm": True,
                                   "args": {"changes": [native_log("gated edit", id=gated, condition=gone)]}})
             kept_error = self._rm_refused(kept)
-            assert "Rule Machine's own broken() check now calls rule" in kept_error and kept.get("partial") is True \
-                and kept.get("broken") is True, kept
-            assert any(row.get("kind") == "condition" and str(row.get("id")) == str(gone) for row in kept.get("brokenRowsBefore") or []), kept
-            assert self._rm_health(app_id).get("broken") is True
-            later = self._rm_call({"operation": "update", "ruleId": int(app_id), "confirm": True, "args": {"changes": [native_log("after broken")]}})
-            assert "is already broken" in self._rm_refused(later) and later.get("partial") is False, later
+            assert "Rule Machine marks this action broken" in kept_error and "move it to another condition" in kept_error \
+                and kept.get("partial") is False, kept
+            assert self._native_rule_document(app_id).get("actions") == before_kept, "the refused gated edit changed the actions"
+            assert self._rm_health(app_id).get("broken") is False
+            later = self._rm_update(app_id, [native_log("after the refused edit")])
+            assert later.get("broken") is False, later
         finally:
             self._delete_native(app_id)
 

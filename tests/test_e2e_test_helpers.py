@@ -1714,8 +1714,8 @@ def test_send_does_not_retry_a_lost_non_mrtr_write(send_client):
 
 
 @pytest.mark.parametrize("leaf_args", [
-    {"ruleId": 1, "action": "rule"},
-    json.dumps({"ruleId": 1, "action": "rule"}),
+    {"ruleId": 1, "action": "actions"},
+    json.dumps({"ruleId": 1, "action": "actions"}),
 ])
 def test_send_does_not_retry_a_lost_single_rule_call_without_confirm(
     send_client, leaf_args,

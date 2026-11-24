@@ -571,7 +571,8 @@ class NativeModelSpec extends ToolSpecBase {
         true    | false
     }
 
-    def 'a broken label stays only while a marked condition explains it before and after the edit; any other is refused and rolled back (#label)'() {
+    // An action left gated on a marked condition turns broken() true (C-7), so any marked or empty label is rolled back.
+    def 'an action whose label comes back marked or empty is refused and rolled back, even when it was marked before (#label)'() {
         given: "condition 2's device was deleted: Rule Machine marks it, lists it in use, and an action naming it draws the marker"
         if (editing) {
             nativeState.actions = ['1': prior]
@@ -610,18 +611,73 @@ class NativeModelSpec extends ToolSpecBase {
         def result = script._nmUpsertAction(42L, row)
         then:
         result.success == allowed
-        allowed || result.error == 'Native action label is missing or broken'
+        allowed || result.error == 'Rule Machine marks this action broken or draws no label for it, so the change was rolled back. If it is gated on a condition Rule Machine marks, move it to another condition, or repair or delete that condition first'
         allowed || buttons.contains('actionCancel')
         where:
         label                                                           | editing | prior                             | condition | brokenAfter | allowed
-        'an edit kept on the marked condition'                          | true    | [method: 'getLogMsg', cond: '2']  | '2'       | true        | true
+        'an edit kept on the marked condition'                          | true    | [method: 'getLogMsg', cond: '2']  | '2'       | true        | false
         'an edit moved to a healthy condition with a clean label'       | true    | [method: 'getLogMsg', cond: '2']  | '1'       | false       | true
         'an edit moved to a healthy condition, its label still broken'  | true    | [method: 'getLogMsg', cond: '2']  | '1'       | true        | false
-        'an edit of an action whose expression names it'                | true    | [method: 'getLogMsg', rule: '3']  | null      | true        | true
+        'an edit of an action whose expression names it'                | true    | [method: 'getLogMsg', rule: '3']  | null      | true        | false
         'a new action gated on the marked one'                          | false   | null                              | '2'       | true        | false
         'an edit of an action that named no marked condition'           | true    | [method: 'getLogMsg', cond: '1']  | '2'       | true        | false
         'an edit of an action whose expression names no marked one'     | true    | [method: 'getLogMsg', rule: '4']  | null      | true        | false
         'an edit kept on the marked condition whose label draws nothing' | true   | [method: 'getLogMsg', cond: '2']  | '2'       | 'empty'     | false
+    }
+
+    // The row step alone is covered above; this runs it through the whole update, as the review asked: preflight, the
+    // health check's marked rows, the row step's rollback and the result the caller sees.
+    def 'a whole update that edits an action kept on the marked condition is rolled back: the rule is unchanged and not partial'() {
+        given: "condition 2's device was deleted; action 1 is gated on it, and its label stays marked after the edit"
+        settingsMap.backupBeforeRuleEdits = false
+        stateMap.lastBackupTimestamp = 1234567890000L
+        nativeState.actions = ['1': [method: 'getLogMsg', cond: '2']]
+        nativeState.actionList = ['1']
+        nativeState.inUseConds = ['2']
+        settings.put('actType.1', [type: 'enum', value: 'messageActs'])
+        settings.put('actSubType.1', [type: 'enum', value: 'getLogMsg'])
+        settings.put('logmsg.1', [type: 'text', value: 'gated'])
+        settings.put('rDev_2', [type: 'capability.switch', value: null, deviceList: null])
+        nativeRule.removeSetting = { String name -> settings.remove(name) }
+        nativeRule.thisActionLabel = { Object actionId -> "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'" }
+        nativeRule.doActPage = { ->
+            nativeState.hasCondition = true
+            nativeForm([[name: 'actType.1', type: 'enum', options: ['messageActs'], submitOnChange: true],
+                        [name: 'actSubType.1', type: 'enum', options: ['getLogMsg'], submitOnChange: true],
+                        [name: 'logmsg.1', type: 'text']])
+        }
+        List buttons = []
+        nativeRule.appButtonHandler = { String name ->
+            buttons << name
+            if (name == 'actionDone') nativeState.actions = ['1': [method: 'getLogMsg', cond: nativeState.doActN.tokenize('.')[1]]]
+        }
+        // The health check's own path is covered by ToolRuleHealthSpec: here it reports the rule healthy with condition 2 marked.
+        script.metaClass._rmCheckRuleHealth = { Integer id, Map marked ->
+            marked.putAll([rows: [[kind: 'condition', id: '2', setting: 'rDev_2']], marks: [trigger: 0, condition: 1, action: 1], inUse: ['2'], emptied: ['2']])
+            [broken: false, disabledActions: [], brokenRows: marked.rows, checkErrors: []]
+        }
+        List posts = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean retry = false -> posts << path; [status: 200] }
+        Map stateBefore = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(nativeState.subMap(['actions', 'actionList', 'eval', 'capabsfalse'])))
+        Map settingsBefore = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(settings))
+
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [[part: 'action', value: [id: '1', type: 'messageActs', subtype: 'getLogMsg', condition: '2',
+            fields: [[name: 'logmsg.#', type: 'text', value: 'edited']]]]]])
+
+        then: 'refused at the action, rolled back, and never finished with Done'
+        result.success == false
+        result.partial == false
+        result.error.startsWith('Rule Machine marks this action broken or draws no label for it, so the change was rolled back.')
+        result.results*.result*.rolledBack == [true]
+        result.note.startsWith('No change was written.')
+        result.brokenRowsBefore == [[kind: 'condition', id: '2', setting: 'rDev_2']]
+        buttons.contains('actionCancel')
+        posts.isEmpty()
+
+        and: 'the rule is as it was'
+        nativeState.subMap(['actions', 'actionList', 'eval', 'capabsfalse']) == stateBefore
+        settings == settingsBefore
     }
 
     def 'unknown simple action condition refuses before native editor or settings mutation'() {
@@ -1005,6 +1061,32 @@ class NativeModelSpec extends ToolSpecBase {
         }
         where:
         damage << ['none', 'addition', 'value', 'type', 'row', 'reference']
+    }
+
+    // Live (C-7): Rule Machine's own condition delete removes the condition from predCapabs, and nothing else changes.
+    def 'a condition delete verifies when Rule Machine drops only that condition from predCapabs (#label)'() {
+        given:
+        nativeState.predCapabs = [1, 2]
+        settings.put('rCapab_2', [type: 'enum', value: 'Switch'])
+        nativeRule.selectConditions = { Map params ->
+            nativeState.capabsfalse.remove('2')
+            settings.remove('rCapab_2')
+            nativeState.remove('deleteCon')
+            nativeState.predCapabs = after
+        }
+        when:
+        def result = script._nmDeleteRow(42L, 'condition', '2')
+        then:
+        result.deleted
+        result.referencesPreserved == verified
+        result.success == verified
+        result.partial == !verified
+        where:
+        label                                  | after  | verified
+        'only the deleted condition dropped'   | [1]    | true
+        'left as it was'                       | [1, 2] | true
+        'another condition dropped too'        | []     | false
+        'another condition dropped instead'    | [2]    | false
     }
 
     def 'condition deletion cannot succeed over removed settings while native condition remains'() {

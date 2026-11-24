@@ -1643,6 +1643,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         'UI-built REPEAT closed by END-IF' | [u(1, 'getRepeat'), a(2, 'switchActs', 'getOnOffSwitch'), u(3, 'getEndIf')] | [1, 2, 3] | ['mismatched block closer']
         'empty action list with a leftover IF row' | [a(7, 'condActs', 'getIfThen')] | [] | []
         'Repeat-While closed by END-REP' | [a(1, 'repeatActs', 'getWhile'), a(2, 'logActs', 'getLogMsg'), u(3, 'getEndRepeat')] | [1, 2, 3] | []
+        'Repeat-Until closed by END-REP' | [a(1, 'repeatActs', 'getUntil'), a(2, 'logActs', 'getLogMsg'), u(3, 'getEndRepeat')] | [1, 2, 3] | []
+        'Repeat (While) closed by END-REP' | [a(1, 'repeatActs', 'getRepeatWhile'), a(2, 'logActs', 'getLogMsg'), u(3, 'getEndRepeat')] | [1, 2, 3] | []
+        'Repeat-Until never closed' | [a(1, 'repeatActs', 'getUntil'), a(2, 'logActs', 'getLogMsg')] | [1, 2] | ['action 1 (Repeat) opened a block that was never closed']
         'live IF / While / END-REP / ELSE / Stop Repeating / END-IF' | [a(1, 'condActs', 'getIfThen'), a(2, 'repeatActs', 'getWhile'), a(3, 'notificationActs', 'getMsg'), u(4, 'getEndRepeat'), u(5, 'getElse'), a(6, 'repeatActs', 'getStopRepeat'), a(7, 'notificationActs', 'getMsg'), u(8, 'getEndIf')] | [1, 2, 3, 4, 5, 6, 7, 8] | []
         'IF / Repeat / END-REP / ELSE / END-IF' | [a(1, 'condActs', 'getIfThen'), a(2, 'repeatActs', 'getRepeat'), a(3, 'logActs', 'getLogMsg'), u(4, 'getEndRepeat'), u(5, 'getElse'), a(6, 'logActs', 'getLogMsg'), u(7, 'getEndIf')] | [1, 2, 3, 4, 5, 6, 7] | []
         'Repeat never closed despite a Stop Repeating' | [a(1, 'repeatActs', 'getRepeat'), a(2, 'logActs', 'getLogMsg'), a(3, 'repeatActs', 'getStopRepeat')] | [1, 2, 3] | ['action 1 (Repeat) opened a block that was never closed — rule is missing an END-REP']
@@ -1670,6 +1673,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         'getEndIf'      | 'condActs'
         'getRepeat'     | 'repeatActs'
         'getWhile'      | 'repeatActs'
+        'getUntil'      | 'repeatActs'
+        'getRepeatWhile' | 'repeatActs'
         'getEndRepeat'  | 'repeatActs'
         'getStopRepeat' | null
         'getLogMsg'     | null
@@ -1705,6 +1710,38 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         e.message.contains("structural END-REP")
         e.message.contains("never closed")
         clicks.isEmpty()
+    }
+
+    // _ndBlockIssues already treats these as repeat openers; the delete's own walk must too.
+    def "removing the END-REP of a #opener block alone is refused before any click"() {
+        given:
+        def clicks = []
+        deletePreflight([
+            [idx: 1, actType: "repeatActs", actSubType: opener],
+            [idx: 2, actType: "logActs",    actSubType: "getLogMsg"],
+            [idx: 3,                        actSubType: "getEndRepeat"]
+        ], [1, 2, 3], clicks)
+
+        when:
+        script._rmDeleteAction(100, 3)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("structural END-REP")
+        clicks.isEmpty()
+
+        when: 'the opener alone'
+        script._rmDeleteAction(100, 1)
+
+        then:
+        def opened = thrown(IllegalArgumentException)
+        opened.message.contains("structural ${kind}")
+        clicks.isEmpty()
+
+        where:
+        opener           | kind
+        'getUntil'       | 'Repeat-Until'
+        'getRepeatWhile' | 'Repeat-While'
     }
 
     def "removing a Stop Repeating leaf inside a Repeat block is allowed"() {

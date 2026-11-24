@@ -1,5 +1,7 @@
 package server
 
+import groovy.json.JsonOutput
+
 import support.RMUtilsMock
 import support.ToolSpecBase
 
@@ -15,11 +17,25 @@ class SendRmActionSpec extends ToolSpecBase {
     def setup() {
         rmUtils = new RMUtilsMock()
         rmUtils.install()
+        // Each rule's App Status page, whose private entry shows the last value dispatched to it, as Rule Machine sets
+        // it; a rule never dispatched to holds the text 'true' a new rule stores.
+        (1..10).each { int id -> hubGet.register("/installedapp/statusJson/${id}") { params -> privateStatus(id, lastPrivate(id)) } }
         script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
     }
 
     def cleanup() {
         rmUtils?.uninstall()
+    }
+
+    private Object lastPrivate(int id) {
+        def call = rmUtils.calls.findAll { it.method == 'sendAction' && id in (it.ruleIds ?: [])*.toInteger() }.with { it ? it.last() : null }
+        call == null ? 'true' : call.action == 'setRuleBooleanTrue'
+    }
+
+    // A rule's App Status page as the hub serves it.
+    private static String privateStatus(int id, Object value) {
+        JsonOutput.toJson([installedApp: [id: id], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                           appState: [[name: 'running', value: false, type: 'Boolean'], [name: 'private', value: value, type: 'Boolean']]])
     }
 
     def "a successful dispatch is the single 4-arg call"() {
