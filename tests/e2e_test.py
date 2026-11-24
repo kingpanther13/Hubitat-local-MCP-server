@@ -7564,10 +7564,9 @@ def updated() {}
                 # The pause re-renders the rule's page, so the list shows it at once.
                 assert self._rm_listed(app_id).get("paused") is paused
                 assert self._rm_health(app_id).get("label") == label
-            # Two pauses sent at once on the unpaused rule: a toggle holds the rule while it reads, clicks and reads
-            # again, so one that overlaps it is refused with nothing clicked. Should both still click, the second
-            # click unpauses the rule and the read-back reports the mismatch instead of a success; a call that
-            # reports success saw the rule paused.
+            # Two pauses sent at once on the unpaused rule: each reads the flag, clicks the toggle and reads the flag
+            # again, so when both click, the second click unpauses the rule. The read-back then reports the mismatch
+            # instead of a success; a call that reports success saw the rule paused.
             race: list[Any] = [None, None]
             gate = threading.Barrier(2)
 
@@ -7589,10 +7588,7 @@ def updated() {}
             assert all(isinstance(r, dict) for r in race), f"a concurrent pause call raised: {race}"
             mismatched = [r for r in race if r.get("success") is False
                           and "click was accepted, but the rule's paused state then read" in str(r.get("error"))]
-            busy = [r for r in race if r.get("success") is False
-                    and "This rule already has an active native editing operation, so nothing was clicked" in str(r.get("error"))]
-            assert all(r.get("success") is True or r in mismatched or r in busy for r in race), race
-            assert len(busy) < 2, f"both overlapping pauses were refused, so neither ran: {race}"
+            assert all(r.get("success") is True or r in mismatched for r in race), race
             final_paused = self._rm_health(app_id).get("paused")
             print(f"    concurrent pause: results={[r.get('rmAction') or r.get('error') for r in race]} final paused={final_paused}")
             # With no mismatch reported, every call said paused, and the rule is paused.

@@ -49,6 +49,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
 
     def cleanup() {
         rmUtils?.uninstall()
+        formContexts().clear()
     }
 
     // A rule's App Status page as the hub serves it; a null flag is left out, as for a rule never stopped or paused.
@@ -72,81 +73,74 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         posts.findAll { it.path == '/installedapp/btn' && it.body.name == button }
     }
 
-    // The per-app busy map a hub_set_rule update or native form step holds while it runs.
-    private Map busyMap() {
-        def field = script.class.getDeclaredField('NATIVE_FORM_BUSY')
+    // A hub_set_rule form session left open across calls, as _nfContext stores it per caller.
+    private Map formContexts() {
+        def field = script.class.getDeclaredField('NATIVE_FORM_CONTEXTS')
         field.accessible = true
         field.get(null) as Map
     }
 
-    // The render after a toggle click would clear an open form operation's in-progress state, so a toggle refuses
-    // while one holds the rule, and holds the rule itself while it runs.
+    private int renders(int id) { hubGet.calls.count { it.path == "/installedapp/configure/json/${id}".toString() } }
+
+    // A render rewrites the rule's state, which would clear the open session's in-progress keys.
     @spock.lang.Unroll
-    def "action=#action refuses while a native form operation holds the rule: no read, no click, no render"() {
+    def "action=#action on a rule with an open form session clicks but leaves the page unrendered, saying so"() {
         given:
-        rule(900, false, false)
-        String key = script._nfKey(900L)
-        busyMap()[key] = true
-        int reads = 0
-        hubGet.register('/installedapp/statusJson/900') { params -> reads++; statusJson(900, false, false) }
+        rule(900, action == 'start', action == 'resume')
+        formContexts()['caller:main'] = [app_id: 900L, expires: script.now() + 60000L]
 
         when:
         def result = script.toolRunRmRule([ruleId: 900, action: action])
 
         then:
-        result.success == false
-        result.error == "hub_call_rule action=${action}: This rule already has an active native editing operation, so nothing was clicked.".toString()
-        result.note.contains('Send the action again once it has finished')
-        reads == 0
-        posts.isEmpty()
-        busyMap()[key] == true
-
-        cleanup:
-        busyMap().remove(key)
+        result.success == true
+        clicks(button).size() == 1
+        renders(900) == 0
+        result.note == "The rule's ${flag} state changed. Its page was not rendered because a hub_set_rule form session is open on it, so hub_list_rules may show the old status until that session finishes or the page next renders.".toString()
 
         where:
-        action << ['stop', 'start', 'pause', 'resume']
+        action   | button     | flag
+        'stop'   | 'stopRule' | 'stopped'
+        'start'  | 'stopRule' | 'stopped'
+        'pause'  | 'pausRule' | 'paused'
+        'resume' | 'pausRule' | 'paused'
     }
 
-    def "a toggle holds the rule's busy key while it runs and releases it after"() {
+    @spock.lang.Unroll
+    def "a #label form context leaves the toggle's render in place"() {
         given:
         rule(901, false, false)
-        String key = script._nfKey(901L)
-        Boolean heldDuringClick = null
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            heldDuringClick = busyMap().containsKey(key)
-            posts << [path: path, body: body]
-            toggle(path, body)
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
+        formContexts()['caller:main'] = context
 
         when:
         def result = script.toolRunRmRule([ruleId: 901, action: 'pause'])
 
         then:
         result.success == true
-        heldDuringClick == true
-        !busyMap().containsKey(key)
+        renders(901) == 1
+        !result.containsKey('note')
+
+        where:
+        label                  | context
+        'expired'              | [app_id: 901L, expires: script.now() - 1000L]
+        "another app's"        | [app_id: 902L, expires: script.now() + 60000L]
     }
 
     @spock.lang.Unroll
-    def "hub_call_rule via dispatch stop while a form operation holds the rule is an isError failure that clicks nothing (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch pause on a rule with an open form session skips the render (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        rule(902, false, false)
-        String key = script._nfKey(902L)
-        busyMap()[key] = true
+        rule(903, false, false)
+        formContexts()['caller:main'] = [app_id: 903L, expires: script.now() + 60000L]
 
         when:
-        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 902, action: 'stop'])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 903, action: 'pause'])
 
         then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('This rule already has an active native editing operation')
-        posts.isEmpty()
-
-        cleanup:
-        busyMap().remove(key)
+        !response.result.isError
+        mcpDriver.parseInner(response).note.contains('a hub_set_rule form session is open on it')
+        clicks('pausRule').size() == 1
+        renders(903) == 0
 
         where:
         useGateways << [true, false]

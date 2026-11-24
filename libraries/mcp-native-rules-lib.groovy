@@ -650,54 +650,51 @@ private Map _rmTogglePaused(Integer ruleId, String action) {
 }
 
 private Map _rmToggleButton(Integer ruleId, String action, String flag, String button, boolean target, String clicked) {
-    // A hub_set_rule update or native form step on the rule holds this key, and the page render after the click would
-    // clear its in-progress state, so the toggle refuses while it is held and holds it itself.
-    String busyKey = _nfKey(ruleId as Long)
-    if (NATIVE_FORM_BUSY.putIfAbsent(busyKey, true) != null) return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: This rule already has an active native editing operation, so nothing was clicked.".toString(),
-        note: "A hub_set_rule update or native form step on this rule is running. Send the action again once it has finished; hub_get_rule reads the rule's state."]
     // The body runs in a closure, whose class carries its call sites: the server class sits at the JVM's constant-pool limit.
-    try {
-        return { wrapped ->
-            boolean now
-            try {
-                now = _rmRuntimeFlag(ruleId, flag)
-            } catch (Exception e) {
-                return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: cannot read the rule's ${flag} state before the toggle (${e.message})".toString(),
-                        note: "Nothing was clicked. Retry; hub_get_rule reads the rule's state."]
-            }
-            if (now == target) {
-                return [success: true, ruleId: ruleId, rmAction: "noop",
-                        note: "Rule was already ${target ? flag : 'not ' + flag} -- ${button} button not clicked.".toString()]
-            }
-            try {
-                _rmClickAppButton(ruleId, button)
-            } catch (Exception e) {
-                return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${button} button click failed (${e.message})".toString(),
-                        note: "Re-issuing is safe: the rule's state is read first and a rule already ${target ? flag : 'not ' + flag} is left alone. Confirm with hub_get_rule or hub_list_rules. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
-            }
-            def out = [success: true, ruleId: ruleId, rmAction: clicked]
-            // The click alone leaves the rule's "(Stopped)"/"(Paused)" name decoration stale until its page is next
-            // rendered; render it once, as the hub UI does after the click, so hub_list_rules is current.
-            String renderError = null
-            try {
-                // A page that renders with an error may not have refreshed the decoration either.
-                def pageError = _rmFetchConfigJson(ruleId)?.configPage?.error
-                if (pageError) renderError = "the page reported: ${pageError}".toString()
-            } catch (Exception e) {
-                renderError = e.message ?: e.toString()
-            }
-            // The hub accepts a click that changes nothing, and two toggles sent at once cancel out, so the flag is read again.
-            def seen
-            try { seen = _rmRuntimeFlag(ruleId, flag) }
-            catch (Exception e) { seen = e.message ?: e.toString() }
-            if (seen != target) {
-                return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: the ${button} click was accepted, but the rule's ${flag} state then read ${seen}, not ${target}".toString(),
-                        note: "Another change to the rule may have run at the same time. Read it with hub_get_rule, then send the action again if it is still needed: a rule already in the target state is left alone. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
-            }
-            if (renderError != null) out.note = "The rule's ${flag} state changed, but re-rendering its page failed (${renderError}), so hub_list_rules may show the old status until the rule's page next renders without an error; hub_get_app_config(appId: ${ruleId}) opens it. hub_get_rule reads the rule's own state.".toString()
-            return out
-        }.call(null)
-    } finally { NATIVE_FORM_BUSY.remove(busyKey) }
+    return { wrapped ->
+        boolean current
+        try {
+            current = _rmRuntimeFlag(ruleId, flag)
+        } catch (Exception e) {
+            return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: cannot read the rule's ${flag} state before the toggle (${e.message})".toString(),
+                    note: "Nothing was clicked. Retry; hub_get_rule reads the rule's state."]
+        }
+        if (current == target) {
+            return [success: true, ruleId: ruleId, rmAction: "noop",
+                    note: "Rule was already ${target ? flag : 'not ' + flag} -- ${button} button not clicked.".toString()]
+        }
+        try {
+            _rmClickAppButton(ruleId, button)
+        } catch (Exception e) {
+            return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${button} button click failed (${e.message})".toString(),
+                    note: "Re-issuing is safe: the rule's state is read first and a rule already ${target ? flag : 'not ' + flag} is left alone. Confirm with hub_get_rule or hub_list_rules. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
+        }
+        def out = [success: true, ruleId: ruleId, rmAction: clicked]
+        // The click alone leaves the rule's "(Stopped)"/"(Paused)" name decoration stale until its page is next
+        // rendered; render it once, as the hub UI does after the click, so hub_list_rules is current.
+        String renderError = null
+        // A hub_set_rule form session left open on the rule keeps its in-progress state in the rule, which a render
+        // rewrites, so the page is left for that session to render.
+        boolean formOpen = NATIVE_FORM_CONTEXTS.values().any { it?.app_id?.toString() == ruleId.toString() && it.expires >= now() }
+        if (!formOpen) try {
+            // A page that renders with an error may not have refreshed the decoration either.
+            def pageError = _rmFetchConfigJson(ruleId)?.configPage?.error
+            if (pageError) renderError = "the page reported: ${pageError}".toString()
+        } catch (Exception e) {
+            renderError = e.message ?: e.toString()
+        }
+        // The hub accepts a click that changes nothing, and two toggles sent at once cancel out, so the flag is read again.
+        def seen
+        try { seen = _rmRuntimeFlag(ruleId, flag) }
+        catch (Exception e) { seen = e.message ?: e.toString() }
+        if (seen != target) {
+            return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: the ${button} click was accepted, but the rule's ${flag} state then read ${seen}, not ${target}".toString(),
+                    note: "Another change to the rule may have run at the same time. Read it with hub_get_rule, then send the action again if it is still needed: a rule already in the target state is left alone. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+        }
+        if (formOpen) out.note = "The rule's ${flag} state changed. Its page was not rendered because a hub_set_rule form session is open on it, so hub_list_rules may show the old status until that session finishes or the page next renders.".toString()
+        if (renderError != null) out.note = "The rule's ${flag} state changed, but re-rendering its page failed (${renderError}), so hub_list_rules may show the old status until the rule's page next renders without an error; hub_get_app_config(appId: ${ruleId}) opens it. hub_get_rule reads the rule's own state.".toString()
+        return out
+    }.call(null)
 }
 
 // A Visual Rule's pause runs through its builder's endpoint, which sets the state it is given; the state is
