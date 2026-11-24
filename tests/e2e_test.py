@@ -7953,9 +7953,16 @@ def updated() {}
             for secret in ("E2E_SECRET", "E2E_PSW", "E2E_CLIENT"):
                 assert secret not in json.dumps(read_settings), f"the HTTP action's {secret} came back in clear"
             config = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeSettings": True})
-            # The page prints the URL in the action's summary whether or not the settings map came back.
-            config_urls = [v for k, v in (config.get("settings") or {}).items() if str(k).startswith("httper.")]
-            assert "settings" not in config or config_urls == urls, config_urls
+            # includeSettings returns the settings unless the read withholds them, which it says in settingsNote.
+            if "settings" in config:
+                config_urls = [v for k, v in config["settings"].items() if str(k).startswith("httper.")]
+                assert config_urls == urls, config_urls
+            else:
+                assert "withheld" in str(config.get("settingsNote", "")), config
+            # Where the page prints the URL in the action's summary, its apikey reads masked there too.
+            page_text = json.dumps(config.get("page"))
+            if "192.0.2.1/x?apikey=" in page_text:
+                assert f"192.0.2.1/x?apikey={masked}" in page_text, page_text
             assert not any(secret in json.dumps(config) for secret in ("E2E_SECRET", "E2E_PSW", "E2E_CLIENT")), "hub_get_app_config showed a URL secret"
             # The tool takes ruleId; a client still sending appId is told so.
             try:
@@ -9271,6 +9278,8 @@ def updated() {}
             kept_error = self._rm_refused(kept)
             assert "Rule Machine marks this action broken" in kept_error and "move it to another condition" in kept_error \
                 and kept.get("partial") is False, kept
+            # rolledBack is the action's own outcome, in its results entry.
+            assert [(row.get("part"), (row.get("result") or {}).get("rolledBack")) for row in kept.get("results") or []] == [("action", True)], kept
             assert self._native_rule_document(app_id).get("actions") == before_kept, "the refused gated edit changed the actions"
             assert self._rm_health(app_id).get("broken") is False
             later = self._rm_update(app_id, [native_log("after the refused edit")])

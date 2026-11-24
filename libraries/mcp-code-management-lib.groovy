@@ -706,7 +706,7 @@ def toolGetAppConfig(args) {
                         redacted.put(k, _appConfigIsSecretSetting(key, type, v) ? redactedPw : v)
                     }
                     result.settings = _ruleSecretsMasked(redacted, lock)
-                    result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, psw, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, cookie, session, bearer, a PIN, or a code named for a lock, user, alarm, keypad, installer or similar), the value of a URL query parameter named like one (an HTTP action's apikey= or token=), and every parameter of a lock-code custom action (setCode), here and in the page text. Other free-text values are not recognised. OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. Turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
+                    result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, psw, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, cookie, session, bearer, a PIN, or a code named for a lock, user, alarm, keypad, installer or similar), the value of a URL query parameter named like one or by a short URL name (key, auth, sig, signature, pin; an HTTP action's apikey= or token=), and every parameter of a lock-code custom action (setCode), here and in the page text. Other free-text values are not recognised. OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. Turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
                 }
             }
         } else if (settingsCount > 0) {
@@ -720,12 +720,19 @@ def toolGetAppConfig(args) {
         if (includeStatus) _appConfigAttachStatus(result, appIdStr as Integer, fetched.statusError ?: fetched.status)
         // A rule's page prints its local variables and other stored values as plain text (the locals table), so a value
         // masked in this response's settings or appState is masked in the page too.
-        List hidden = []
+        // Each hidden value -> the marker that stands in for it.
+        Map hidden = [:]
+        boolean maskTokens = _redactsAccessTokens()
         _appConfigMaskedLeaves(parsed.settings, result.settings, hidden)
+        // An access token is masked by the central pass, after this point, so its raw value is collected here.
+        if (maskTokens && parsed.settings instanceof Map) _appConfigMaskedLeaves(parsed.settings, _redactAccessTokens(parsed.settings), hidden)
         def rawState = fetched.status instanceof Map ? fetched.status.appState : null
         Map rawRows = rawState instanceof Map ? rawState : (rawState instanceof List ? rawState.findAll { it instanceof Map }.collectEntries { [(it.name?.toString()): it.value] } : [:])
-        // From the full state, not result.appState: fitting an oversized status drops its values.
-        if (result.appState instanceof List) rawRows.each { name, raw -> _appConfigMaskedLeaves(raw, _appStateMasked(name?.toString(), raw), hidden) }
+        // From the full state, not result.appState, which fitting an oversized status can drop entirely.
+        if (includeStatus) rawRows.each { name, raw ->
+            def masked = _appStateMasked(name?.toString(), raw)
+            _appConfigMaskedLeaves(raw, maskTokens ? _redactAccessTokens([(name): masked]).get(name) : masked, hidden)
+        }
         // A rule's page prints its locals whether or not includeStatus read them, so a Rule Machine rule's locals are read
         // in-process, as hub_get_rule does (no render, no status read), and the credential-named ones are scrubbed too.
         if (typeNames.any { _rmIsEditableRuleType(appTypeNamespace, it) }) {
@@ -733,14 +740,13 @@ def toolGetAppConfig(args) {
                 def locals = _nrHandle(appIdStr as Long).getAllLocalVars()
                 (locals instanceof Map ? locals : [:]).each { name, row ->
                     def value = row instanceof Map ? row.value : row
-                    if (_appConfigMasksSetting(name?.toString(), row instanceof Map && row.type?.toString() == 'boolean' ? 'bool' : 'text', value) && value?.toString()?.size() >= 4) hidden << value.toString()
+                    if (_appConfigMasksSetting(name?.toString(), row instanceof Map && row.type?.toString() == 'boolean' ? 'bool' : 'text', value) && value?.toString()?.size() >= 4) hidden.put(value.toString(), _appConfigRedactedMarker())
                 }
             } catch (Exception unread) { mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: local variables unreadable (${unread.message}); page text not checked for them") }
         }
-        hidden = hidden.unique()
         // Everything but the parts already masked: the page, and the controls whose titles carry the same tables.
         if (hidden) {
-            // A sub-page link's page name is what the caller passes back as pageName, so it is never rewritten.
+            // A sub-page link's page name is passed back as pageName, so it is never rewritten.
             List hrefPages = (result.page?.hrefs ?: []).collect { it instanceof Map ? it.page : null }
             result.keySet().findAll { !(it in ['settings', 'appState']) }.each { key -> result.put(key, _ruleSecretsMasked(result.get(key), [names: [], codes: [], texts: hidden])) }
             hrefPages.eachWithIndex { page, i -> if (page != null) result.page.hrefs[i].page = page }
@@ -750,13 +756,14 @@ def toolGetAppConfig(args) {
     }.call(null)
 }
 
-// The text values (four characters or more) that masking replaced: raw beside its masked copy, where a marker stands
-// in for a value or a whole map or list.
-private void _appConfigMaskedLeaves(Object raw, Object masked, List out) {
+// The text values (four characters or more) that masking replaced, each -> its marker: raw beside its masked copy,
+// where a password or access-token marker stands in for a value or a whole map or list.
+private void _appConfigMaskedLeaves(Object raw, Object masked, Map out) {
     if (raw == null || masked == null) return
-    if (masked instanceof CharSequence && masked.toString() == _appConfigRedactedMarker()) {
+    List markers = [_appConfigRedactedMarker(), _accessTokenRedactedMarker()]
+    if (masked instanceof CharSequence && masked.toString() in markers) {
         Closure leaves
-        leaves = { node -> node instanceof Map ? node.values().each { leaves.call(it) } : (node instanceof List ? node.each { leaves.call(it) } : (node instanceof CharSequence || node instanceof Number ? (node.toString().size() >= 4 && node.toString() != _appConfigRedactedMarker() ? out << node.toString() : null) : null)) }
+        leaves = { node -> node instanceof Map ? node.values().each { leaves.call(it) } : (node instanceof List ? node.each { leaves.call(it) } : (node instanceof CharSequence || node instanceof Number ? (node.toString().size() >= 4 && !(node.toString() in markers) ? out.put(node.toString(), masked.toString()) : null) : null)) }
         leaves.call(raw)
     } else if (raw instanceof Map && masked instanceof Map) masked.each { k, v -> _appConfigMaskedLeaves(raw.get(k), v, out) }
     else if (raw instanceof List && masked instanceof List && raw.size() == masked.size()) for (i in 0..<raw.size()) _appConfigMaskedLeaves(raw.get(i), masked.get(i), out)

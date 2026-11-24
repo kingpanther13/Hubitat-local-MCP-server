@@ -214,7 +214,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         def e = thrown(IllegalArgumentException)
         e.message.contains(message)
-        e.message.contains("'actions' (runs the rule's actions; Rule Machine skips its conditions and Required Expression)")
+        e.message.contains("'actions' (runs the rule's actions without its triggers or Required Expression)")
         e.message.endsWith('Nothing was dispatched.')
         !looked
         posts.isEmpty()

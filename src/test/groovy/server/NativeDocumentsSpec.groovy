@@ -1300,7 +1300,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script._ndPreflight(42L, script._ndChanges([repair, required]), marked)
         then:
         noExceptionThrown()
-        when: 'the repair comes after the expression, or supplies no device'
+        when: 'the repair comes after the expression, supplies no device, or fills only a relative device, not the picker'
         script._ndPreflight(42L, script._ndChanges(batch), marked)
         then:
         def error = thrown(IllegalArgumentException)
@@ -1310,8 +1310,34 @@ class NativeDocumentsSpec extends ToolSpecBase {
             [[part: 'required', value: [tokens: ['4']]], [part: 'condition', value: [id: '4', capability: 'Switch', fields: [
                 [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]],
             [[part: 'condition', value: [id: '4', capability: 'Switch', fields: [
-                [name: 'rDev_#', type: 'capability.switch', value: []], [name: 'state_#', type: 'enum', value: 'on']]]], [part: 'required', value: [tokens: ['4']]]]
+                [name: 'rDev_#', type: 'capability.switch', value: []], [name: 'state_#', type: 'enum', value: 'on']]]], [part: 'required', value: [tokens: ['4']]]],
+            [[part: 'condition', value: [id: '4', capability: 'Switch', fields: [
+                [name: 'relDevice_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]], [part: 'required', value: [tokens: ['4']]]]
         ]
+    }
+
+    def 'a repair whose device does not take fails at the condition, before the Required Expression that names it is sent'() {
+        given: "condition 4's device picker lost its device, and the condition write reports success but leaves it empty"
+        backupsOn()
+        nativeState.inUseConds = []
+        Map picker = [name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]
+        statusSettings = [picker]
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [picker]]) }
+        script.metaClass._nmUpsertCondition = { Long id, boolean trigger, Map value -> events << 'condition'; [success: true, id: '4', partial: false] }
+        script.metaClass._nmSetRequired = { Long id, List tokens -> events << 'required'; [success: true] }
+        def repair = [part: 'condition', value: [id: '4', capability: 'Switch', fields: [
+            [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [repair, [part: 'required', value: [tokens: ['4']]]]])
+        then:
+        !result.success
+        result.partial
+        result.results.size() == 1
+        result.results[0].result.success == false
+        result.error == 'Condition 4 still has no device after the change, so the repair did not take'
+        result.remaining == [[part: 'required', value: [tokens: ['4']]]]
+        events.contains('condition') && !events.contains('required')
+        !events.any { it instanceof Map && it.path == '/installedapp/update/json' }
     }
 
     def 'a change refused by its own arguments leaves the update unwritten; any other failure of the first change may have written'() {
@@ -1450,7 +1476,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         then:
         !result.success
         result.partial
-        result.error == "connection reset; the rule's stopped and paused state was verified unchanged"
+        result.error == "Native Done failed: connection reset; the rule's stopped and paused state was verified unchanged"
         result.note.startsWith('Every change was written and Done was sent, but it may or may not have taken, or a check after it failed. Do not send the changes again: read the rule with hub_get_rule before anything else.')
     }
 
@@ -1468,7 +1494,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         then:
         !result.success
         result.partial
-        result.error.startsWith(error)
+        result.error.startsWith('Native Done failed: ' + error)
         result.error.endsWith("; the rule's stopped and paused state was verified unchanged")
         events.count { it instanceof Map && it.path == '/installedapp/update/json' } == 1
         events.count { it == 'stopRule' } == 1
@@ -1496,8 +1522,42 @@ class NativeDocumentsSpec extends ToolSpecBase {
         then:
         !result.success
         result.partial
-        result.error == "connection reset; the rule's stopped and paused state could not be verified unchanged: check it with hub_get_rule"
+        result.error == "Native Done failed: connection reset; the rule's stopped and paused state could not be verified unchanged: check it with hub_get_rule (hub busy)"
         !events.contains('pausRule') && !events.contains('stopRule')
+    }
+
+    def 'a restore press that throws after a successful Done fails saying the lifecycle could not be verified, and why'() {
+        given:
+        lifecycle.paused = true
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean retry = false ->
+            events << [path: path, body: body]; lifecycle.paused = false; [status: 200, data: [:]] }
+        def spec = this
+        script.metaClass._nrHandle = { Long id ->
+            def child = new NativeDocumentChild(events, lifecycle, nativeState.allLocalVars, typedSettings)
+            child.brokenCheck = { -> spec.broken }
+            child.stateOf = { -> spec.nativeState }
+            child.pressFailure = { String name -> throw new IOException('button timeout') }
+            child
+        }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        result.partial
+        result.error == "Native Done was sent; the rule's stopped and paused state could not be verified unchanged: check it with hub_get_rule (button timeout; a stop or pause button press was already sent)"
+        events.count { it == 'pausRule' } == 1
+    }
+
+    def 'a create whose Done throws reports the Done failure without a stopped or paused verdict'() {
+        given:
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean retry = false ->
+            events << [path: path, body: body]; throw new IOException('connection reset') }
+        when:
+        def result = script._ndApply(42L, [logChange()], true)
+        then:
+        !result.success
+        result.error == 'Native Done failed: connection reset'
+        !result.error.contains('stopped and paused')
     }
 
     def 'a paused flag that reads but is not a flag after Done fails the update rather than passing as unpaused'() {
@@ -2615,8 +2675,11 @@ class NativeDocumentChild {
     Object getSetting(String name) { typedSettings.get(name) }
     Map getAllLocalVars() { locals }
     Object broken() { brokenCheck() }
+    // Runs after a press is recorded: a hub that times out on the press.
+    Closure pressFailure = null
     void appButtonHandler(String name) {
         events << name
+        if (pressFailure != null) pressFailure(name)
         if (name == 'stopRule') lifecycle.stopped = !lifecycle.stopped
         if (name == 'pausRule') lifecycle.paused = !lifecycle.paused
     }

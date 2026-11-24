@@ -1048,6 +1048,57 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('hunter22secret')
     }
 
+    def "a state value is still masked in the page text when fitting the status drops appState entirely"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass._responseSizeLimitBytes = { -> 12000 }
+        def sections = [[title: '', input: [], body: [[element: 'paragraph', description: 'Broker login: hunter22secret (saved)']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'App', install: true, refreshInterval: null, sections: sections]])
+        }
+        List rows = (1..400).collect { [name: "pistonVariable${it}".padRight(48, 'x'), value: 'v'] } + [[name: 'mqttPassword', value: 'hunter22secret']]
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: rows])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        !result.containsKey('appState')
+        result.appStateTotal == 401
+        result.page.sections[0].paragraphs == ['Broker login: ***redacted (password)*** (saved)']
+        !JsonOutput.toJson(result).contains('hunter22secret')
+    }
+
+    @spock.lang.Unroll
+    def "an access token masked in appState is masked in the page text too (redactAccessTokens=#tokens, redactCredentials=#credentials)"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactAccessTokens = tokens
+        settingsMap.redactCredentials = credentials
+        def sections = [[title: '', input: [], body: [[element: 'paragraph', description: 'Endpoint key tok-abc-12345 (copy it)']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'App', install: true, refreshInterval: null, sections: sections]])
+        }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                               appState: [[name: 'accessToken', value: 'tok-abc-12345']]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.page.sections[0].paragraphs == [tokens ? 'Endpoint key ***redacted (access token)*** (copy it)' : 'Endpoint key tok-abc-12345 (copy it)']
+
+        where:
+        tokens | credentials
+        true   | true
+        true   | false
+        false  | true
+    }
+
     def "a failed status read is not repeated in the same call, and its note is unchanged"() {
         given:
         settingsMap.enableRead = true
@@ -1130,6 +1181,17 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         // Guest is a setCode parameter masked in settings, so the page masks it too.
         result.page.sections[0].paragraphs[0].contains('setCode(1, ***redacted (password)***, ***redacted (password)***)')
         result.settingsRedactionNote.contains('lock-code custom action (setCode)')
+    }
+
+    // A nested URL carried as a parameter value stops at its own '?', so the parameters inside it are judged too.
+    def "a secret parameter inside a nested URL's query is masked: #url"() {
+        expect:
+        script._ruleSecretsMasked(url, [names: [], codes: []]) == expected
+
+        where:
+        url                                                     | expected
+        'http://hub/cb?next=https://api.x.com/v1?apikey=SECRET' | 'http://hub/cb?next=https://api.x.com/v1?apikey=***redacted (password)***'
+        'http://h/a?url=http://h/?password=pw'                  | 'http://h/a?url=http://h/?password=***redacted (password)***'
     }
 
     // The secret word starts the parameter name or follows a separator, so a word that merely ends in one is kept.

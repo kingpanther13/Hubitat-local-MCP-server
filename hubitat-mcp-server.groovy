@@ -5468,10 +5468,11 @@ private boolean _appConfigQualifiedSuffix(String word, Set qualifiers) {
     return false
 }
 
-// redactAccessTokens (Advanced page). Covers the three shapes a token reaches a tool result in:
+// redactAccessTokens (Advanced page). Covers the four shapes a token reaches a tool result in:
 // an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
-// (app settings and state) or the clientTokens map of per-client tokens, and that same key
-// inside JSON carried as a string (a file read or an exported setting).
+// (app settings and state) or the clientTokens map of per-client tokens, a {name, value} row
+// named accessToken (app state, a status list), and that same key inside JSON carried as a
+// string (a file read or an exported setting).
 private def _redactAccessTokens(value) {
     String marker = _accessTokenRedactedMarker()
     if (value instanceof Map) {
@@ -5491,7 +5492,8 @@ private def _redactAccessTokens(value) {
         String text = value.toString()
         boolean clientTokens = text.contains("clientTokens")
         if (!clientTokens && !text.toLowerCase().contains("access")) return value
-        String masked = text.replaceAll(/(?i)(access_token=)[^&\s"'<>#]+/, '$1' + marker)
+        // A value already masked (a page scrub runs first) is left whole: the marker has spaces in it.
+        String masked = text.replaceAll(/(?i)(access_token=)(?!\*\*\*redacted)[^&\s"'<>#]+/, '$1' + marker)
                             .replaceAll(/(?i)("access_?token"\s*:\s*")[^"]*(")/, '$1' + marker + '$2')
         // Once clientTokens appears, every "token" string value in the text is masked: a
         // serialized clientTokens map carries each token under that key, and over-masking is safe.
@@ -10516,28 +10518,30 @@ private Map _ruleLockParams(Map settings) {
 
 // With Hide passwords and credentials on, masks a secret-named URL query parameter (access_token follows Hide access
 // tokens) and the lock-code parameters lock (_ruleLockParams) names, at any depth; other free-text parameters are not
-// recognised. A {name, value} row is judged by its name. lock.texts, when given, are values the response masked
-// elsewhere, removed from text wherever they appear.
+// recognised. A {name, value} row is judged by its name. lock.texts, when given, maps values the response masked
+// elsewhere (under either setting) to their marker, replaced in text wherever they appear.
 private Object _ruleSecretsMasked(Object value, Map lock) {
-    if (!_redactsCredentials()) return value
+    boolean credentials = _redactsCredentials()
+    if (!credentials && !lock.texts) return value
     String marker = _appConfigRedactedMarker()
     Closure walk
     walk = { node, String key ->
-        if (node != null && key in lock.names) return marker
+        if (credentials && node != null && key in lock.names) return marker
         String row = node instanceof Map && node.name instanceof CharSequence && node.containsKey('value') ? node.name.toString() : null
         if (node instanceof Map) return node.collectEntries { k, v -> [(k): walk.call(v, k == 'value' && row != null ? row : k?.toString())] }
         if (node instanceof List) return node.collect { walk.call(it, key) }
         if (!(node instanceof CharSequence)) return node
         // A parameter is secret by the short URL names below or by the credential-name test settings use
         // (psw, authToken, clientSecret).
-        String text = node.toString().replaceAll(/([?&])([^=&\s"'<>#]+)=([^&\s"'<>#]*)/) { all, sep, name, val ->
+        // A value stops at '?' too, so a nested URL's own query (?next=http://h/?apikey=X) is judged parameter by parameter.
+        String text = !credentials ? node.toString() : node.toString().replaceAll(/([?&])([^=&\s"'<>#?]+)=([^&\s"'<>#?]*)/) { all, sep, name, val ->
             boolean secret = !(name ==~ /(?i)access_?token/) && (name ==~ /(?i)(?:[\w.\-]*[_.\-])?(?:api_?key|key|token|secret|pass|passwd|password|pwd|auth|sig|signature|pin)/ || _appConfigSecretName(name))
             secret && val && !val.startsWith('***redacted') ? "${sep}${name}=${marker}".toString() : all
         }
         // In page text, where a PIN sits among other words.
-        if (text =~ /\s/) lock.codes.each { code -> text = text.replaceAll('(?<![\\w.])' + java.util.regex.Pattern.quote(code) + '(?![\\w.])', marker) }
+        if (credentials && text =~ /\s/) lock.codes.each { code -> text = text.replaceAll('(?<![\\w.])' + java.util.regex.Pattern.quote(code) + '(?![\\w.])', marker) }
         // Values masked elsewhere in the same response, which a page can print run together with other text.
-        (lock.texts ?: []).each { secret -> text = text.replace(secret, marker) }
+        (lock.texts ?: [:]).each { secret, mask -> text = text.replace(secret, mask) }
         text
     }
     walk.call(value, null)
@@ -12732,7 +12736,7 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 `action` (required; a call without it is refused) selects what to do:
 
-- **`actions`**: run the rule's actions directly. A Rule Machine rule's Run Actions button (`runAction`) is clicked, which runs every action without checking its conditions or Required Expression; a Visual Rule Builder 2.0 rule runs through its builder's run endpoint, which still evaluates its conditions to pick the branch, and a run the hub declines comes back as success:false with the hub's own message. A Visual Rule Builder 1.0 rule has no run button, so `actions` naming one refuses the whole call before anything runs; pause and resume work on it.
+- **`actions`**: run the rule's actions directly. A Rule Machine rule's (or Button Rule's) Run Actions button (`runAction`) is clicked, which runs its actions without its triggers or Required Expression; conditions inside the actions (IF blocks, conditional actions) are still evaluated. A Visual Rule Builder 2.0 rule runs through its builder's run endpoint, whose conditions still pick the branch, and a run the hub declines comes back as success:false with the hub's own message. A Visual Rule Builder 1.0 rule has no run button, so `actions` naming one refuses the whole call before anything runs; pause and resume work on it.
 - **`stop`**: halt the rule's in-progress actions (Rule Machine only).
 - **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged; Rule Machine only).
 - **`pause`** / **`resume`**: pause or resume the rule; a paused rule does not fire on its triggers. A Rule Machine rule's Pause button (`pausRule`) is clicked; a Visual Rule is paused through its builder's pause endpoint, and its paused state is read again afterwards, so an endpoint success that left it unchanged returns success:false.

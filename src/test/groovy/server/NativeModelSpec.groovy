@@ -643,8 +643,9 @@ class NativeModelSpec extends ToolSpecBase {
         nativeRule.appButtonHandler = { String name ->
             if (name == 'actionDone') nativeState.actions = ['1': [method: 'getLogMsg', cond: nativeState.doActN.tokenize('.')[1]]]
         }
-        // The rollback removes the settings the edit added; a rule that refuses that leaves the rollback unverified.
-        if (verified) nativeRule.removeSetting = { String name -> settings.remove(name) }
+        // The rollback removes the settings the edit added; a removal that runs but leaves the setting in place leaves
+        // the rollback unverified.
+        nativeRule.removeSetting = { String name -> if (verified) settings.remove(name) }
         when:
         def result = script._nmUpsertAction(42L, [id: '1', type: 'messageActs', subtype: 'getLogMsg', condition: '2', fields: [[name: 'logmsg.#', type: 'text', value: 'edited']]])
         then:
@@ -653,7 +654,7 @@ class NativeModelSpec extends ToolSpecBase {
         result.partial == !verified
         result.error == (verified ?
             'Rule Machine marks this action broken or draws no label for it, so the change was rolled back. If it is gated on a condition Rule Machine marks, move it to another condition, or repair or delete that condition first' :
-            'Rule Machine marks this action broken or draws no label for it, and the rollback did not verify: read the rule and repair it or restore the backup')
+            'Rule Machine marks this action broken or draws no label for it, and the rollback did not verify: read the rule and repair it, or restore the pre-edit backup if one was returned')
         where:
         verified << [true, false]
     }
@@ -711,6 +712,19 @@ class NativeModelSpec extends ToolSpecBase {
         and: 'the rule is as it was'
         nativeState.subMap(['actions', 'actionList', 'eval', 'capabsfalse']) == stateBefore
         settings == settingsBefore
+
+        when: 'the same edit through hub_set_rule'
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', ruleId: 42, confirm: true, args: [changes: [[part: 'action', value: [id: '1', type: 'messageActs', subtype: 'getLogMsg', condition: '2',
+            fields: [[name: 'logmsg.#', type: 'text', value: 'edited']]]]]]])
+        def inner = mcpDriver.parseInner(response)
+
+        then: "rolledBack is the action's own outcome, in its results entry, not a top-level key"
+        response.result.isError == true
+        inner.partial == false
+        !inner.containsKey('rolledBack')
+        inner.results == [[part: 'action', result: inner.results[0].result]]
+        inner.results[0].result.success == false
+        inner.results[0].result.rolledBack == true
     }
 
     def 'unknown simple action condition refuses before native editor or settings mutation'() {

@@ -390,7 +390,7 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
         // With "Display current values" on, RM shows each device's value in a span after it (inline black on 2.5.2,
         // classed on 2.5.3); a device with no value yet shows null there. Only that value span is removed.
         String bare = label instanceof String ? label.replaceAll(/\(?<span (?:style='color:black'|class='text-color')>\(?[^<]*\)?<\/span>\)?/, '') : null
-        boolean compiled = bare?.trim() && !bare.contains('null') && !bare.contains('BROKEN')
+        boolean compiled = bare?.trim() && !bare.contains('null') && !bare.contains('BROKEN') && !(bare =~ /\*\*Broken [^*]+\*\*/)
         if (!(compiled && persisted && membership)) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render,
             [error: compiled ? 'Native input persistence failed' : 'Native row did not compile a valid label', compiledLabel: label?.toString()])
         [success: true, id: id, label: label, partial: false, settingsVerified: true]
@@ -513,7 +513,7 @@ Map _nmUpsertAction(Long ruleId, Map row) {
                 Map rejected = reject.call([:])
                 rejected.error = rejected.rolledBack == true ?
                     'Rule Machine marks this action broken or draws no label for it, so the change was rolled back. If it is gated on a condition Rule Machine marks, move it to another condition, or repair or delete that condition first' :
-                    'Rule Machine marks this action broken or draws no label for it, and the rollback did not verify: read the rule and repair it or restore the backup'
+                    'Rule Machine marks this action broken or draws no label for it, and the rollback did not verify: read the rule and repair it, or restore the pre-edit backup if one was returned'
                 return rejected
             }
             [success: true, id: id, action: action, partial: false, settingsVerified: true, expressionVerified: true, waitsVerified: true, conditionVerified: true]
