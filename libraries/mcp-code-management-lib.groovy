@@ -712,10 +712,35 @@ def toolGetAppConfig(args) {
         } else if (settingsCount > 0) {
             result.settingsNote = "Raw settings omitted; pass includeSettings=true to include them."
         }
+        if (includeStatus && fetched.status == null) {
+            try { fetched.status = _rmFetchStatusJson(appIdStr as Integer) }
+            catch (Exception unread) { mcpLog("debug", "hub-admin", "hub_get_app_config app ${appIdStr}: status read deferred (${unread.message})") }
+        }
         if (includeStatus) _appConfigAttachStatus(result, appIdStr as Integer, fetched.status)
+        // A rule's page prints its local variables and other stored values as plain text (the locals table), so a value
+        // masked in this response's settings or appState is masked in the page too.
+        List hidden = []
+        _appConfigMaskedLeaves(parsed.settings, result.settings, hidden)
+        def rawState = fetched.status instanceof Map ? fetched.status.appState : null
+        Map rawRows = rawState instanceof Map ? rawState : (rawState instanceof List ? rawState.findAll { it instanceof Map }.collectEntries { [(it.name?.toString()): it.value] } : [:])
+        (result.appState instanceof List ? result.appState : []).each { row -> _appConfigMaskedLeaves(rawRows.get(row?.name?.toString()), row?.value, hidden) }
+        hidden = hidden.unique()
+        if (hidden) result.page = _ruleSecretsMasked(result.page, [names: [], codes: [], texts: hidden])
 
         return result
     }.call(null)
+}
+
+// The text values (four characters or more) that masking replaced: raw beside its masked copy, where a marker stands
+// in for a value or a whole map or list.
+private void _appConfigMaskedLeaves(Object raw, Object masked, List out) {
+    if (raw == null || masked == null) return
+    if (masked instanceof CharSequence && masked.toString() == _appConfigRedactedMarker()) {
+        Closure leaves
+        leaves = { node -> node instanceof Map ? node.values().each { leaves.call(it) } : (node instanceof List ? node.each { leaves.call(it) } : (node instanceof CharSequence || node instanceof Number ? (node.toString().size() >= 4 && node.toString() != _appConfigRedactedMarker() ? out << node.toString() : null) : null)) }
+        leaves.call(raw)
+    } else if (raw instanceof Map && masked instanceof Map) masked.each { k, v -> _appConfigMaskedLeaves(raw.get(k), v, out) }
+    else if (raw instanceof List && masked instanceof List && raw.size() == masked.size()) for (i in 0..<raw.size()) _appConfigMaskedLeaves(raw.get(i), masked.get(i), out)
 }
 
 // includeStatus: the app's App Status lists from the one shared read. A failed read leaves the rest of the result standing.
