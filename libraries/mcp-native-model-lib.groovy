@@ -260,8 +260,9 @@ private void _nmRefreshHealth(Long ruleId, Map baseline) {
 
 // Rule Machine sets state.broken when an action's label method, or a condition in its IF or wait expression, renders
 // nothing. A simple conditional action whose condition renders nothing only draws a **Broken Condition** status span,
-// so that span is checked too. The flag is cleared first so only this row can raise it, then restored.
-private boolean _nmActionLabel(Long ruleId, String id) {
+// so that span is checked too. The flag is cleared first so only this row can raise it, then restored. Returns null
+// for a healthy label, 'marked' when Rule Machine flagged or marked the row, and 'empty' when the label drew nothing.
+private String _nmActionLabel(Long ruleId, String id) {
     Map before = _nrState(ruleId)
     List keys = ['actLabelIndent', 'nestedLabel', 'inIf', 'inRepeat', 'broken']
     Map format = before.findAll { key, value -> key in keys }
@@ -273,7 +274,8 @@ private boolean _nmActionLabel(Long ruleId, String id) {
         label = _nrHandle(ruleId).thisActionLabel(id)
         broken = _nrState(ruleId).broken == true
     } finally { _nrStatePatch(ruleId, format, keys.findAll { !format.containsKey(it) }) }
-    label instanceof String && label.trim() && !broken && !(label =~ /<span\b[^>]*>\s*\*\*Broken [^*]+\*\*\s*<\/span>/).find()
+    if (!(label instanceof String) || !label.trim()) return 'empty'
+    broken || (label =~ /<span\b[^>]*>\s*\*\*Broken [^*]+\*\*\s*<\/span>/).find() ? 'marked' : null
 }
 
 private Map _nmRejectEdit(Long ruleId, String id, Map baseline, Map savedSettings, List keys, Map entries, Closure cancel, Map failure) {
@@ -503,12 +505,12 @@ Map _nmUpsertAction(Long ruleId, Map row) {
         Map echoed = _nrSettings(ruleId, settings.collect { it.name })
         boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
         if (!(listed && ordered && compiled && persisted && expressionVerified && waitsVerified && conditionVerified)) return reject.call([error: 'Native action compilation or input verification failed', settingsVerified: persisted, expressionVerified: expressionVerified, waitsVerified: waitsVerified, conditionVerified: conditionVerified])
-        // A broken label stays only when a condition Rule Machine marks explains it, both before and after the edit (its
-        // simple condition, or its IF or wait expression): the row was already marked, as the Hubitat UI allows. Any
-        // other broken label is new, and the edit is rolled back.
-        boolean marked = !_nmActionLabel(ruleId, id)
+        // A marked label stays only when a condition Rule Machine marks explains it, both before and after the edit (its
+        // simple condition, or its IF or wait expression): the row was already marked, as the Hubitat UI allows. An empty
+        // label is never explained by a marked condition, and any other broken label is new: the edit is rolled back.
+        String fault = _nmActionLabel(ruleId, id)
         // Checked in a closure, whose class carries its call sites: the server class sits at the constant-pool limit.
-        boolean allowed = !marked || (editing && { unused ->
+        boolean allowed = fault == null || (editing && fault == 'marked' && { unused ->
             List markedIds = _ndMarkedNow(ruleId).rows.findAll { it.kind == 'condition' }*.id
             [baseline, after].every { state -> _nmNamedConditions([actionList: [id], actions: state.actions, eval: state.eval], false).any { it in markedIds } }
         }.call(null))

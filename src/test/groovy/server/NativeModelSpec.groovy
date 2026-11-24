@@ -581,7 +581,7 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.inUseConds = ['2']
         settings.put('rDev_2', [type: 'capability.switch', value: null, deviceList: null])
         nativeRule.conditionLabel = { -> "<span class='text-hubitat-danger'>**Broken Condition**</span>" }
-        nativeRule.thisActionLabel = { Object actionId -> brokenAfter ? "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'" : "Log: 'edited'" }
+        nativeRule.thisActionLabel = { Object actionId -> brokenAfter == 'empty' ? '' : (brokenAfter ? "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'" : "Log: 'edited'") }
         List buttons = []
         nativeRule.doActPage = { ->
             if (editing) nativeState.hasCondition = true
@@ -621,6 +621,7 @@ class NativeModelSpec extends ToolSpecBase {
         'a new action gated on the marked one'                          | false   | null                              | '2'       | true        | false
         'an edit of an action that named no marked condition'           | true    | [method: 'getLogMsg', cond: '1']  | '2'       | true        | false
         'an edit of an action whose expression names no marked one'     | true    | [method: 'getLogMsg', rule: '4']  | null      | true        | false
+        'an edit kept on the marked condition whose label draws nothing' | true   | [method: 'getLogMsg', cond: '2']  | '2'       | 'empty'     | false
     }
 
     def 'unknown simple action condition refuses before native editor or settings mutation'() {

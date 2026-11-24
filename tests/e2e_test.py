@@ -1788,6 +1788,7 @@ class TestRunner:
     # on; every other scenario runs without the snapshot a protected edit pays for.
     BACKUP_PROVING_TESTS: ClassVar[frozenset[str]] = frozenset({
         "test_set_rule_self_gateway_envelope_edit",
+        "test_set_rule_required_expression_multi_condition",
         "test_set_native_app_basic_rule_lifecycle",
         "test_set_native_app_form_keeps_the_pending_page",
         "test_set_native_app_snapshot_redacts_password_settings",
