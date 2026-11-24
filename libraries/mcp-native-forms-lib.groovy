@@ -11,7 +11,7 @@ private String _nfText(Object value) { _nfEntities(value?.toString()?.replaceAll
 private String _nfEntities(String value) {
     value.replace('&quot;', '"').replace('&#39;', "'").replace('&apos;', "'").replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ').replace('&amp;', '&')
 }
-private String _nfKey(Long id) { "${app.id}:${id}".toString() }
+private String _nfKey(Long id) { "${app?.id}:${id}".toString() }
 private String _nfCallerKey() { "${app.id}:caller:${callerClient == null ? 'main' : 'client:' + callerClient.id}".toString() }
 
 private Map _nfJson(Object value) {

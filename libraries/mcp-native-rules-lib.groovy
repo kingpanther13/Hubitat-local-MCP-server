@@ -1,7 +1,9 @@
 library(name: "McpNativeRulesLib", namespace: "mcp", author: "kingpanther13", description: "Native Rule Machine runtime, generic native app authoring, app deletion and backup compatibility for the MCP Rule Server.")
 
 def _getAllToolDefinitions_partNativeRM() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         // Native Rule Machine runtime and administrative tools.
         [
             name: "hub_list_rules",
@@ -21,9 +23,9 @@ def _getAllToolDefinitions_partNativeRM() {
                 type: "object",
                 properties: [
                     ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules (a Button Rule's from hub_list_apps(nameFilter:'Button Rule'), a Visual Rule's from hub_get_visual_rule), or an array of rule IDs to act on in one call"],
-                    action: [type: "string", enum: ["actions", "stop", "start", "pause", "resume"], description: "actions (the default) runs the rule's actions; stop/start stop or restart a Rule Machine rule; pause/resume pause or resume the rule."],
+                    action: [type: "string", enum: ["actions", "stop", "start", "pause", "resume"], description: "Required. actions runs the rule's actions at once, without checking its conditions or Required Expression; stop/start stop or restart a Rule Machine rule; pause/resume pause or resume the rule."],
                 ],
-                required: ["ruleId"]
+                required: ["ruleId", "action"]
             ]
         ],
         [
@@ -86,7 +88,8 @@ Requires Write master + confirm=true + recent hub backup.""",
                 required: ["appId", "disabled"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 // Enable/disable any installed app via POST /installedapp/disable {id, disable} -- the documented
@@ -395,7 +398,7 @@ private boolean _rmSettleRuleStatusFromState(Map entry, Map flags) {
     boolean stopped = flags.stopped
     boolean fromState = true
     try {
-        Map status = _appStatusRead(flags.appId as Integer)
+        Map status = _appStatusFlagsRead(flags.appId as Integer)
         // A rule that was never paused or stopped has no entry for it.
         Map statePaused = _appStatusFlag(status, "paused")
         Map stateStopped = _appStatusFlag(status, "stopped")
@@ -461,9 +464,10 @@ private List<Integer> _rmRuleIdListArg(Object raw) {
 def toolRunRmRule(args) {
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
     List<Integer> ruleIds = _rmRuleIdListArg(args.ruleId)
-    def action = args?.action ?: "actions"
+    // No default: a call that leaves action out must not run every action, skipping the rule's conditions.
+    def action = args?.action
     if (!(action in ["actions", "stop", "start", "pause", "resume"])) {
-        throw new IllegalArgumentException("Invalid action '${action}'. Must be 'actions', 'stop', 'start', 'pause' or 'resume'.")
+        throw new IllegalArgumentException("${action == null ? 'action is required' : "Invalid action '${action}'"}: 'actions' (runs every action without checking conditions or the Required Expression), 'stop', 'start', 'pause' or 'resume'. Nothing was dispatched.")
     }
     ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
     Map guard = _rmRequireRuleTargets(ruleIds, "hub_call_rule", true)
@@ -626,7 +630,7 @@ private Map _rmRunActionsButton(Integer ruleId) {
 // no entry and reads false; an entry that is not a flag throws, so no toggle is clicked on a state that
 // cannot be read.
 private boolean _rmRuntimeFlag(Integer ruleId, String name) {
-    Map flag = _appStatusFlag(_appStatusRead(ruleId), name)
+    Map flag = _appStatusFlag(_appStatusFlagsRead(ruleId), name)
     if (flag.missing) throw new IllegalStateException("its status page carried no appState")
     if (flag.present && flag.value == null) throw new IllegalStateException("its ${name} state is neither true nor false")
     return flag.value == true
@@ -646,44 +650,54 @@ private Map _rmTogglePaused(Integer ruleId, String action) {
 }
 
 private Map _rmToggleButton(Integer ruleId, String action, String flag, String button, boolean target, String clicked) {
-    boolean now
+    // A hub_set_rule update or native form step on the rule holds this key, and the page render after the click would
+    // clear its in-progress state, so the toggle refuses while it is held and holds it itself.
+    String busyKey = _nfKey(ruleId as Long)
+    if (NATIVE_FORM_BUSY.putIfAbsent(busyKey, true) != null) return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: This rule already has an active native editing operation, so nothing was clicked.".toString(),
+        note: "A hub_set_rule update or native form step on this rule is running. Send the action again once it has finished; hub_get_rule reads the rule's state."]
+    // The body runs in a closure, whose class carries its call sites: the server class sits at the JVM's constant-pool limit.
     try {
-        now = _rmRuntimeFlag(ruleId, flag)
-    } catch (Exception e) {
-        return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: cannot read the rule's ${flag} state before the toggle (${e.message})".toString(),
-                note: "Nothing was clicked. Retry; hub_get_rule reads the rule's state."]
-    }
-    if (now == target) {
-        return [success: true, ruleId: ruleId, rmAction: "noop",
-                note: "Rule was already ${target ? flag : 'not ' + flag} -- ${button} button not clicked.".toString()]
-    }
-    try {
-        _rmClickAppButton(ruleId, button)
-    } catch (Exception e) {
-        return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${button} button click failed (${e.message})".toString(),
-                note: "Re-issuing is safe: the rule's state is read first and a rule already ${target ? flag : 'not ' + flag} is left alone. Confirm with hub_get_rule or hub_list_rules. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
-    }
-    def out = [success: true, ruleId: ruleId, rmAction: clicked]
-    // The click alone leaves the rule's "(Stopped)"/"(Paused)" name decoration stale until its page is next
-    // rendered; render it once, as the hub UI does after the click, so hub_list_rules is current.
-    String renderError = null
-    try {
-        // A page that renders with an error may not have refreshed the decoration either.
-        def pageError = _rmFetchConfigJson(ruleId)?.configPage?.error
-        if (pageError) renderError = "the page reported: ${pageError}".toString()
-    } catch (Exception e) {
-        renderError = e.message ?: e.toString()
-    }
-    // The hub accepts a click that changes nothing, and two toggles sent at once cancel out, so the flag is read again.
-    def seen
-    try { seen = _rmRuntimeFlag(ruleId, flag) }
-    catch (Exception e) { seen = e.message ?: e.toString() }
-    if (seen != target) {
-        return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: the ${button} click was accepted, but the rule's ${flag} state then read ${seen}, not ${target}".toString(),
-                note: "Another change to the rule may have run at the same time. Read it with hub_get_rule, then send the action again if it is still needed: a rule already in the target state is left alone. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
-    }
-    if (renderError != null) out.note = "The rule's ${flag} state changed, but re-rendering its page failed (${renderError}), so hub_list_rules may show the old status until the rule's page next renders without an error; hub_get_app_config(appId: ${ruleId}) opens it. hub_get_rule reads the rule's own state.".toString()
-    return out
+        return { wrapped ->
+            boolean now
+            try {
+                now = _rmRuntimeFlag(ruleId, flag)
+            } catch (Exception e) {
+                return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: cannot read the rule's ${flag} state before the toggle (${e.message})".toString(),
+                        note: "Nothing was clicked. Retry; hub_get_rule reads the rule's state."]
+            }
+            if (now == target) {
+                return [success: true, ruleId: ruleId, rmAction: "noop",
+                        note: "Rule was already ${target ? flag : 'not ' + flag} -- ${button} button not clicked.".toString()]
+            }
+            try {
+                _rmClickAppButton(ruleId, button)
+            } catch (Exception e) {
+                return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${button} button click failed (${e.message})".toString(),
+                        note: "Re-issuing is safe: the rule's state is read first and a rule already ${target ? flag : 'not ' + flag} is left alone. Confirm with hub_get_rule or hub_list_rules. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
+            }
+            def out = [success: true, ruleId: ruleId, rmAction: clicked]
+            // The click alone leaves the rule's "(Stopped)"/"(Paused)" name decoration stale until its page is next
+            // rendered; render it once, as the hub UI does after the click, so hub_list_rules is current.
+            String renderError = null
+            try {
+                // A page that renders with an error may not have refreshed the decoration either.
+                def pageError = _rmFetchConfigJson(ruleId)?.configPage?.error
+                if (pageError) renderError = "the page reported: ${pageError}".toString()
+            } catch (Exception e) {
+                renderError = e.message ?: e.toString()
+            }
+            // The hub accepts a click that changes nothing, and two toggles sent at once cancel out, so the flag is read again.
+            def seen
+            try { seen = _rmRuntimeFlag(ruleId, flag) }
+            catch (Exception e) { seen = e.message ?: e.toString() }
+            if (seen != target) {
+                return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: the ${button} click was accepted, but the rule's ${flag} state then read ${seen}, not ${target}".toString(),
+                        note: "Another change to the rule may have run at the same time. Read it with hub_get_rule, then send the action again if it is still needed: a rule already in the target state is left alone. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+            }
+            if (renderError != null) out.note = "The rule's ${flag} state changed, but re-rendering its page failed (${renderError}), so hub_list_rules may show the old status until the rule's page next renders without an error; hub_get_app_config(appId: ${ruleId}) opens it. hub_get_rule reads the rule's own state.".toString()
+            return out
+        }.call(null)
+    } finally { NATIVE_FORM_BUSY.remove(busyKey) }
 }
 
 // A Visual Rule's pause runs through its builder's endpoint, which sets the state it is given; the state is
@@ -769,7 +783,26 @@ def toolSetRmRuleBoolean(args) {
     ruleIds.each { _requireUnprotectedAppMutation(it, "set rule private boolean") }
     Map guard = _rmRequireRuleTargets(ruleIds, "hub_set_rule_private_boolean")
     if (guard.failure) return guard.failure + [ruleIds: ruleIds]
-    return sendRmAction(ruleIds, rmAction, "hub_set_rule_private_boolean value=${resolved}")
+    Map sent = sendRmAction(ruleIds, rmAction, "hub_set_rule_private_boolean value=${resolved}")
+    if (sent.success != true) return sent
+    // RMUtils hands the action to Rule Machine, which can set the flag after the dispatch returns, so each rule's flag
+    // is read until it shows the value, for up to two seconds. Checked in a closure, whose class carries its call sites:
+    // the server class sits at the JVM's constant-pool limit.
+    return { wrapped ->
+        Map seen = [:]
+        for (attempt in 0..<5) {
+            if (attempt > 0) pauseExecution(500)
+            ruleIds.findAll { seen.get(it) != resolved }.each { id ->
+                try { seen.put(id, _appStatusFlag(_appStatusFlagsRead(id), 'private').value) }
+                catch (Exception unread) { seen.put(id, "unreadable (${unread.message ?: unread.toString()})".toString()) }
+            }
+            if (ruleIds.every { seen.get(it) == resolved }) return sent
+        }
+        List off = ruleIds.findAll { seen.get(it) != resolved }
+        sent + [success: false, unconfirmedRuleIds: off,
+            error: "The ${rmAction} dispatch was accepted, but the private boolean of rule(s) ${off.join(', ')} then read ${off.collect { seen.get(it) }.join(', ')}, not ${resolved}.".toString(),
+            note: "Read each rule with hub_get_rule (health.privateBoolean) before sending the value again; setting a value a rule already has changes nothing. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+    }.call(null)
 }
 
 // Shared sendAction wrapper. Returns a consistent success/error result map.
@@ -984,7 +1017,7 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
     // ELSE / ELSE-IF / END-IF / END-REP rows, so also requiring actType would let a
     // UI-built closer skip the refusal and silently unbalance the rule.
     def sType = settingsByName["actSubType.${actionIdx}".toString()]?.value?.toString()
-    def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getEndRepeat"]
+    def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getUntil", "getRepeatWhile", "getEndRepeat"]
     if (sType in structuralSubTypes && !skipStructuralCheck) {
         // Both sides walk the rule's OWN actions. A leftover settings row is not
         // part of the rule's structure, and the set-diff does not reliably cancel
@@ -998,6 +1031,8 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
             "getEndIf": "END-IF",
             "getRepeat": "Repeat",
             "getWhile": "Repeat-While",
+            "getUntil": "Repeat-Until",
+            "getRepeatWhile": "Repeat-While",
             "getEndRepeat": "END-REP"
         ][sType] ?: sType
         def orderedIndices = _rmOrderedActionIndices(appId)
@@ -2712,6 +2747,8 @@ def toolGetNativeRule(args) {
 Map _rmPublicLocalVariable(String name, Map row) {
     Map result = [name: name, type: row?.type, value: row?.value]
     if (_appConfigMasksSetting(name, row?.type == 'boolean' ? 'bool' : 'text', row?.value)) { result.value = null; result.redacted = true }
+    // A {name, value} row: the token pass keys on map keys, so it never sees a local named accessToken.
+    else if (_redactsAccessTokens() && name ==~ /(?i)access_?token/ && row?.value instanceof CharSequence) result.value = _accessTokenRedactedMarker()
     result
 }
 

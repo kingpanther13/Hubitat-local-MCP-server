@@ -27,11 +27,16 @@ private Boolean _ndNativeFlag(Map health, String name) {
 private List _ndSettings(Long id) {
     def response = _ndJson(hubInternalGet("/installedapp/settings/${id}"))
     if (!(response instanceof Map) || !(response.settings instanceof List)) throw new IllegalStateException('Native settings are unavailable')
+    if (response.settings.any { !(it instanceof Map) || !(it.name instanceof String) }) throw new IllegalStateException('Unexpected native setting row')
+    // A lock-code action's parameters, the PIN among them, are masked like a credential, and an HTTP URL's secret query
+    // parameters within their values.
+    Map lock = _ruleLockParams(response.settings.collectEntries { [(it.name): it.value] })
     response.settings.collect { row ->
-        if (!(row instanceof Map) || !(row.name instanceof String)) throw new IllegalStateException('Unexpected native setting row')
-        boolean secret = _redactsCredentials() && (row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value))
-        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : row.value, deviceIds: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
+        boolean secret = _redactsCredentials() && (row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value) || row.name in lock.names)
+        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : _ruleSecretsMasked(row.value, lock), deviceIds: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
         if (secret) setting.redacted = true
+        // A {name, value} row: the token pass keys on map keys, so it never sees a setting named accessToken.
+        else if (_redactsAccessTokens() && row.name ==~ /(?i)access_?token/ && row.value instanceof CharSequence) setting.value = _accessTokenRedactedMarker()
         setting
     }
 }
@@ -135,7 +140,8 @@ private int _ndEnvelopeBytes(Map document) {
 // section, and page as a section of their own. Health comes first and always returns; a read that would pass the
 // response cap keeps the parts that fit whole, pages the first that does not, and lists the others that do not fit
 // in omittedSections.
-Map toolGetRuleDocument(Map args) {
+// health: the health a caller already holds (a write's read-back, whose own checks stand for it); false leaves it out.
+Map toolGetRuleDocument(Map args, Object health = null) {
     Long id = _ndId(args.ruleId)
     boolean withLocals = args.localVariables == true
     String toolName = withLocals ? 'hub_get_rule' : 'hub_set_rule'
@@ -146,7 +152,7 @@ Map toolGetRuleDocument(Map args) {
     def limit = read.limit
     _nrHandle(id)
     try {
-        def document = [health: _rmCheckRuleHealth(id as Integer), ruleId: id]
+        def document = health == false ? [ruleId: id] : [health: health ?: _rmCheckRuleHealth(id as Integer), ruleId: id]
         // Only these sections come from native state, so a read of health, settings or the locals alone never reads it.
         Map nativeState = sections.any { it in ['actions', 'conditions', 'triggers', 'expressions'] } ? _nrState(id) : null
         // hub_get_rule returns the locals with every read except a page of another section.
@@ -161,6 +167,10 @@ Map toolGetRuleDocument(Map args) {
                 mcpLog('warn', 'rm-native', "${toolName}: rule ${id}'s local variables could not be read (${localsFailure.message})")
                 document.put(key, null)
                 document.localVariablesError = (localsFailure.message ?: localsFailure.toString()).toString()
+                // A page of the locals that did not come back must not read as their end.
+                if (read.paged && sections[0] == key) return [success: false, health: document.health, ruleId: id, localVariablesError: document.localVariablesError, cursor: cursor,
+                    error: "Rule ${id}'s local variables could not be read: ${document.localVariablesError}".toString(),
+                    note: "Nothing was read past this point; retry with the same cursor. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
             }
         }
         if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
@@ -169,7 +179,15 @@ Map toolGetRuleDocument(Map args) {
         if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
         if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
         if ('expressions' in sections) document.expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
-        if ('settings' in sections) document.settings = _ndSettings(id)
+        if ('settings' in sections) {
+            // A requested section that did not come back is a failed read, as on the Basic Rule path; the health stays.
+            try { document.settings = _ndSettings(id) }
+            catch (Exception settingsFailure) {
+                String why = (settingsFailure.message ?: settingsFailure.toString()).toString()
+                return [success: false, health: document.health, ruleId: id, settings: null, settingsError: why, error: "Rule ${id} could not be read: ${why}".toString(),
+                    note: "The read does not open the rule's page or change its configuration, so retrying once is safe. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+            }
+        }
         // Match the tools/call JSON-within-text envelope; reserve 1 KiB for its actual request ID and response metadata.
         int budget = _responseSizeLimitBytes() - 1024
         String section = read.paged ? sections[0] : null
@@ -263,53 +281,60 @@ private void _ndValidateFields(Object fields, List selectors, String selectorMes
 }
 
 private void _ndValidateChange(Object change) {
-    if (!(change instanceof Map) || change.keySet().any { !(it in ['part', 'value']) } || !(change.value instanceof Map)) throw new IllegalArgumentException('Each change requires part and value')
-    def value = change.value
-    if (!ND_CHANGE_KEYS.containsKey(change.part) || value.keySet().any { !(it in ND_CHANGE_KEYS.get(change.part)) }) throw new IllegalArgumentException('Unknown change part or field')
-    if (value.containsKey('id') && (value.id == null || !value.id.toString().isInteger() || value.id.toString().toInteger() < (change.part == 'expression' ? 0 : 1))) throw new IllegalArgumentException('Invalid native row ID')
-    if (change.part in ['condition', 'trigger']) {
-        if (!(value.capability instanceof String) || !value.capability.trim()) throw new IllegalArgumentException('Native capability is required')
-        _ndValidateFields(value.get('fields'), ['tCapab1', 'rCapab_1'], 'Capability selector must not be repeated in fields')
-    }
-    if (change.part == 'action') {
-        if (!(value.type instanceof String) || !value.type.trim() || !(value.subtype instanceof String) || !value.subtype.trim() || (value.subtype.toLowerCase().contains('wait') && !(value.subtype in ['getWaitEvents', 'getWaitRule']))) throw new IllegalArgumentException('A supported native action type and subtype are required')
-        _ndValidateFields(value.get('fields'), ['actType.1', 'actSubType.1'], 'Action selectors must not be repeated')
-        if (value.containsKey('expression') && (!(value.expression instanceof List) || !value.expression || !(value.subtype in ND_EXPRESSION_SUBTYPES))) throw new IllegalArgumentException('Invalid action expression')
-        if (!value.containsKey('id') && value.subtype in ND_EXPRESSION_SUBTYPES && !value.containsKey('expression')) throw new IllegalArgumentException('New expression actions require expression tokens')
-        if (value.containsKey('condition')) {
-            _nmId(value.condition)
-            if (value.containsKey('expression') || value.type in ['condActs', 'repeatActs', 'delayActs']) throw new IllegalArgumentException('A simple condition requires an ordinary native action')
+    // The checks run in a closure, whose class carries their call sites: the server class sits at the JVM's constant-pool limit.
+    Closure checks = { wrapped ->
+        if (!(change instanceof Map) || change.keySet().any { !(it in ['part', 'value']) } || !(change.value instanceof Map)) throw new IllegalArgumentException('Each change requires part and value')
+        def value = change.value
+        if (!ND_CHANGE_KEYS.containsKey(change.part) || value.keySet().any { !(it in ND_CHANGE_KEYS.get(change.part)) }) throw new IllegalArgumentException('Unknown change part or field')
+        if (value.containsKey('id') && (value.id == null || !value.id.toString().isInteger() || value.id.toString().toInteger() < (change.part == 'expression' ? 0 : 1))) throw new IllegalArgumentException('Invalid native row ID')
+        if (change.part in ['condition', 'trigger']) {
+            if (!(value.capability instanceof String) || !value.capability.trim()) throw new IllegalArgumentException('Native capability is required')
+            _ndValidateFields(value.get('fields'), ['tCapab1', 'rCapab_1'], 'Capability selector must not be repeated in fields')
         }
-        if (value.subtype == 'getWaitEvents') {
-            if (!(value.events instanceof List) || !value.events || value.events.size() > 16) throw new IllegalArgumentException('Wait events require between 1 and 16 events')
-            value.events.eachWithIndex { event, index ->
-                try {
-                    if (!(event instanceof Map) || event.keySet().any { !(it in ['capability', 'fields']) } || !(event.capability instanceof String) || !event.capability.trim()) throw new IllegalArgumentException('Wait events require a capability and typed fields')
-                    _ndValidateFields(event.get('fields'), ['tCapab1'], 'Wait fields must not repeat selectors or native inputs')
-                } catch (IllegalArgumentException failure) { throw new IllegalArgumentException("events[${index}]: ${failure.message}".toString()) }
+        if (change.part == 'action') {
+            if (!(value.type instanceof String) || !value.type.trim() || !(value.subtype instanceof String) || !value.subtype.trim() || (value.subtype.toLowerCase().contains('wait') && !(value.subtype in ['getWaitEvents', 'getWaitRule']))) throw new IllegalArgumentException('A supported native action type and subtype are required')
+            _ndValidateFields(value.get('fields'), ['actType.1', 'actSubType.1'], 'Action selectors must not be repeated')
+            if (value.containsKey('expression') && (!(value.expression instanceof List) || !value.expression || !(value.subtype in ND_EXPRESSION_SUBTYPES))) throw new IllegalArgumentException('Invalid action expression')
+            if (!value.containsKey('id') && value.subtype in ND_EXPRESSION_SUBTYPES && !value.containsKey('expression')) throw new IllegalArgumentException('New expression actions require expression tokens')
+            if (value.containsKey('condition')) {
+                _nmId(value.condition)
+                if (value.containsKey('expression') || value.type in ['condActs', 'repeatActs', 'delayActs']) throw new IllegalArgumentException('A simple condition requires an ordinary native action')
             }
-        } else if (value.containsKey('events')) throw new IllegalArgumentException('Only wait-event actions accept events')
+            if (value.subtype == 'getWaitEvents') {
+                if (!(value.events instanceof List) || !value.events || value.events.size() > 16) throw new IllegalArgumentException('Wait events require between 1 and 16 events')
+                value.events.eachWithIndex { event, index ->
+                    try {
+                        if (!(event instanceof Map) || event.keySet().any { !(it in ['capability', 'fields']) } || !(event.capability instanceof String) || !event.capability.trim()) throw new IllegalArgumentException('Wait events require a capability and typed fields')
+                        _ndValidateFields(event.get('fields'), ['tCapab1'], 'Wait fields must not repeat selectors or native inputs')
+                    } catch (IllegalArgumentException failure) { throw new IllegalArgumentException("events[${index}]: ${failure.message}".toString()) }
+                }
+            } else if (value.containsKey('events')) throw new IllegalArgumentException('Only wait-event actions accept events')
+        }
+        if (change.part == 'expression' && (!value.containsKey('id') || !(value.tokens instanceof List) || !value.tokens)) throw new IllegalArgumentException('Expression ID and tokens are required')
+        // Expression 0 is the Required Expression, whose conditions Rule Machine also keeps in predCapabs; only a required
+        // change rebinds them, so an expression change there would leave the two disagreeing.
+        if (change.part == 'expression' && value.id.toString() == '0') throw new IllegalArgumentException("Expression 0 is the Required Expression: change it with {part:'required', value:{tokens}}, which also updates the conditions it uses")
+        if (change.part == 'delete' && (!(value.part in ['action', 'condition', 'trigger']) || !value.containsKey('id'))) throw new IllegalArgumentException('Deletion requires a native collection and ID')
+        if (change.part == 'order') {
+            if (!(value.ids instanceof List) || value.ids.any { it == null || !it.toString().isInteger() || it.toString().toInteger() <= 0 } || value.ids.collect { it.toString() }.unique(false).size() != value.ids.size()) throw new IllegalArgumentException('Ordering requires unique positive native action IDs')
+        }
+        if (change.part == 'required' && (!(value.tokens instanceof List) || !value.tokens)) throw new IllegalArgumentException('Required expression tokens are required')
+        if (change.part == 'terminator' && !(value.subtype in ND_TERMINATOR_METHODS.keySet())) throw new IllegalArgumentException('Unsupported terminator')
+        def tokens = change.part in ['expression', 'required'] ? value.tokens : (change.part == 'action' ? value.expression : null)
+        if (tokens instanceof List) {
+            def operands = [:]
+            tokens.each { token -> if (token != null && token.toString().isInteger() && token.toString().toInteger() > 0) operands.put(token.toString(), 'condition') }
+            _nmTokens(tokens, operands)
+        }
+        if (change.part == 'variable') {
+            if (!(value.operation in ['create', 'set', 'delete']) || !(value.name instanceof String) || !(value.name ==~ /[A-Za-z_][A-Za-z0-9_ ]{0,79}/) || value.name != value.name.trim()) throw new IllegalArgumentException('Invalid native variable change')
+            if (value.operation in ['create', 'set'] && !value.containsKey('value')) throw new IllegalArgumentException('Variable value is required')
+            // The stored type governs set and delete; a type there would be silently ignored.
+            if (value.operation != 'create' && value.containsKey('type')) throw new IllegalArgumentException('Variable type is accepted only when creating a local variable')
+            if (value.operation == 'create') _nmLocalValue(value.type?.toString(), value.value)
+        }
     }
-    if (change.part == 'expression' && (!value.containsKey('id') || !(value.tokens instanceof List) || !value.tokens)) throw new IllegalArgumentException('Expression ID and tokens are required')
-    if (change.part == 'delete' && (!(value.part in ['action', 'condition', 'trigger']) || !value.containsKey('id'))) throw new IllegalArgumentException('Deletion requires a native collection and ID')
-    if (change.part == 'order') {
-        if (!(value.ids instanceof List) || value.ids.any { it == null || !it.toString().isInteger() || it.toString().toInteger() <= 0 } || value.ids.collect { it.toString() }.unique(false).size() != value.ids.size()) throw new IllegalArgumentException('Ordering requires unique positive native action IDs')
-    }
-    if (change.part == 'required' && (!(value.tokens instanceof List) || !value.tokens)) throw new IllegalArgumentException('Required expression tokens are required')
-    if (change.part == 'terminator' && !(value.subtype in ND_TERMINATOR_METHODS.keySet())) throw new IllegalArgumentException('Unsupported terminator')
-    def tokens = change.part in ['expression', 'required'] ? value.tokens : (change.part == 'action' ? value.expression : null)
-    if (tokens instanceof List) {
-        def operands = [:]
-        tokens.each { token -> if (token != null && token.toString().isInteger() && token.toString().toInteger() > 0) operands.put(token.toString(), 'condition') }
-        _nmTokens(tokens, operands)
-    }
-    if (change.part == 'variable') {
-        if (!(value.operation in ['create', 'set', 'delete']) || !(value.name instanceof String) || !(value.name ==~ /[A-Za-z_][A-Za-z0-9_ ]{0,79}/) || value.name != value.name.trim()) throw new IllegalArgumentException('Invalid native variable change')
-        if (value.operation in ['create', 'set'] && !value.containsKey('value')) throw new IllegalArgumentException('Variable value is required')
-        // The stored type governs set and delete; a type there would be silently ignored.
-        if (value.operation != 'create' && value.containsKey('type')) throw new IllegalArgumentException('Variable type is accepted only when creating a local variable')
-        if (value.operation == 'create') _nmLocalValue(value.type?.toString(), value.value)
-    }
+    checks.call(null)
 }
 
 // Whether a batch may name this row of one native collection: true for an existing row, false when
@@ -349,7 +374,9 @@ private void _ndDropRow(Map rows, String rowId, String missing) {
     rows.deleted << rowId
 }
 
-private void _ndPreflight(Long id, List changes) {
+// marked: _rmMarkedRows as the update's health check read it (the conditions in use, and those whose device is gone).
+private void _ndPreflight(Long id, List changes, Map marked = null) {
+    List inUse = marked?.inUse
     Map before = id == null ? [:] : _nrState(id)
     Map conditions = before.capabsfalse instanceof Map ? [:] + before.capabsfalse : [:]
     Map triggers = before.capabstrue instanceof Map ? [:] + before.capabstrue : [:]
@@ -372,7 +399,6 @@ private void _ndPreflight(Long id, List changes) {
     Map condTrigs = null
     boolean requiredOn = false
     Set freed = [] as Set
-    List inUse = null
     Closure references = { unused ->
         List names = requiredOn && expressions.get('0') instanceof List ? expressions.get('0')*.toString() : []
         projectedOrder.each { actionId ->
@@ -403,6 +429,9 @@ private void _ndPreflight(Long id, List changes) {
             List named = change.part in ['expression', 'required'] ? value.tokens :
                 (change.part == 'action' ? (value.expression instanceof List ? value.expression : []) + (value.containsKey('condition') ? [value.condition] : []) : [])
             named.findAll { it != null && it.toString().isInteger() }.each { token -> _ndKnownRow(rows.condition, token.toString(), 'Expression references an unknown condition') }
+            // Rule Machine marks a condition whose device is gone once an expression names it, which would fail the write after it lands.
+            def gone = change.part in ['expression', 'required'] ? named.find { it?.toString() in (marked?.emptied ?: []) } : null
+            if (gone != null) throw new IllegalArgumentException("Expression names condition ${gone}, whose device is gone, so Rule Machine would mark it broken; repair or delete that condition first".toString())
             if (change.part == 'variable') {
                 if (locals == null) {
                     def fresh = _nrHandle(id).getAllLocalVars()
@@ -477,7 +506,6 @@ private void _ndPreflight(Long id, List changes) {
                 // Rule Machine lists it in use (state.inUseConds) and no earlier change in the batch removed a reference
                 // to it. The delete itself checks again as things stand then.
                 if (target in condTrigs.values().findAll { it.ticked }*.cond) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
-                if (id != null && inUse == null) inUse = _rmMarkedRows(_nrHandle(id), before, []).inUse
                 boolean held = target in references(null) || (inUse != null && target in inUse && !(target in freed))
                 if (held) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
                 _ndDropRow(rows.condition, target, 'Native row does not exist')
@@ -501,8 +529,12 @@ private Map _ndMarkedNow(Long id) {
 
 // before: the rows Rule Machine marked before an update (_ndMarkedNow); a write fails only for a row it newly marks.
 private Map _ndApply(Long id, List changes, boolean created, Map before = null) {
+    // The body runs in a closure, whose class carries its call sites: the server class sits at the JVM's constant-pool limit.
+    return { wrapped ->
     def outcomes = []
     boolean started = created
+    // 0 while the changes run, 1 once every change is written, 2 once Done was pressed: the failure note says which.
+    int stage = 0
     try {
         def beforeHealth = _ndRuleHealth(id)
         if (!(beforeHealth instanceof Map) || !(beforeHealth.broken instanceof Boolean)) throw new IllegalStateException('Native rule health is unavailable before changes')
@@ -517,19 +549,23 @@ private Map _ndApply(Long id, List changes, boolean created, Map before = null) 
         }
         for (change in changes) {
             def value = change.value
-            started = true
             Map outcome
-            switch (change.part) {
-                case 'condition': outcome = _nmUpsertCondition(id, false, value); break
-                case 'trigger': outcome = _nmUpsertCondition(id, true, value); break
-                case 'action': outcome = _nmUpsertAction(id, value); break
-                case 'expression': outcome = _nmSetExpression(id, value.id, value.tokens); break
-                case 'delete': outcome = _nmDeleteRow(id, value.part, value.id); break
-                case 'order': outcome = _nmOrderActions(id, value.ids); break
-                case 'required': outcome = _nmSetRequired(id, value.tokens); break
-                case 'variable': outcome = _nmLocal(id, value.operation, value.name, value.value, value.type); break
-                case 'terminator': outcome = _nmAddTerminator(id, value.subtype); break
-            }
+            // A change refuses its arguments before it writes anything, so a refusal leaves started as it was.
+            boolean wrote = started
+            started = true
+            try {
+                switch (change.part) {
+                    case 'condition': outcome = _nmUpsertCondition(id, false, value); break
+                    case 'trigger': outcome = _nmUpsertCondition(id, true, value); break
+                    case 'action': outcome = _nmUpsertAction(id, value); break
+                    case 'expression': outcome = _nmSetExpression(id, value.id, value.tokens); break
+                    case 'delete': outcome = _nmDeleteRow(id, value.part, value.id); break
+                    case 'order': outcome = _nmOrderActions(id, value.ids); break
+                    case 'required': outcome = _nmSetRequired(id, value.tokens); break
+                    case 'variable': outcome = _nmLocal(id, value.operation, value.name, value.value, value.type); break
+                    case 'terminator': outcome = _nmAddTerminator(id, value.subtype); break
+                }
+            } catch (IllegalArgumentException refused) { started = wrote; throw refused }
             outcomes << [part: change.part, result: outcome]
             if (outcome?.success != true) {
                 boolean landed = created || outcomes.size() > 1 || outcome?.partial == true
@@ -537,6 +573,7 @@ private Map _ndApply(Long id, List changes, boolean created, Map before = null) 
                     error: outcome?.error?.toString() ?: "Native ${change.part} change did not verify".toString(), note: _ndFailureNote(landed, created)]
             }
         }
+        stage = 1
         ['selectTriggers', pages.actions, pages.primary].unique().each { page -> _ndRender(id, page) }
         def health = _ndRuleHealth(id)
         Map renderedState = _nrState(id) + (health instanceof Map ? health : [:])
@@ -550,7 +587,11 @@ private Map _ndApply(Long id, List changes, boolean created, Map before = null) 
         if (marks != null) {
             Map after = _ndMarkedNow(id)
             added = after.rows.findAll { row -> row.id != null && !marks.rows.any { it.kind == row.kind && it.id == row.id } }.collect { "${it.kind} ${it.id}".toString() }
-            after.marks.each { kind, count -> if (count > (marks.marks.get(kind) ?: 0)) added << "${kind} (${count} marked, ${marks.marks.get(kind) ?: 0} before)".toString() }
+            List grown = []
+            after.marks.each { kind, count -> if (count > (marks.marks.get(kind) ?: 0)) { grown << kind; added << "${kind} (${count} marked, ${marks.marks.get(kind) ?: 0} before)".toString() } }
+            // An id-less row is compared by kind and text too, so repairing one and adding another of the same kind shows.
+            List was = marks.rows.findAll { it.id == null }.collect { "${it.kind} ('${it.text}')".toString() }
+            after.rows.findAll { it.id == null && !(it.kind in grown) }.each { row -> String key = "${row.kind} ('${row.text}')".toString(); if (!was.remove(key)) added << key }
         }
         if (added) structuralIssues << "The write adds rows Rule Machine marks broken: ${added.join('; ')}".toString()
         if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
@@ -559,26 +600,30 @@ private Map _ndApply(Long id, List changes, boolean created, Map before = null) 
         def flag = _nrHandle(id).broken()
         boolean healthy = health instanceof Map && flag == false
         String unhealthy = flag == true ? "The change was written, but Rule Machine's own broken() check now calls rule ${id} broken, so Done was not pressed".toString() : 'Native rule health is broken or unverified'
-        if (!healthy) return [success: false, partial: true, ruleId: id, created: created, results: outcomes, broken: flag, error: unhealthy, note: _ndFailureNote(true, created)]
+        if (!healthy) return [success: false, partial: true, ruleId: id, created: created, results: outcomes, broken: flag, error: unhealthy, note: _ndFailureNote(true, created, 1)]
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
+        stage = 2
         def doneStatus = done instanceof Map ? done.get('status') : null
-        if (doneStatus != null && doneStatus.toString().isInteger() && doneStatus.toInteger() >= 400) throw new IllegalStateException('Native Done was rejected')
+        String failed = doneStatus != null && doneStatus.toString().isInteger() && doneStatus.toInteger() >= 400 ? 'Native Done was rejected' : null
         def doneBody = done instanceof Map ? done.get('data') : null
-        if (doneBody instanceof Map || (doneBody != null && doneBody.toString().trim())) _nfJson(doneBody)
+        if (failed == null && (doneBody instanceof Map || (doneBody != null && doneBody.toString().trim()))) _nfJson(doneBody)
+        // A stopped or paused rule that Done restarted is put back before any check below can fail. Its flags are
+        // trusted only beside a readable broken flag: a partial read would have a button pressed on a guess.
         def finalHealth = _ndRuleHealth(id)
-        healthy = finalHealth instanceof Map && _nrHandle(id).broken() == false
-        if (!healthy) throw new IllegalStateException('Native rule health failed after Done')
-        boolean stopped = _ndNativeFlag(finalHealth, 'stopped') == true
-        boolean paused = _ndNativeFlag(finalHealth, 'paused') == true
-        if (!created) {
-            if (wasStopped != stopped) _nrHandle(id).appButtonHandler('stopRule')
-            if (wasPaused != paused) _nrHandle(id).appButtonHandler('pausRule')
+        boolean readable = finalHealth instanceof Map && finalHealth.broken instanceof Boolean
+        if (!created && readable) {
+            Boolean nowStopped = _ndNativeFlag(finalHealth, 'stopped')
+            Boolean nowPaused = _ndNativeFlag(finalHealth, 'paused')
+            if (nowStopped != null && nowStopped != wasStopped) _nrHandle(id).appButtonHandler('stopRule')
+            if (nowPaused != null && nowPaused != wasPaused) _nrHandle(id).appButtonHandler('pausRule')
             finalHealth = _ndRuleHealth(id)
-            stopped = finalHealth instanceof Map && _ndNativeFlag(finalHealth, 'stopped') == true
-            paused = finalHealth instanceof Map && _ndNativeFlag(finalHealth, 'paused') == true
-            healthy = finalHealth instanceof Map && _nrHandle(id).broken() == false && wasStopped == stopped && wasPaused == paused
-            if (!healthy) throw new IllegalStateException('Native stopped or paused state was not preserved')
+            readable = finalHealth instanceof Map && finalHealth.broken instanceof Boolean
         }
+        boolean stopped = readable && _ndNativeFlag(finalHealth, 'stopped') == true
+        boolean paused = readable && _ndNativeFlag(finalHealth, 'paused') == true
+        if (failed == null && !(readable && _nrHandle(id).broken() == false)) failed = 'Native rule health failed after Done'
+        if (failed == null && !created && (wasStopped != stopped || wasPaused != paused)) failed = 'Native stopped or paused state was not preserved'
+        if (failed != null) throw new IllegalStateException(failed)
         def status = _ndJson(hubInternalGet("/installedapp/statusJson/${id}"))
         if (!(status instanceof Map) || !status.containsKey('eventSubscriptions') || !status.containsKey('scheduledJobs')) throw new IllegalStateException('Native activation status is unavailable')
         def subscriptions = status.get('eventSubscriptions')
@@ -600,32 +645,47 @@ private Map _ndApply(Long id, List changes, boolean created, Map before = null) 
             persistedState.stPrimed == false
         if (actualTriggers && !stopped && !paused && !suppressed && subscriptions.empty && jobs.empty) throw new IllegalStateException('Native triggers have no active subscriptions or scheduled jobs')
         if (created && getAppByAppId(id)?.installed != true) throw new IllegalStateException('Native rule is not installed after Done')
-        Map written = [success: true, ruleId: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.']
+        // The same masking as hub_get_app_config's App Status lists: an app may pass credentials as subscription or job data.
+        Map lists = _appStatusLists(subscriptions, jobs)
+        Map written = [success: true, ruleId: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: lists.eventSubscriptions, scheduledJobs: lists.scheduledJobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.']
         if (suppressed) written.subscriptionSettle = 'SUPPRESSED: Required Expression is false'
+        // An oversized result is replaced whole by the size guard, which would drop this receipt and its backup key
+        // (added after this returns, so room is kept for it): long lists are cut to counts first.
+        int budget = _responseSizeLimitBytes() - 3072
+        if (_ndEnvelopeBytes(written) > budget) {
+            written.remove('eventSubscriptions')
+            written.remove('scheduledJobs')
+            written.eventSubscriptionCount = subscriptions.size()
+            written.scheduledJobCount = jobs.size()
+            written.results = outcomes.collect { [part: it.part, success: it.result?.success] }
+            written.trimmed = "The receipt is too large to return whole: results keep each change's part and success, and the activation lists are counts. hub_get_app_config(appId: ${id}, includeStatus: true) lists the subscriptions and jobs.".toString()
+        }
         // The write is verified by now, so a failed read-back, returned or thrown, must not read as a failed write that a caller would re-send.
         Map document
-        try { document = toolGetRuleDocument([ruleId: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']]) }
+        try { document = toolGetRuleDocument([ruleId: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']], false) }
         catch (Exception readBack) { document = [success: false, error: readBack.message ?: readBack.toString()] }
         if (document.success == false) {
             written.documentReadError = document.error
             written.note = "The changes were written and verified; only reading the rule back failed. Do not send them again: read the rule with hub_set_rule(operation:'read') or hub_get_rule. See hub_get_tool_guide(section='set_rule_reference')."
-        } else if (document.pagedSection != null || _ndEnvelopeBytes(written + [document: document]) > _responseSizeLimitBytes() - 1024) {
-            // An oversized result is replaced whole by the size guard, which would drop this receipt and its backup
-            // key; the cloud relay's cap applies, since a detached worker cannot tell which route will deliver it. A
-            // read-back that came back paged is left out the same way: its note would have the caller send the write again.
+        } else if (document.pagedSection != null || _ndEnvelopeBytes(written + [document: document]) > budget) {
+            // A read-back that came back paged is left out the same way: its note would have the caller send the write again.
             written.documentOmitted = true
             written.note = "The changes were written and verified; the rule's document is too large to return with them. Do not send them again: read it one section at a time with hub_set_rule(operation:'read', args:{sections:['actions'], cursor:'', limit:50}) and follow nextCursor. See hub_get_tool_guide(section='set_rule_reference')."
         } else written.document = document
         written
     } catch (Exception failure) {
         mcpLogError('rm-native', "hub_set_rule ${created ? 'create' : 'update'} failed for rule ${id}: ${failure.message}".toString(), failure)
-        [success: false, partial: started, ruleId: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()), error: failure.message?.toString(), note: _ndFailureNote(started, created)]
+        [success: false, partial: started, ruleId: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()), error: failure.message?.toString(), note: _ndFailureNote(started, created, stage)]
     }
+    }.call(null)
 }
 
-// What the caller should do after a failed batch: the hub log carries the detail, the response the recovery.
-private String _ndFailureNote(boolean landed, boolean created) {
-    String written = landed ? "Changes before the failure may have been written; read the rule with hub_set_rule(operation:'read') and resubmit only what is missing." : 'No change was written.'
+// What the caller should do after a failed batch: the hub log carries the detail, the response the recovery. stage is
+// _ndApply's: 1 when every change was written before a check failed, 2 when Done was pressed too.
+private String _ndFailureNote(boolean landed, boolean created, int stage = 0) {
+    String written = stage == 2 ? "Every change was written and Done was pressed, but a check after Done failed. Do not send the changes again: read the rule with hub_get_rule and check it first." :
+        stage == 1 ? "Every change was written, but a check after the write failed, so Done was not pressed. Do not send the changes again: read the rule with hub_get_rule, then repair it or restore the backup." :
+        landed ? "Changes before the failure may have been written; read the rule with hub_set_rule(operation:'read') and resubmit only what is missing." : 'No change was written.'
     String recovery = created ? ' The new rule exists; delete it with hub_delete_native_app if it is not wanted.' : " An update's response carries backup.backupKey for hub_restore_backup when pre-edit backups are on."
     (written + recovery + " See hub_get_tool_guide(section='set_rule_reference').").toString()
 }
@@ -641,12 +701,13 @@ Map toolUpdateRuleDocument(Map args) {
     try {
         _nrHandle(id)
         if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
-        try { _ndPreflight(id, changes) }
-        catch (Exception failure) { return [success: false, partial: false, ruleId: id, error: failure.message?.toString()] }
         // A rule that is already broken is refused here, not reported broken after the write; hub_get_rule reports the
         // same health, so the read and the refusal agree. Only broken() refuses: a row Rule Machine's page marks
         // without calling the rule broken is editable in the Hubitat UI, so the write is checked for new marks instead.
-        Map beforeHealth = _rmCheckRuleHealth(id as Integer)
+        // The health check's marked rows and conditions in use serve the batch check and the write's baseline, so the
+        // rule's labels and settings are read once before the write.
+        Map marked = [:]
+        Map beforeHealth = _rmCheckRuleHealth(id as Integer, marked)
         if (beforeHealth.broken == true) {
             String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { "${it.kind} ${it.id}" + (it.text ? " ('${it.text}')" : '') }.unique().join('; ') : ''
             return [success: false, partial: false, ruleId: id, broken: true, brokenRows: beforeHealth.brokenRows, checkErrors: beforeHealth.checkErrors,
@@ -656,12 +717,7 @@ Map toolUpdateRuleDocument(Map args) {
         // disabledActions stays null only when the rule's compiled state went unread or is malformed; the writes below
         // verify against that same state, so a rule whose state cannot be read is not edited either. Unread marked
         // rows would let a newly marked row go unnoticed.
-        boolean unread = beforeHealth.broken == null || beforeHealth.disabledActions == null || beforeHealth.brokenRows == null
-        Map marked = null
-        if (!unread) {
-            try { marked = _ndMarkedNow(id) }
-            catch (Exception markFailure) { unread = true; beforeHealth.checkErrors << "marked rows: ${markFailure.message ?: markFailure.toString()}".toString() }
-        }
+        boolean unread = beforeHealth.broken == null || beforeHealth.disabledActions == null || beforeHealth.brokenRows == null || !marked
         if (unread) {
             String why = beforeHealth.broken == null ? "broken flag could not be read before the write, so whether it is already broken is unknown" :
                 beforeHealth.disabledActions == null ? "compiled state could not be read before the write, so it is not known to be intact" :
@@ -670,6 +726,8 @@ Map toolUpdateRuleDocument(Map args) {
                 error: "Rule ${id}'s ${why}; no change was written.".toString(),
                 note: "checkErrors says why. Check that the hub answers with hub_get_info, then read the rule with hub_get_rule: send the update once its health reads broken:false and lists disabledActions and brokenRows. If it stays unreadable, check the rule in the Hubitat UI or with hub_set_rule(operation:'form') before editing it. See hub_get_tool_guide(section='set_rule_reference')."]
         }
+        try { _ndPreflight(id, changes, marked) }
+        catch (Exception failure) { return [success: false, partial: false, ruleId: id, error: failure.message?.toString()] }
         Map backup
         try { backup = _ndEditBackup(id, 'pre-document-update') }
         catch (Exception failure) { return [success: false, partial: false, ruleId: id, error: "Pre-edit backup failed; no document changes were applied: ${failure.message}".toString()] }
@@ -842,12 +900,12 @@ Read hub_set_rule(operation:"read",ruleId,args:{sections:[...]}) before editing 
 
 For large rules, read one section with args:{sections:["settings"],cursor:"",limit:50}. Paging requires exactly one section; limit is 1..100 (default 50). The section keeps its usual map or list shape. Pass the returned top-level nextCursor into args.cursor until nextCursor is null. page returns offset, limit, total and revision, a hash of the complete section; restart if revision changes. Pages may contain fewer than limit rows to fit the response size cap; a row too large to send beside the health alone returns success:false with the health, never truncated. Actions retain native order, settings sort by name, and map sections sort by string key. Omit cursor and limit for an unpaged read; one too large for the response cap returns health and the parts that fit whole, pages the first part that does not (pagedSection, nextCursor) and lists the other parts that do not fit in omittedSections.
 
-Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",ruleId,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parentId,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine; parentId is the installed Rule Machine app's id, which hub_list_apps(scope:"instances") lists. A failed creation can leave a native child: inspect returned ruleId and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting. An update first reads the same health and, before any backup or write, refuses a rule that is already broken (its own broken() check), naming each marked row by kind and native id (trigger 2), or a rule whose broken flag, compiled state or marked rows cannot be read, with checkErrors saying why: repair broken rows with operation:"form" or in the Hubitat UI. A rule whose page marks rows without being broken (a condition whose device was deleted) is updated: brokenRowsBefore lists the rows marked before the write, and the write fails only if it adds a newly marked row, so it can also repair them.
+Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",ruleId,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parentId,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine; parentId is the installed Rule Machine app's id, which hub_list_apps(scope:"instances") lists. A failed creation can leave a native child: inspect returned ruleId and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting. An update first reads the same health and, before any backup or write, refuses a rule that is already broken (its own broken() check), naming each marked row by kind and native id (trigger 2), or a rule whose broken flag, compiled state or marked rows cannot be read, with checkErrors saying why: repair broken rows with operation:"form" or in the Hubitat UI. A rule whose page marks rows without being broken (a condition whose device was deleted) is updated: brokenRowsBefore lists the rows marked before the write, and the write fails only if it adds a newly marked row, so it can also repair them. An action change whose action comes back marked or with no label is rolled back, even when it was marked before: an action left gated on a marked condition turns the rule's own broken() check true, so move the action to another condition, or repair or delete that condition, first. After a check that follows the writes fails, every change is on the rule: do not send them again, read the rule and repair it or restore the backup.
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.
 - action: {id?,type,subtype,fields:[{name,type,value}],expression?,events?,condition?}. condition is an existing native condition ID for a Simple Conditional Action.
-- expression: {id,tokens}; required: {tokens}.
+- expression: {id,tokens}, id 1 or more; required: {tokens} sets the Required Expression (expression 0, which an expression change refuses).
 - getWaitEvents actions accept events:[{capability,fields}] (1 through 16 native event rows); an edit preserves the event count. Duration fields remain native typed fields.
 - getWaitRule actions accept expression tokens, with optional native timeout/duration fields. New IF, ELSE-IF and Wait for Expression actions require expression tokens.
 - variable: {operation:create|set|delete,name,type?,value?}. Create types: integer,bigdecimal,boolean,string,datetime. DateTime uses native ISO text, e.g. 2026-01-01T12:30:00.000-0500; native date-only/time-only sentinels are accepted.
@@ -857,7 +915,7 @@ Each change is {part,value}. Supported parts:
 
 Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; not every capability-specific variant is supported. Discover native options through operation:"form" when a document contract is unavailable. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback, native editor diagnostics, expression-reference checks and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
 
-Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document; a document too large to send with the result is left out (documentOmitted:true), so read it by section. These pages can mutate native state; a document read renders none of them.
+Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document (without health: the write's own checks stand for it); a document too large to send with the result is left out (documentOmitted:true), so read it by section, and a receipt still too large keeps each change's part and success and counts the subscriptions and jobs (trimmed says so). These pages can mutate native state; a document read renders none of them.
 
 ## Native Rule Forms
 
