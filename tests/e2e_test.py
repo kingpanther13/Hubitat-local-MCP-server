@@ -7942,12 +7942,21 @@ def updated() {}
             assert "e2e-cookie-value" not in json.dumps(plain), "the cookie local leaked through the rule's page"
             local_rows = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
             assert [(row.get("name"), row.get("redacted")) for row in local_rows] == [("e2eSessionCookie", True)], local_rows
-            # An HTTP Get action keeps its URL, query string included, as a setting: a secret-named query value reads masked.
-            self._rm_update(app_id, [self._rm_action("messageActs", "getHTTPGet", [("httper", "text", "http://192.0.2.1/x?apikey=E2E_SECRET&room=den")])])
+            # An HTTP Get action keeps its URL, query string included, as a setting: a secret-named query value reads
+            # masked, by the short URL names (apikey) and by the credential names settings use (psw, clientSecret).
+            self._rm_update(app_id, [self._rm_action("messageActs", "getHTTPGet", [(
+                "httper", "text", "http://192.0.2.1/x?apikey=E2E_SECRET&psw=E2E_PSW&clientSecret=E2E_CLIENT&room=den")])])
             read_settings = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": ["settings"]})
             urls = [row.get("value") for row in read_settings.get("settings") or [] if str(row.get("name", "")).startswith("httper.")]
-            assert urls == ["http://192.0.2.1/x?apikey=***redacted (password)***&room=den"], urls
-            assert "E2E_SECRET" not in json.dumps(read_settings), "the HTTP action's apikey came back in clear"
+            masked = "***redacted (password)***"
+            assert urls == [f"http://192.0.2.1/x?apikey={masked}&psw={masked}&clientSecret={masked}&room=den"], urls
+            for secret in ("E2E_SECRET", "E2E_PSW", "E2E_CLIENT"):
+                assert secret not in json.dumps(read_settings), f"the HTTP action's {secret} came back in clear"
+            config = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeSettings": True})
+            # The page prints the URL in the action's summary whether or not the settings map came back.
+            config_urls = [v for k, v in (config.get("settings") or {}).items() if str(k).startswith("httper.")]
+            assert "settings" not in config or config_urls == urls, config_urls
+            assert not any(secret in json.dumps(config) for secret in ("E2E_SECRET", "E2E_PSW", "E2E_CLIENT")), "hub_get_app_config showed a URL secret"
             # The tool takes ruleId; a client still sending appId is told so.
             try:
                 stale = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "appId": int(app_id)})
@@ -9266,6 +9275,13 @@ def updated() {}
             assert self._rm_health(app_id).get("broken") is False
             later = self._rm_update(app_id, [native_log("after the refused edit")])
             assert later.get("broken") is False, later
+            # One batch that gives the condition a device again may then name it in the Required Expression: the
+            # repair runs first, so the expression no longer names a condition whose device is gone.
+            repaired = self._rm_update(app_id, [self._rm_switch_condition(switch, id=gone), native_change("required", tokens=[gone])])
+            assert repaired.get("broken") is False and repaired["document"]["expressions"]["0"] == [str(gone)], repaired
+            repaired_health = self._rm_health(app_id)
+            assert repaired_health.get("broken") is False, repaired_health
+            assert not any(str(row.get("id")) == str(gone) for row in repaired_health.get("brokenRows") or []), repaired_health
         finally:
             self._delete_native(app_id)
 
