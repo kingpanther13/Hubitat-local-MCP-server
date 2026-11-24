@@ -593,7 +593,7 @@ Write/delete require the Write master + confirm + a recent backup.
 |------|-------------|
 | `hub_set_rule` | Read, create, update or use native RM editor forms. Omit operation for help; unconfirmed writes return argument schemas. |
 | `hub_list_rules` | List the Rule Machine 5.x rules with their live status via the official `hubitat.helper.RMUtils` API (Button Rules: `hub_list_apps`; Visual Rules: `hub_get_visual_rule`; also in `hub_read_rules`) |
-| `hub_call_rule` | Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (`ruleId` takes an id or an array; `action`: "actions" (default)/"stop"/"start"/"pause"/"resume"; a Visual Rule takes pause and resume, and actions only on a graph (2.0) Visual Rule) |
+| `hub_call_rule` | Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (`ruleId` takes an id or an array; `action` (required): "actions"/"stop"/"start"/"pause"/"resume"; a Visual Rule takes pause and resume, and actions only on a graph (2.0) Visual Rule) |
 | `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
 | `hub_get_rule` | Read one Rule Machine rule, Button Rule or Basic Rule without opening its page: its health (broken state and broken rows by native id, paused/stopped, private boolean, disabled actions, block structure and live subscription/job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; a Basic Rule's settings. Any other app returns its health alone. (also in `hub_read_rules`) |
 | `hub_delete_native_app` | Delete any classic native app incl. RM rules (auto-snapshot first; `force=true` for hard delete; also in `hub_manage_native_rules_and_apps`) |
@@ -611,7 +611,7 @@ Reads (`hub_list_rules`, `hub_get_rule`, `hub_get_visual_rule`) are gated by the
 | Tool | Description |
 |------|-------------|
 | `hub_list_rules` | List the Rule Machine 5.x rules with their live status via the official `hubitat.helper.RMUtils` API (Button Rules: `hub_list_apps`; Visual Rules: `hub_get_visual_rule`; also in `hub_read_rules`) |
-| `hub_call_rule` | Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (`ruleId` takes an id or an array; `action`: "actions" (default)/"stop"/"start"/"pause"/"resume"; a Visual Rule takes pause and resume, and actions only on a graph (2.0) Visual Rule) |
+| `hub_call_rule` | Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (`ruleId` takes an id or an array; `action` (required): "actions"/"stop"/"start"/"pause"/"resume"; a Visual Rule takes pause and resume, and actions only on a graph (2.0) Visual Rule) |
 | `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
 | `hub_set_rule` | Read, create, update or use native RM editor forms. Omit operation for help; unconfirmed writes return argument schemas. |
 | `hub_set_native_app` | Create, update or drive the native forms of every other classic app, user and community apps included (`operation`: create/update/form). Omit operation for help; unconfirmed writes return argument schemas. |
