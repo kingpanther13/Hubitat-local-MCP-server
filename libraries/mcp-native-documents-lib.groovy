@@ -604,8 +604,9 @@ private Map _ndApply(Long id, List changes, boolean created, Map before = null) 
         boolean healthy = health instanceof Map && flag == false
         String unhealthy = flag == true ? "The change was written, but Rule Machine's own broken() check now calls rule ${id} broken, so Done was not pressed".toString() : 'Native rule health is broken or unverified'
         if (!healthy) return [success: false, partial: true, ruleId: id, created: created, results: outcomes, broken: flag, error: unhealthy, note: _ndFailureNote(true, created, 1)]
-        def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
+        // Set before the POST: one that throws in transport may still have landed.
         stage = 2
+        def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
         def doneStatus = done instanceof Map ? done.get('status') : null
         String failed = doneStatus != null && doneStatus.toString().isInteger() && doneStatus.toInteger() >= 400 ? 'Native Done was rejected' : null
         def doneBody = done instanceof Map ? done.get('data') : null
@@ -686,7 +687,7 @@ private Map _ndApply(Long id, List changes, boolean created, Map before = null) 
 // What the caller should do after a failed batch: the hub log carries the detail, the response the recovery. stage is
 // _ndApply's: 1 when every change was written before a check failed, 2 when Done was pressed too.
 private String _ndFailureNote(boolean landed, boolean created, int stage = 0) {
-    String written = stage == 2 ? "Every change was written and Done was pressed, but a check after Done failed. Do not send the changes again: read the rule with hub_get_rule and check it first." :
+    String written = stage == 2 ? "Every change was written and Done was sent, but it may or may not have taken, or a check after it failed. Do not send the changes again: read the rule with hub_get_rule before anything else." :
         stage == 1 ? "Every change was written, but a check after the write failed, so Done was not pressed. Do not send the changes again: read the rule with hub_get_rule, then repair it or restore the backup." :
         landed ? "Changes before the failure may have been written; read the rule with hub_set_rule(operation:'read') and resubmit only what is missing." : 'No change was written.'
     String recovery = created ? ' The new rule exists; delete it with hub_delete_native_app if it is not wanted.' : " An update's response carries backup.backupKey for hub_restore_backup when pre-edit backups are on."
