@@ -1317,7 +1317,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !result.success
         result.partial
         result.error == 'Native Done was rejected'
-        result.note.startsWith('Every change was written and Done was pressed, but a check after Done failed.')
+        result.note.startsWith('Every change was written and Done was sent, but it may or may not have taken, or a check after it failed.')
         events.count { it == 'stopRule' } == 1
         events.count { it == 'pausRule' } == 1
         lifecycle.stopped && lifecycle.paused
@@ -1400,12 +1400,34 @@ class NativeDocumentsSpec extends ToolSpecBase {
         false    | null                               | 131072 - 11072
         true     | [requestSource: 'local']           | 131072 - 11072
         true     | [requestSource: 'cloud']           | 99000
+        true     | [requestSource: null]              | 99000
         true     | null                               | 99000
     }
 
-    def 'the request snapshot a worker carries names the transport the request came over'() {
-        expect:
-        script._requestSettingsSnapshot().requestSource == 'local'
+    def 'the request snapshot a worker carries names the transport the request came over, and none without a request'() {
+        expect: 'a scheduled continuation has no request, so its worker falls to the relay cap'
+        script._requestSettingsSnapshot().requestSource == null
+        when: 'a call over each transport'
+        def seen = null
+        script.metaClass.toolUpdateRuleDocument = { Map args -> seen = script._requestSettingsSnapshot().requestSource; [success: true] }
+        mcpDriver.requestSource = source
+        mcpDriver.callTool('hub_set_rule', [operation: 'update', ruleId: 42, confirm: true, args: [changes: [logChange()]]])
+        then:
+        seen == source
+        where:
+        source << ['local', 'cloud']
+    }
+
+    def 'a Done POST that throws in transport says Done was sent and may have taken'() {
+        given:
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean retry = false -> events << [path: path, body: body]; throw new IOException('connection reset') }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        result.partial
+        result.error == 'connection reset'
+        result.note.startsWith('Every change was written and Done was sent, but it may or may not have taken, or a check after it failed. Do not send the changes again: read the rule with hub_get_rule before anything else.')
     }
 
     def 'repairing one id-less marked row and adding another of the same kind is caught by its text'() {

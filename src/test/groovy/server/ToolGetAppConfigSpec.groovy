@@ -907,9 +907,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
         Map live = [filter: 'true', handler: 'switchHandler', name: 'switch', subscriptionData: '3', type: 'DEVICE', typeId: 12, typeName: 'Kitchen']
+        Map url = live + [subscriptionData: 'http://x.test/hook?token=SUBTOK&room=den', type: 'LOCATION', typeId: null, typeName: null]
         hubGet.register('/installedapp/statusJson/35') { params ->
             JsonOutput.toJson([installedApp: [id: 35], appSettings: [], appState: [],
-                               eventSubscriptions: [live, live + [subscriptionData: [apiKey: 'sub-api-key']]],
+                               eventSubscriptions: [live, live + [subscriptionData: [apiKey: 'sub-api-key']], url],
                                scheduledJobs: [[handler: 'poll', data: [token: 'job-token']]]])
         }
 
@@ -919,6 +920,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         result.eventSubscriptions[0] == live
         result.eventSubscriptions[1].subscriptionData == [apiKey: '***redacted (password)***']
+        result.eventSubscriptions[2].subscriptionData == 'http://x.test/hook?token=***redacted (password)***&room=den'
+        !JsonOutput.toJson(result).contains('SUBTOK')
         result.scheduledJobs == [[handler: 'poll', data: [token: '***redacted (password)***']]]
         !JsonOutput.toJson(result).contains('sub-api-key') && !JsonOutput.toJson(result).contains('job-token')
     }
@@ -999,6 +1002,27 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !text.contains('KEY123') && !text.contains('TOK456')
         result.page.sections[0].paragraphs[0].contains('setCode(1, ***redacted (password)***, Guest)')
         result.settingsRedactionNote.contains('lock-code custom action (setCode)')
+    }
+
+    // The secret word starts the parameter name or follows a separator, so a word that merely ends in one is kept.
+    def "a URL query parameter named #param is #outcome"() {
+        expect:
+        script._ruleSecretsMasked("http://x.test/a?${param}=V123&room=den".toString(), [names: [], codes: []]) ==
+            "http://x.test/a?${param}=${masked ? '***redacted (password)***' : 'V123'}&room=den".toString()
+
+        where:
+        param          | masked
+        'apikey'       | true
+        'api_key'      | true
+        'x-api-key'    | true
+        'auth_token'   | true
+        'token'        | true
+        'Password'     | true
+        'monkey'       | false
+        'hotkey'       | false
+        'oauth'        | false
+        'access_token' | false
+        outcome = masked ? 'masked' : 'kept'
     }
 
     def "with Hide passwords and credentials off, URL parameters and lock-code parameters read as stored"() {

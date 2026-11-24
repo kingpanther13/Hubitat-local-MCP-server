@@ -7937,6 +7937,12 @@ def updated() {}
             assert (locals_row.get("value") or {}).get("e2eSessionCookie") == "***redacted (password)***", locals_row
             local_rows = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
             assert [(row.get("name"), row.get("redacted")) for row in local_rows] == [("e2eSessionCookie", True)], local_rows
+            # An HTTP Get action keeps its URL, query string included, as a setting: a secret-named query value reads masked.
+            self._rm_update(app_id, [self._rm_action("messageActs", "getHTTPGet", [("httper", "text", "http://192.0.2.1/x?apikey=E2E_SECRET&room=den")])])
+            read_settings = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": ["settings"]})
+            urls = [row.get("value") for row in read_settings.get("settings") or [] if str(row.get("name", "")).startswith("httper.")]
+            assert urls == ["http://192.0.2.1/x?apikey=***redacted (password)***&room=den"], urls
+            assert "E2E_SECRET" not in json.dumps(read_settings), "the HTTP action's apikey came back in clear"
             # The tool takes ruleId; a client still sending appId is told so.
             try:
                 stale = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "appId": int(app_id)})
@@ -9230,6 +9236,16 @@ def updated() {}
             unrelated = self._rm_update(app_id, [native_log("unrelated")])
             assert any(str(row.get("id")) == str(gone) for row in unrelated.get("brokenRowsBefore") or []), unrelated
             assert "unrelated" in self._rm_values(app_id).values(), "the unrelated edit was not written"
+            # A Required Expression naming the condition whose device is gone would get it marked after the write, so
+            # it is refused before the backup and any write.
+            before_gone = self._rm_snapshot(app_id)
+            backups_gone = self._rm_backup_keys(app_id)
+            gone_required = self._rm_call({"operation": "update", "ruleId": int(app_id), "confirm": True,
+                                           "args": {"changes": [native_change("required", tokens=[gone])]}})
+            gone_error = self._rm_refused(gone_required)
+            assert f"Expression names condition {gone}, whose device is gone" in gone_error and gone_required.get("partial") is False, gone_required
+            assert self._rm_snapshot(app_id) == before_gone, "the refused Required Expression changed the rule"
+            assert self._rm_backup_keys(app_id) == backups_gone, "the refused Required Expression took a backup"
             # Editing the gated action while it stays on the marked condition would turn Rule Machine's own broken()
             # true, so the edit is rolled back at the action: the rule is unchanged, not partial, and still editable.
             before_kept = self._native_rule_document(app_id).get("actions")
