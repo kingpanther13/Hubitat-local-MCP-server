@@ -902,6 +902,45 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('2468') && !JsonOutput.toJson(result).contains('1357') && !JsonOutput.toJson(result).contains('row-api-key')
     }
 
+    // Live (C-7): a rule's page prints its local variables as a table whose text runs together, so a local masked in
+    // appState still came back in clear in page.sections[].paragraphs.
+    def "a value masked in appState is masked in the page text too, even run together with other words"() {
+        given:
+        settingsMap.enableRead = true
+        def sections = [[title: '', input: [], body: [
+            [element: 'paragraph', description: 'NameTypeValuePrivate BooleanBooleantrue%value%Value0e2eSessionCookieStringe2e-cookie-value']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null, sections: sections]])
+        }
+        registerAppStatus([[name: 'allLocalVars', value: [value: [type: 'integer', value: 0], e2eSessionCookie: [type: 'string', value: 'e2e-cookie-value']]]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState.find { it.name == 'allLocalVars' }.value.e2eSessionCookie == '***redacted (password)***'
+        result.page.sections[0].paragraphs == ['NameTypeValuePrivate BooleanBooleantrue%value%Value0e2eSessionCookieString***redacted (password)***']
+        !JsonOutput.toJson(result).contains('e2e-cookie-value')
+        hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
+    }
+
+    def "a value masked in settings is masked in the page text too"() {
+        given:
+        settingsMap.enableRead = true
+        def sections = [[title: '', input: [], body: [[element: 'paragraph', description: 'Broker login: brokerPwd=hunter22 (saved)']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'App', install: true, refreshInterval: null, sections: sections], settings: [brokerPassword: 'hunter22']])
+        }
+        registerStatusJson([brokerPassword: 'text'])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.settings.brokerPassword == '***redacted (password)***'
+        result.page.sections[0].paragraphs == ['Broker login: brokerPwd=***redacted (password)*** (saved)']
+    }
+
     def "includeStatus runs eventSubscriptions and scheduledJobs through the same masking before any truncation"() {
         given: 'the live subscription shape, plus one whose data an app filled with a credential-named map'
         settingsMap.enableRead = true
@@ -998,9 +1037,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.settings['httper.1'] == 'http://x.test/api?apikey=***redacted (password)***&mode=on&token=***redacted (password)***&access_token=AT789'
         ['cpVal1.2', 'cpVal2.2', 'cpVal3.2'].every { result.settings[it] == '***redacted (password)***' }
         result.settings['cpVal2.3'] == '482913'
-        result.page.hrefs[0].description == 'GET http://x.test/api?apikey=***redacted (password)***&mode=on&token=***redacted (password)***&access_token=AT789Lock: setCode(1, ***redacted (password)***, Guest)'
+        result.page.hrefs[0].description == 'GET http://x.test/api?apikey=***redacted (password)***&mode=on&token=***redacted (password)***&access_token=AT789Lock: setCode(1, ***redacted (password)***, ***redacted (password)***)'
         !text.contains('KEY123') && !text.contains('TOK456')
-        result.page.sections[0].paragraphs[0].contains('setCode(1, ***redacted (password)***, Guest)')
+        // Guest is a setCode parameter masked in settings, so the page masks it too.
+        result.page.sections[0].paragraphs[0].contains('setCode(1, ***redacted (password)***, ***redacted (password)***)')
         result.settingsRedactionNote.contains('lock-code custom action (setCode)')
     }
 

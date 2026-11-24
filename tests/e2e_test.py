@@ -7528,7 +7528,9 @@ def updated() {}
         try:
             assert str(doc.get("ruleId")) == str(app_id), doc
             assert [row["value"]["method"] for row in doc["actions"]] == ["getLogMsg"], doc
-            assert doc["health"]["structuralIssues"] == [] and doc["health"]["broken"] is False, doc
+            # A write's read-back leaves health out (the write's own checks stand for it), so health comes from hub_get_rule.
+            health = self._rm_health(app_id)
+            assert health["structuralIssues"] == [] and health["broken"] is False, health
         finally:
             self._delete_native(app_id)
 
@@ -8001,8 +8003,11 @@ def updated() {}
             cond_health = self._rm_health(cond_id)
             assert cond_health.get("broken") is False and cond_health.get("ok") is False, cond_health
             marked_rows = cond_health.get("brokenRows") or []
-            assert sorted((row.get("kind"), str(row.get("id")), row.get("setting")) for row in marked_rows if row.get("kind") == "condition") == \
+            assert sorted((row.get("kind"), str(row.get("id")), row.get("setting")) for row in marked_rows
+                          if row.get("kind") == "condition" and row.get("id") is not None) == \
                 sorted([("condition", str(gone), f"rDev_{gone}"), ("condition", str(bound), f"rDev_{bound}")]), (spare, cond_health)
+            # The spare condition is marked too but nothing uses it, so it is listed by its label line, without an id.
+            assert len([row for row in marked_rows if row.get("kind") == "condition" and row.get("id") is None]) == 1, (spare, cond_health)
             # The action gated on the marked condition has no device of its own, so it is listed without an id.
             assert all(row.get("id") is None for row in marked_rows if row.get("kind") == "action"), cond_health
             assert any("does not call the rule broken" in str(issue) for issue in cond_health.get("issues") or []), cond_health
