@@ -2781,6 +2781,8 @@ Map _rmPublicLocalVariable(String name, Map row) {
     // rest of the value stays, so redacted marks it as unfit to write back.
     else if (row?.value instanceof CharSequence) {
         result.value = _ruleSecretsMasked(row.value, [names: [], codes: []])
+        // An access_token= in the URL follows Hide access tokens; masked here, before the comparison, so it is marked too.
+        if (_redactsAccessTokens()) result.value = _redactAccessTokens(result.value)
         if (result.value?.toString() != row.value.toString()) result.redacted = true
     }
     result

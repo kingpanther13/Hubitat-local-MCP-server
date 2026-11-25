@@ -1234,6 +1234,31 @@ class NativeDocumentsSpec extends ToolSpecBase {
         redact << [true, false]
     }
 
+    // An access_token= inside a URL follows Hide access tokens; the row it changes is marked like any other.
+    @spock.lang.Unroll
+    def 'a URL access_token in a setting and in a local is masked and marked when Hide access tokens is #state'() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        settingsMap.redactAccessTokens = hide
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [
+            [name: 'httper.1', type: 'text', multiple: false, value: 'http://h/cb?access_token=TOK777&mode=on']]]) }
+        nativeState.allLocalVars.callback = [type: 'string', value: 'http://h/cb?access_token=TOK888']
+        when:
+        def document = script.toolGetRuleDocument([ruleId: 42, localVariables: true, sections: ['settings']])
+        Map setting = document.settings.find { it.name == 'httper.1' }
+        Map local = document.localVariables.find { it.name == 'callback' }
+        then:
+        setting.value == (hide ? 'http://h/cb?access_token=***redacted (access token)***&mode=on' : 'http://h/cb?access_token=TOK777&mode=on')
+        setting.redacted == (hide ? true : null)
+        local.value == (hide ? 'http://h/cb?access_token=***redacted (access token)***' : 'http://h/cb?access_token=TOK888')
+        local.redacted == (hide ? true : null)
+        where:
+        state | hide
+        'on'  | true
+        'off' | false
+    }
+
     def 'a verified write whose document read-back fails says so in its own key, not as a nested document'() {
         given:
         def reads = 0
