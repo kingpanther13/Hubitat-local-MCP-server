@@ -8023,6 +8023,21 @@ def updated() {}
             if "192.0.2.1/x?apikey=" in page_text:
                 assert f"192.0.2.1/x?apikey={masked}" in page_text, page_text
             assert not any(secret in json.dumps(config) for secret in ("E2EPW1", "UPW2", "E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT")), "hub_get_app_config showed a URL secret"
+            # An access_token= in a local's URL follows Hide access tokens (default off), and the row it changes is
+            # marked as not fit to write back.
+            self._rm_update(app_id, [native_change("variable", operation="create", name="e2eCallback", type="string",
+                                                   value="http://192.0.2.1/cb?access_token=E2E_AT9")])
+            def set_redact_tokens(on: bool) -> None:
+                self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings",
+                                                         "args": {"settings": {"redactAccessTokens": on}, "confirm": True}})
+            set_redact_tokens(True)
+            try:
+                callback = next((row for row in self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
+                                 if row.get("name") == "e2eCallback"), None)
+                assert callback is not None and callback.get("value") == "http://192.0.2.1/cb?access_token=***redacted (access token)***" \
+                    and callback.get("redacted") is True, callback
+            finally:
+                set_redact_tokens(False)
             # The tool takes ruleId; a client still sending appId is told so.
             try:
                 stale = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "appId": int(app_id)})

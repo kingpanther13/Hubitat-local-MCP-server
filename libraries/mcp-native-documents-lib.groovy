@@ -34,8 +34,9 @@ private List _ndSettings(Long id) {
     response.settings.collect { row ->
         boolean secret = _redactsCredentials() && (row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value) || row.name in lock.names)
         def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : _ruleSecretsMasked(row.value, lock), deviceIds: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
-        // A {name, value} row: the token pass keys on map keys, so it never sees a setting named accessToken. An
-        // access_token= inside a URL is masked here too, before the comparison, so that row is marked as well.
+        // A {name, value} row: the token pass keys on map keys, so it never sees a setting named accessToken. The
+        // result-wide token pass would mask an access_token= in a string value's URL only after this comparison, leaving
+        // the row unmarked, so it is masked here first.
         if (!secret && _redactsAccessTokens() && row.name ==~ /(?i)access_?token/ && row.value instanceof CharSequence) setting.value = _accessTokenRedactedMarker()
         else if (!secret && _redactsAccessTokens() && setting.value instanceof CharSequence) setting.value = _redactAccessTokens(setting.value)
         // A value hidden or carrying a marker (an HTTP action URL with its secret masked) must not be written back.
