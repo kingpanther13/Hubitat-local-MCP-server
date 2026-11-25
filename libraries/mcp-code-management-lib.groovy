@@ -669,9 +669,11 @@ def toolGetAppConfig(args) {
             result.note = _appConfigNote("Input values and controls are withheld: ${formError}. Read the stored values with includeSettings=true")
         }
 
-        // A rule's page repeats its HTTP action URLs and custom action parameters, so they are masked there as in settings.
+        // A rule's page repeats its HTTP action URLs, custom action parameters and local variables (the locals table in a
+        // control's title too), so they are masked there as in settings.
         Map lock = _ruleLockParams(parsed.settings instanceof Map ? parsed.settings : [:])
         result.page = _ruleSecretsMasked(result.page, lock)
+        if (result.controls != null) result.controls = _ruleSecretsMasked(result.controls, lock)
         // includeSettings and includeStatus share one App Status read.
         Map fetched = [:]
         int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0

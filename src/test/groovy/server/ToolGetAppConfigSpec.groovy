@@ -971,6 +971,27 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
     }
 
+    // Live (C-7): a local holding a URL prints in the control's locals table too, where its secret query value is
+    // masked as the same URL is in settings, though no credential-named value was masked elsewhere.
+    def "a URL local's secret query value is masked in a control's title"() {
+        given:
+        settingsMap.enableRead = true
+        String table = '<table class="mdl-data-table"><tr><td>e2eNote</td><td>String</td><td>http://x.invalid/?token=QTOK9</td></tr></table>'
+        def sections = [[title: '', input: [[element: 'input', name: 'localVars', type: 'button', title: table]], body: []]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null, sections: sections]])
+        }
+        script.metaClass._nrState = { Long id -> [:] }
+        script.metaClass._nrHandle = { Long id -> [getAllLocalVars: { -> [e2eNote: [type: 'string', value: 'http://x.invalid/?token=QTOK9']] }] as Expando }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        !JsonOutput.toJson(result).contains('QTOK9')
+        result.controls.find { it.name == 'localVars' }.title.contains('?token=***redacted (password)***')
+    }
+
     // Live (C-7): the rule page's locals table also rides in a control's title as HTML, and the page prints it whether
     // or not includeStatus read the app's state.
     @spock.lang.Unroll
