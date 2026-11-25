@@ -1173,8 +1173,6 @@ private void _rmNativeRestoreFlags(Long id, Map savedState) {
     if ((live.paused == true) != (savedState.paused == true)) _nrHandle(id).appButtonHandler('pausRule')
 }
 
-// A snapshot may hold RM's status spans (_rmLabelName), HTML-stripped to plain text. Compare and restore the name
-// only: the lifecycle state the spans display is verified on its own.
 // The live label is the restored name itself, or that name followed only by RM's status spans; the name is the
 // boundary, so a span the user put at the end of the name (even one reading "(Stopped)") is never taken for status.
 private boolean _rmLabelCarriesName(label, String name) {
@@ -1182,6 +1180,8 @@ private boolean _rmLabelCarriesName(label, String name) {
     live == name || (live.startsWith(name) && _rmLabelName(live.substring(name.length())).trim().isEmpty())
 }
 
+// A snapshot may hold RM's status spans (_rmLabelName), HTML-stripped to plain text. Compare and restore the name
+// only: the lifecycle state the spans display is verified on its own.
 private String _rmRestoredRuleName(List plan, Map identity) {
     def name = plan.find { it.name == 'origLabel' }?.value
     if (name != null) return name.toString()

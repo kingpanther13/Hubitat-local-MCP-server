@@ -111,16 +111,17 @@ private Map _ndRender(Long id, String page) {
 // The document read's section, cursor and limit arguments, checked before anything is read.
 private Map _ndDocumentArgs(Map args, List allowed, String toolName) {
     def sections = args.sections == null ? allowed : args.sections
+    String guide = "See hub_get_tool_guide(section='${toolName == 'hub_get_rule' ? 'builtin_app_tools_rules' : 'set_rule_reference'}')."
     if (!(sections instanceof List) || sections.any { !(it in allowed) }) {
         def bad = sections instanceof List ? sections.findAll { !(it in allowed) } : sections
-        throw new IllegalArgumentException("${sections instanceof List ? 'Unknown section' : 'sections must be a list of names, not'} ${groovy.json.JsonOutput.toJson(bad)}; ${toolName} sections are ${allowed.join(', ')}. See hub_get_tool_guide(section='${toolName == 'hub_get_rule' ? 'builtin_app_tools_rules' : 'set_rule_reference'}').".toString())
+        throw new IllegalArgumentException("${sections instanceof List ? 'Unknown section' : 'sections must be a list of names, not'} ${groovy.json.JsonOutput.toJson(bad)}; ${toolName} sections are ${allowed.join(', ')}. ${guide}".toString())
     }
     boolean paged = args.containsKey('cursor') || args.containsKey('limit')
-    if (paged && sections.size() != 1) throw new IllegalArgumentException('Paged reads require exactly one section')
+    if (paged && sections.size() != 1) throw new IllegalArgumentException("Paged reads require exactly one section, got ${groovy.json.JsonOutput.toJson(sections)}. ${guide}".toString())
     def cursor = args.containsKey('cursor') ? args.cursor : ''
     def limit = args.containsKey('limit') ? args.limit : 50
     if (paged && (!(cursor instanceof String) || !(limit instanceof Number) || !limit.toString().isLong() || limit < 1 || limit > 100))
-        throw new IllegalArgumentException('Read cursor must be a string and limit an integer from 1 to 100')
+        throw new IllegalArgumentException("Read cursor must be a string and limit an integer from 1 to 100, got cursor ${groovy.json.JsonOutput.toJson(cursor)} and limit ${groovy.json.JsonOutput.toJson(limit)}. ${guide}".toString())
     if (paged) _parseListCursor(cursor, Integer.MAX_VALUE, toolName)
     [sections: sections, paged: paged, cursor: cursor, limit: limit]
 }
@@ -857,7 +858,9 @@ private void _ndValidateSchema(Object value, Map schema, String path, boolean co
     boolean valid = schema.type == 'object' ? value instanceof Map : schema.type == 'array' ? value instanceof List :
         schema.type == 'string' ? value instanceof String : schema.type == 'boolean' ? value instanceof Boolean :
         schema.type == 'integer' ? value instanceof Number && value.toString().isLong() : true
-    if (!valid || (schema.enum != null && !(value in schema.enum))) throw new IllegalArgumentException("Invalid ${path}")
+    if (!valid) throw new IllegalArgumentException("Invalid ${path}")
+    // A value outside the list is named beside the list, so a caller can correct it without reading the schema.
+    if (schema.enum != null && !(value in schema.enum)) throw new IllegalArgumentException("Invalid ${path}: ${groovy.json.JsonOutput.toJson(value)} is not one of ${schema.enum.join(', ')}".toString())
     if (schema.type == 'object') {
         def unknown = schema.additionalProperties == false ? value.keySet().find { !schema.properties.containsKey(it) } : null
         if (unknown != null) throw new IllegalArgumentException("Unknown ${path} property: ${unknown}".toString())
@@ -935,7 +938,7 @@ String _ndGuide() {
 
 Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level ruleId identifies the target; args cannot override it or confirm. When mandatory guide acknowledgment is enabled, pass its key as top-level bestPracticeKey alongside operation, ruleId, args and confirm.
 
-Read hub_set_rule(operation:"read",ruleId,args:{sections:[...]}) before editing an existing native rule; hub_get_rule returns the same document from the read-only tools, with the local variables as a localVariables list in place of the variables section. A read does not open the rule's page: it returns health, the same report hub_get_rule returns (broken from the rule's own check, brokenRows for the rows its page marks, paused, stopped, privateBoolean, structuralIssues; see builtin_app_tools_rules). The sections come from native state and typed settings. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
+Read hub_set_rule(operation:"read",ruleId,args:{sections:[...]}) before editing an existing native rule; hub_get_rule returns the same document from the read-only tools, with the local variables as a localVariables list in place of the variables section. A read does not open the rule's page: it returns health, the same report hub_get_rule returns (broken from the rule's own check, brokenRows for the rows its page marks, paused, stopped, privateBoolean, structuralIssues; see builtin_app_tools_rules). The sections come from native state and typed settings. Sections: actions, conditions, triggers, expressions, variables, settings. variables and settings mask secrets as hub_get_rule does; never write back a value that carries the redacted marker. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 
 For large rules, read one section with args:{sections:["settings"],cursor:"",limit:50}. Paging requires exactly one section; limit is 1..100 (default 50). The section keeps its usual map or list shape. Pass the returned top-level nextCursor into args.cursor until nextCursor is null. page returns offset, limit, total and revision, a hash of the complete section; restart if revision changes. Pages may contain fewer than limit rows to fit the response size cap; a row too large to send beside the health alone returns success:false with the health, never truncated. Actions retain native order, settings sort by name, and map sections sort by string key. Omit cursor and limit for an unpaged read; one too large for the response cap returns health and the parts that fit whole, pages the first part that does not (pagedSection, nextCursor) and lists the other parts that do not fit in omittedSections.
 

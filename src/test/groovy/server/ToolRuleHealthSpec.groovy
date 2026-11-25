@@ -1378,7 +1378,9 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         [ruleId: '4294967396']                                     | 'positive whole number'
         [ruleId: 100.5]                                            | 'positive whole number'
         [ruleId: 100, sections: ['variables']]                     | 'Unknown section ["variables"]; hub_get_rule sections are actions, conditions, triggers, expressions, settings, localVariables.'
-        [ruleId: 100, sections: ['actions', 'triggers'], limit: 5] | 'exactly one section'
+        [ruleId: 100, sections: ['actions', 'triggers'], limit: 5] | 'Paged reads require exactly one section, got ["actions","triggers"]. See hub_get_tool_guide(section=\'builtin_app_tools_rules\').'
+        [ruleId: 100, sections: ['actions'], limit: 500]           | 'limit an integer from 1 to 100, got cursor "" and limit 500. See hub_get_tool_guide(section=\'builtin_app_tools_rules\').'
+        [ruleId: 100, sections: ['actions'], cursor: 3]            | 'got cursor 3 and limit 50.'
     }
 
     @spock.lang.Unroll

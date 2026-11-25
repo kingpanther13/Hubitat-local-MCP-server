@@ -9866,8 +9866,8 @@ private Integer normalizeRuleId(def ruleId) {
     return exact
 }
 
-// An id as an error names it. A JSON number past the long range can arrive already wrapped by the request parser,
-// so a number outside the hub's id range is described rather than echoed.
+// An id as an error names it. A JSON number past the long range can arrive already overflowed (modulo 2^64) by the
+// request parser, so a number outside the hub's id range is described rather than echoed.
 String _idShown(Object id) {
     try { if (new BigDecimal(id.toString().trim()).abs() > Integer.MAX_VALUE) return "a number outside the hub's id range" } catch (Exception ignored) { }
     id instanceof CharSequence ? "'${id}'".toString() : id?.toString()
@@ -10455,8 +10455,10 @@ Boolean _appStateFlag(Object value) {
  * secret, so nothing else of it is kept. With Hide
  * passwords and credentials on, an appState value whose name looks like a credential reads as the
  * same marker includeSettings uses; state nests (a rule's allLocalVars map), so map keys are tested
- * the same way at every level. Access tokens (an accessToken row, the clientTokens map) are masked
- * whenever tool results mask them. Throws when the page cannot be read.
+ * the same way at every level. A secret-named URL query value or a URL's user:password@ password inside any
+ * appState string reads the marker too (_ruleSecretsMasked), and such a row carries redacted: true. Access tokens
+ * (an accessToken row, the clientTokens map) are masked whenever tool results mask them. Throws when the page
+ * cannot be read.
  */
 // fetched: a status page this request already read (_rmFetchStatusJson), so it is not read twice.
 Map _appStatusRead(Integer appId, Object fetched = null) {
@@ -10483,8 +10485,10 @@ Map _appStatusRead(Integer appId, Object fetched = null) {
         // A state row is {name, value}, so the central token pass, which keys on the map key, never sees the
         // row's name; run it on the row as the {name: value} entry it stands for.
         if (maskTokens) value = _redactAccessTokens([(key): value]).get(key)
-        // A URL in any string keeps its secret query value or password hidden, as in rule settings.
-        [name: row.name, value: _ruleSecretsMasked(value, [names: [], codes: []])]
+        // A URL in any string keeps its secret query value or password hidden, as in rule settings; redacted marks a
+        // value left partly readable, so it is not written back.
+        def masked = _ruleSecretsMasked(value, [names: [], codes: []])
+        masked == value ? [name: row.name, value: masked] : [name: row.name, value: masked, redacted: true]
      }] + _appStatusLists(sections.eventSubscriptions, sections.scheduledJobs) + [
      appSettings: (sections.appSettings ?: []).findAll { it instanceof Map }.collect { row ->
         def ids = row.deviceIdsForDeviceList instanceof List ? row.deviceIdsForDeviceList : []
@@ -10508,7 +10512,8 @@ private Object _appStateMasked(String name, Object value, String type = null, St
 }
 
 // The App Status lists as a read returns them: map data is masked by key name like appState, and a secret URL query
-// value in string data (a hub stores subscriptionData as a string, such as "3") is masked as in rule settings.
+// value or a URL's user:password@ password in string data (a hub stores subscriptionData as a string, such as "3")
+// is masked as in rule settings.
 private Map _appStatusLists(Object subscriptions, Object jobs) {
     Map lists = _ruleSecretsMasked([eventSubscriptions: _appStateMasked('eventSubscriptions', subscriptions ?: []), scheduledJobs: _appStateMasked('scheduledJobs', jobs ?: [])], [names: [], codes: []])
     _redactsAccessTokens() ? _redactAccessTokens(lists) : lists
@@ -10525,9 +10530,10 @@ private Map _ruleLockParams(Map settings) {
 }
 
 // With Hide passwords and credentials on, masks a secret-named URL query parameter (access_token follows Hide access
-// tokens), the password in a URL's user:password@ part and the lock-code parameters lock (_ruleLockParams) names, at any depth; other free-text parameters are not
-// recognised. A {name, value} row is judged by its name. lock.texts, when given, maps values the response masked
-// elsewhere (under either setting) to their marker, replaced in text wherever they appear.
+// tokens), the password in a URL's user:password@ part and the lock-code parameters lock (_ruleLockParams) names, at
+// any depth; other free-text parameters are not recognised. A {name, value} row is judged by its name. lock.texts,
+// when given, maps values the response masked elsewhere (under either setting) to their marker, replaced in text
+// wherever they appear.
 private Object _ruleSecretsMasked(Object value, Map lock) {
     boolean credentials = _redactsCredentials()
     if (!credentials && !lock.texts) return value
@@ -10541,17 +10547,21 @@ private Object _ruleSecretsMasked(Object value, Map lock) {
         if (!(node instanceof CharSequence)) return node
         // A parameter is secret by the short URL names below or by the credential-name test settings use
         // (psw, authToken, clientSecret).
-        // A secret value is masked up to the next '&' or '#', '?' included (psw=ab?cd); any other value is scanned again, so a nested URL's
-        // own query (?next=http://h/?apikey=X) is judged parameter by parameter.
+        // A secret value is masked up to the next '&' or '#', '?' included (psw=ab?cd); any other value is scanned again,
+        // so a nested URL's own query (?next=http://h/?apikey=X) is judged parameter by parameter. Each rescan reads the
+        // rest of the string, so the depth is capped: ?a=?a=?a=... would otherwise cost quadratic time and the stack.
         Closure query
-        query = { String s -> s.replaceAll(/([?&])([^=&\s"'<>#?]+)=([^&\s"'<>#]*)/) { all, sep, name, val ->
+        query = { String s, int depth -> s.replaceAll(/([?&])([^=&\s"'<>#?]+)=([^&\s"'<>#]*)/) { all, sep, name, val ->
             boolean secret = !(name ==~ /(?i)access_?token/) && (name ==~ /(?i)(?:[\w.\-]*[_.\-])?(?:api_?key|key|token|secret|pass|passwd|password|pwd|auth|sig|signature|pin)/ || _appConfigSecretName(name))
             if (!val || val.startsWith('***redacted')) return all
-            secret ? "${sep}${name}=${marker}".toString() : "${sep}${name}=${query.call(val)}".toString()
+            secret ? "${sep}${name}=${marker}".toString() : (depth < 3 ? "${sep}${name}=${query.call(val, depth + 1)}".toString() : all)
         } }
-        String text = !credentials ? node.toString() : query.call(node.toString())
-        // A URL's own password (scheme://user:password@host); the user name stays, and an email address has no '://'.
-        if (credentials) text = text.replaceAll(/([A-Za-z][\w+.\-]*:\/\/[^\s:\/@"'<>]*:)[^\s@\/?#"'<>]+(?=@)/) { all, pre -> "${pre}${marker}".toString() }
+        String text = !credentials ? node.toString() : query.call(node.toString(), 0)
+        // A URL's own password (scheme://user:password@host), run to the authority's last '@' so p@ss is masked whole; a
+        // raw '/' in it cannot be told from the path, so that one stays. The user name stays, and an email address has
+        // no '://'. The lookbehind starts the scheme at a word's start: unanchored, a long word is rescanned from each
+        // of its letters.
+        if (credentials) text = text.replaceAll(/(?<![\w+.\-])([A-Za-z][\w+.\-]*:\/\/[^\s:\/@?#"'<>]*:)[^\s\/?#"'<>]+(?=@)/) { all, pre -> "${pre}${marker}".toString() }
         // In page text, where a PIN sits among other words.
         if (credentials && text =~ /\s/) lock.codes.each { code -> text = text.replaceAll('(?<![\\w.])' + java.util.regex.Pattern.quote(code) + '(?![\\w.])', marker) }
         // Values masked elsewhere in the same response, which a page can print run together with other text.
@@ -11039,7 +11049,8 @@ Map _rmCheckRuleHealth(Integer appId, Map marked = null) {
         else labelPaused = true
         label = label.substring(0, decoration.start()).trim()
     }
-    // Status spans the loop above does not read ((Required Expression false), (Repeating)) go too, so the label is the rule's name.
+    // Every status span then goes (*BROKEN*, (Not Installed), (Required Expression false), (Repeating), and any
+    // (Paused) or (Stopped) the loop above left), so the label is the rule's name.
     result.label = label == null ? null : _rmLabelName(label).replaceAll(/<[^>]+>/, "").trim()
     Map compiled = null
     if (ruleType) result.ruleFormat = "rm"
@@ -12672,8 +12683,8 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
   - Each input is the field hub_set_native_app(operation='form') returns; a device picker adds `selected`, its devices with labels. `unsupported` lists page parts a form cannot drive, such as a community app's create button. When the page cannot be modelled, `formError` says why: inputs carry no values and there are no controls.
   - `appType.namespace` and `appType.name` name the type; `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
-  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, psw, secret, token, API key, credential, cookie, session, bearer, PIN, lock or alarm code, ...). A secret-named URL query parameter (an HTTP action's `apikey=` or `token=`), the password in a URL's `user:password@` and every parameter of a lock-code custom action (setCode, whose parameters carry the PIN) read the marker too, in the settings and in the page's inputs, links and text; other free-text values are not recognised. OAuth accessToken settings follow the Hide access tokens setting. Page inputs read as in the form tools: a password input carries no value and `redacted: true`; a credential-named input reads the marker. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
-  - `includeStatus=true` adds the app's App Status lists, for any app and also with `summary=true`: `appState` (the app's stored state as `[{name, value}]`; a community app's working data, a webCoRE piston's definition, logs and trace), `eventSubscriptions` and `scheduledJobs`. With Hide passwords and credentials on, a value whose name looks like a credential (a session cookie included) reads `***redacted (password)***`, also inside nested maps and lists, where a key is judged on its own and after its parent's name (a bare `code` under `lockCodes`) and a `{name, value}` row by its name; in `eventSubscriptions` and `scheduledJobs` map data is masked by key name the same way, while string data (a hub stores `subscriptionData` as a string such as `"3"`) is shown as the hub stores it, except that a secret-named URL query value or a URL's `user:password@` password in it is masked, as in any `appState` string; `statusRedactionNote` says so. Access tokens (an `accessToken` entry, each per-client token in `clientTokens`) read `***redacted (access token)***` whenever Hide access tokens is on, and always for a per-client token; `statusRedactionNote` also says whether an app's stored token is shown; for a per-client token it says both are always hidden. A status page that carried no app state reads `appState: []` with `appStateMissing: true`, unlike an app whose state is empty. When the lists would push the response past the size cap (a webCoRE piston's state can), `appState` lists names only with its values omitted, `statusTruncated` is true and `statusTruncatedNote` says what was cut; if that is still too large, `eventSubscriptions` and `scheduledJobs` are cut too, with `eventSubscriptionsTotal` / `scheduledJobsTotal` giving their full counts, and as a last resort `appState` is left out with `appStateTotal` giving its count. When the status page cannot be read the three lists are omitted and `statusNote` says why. hub_get_rule counts a rule's subscriptions and jobs from the same read.
+  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, psw, secret, token, API key, credential, cookie, session, bearer, PIN, lock or alarm code, ...). A secret-named URL query parameter (an HTTP action's `apikey=` or `token=`), the password in a URL's `user:password@` (one holding a raw `/` cannot be told from the path and is not masked) and every parameter of a lock-code custom action (setCode, whose parameters carry the PIN) read the marker too, in the settings and in the page's inputs, links and text; other free-text values are not recognised. OAuth accessToken settings follow the Hide access tokens setting. Page inputs read as in the form tools: a password input carries no value and `redacted: true`; a credential-named input reads the marker. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - `includeStatus=true` adds the app's App Status lists, for any app and also with `summary=true`: `appState` (the app's stored state as `[{name, value}]`; a community app's working data, a webCoRE piston's definition, logs and trace), `eventSubscriptions` and `scheduledJobs`. With Hide passwords and credentials on, a value whose name looks like a credential (a session cookie included) reads `***redacted (password)***`, also inside nested maps and lists, where a key is judged on its own and after its parent's name (a bare `code` under `lockCodes`) and a `{name, value}` row by its name; in `eventSubscriptions` and `scheduledJobs` map data is masked by key name the same way, while string data (a hub stores `subscriptionData` as a string such as `"3"`) is shown as the hub stores it, except that a secret-named URL query value or a URL's `user:password@` password in it is masked, as in any `appState` string, where that row carries `redacted: true` and its value must not be written back; `statusRedactionNote` says so. Access tokens (an `accessToken` entry, each per-client token in `clientTokens`) read `***redacted (access token)***` whenever Hide access tokens is on, and always for a per-client token; `statusRedactionNote` also says whether an app's stored token is shown; for a per-client token it says both are always hidden. A status page that carried no app state reads `appState: []` with `appStateMissing: true`, unlike an app whose state is empty. When the lists would push the response past the size cap (a webCoRE piston's state can), `appState` lists names only with its values omitted, `statusTruncated` is true and `statusTruncatedNote` says what was cut; if that is still too large, `eventSubscriptions` and `scheduledJobs` are cut too, with `eventSubscriptionsTotal` / `scheduledJobsTotal` giving their full counts, and as a last resort `appState` is left out with `appStateTotal` giving its count. When the status page cannot be read the three lists are omitted and `statusNote` says why. hub_get_rule counts a rule's subscriptions and jobs from the same read.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
@@ -12758,7 +12769,7 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 `action` (required; a call without it is refused) selects what to do:
 
-- **`actions`**: run the rule's actions directly. A Rule Machine rule's (or Button Rule's) Run Actions button (`runAction`) is clicked, which runs its actions without its triggers or Required Expression; conditions inside the actions (IF blocks, conditional actions) are still evaluated. Rule Machine runs nothing for a paused rule, so a paused Rule Machine rule or Button Rule is not clicked and returns success:false; resume it first with `resume`. A Visual Rule Builder 2.0 rule runs through its builder's run endpoint, whose conditions still pick the branch, and a run the hub declines comes back as success:false with the hub's own message. A Visual Rule Builder 1.0 rule has no run button, so `actions` naming one refuses the whole call before anything runs; pause and resume work on it.
+- **`actions`**: run the rule's actions directly. A Rule Machine rule's (or Button Rule's) Run Actions button (`runAction`) is clicked, which runs its actions without its triggers or Required Expression; conditions inside the actions (IF blocks, conditional actions) are still evaluated. Rule Machine runs nothing for a paused rule, so a paused Rule Machine rule or Button Rule is not clicked and returns success:false (`dispatched:false`; in a batch the note says it was not run); resume it first with `resume`. When the paused state cannot be read the click is sent anyway and a `note` says so; check with hub_get_rule. A Visual Rule Builder 2.0 rule runs through its builder's run endpoint, whose conditions still pick the branch, and a run the hub declines comes back as success:false with the hub's own message. A Visual Rule Builder 1.0 rule has no run button, so `actions` naming one refuses the whole call before anything runs; pause and resume work on it.
 - **`stop`**: halt the rule's in-progress actions (Rule Machine only).
 - **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged; Rule Machine only).
 - **`pause`** / **`resume`**: pause or resume the rule; a paused rule does not fire on its triggers. A Rule Machine rule's Pause button (`pausRule`) is clicked; a Visual Rule is paused through its builder's pause endpoint, and its paused state is read again afterwards, so an endpoint success that left it unchanged returns success:false.
@@ -12769,9 +12780,9 @@ Every action on a Rule Machine rule clicks the rule's own page button (`runActio
 
 ### hub_get_rule
 
-`hub_get_rule(ruleId, sections?, cursor?, limit?)` reads one Rule Machine rule, Button Rule or Basic Rule. It returns `health` (first), `ruleId`, `localVariables` and, for a Rule Machine 5.1 rule or Button Rule, the document hub_set_rule(operation='read') returns: `actions`, `conditions`, `triggers`, `expressions` and `settings`, all by default, or the ones named in `sections`; `sections: []` returns the health and local variables alone. Page one section, `localVariables` included, with `cursor` ("" first, then each `nextCursor`) and `limit` (1-100, default 50), exactly as the hub_set_rule read does (see set_rule_reference); a page of another section leaves `localVariables` out. A read over the response size cap returns `health`, then the parts that fit whole; the first that does not fit is paged (`pagedSection`, `page`, `nextCursor`: continue with `sections: [<pagedSection>]` and that cursor), the rest are listed in `omittedSections` (read each with `sections: [<name>]`, `cursor: ""`); a single row too large to send beside the health returns `success:false` with the health. A Basic Rule returns `health`, `localVariables: null` and its `settings` (the same `[{name, type, multiple, value, deviceIds}]` rows; whole, so `cursor` and `limit` are refused). Requested settings that cannot be read return `success:false` with `error`, `settingsError` and the health, for every rule type. With Hide passwords and credentials on, `settings` masks credential-named and password-typed values (`value: null`, `redacted: true`), every parameter of a lock-code custom action (setCode, whose parameters carry the PIN) the same way, and a secret-named URL query parameter or a URL's `user:password@` password inside a value (an HTTP action's `apikey=` or `token=`); other free-text values are not recognised. A paged `localVariables` read that fails returns `success:false` with the `cursor` to retry. Any other app returns `health`, `localVariables: null` and a `note`: a Visual Rule's definition is read with hub_get_visual_rule, any other app's configuration and App Status with hub_get_app_config(includeStatus: true).
+`hub_get_rule(ruleId, sections?, cursor?, limit?)` reads one Rule Machine rule, Button Rule or Basic Rule. It returns `health` (first), `ruleId`, `localVariables` and, for a Rule Machine 5.1 rule or Button Rule, the document hub_set_rule(operation='read') returns: `actions`, `conditions`, `triggers`, `expressions` and `settings`, all by default, or the ones named in `sections`; `sections: []` returns the health and local variables alone. Page one section, `localVariables` included, with `cursor` ("" first, then each `nextCursor`) and `limit` (1-100, default 50), exactly as the hub_set_rule read does (see set_rule_reference); a page of another section leaves `localVariables` out. A read over the response size cap returns `health`, then the parts that fit whole; the first that does not fit is paged (`pagedSection`, `page`, `nextCursor`: continue with `sections: [<pagedSection>]` and that cursor), the rest are listed in `omittedSections` (read each with `sections: [<name>]`, `cursor: ""`); a single row too large to send beside the health returns `success:false` with the health. A Basic Rule returns `health`, `localVariables: null` and its `settings` (the same `[{name, type, multiple, value, deviceIds}]` rows; whole, so `cursor` and `limit` are refused). Requested settings that cannot be read return `success:false` with `error`, `settingsError` and the health, for every rule type. With Hide passwords and credentials on, `settings` masks credential-named and password-typed values (`value: null`, `redacted: true`), every parameter of a lock-code custom action (setCode, whose parameters carry the PIN) the same way, and a secret-named URL query parameter or a URL's `user:password@` password inside a value (an HTTP action's `apikey=` or `token=`; a password holding a raw `/` cannot be told from the path and is not masked); other free-text values are not recognised. A paged `localVariables` read that fails returns `success:false` with the `cursor` to retry. Any other app returns `health`, `localVariables: null` and a `note`: a Visual Rule's definition is read with hub_get_visual_rule, any other app's configuration and App Status with hub_get_app_config(includeStatus: true).
 
-- `localVariables`: `[{name, type, value}]`, the rule's own list, including a value the running rule just set. `type` is Rule Machine's token (integer, bigdecimal, string, boolean, datetime), the value a hub_set_rule variable change takes. A credential-named variable's value is hidden (`redacted:true`) while credential hiding is on, and a URL in a string value has its secret-named query value and `user:password@` password masked as in `settings`. Hub globals are read with hub_list_variables.
+- `localVariables`: `[{name, type, value}]`, the rule's own list, including a value the running rule just set. `type` is Rule Machine's token (integer, bigdecimal, string, boolean, datetime), the value a hub_set_rule variable change takes. A credential-named variable's value is hidden (`redacted:true`) while credential hiding is on, and a URL in a string value has its secret-named query value and `user:password@` password masked as in `settings`, with `redacted: true` on that row: a value carrying the marker must not be written back. Hub globals are read with hub_list_variables.
 - If the local variables alone cannot be read, `localVariables` is null and `localVariablesError` says why; the health and the requested sections still return.
 - If the rule cannot be identified but its health can still be read, that health returns with `localVariables: null` and no document sections: as `success:false` with the reason in `error` when sections were requested, and with the reason in `documentError` for `sections: []`.
 - The read does not open the app's page or change its configuration, so it never runs the app's page code; a Rule Machine 5.1 rule's or Button Rule's own broken() check can refresh its stored broken flag. A read that fails returns `success:false` with `error` and `note`; retrying it once is safe.

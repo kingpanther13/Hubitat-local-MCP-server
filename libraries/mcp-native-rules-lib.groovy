@@ -512,7 +512,12 @@ def toolRunRmRule(args) {
         results << perRule(ruleIds[i])
     }
     List failed = []
-    results.eachWithIndex { r, i -> if (r?.success != true) failed << ruleIds[i] }
+    // A paused rule's refusal (dispatched:false) sent nothing, so it is not warned about as a lost run.
+    List paused = []
+    results.eachWithIndex { r, i ->
+        if (r?.success != true) failed << ruleIds[i]
+        if (r?.dispatched == false) paused << ruleIds[i]
+    }
     def out = [
         success: failed.isEmpty() && !budgetPaused,
         // Partial means some rules were actioned and some were not; a pause after only failures actioned none.
@@ -528,7 +533,7 @@ def toolRunRmRule(args) {
             ? "${action} failed for EVERY rule ${budgetPaused ? 'reached' : 'in the batch'} (${failed.join(', ')}); per-rule detail in results[].".toString()
             : "${action} failed for rule(s) ${failed.join(', ')} -- the other ${actionedCount} rule(s) in the batch WERE actioned; per-rule detail in results[].".toString()
         out.note = runActions
-            ? _rmRunFailedNote(failed)
+            ? _rmRunFailedNote(failed, paused)
             : "Re-issue for the failed ids only. A repeat of a succeeded id is safe: the toggle no-ops rules already in the target state."
     }
     if (budgetPaused) {
@@ -537,7 +542,7 @@ def toolRunRmRule(args) {
         if (runActions) {
             // A failed run may have reached the hub, so only the un-reached rules are safe to send again.
             out.note = ("Budget checkpoint -- re-issue with ruleId=[${remaining.join(', ')}] to run the rules not yet reached; leave out the rules already run, or their actions run again." +
-                (failed ? " ${_rmRunFailedNote(failed)}" : "")).toString()
+                (failed ? " ${_rmRunFailedNote(failed, paused)}" : "")).toString()
         } else {
             // Failed ids and un-reached ids are DIFFERENT sets -- the re-issue
             // guidance must carry both or a caller following it strands the failures.
@@ -548,9 +553,13 @@ def toolRunRmRule(args) {
     return out
 }
 
-// A run whose answer was lost may still have run the rule, so a failed id is not simply re-sent.
-private String _rmRunFailedNote(List failed) {
-    "Rule(s) ${failed.join(', ')} failed: read each one's results[] note before running it again, because a run whose answer was lost may already have run the actions. A repeat of a succeeded id runs that rule's actions again.".toString()
+// A run whose answer was lost may still have run the rule, so a failed id is not simply re-sent; a paused rule's
+// refusal sent nothing.
+private String _rmRunFailedNote(List failed, List paused) {
+    List lost = failed - paused
+    String note = paused ? "Rule(s) ${paused.join(', ')} were not run because they are paused; resume them with action:'resume' first. " : ""
+    if (lost) note += "Rule(s) ${lost.join(', ')} failed: read each one's results[] note before running it again, because a run whose answer was lost may already have run the actions. "
+    (note + "A repeat of a succeeded id runs that rule's actions again.").toString()
 }
 
 // A batch the target guard refused carries one row per rule, so a refusal in a later continuation slice
@@ -617,13 +626,18 @@ private Map _rmLookupFailure(Map reasonsById) {
             note: "Nothing was changed. Retry once; if it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
 }
 
-// Click the rule's Run Actions button (runAction on the main page): runs the action list
-// directly, skipping condition evaluation, exactly as the hub UI does.
+// Click the rule's Run Actions button (runAction on the main page), as the hub UI does: it runs the action list
+// without the triggers or Required Expression, while IF blocks and conditional actions are still evaluated. The hub
+// accepts the click on a paused rule but Rule Machine runs nothing, so a paused rule is reported, not clicked.
 private Map _rmRunActionsButton(Integer ruleId) {
-    // The hub accepts the click on a paused rule but Rule Machine runs nothing, so a paused rule is reported, not clicked.
-    // A flag that cannot be read does not block the run: the click goes ahead.
+    // A paused flag that cannot be read does not block the run: a missed run is worse than a click a paused rule ignores.
     boolean paused = false
-    try { paused = _rmRuntimeFlag(ruleId, "paused") } catch (Exception ignored) { }
+    String unread = null
+    try { paused = _rmRuntimeFlag(ruleId, "paused") }
+    catch (Exception e) {
+        unread = e.message ?: e.toString()
+        mcpLog("warn", "rm-interop", "hub_call_rule action=actions: rule ${ruleId}'s paused state could not be read (${unread}); clicking runAction anyway")
+    }
     if (paused) {
         return [success: false, ruleId: ruleId, dispatched: false, error: "hub_call_rule action=actions: rule ${ruleId} is paused, and Rule Machine does not run a paused rule's actions, so nothing was run.".toString(),
                 note: "Resume it first with action:'resume', then run its actions. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
@@ -634,7 +648,9 @@ private Map _rmRunActionsButton(Integer ruleId) {
         return [success: false, ruleId: ruleId, error: "hub_call_rule action=actions: runAction button click failed (${e.message})".toString(),
                 note: "The click may have reached the hub and run the rule's actions before failing. Check the rule's effects and hub_get_logs before retrying, because a retry runs the actions again. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
     }
-    return [success: true, ruleId: ruleId, rmAction: "runAction button"]
+    Map done = [success: true, ruleId: ruleId, rmAction: "runAction button"]
+    if (unread) done.note = "The rule's paused state could not be read (${unread}), so the click was sent; if the rule is paused, Rule Machine ran nothing. Check with hub_get_rule.".toString()
+    return done
 }
 
 // A rule's paused or stopped flag from its App Status page. A rule that was never paused or stopped has
@@ -2757,8 +2773,12 @@ Map _rmPublicLocalVariable(String name, Map row) {
     if (_appConfigMasksSetting(name, row?.type == 'boolean' ? 'bool' : 'text', row?.value)) { result.value = null; result.redacted = true }
     // A {name, value} row: the token pass keys on map keys, so it never sees a local named accessToken.
     else if (_redactsAccessTokens() && name ==~ /(?i)access_?token/ && row?.value instanceof CharSequence) result.value = _accessTokenRedactedMarker()
-    // A string local can hold a URL, whose secret query value or password is masked as in the rule's settings.
-    else if (row?.value instanceof CharSequence) result.value = _ruleSecretsMasked(row.value, [names: [], codes: []])
+    // A string local can hold a URL, whose secret query value or password is masked as in the rule's settings; the
+    // rest of the value stays, so redacted marks it as unfit to write back.
+    else if (row?.value instanceof CharSequence) {
+        result.value = _ruleSecretsMasked(row.value, [names: [], codes: []])
+        if (result.value?.toString() != row.value.toString()) result.redacted = true
+    }
     result
 }
 

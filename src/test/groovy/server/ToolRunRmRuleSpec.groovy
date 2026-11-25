@@ -340,12 +340,14 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.success == true
         result.rmAction == 'runAction button'
         clicks('runAction').size() == 1
+        result.note == note
 
         where:
         why                    | paused | statusPage
         'false'                | false  | null
         'absent (never paused)'| null   | null
         'unreadable'           | null   | JsonOutput.toJson([installedApp: [id: 131], appSettings: []])
+        note << [null, null, "The rule's paused state could not be read (its status page carried no appState), so the click was sent; if the rule is paused, Rule Machine ran nothing. Check with hub_get_rule."]
     }
 
     def "a batch runs the rule that is not paused and reports the paused one as not run"() {
@@ -364,6 +366,21 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.results[0].error.contains('rule 132 is paused')
         result.results[1].success == true
         clicks('runAction')*.body.id == ['133']
+        result.note == "Rule(s) 132 were not run because they are paused; resume them with action:'resume' first. A repeat of a succeeded id runs that rule's actions again."
+    }
+
+    def "a batch note says a paused rule was not run and keeps the lost-run warning for a click that failed"() {
+        given:
+        rule(132, false, true)
+        rule(133, false, false)
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> throw new IllegalStateException('read timed out') }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: [132, 133], action: 'actions'])
+
+        then:
+        result.failedRuleIds == [132, 133]
+        result.note == "Rule(s) 132 were not run because they are paused; resume them with action:'resume' first. Rule(s) 133 failed: read each one's results[] note before running it again, because a run whose answer was lost may already have run the actions. A repeat of a succeeded id runs that rule's actions again."
     }
 
     @spock.lang.Unroll

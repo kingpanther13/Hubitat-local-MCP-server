@@ -1244,6 +1244,30 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'http://h/cb?next=ftp://u:pw2@f/x'                      | 'http://h/cb?next=ftp://u:***redacted (password)***@f/x'
         'http://user@h/x'                                       | 'http://user@h/x'
         'mail bob@example.com or x:y@z'                         | 'mail bob@example.com or x:y@z'
+        // The password runs to the authority's last '@'; a raw '/' in it cannot be told from the path, so it stays.
+        'http://u:p@ss@h/x'                                     | 'http://u:***redacted (password)***@h/x'
+        'http://u:pa/ss@h/x'                                    | 'http://u:pa/ss@h/x'
+        'http://192.0.2.1:8080/x?mode=on'                       | 'http://192.0.2.1:8080/x?mode=on'
+        'http://192.0.2.1:8080/x?mode=on, mail bob@example.com' | 'http://192.0.2.1:8080/x?mode=on, mail bob@example.com'
+    }
+
+    // Every appState string and string local is scanned, so a long one must not cost quadratic time or the stack.
+    def "a 100 KB #shape string is masked in linear time"() {
+        when:
+        long t0 = System.currentTimeMillis()
+        def out = script._ruleSecretsMasked(text, [names: [], codes: []])
+        long elapsed = System.currentTimeMillis() - t0
+
+        then:
+        out == text
+        elapsed < 2000
+
+        where:
+        shape                 | text
+        'word'                | 'a' * 100000
+        'query pairs'         | 'http://h/x?' + ('a=a&' * 25000)
+        'nested query values' | 'http://h/x' + ('?a=' * 33000)
+        'scheme-like words'   | ('ab://' * 20000)
     }
 
     // The secret word starts the parameter name or follows a separator, so a word that merely ends in one is kept.
@@ -1378,7 +1402,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
 
         then:
-        result.statusRedactionNote == "This client's token always reads credential-named appState values and access tokens as redacted, whatever the MCP app's settings say."
+        result.statusRedactionNote == "This client's token always reads credential-named appState values, URL secrets inside appState strings and access tokens as redacted, whatever the MCP app's settings say."
         !JsonOutput.toJson(result).contains('tok-123') && !JsonOutput.toJson(result).contains('secret-api-key')
 
         cleanup:

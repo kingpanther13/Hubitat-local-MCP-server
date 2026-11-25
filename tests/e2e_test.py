@@ -9065,10 +9065,23 @@ def updated() {}
                 bad = refused("hub_get_rule", {"ruleId": int(app_id), "sections": sections})
                 assert text in str(bad.get("error")) and "hub_get_rule sections are actions, conditions, triggers, expressions, settings, localVariables." \
                     in str(bad.get("error")) and "hub_get_tool_guide(section='builtin_app_tools_rules')" in str(bad.get("error")), (sections, bad)
+            # hub_set_rule's read names its own sections and its own guide section.
+            set_bad = refused("hub_set_rule", {"operation": "read", "ruleId": int(app_id), "args": {"sections": ["bogus"]}})
+            assert 'Invalid args.sections: "bogus" is not one of actions, conditions, triggers, expressions, variables, settings' \
+                in str(set_bad.get("error")) and "set_rule_reference" in str(set_bad.get("error")), set_bad
+            # A paged read names the sections it was sent and the bad cursor or limit, with the guide section.
+            for args, text in (({"sections": ["actions", "triggers"], "limit": 5}, 'Paged reads require exactly one section, got ["actions","triggers"].'),
+                               ({"sections": ["actions"], "limit": 500}, 'got cursor "" and limit 500.')):
+                paged = refused("hub_get_rule", {"ruleId": int(app_id), **args})
+                assert text in str(paged.get("error")) and "hub_get_tool_guide(section='builtin_app_tools_rules')" in str(paged.get("error")), (args, paged)
             # An empty id list is a full sentence pointing at the tools that list the ids hub_call_rule takes.
             empty = refused("hub_call_rule", {"ruleId": [], "action": "actions"})
             assert "ruleId array must not be empty: name one rule id or more. Find rule ids with hub_list_rules (Rule Machine), " \
                 "hub_list_apps(nameFilter:'Button Rule') (Button Rules) or hub_get_visual_rule (Visual Rules)." in str(empty.get("error")), empty
+            # hub_set_rule_private_boolean takes no Visual Rules, so its sentence names only the other two sources.
+            empty_pb = refused("hub_set_rule_private_boolean", {"ruleId": [], "value": True})
+            assert "ruleId array must not be empty: name one rule id or more. Find rule ids with hub_list_rules (Rule Machine) or " \
+                "hub_list_apps(nameFilter:'Button Rule') (Button Rules)." in str(empty_pb.get("error")), empty_pb
             by_string = self.client.call_tool("hub_get_rule", {"ruleId": str(app_id), "sections": []})
             assert str(by_string.get("ruleId")) == str(app_id) and len(by_string.get("localVariables") or []) == 1, by_string
             set_by_string = self._rm_call({"operation": "read", "ruleId": str(app_id), "args": {"sections": []}})
@@ -16041,7 +16054,7 @@ def updated() {}
                     cfg = st.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
                                                               "args": {"appId": int(other["id"]), "includeStatus": True}})
                     note = cfg.get("statusRedactionNote") or ""
-                    assert "always reads credential-named appState values and access tokens as redacted" in note, \
+                    assert "always reads credential-named appState values, URL secrets inside appState strings and access tokens as redacted" in note, \
                         {k: cfg.get(k) for k in ("statusRedactionNote", "statusNote")}
                 finally:
                     manage({"action": "revoke", "clientId": reader["clientId"]})

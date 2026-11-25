@@ -240,11 +240,44 @@ class NativeDocumentsSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(mcpDriver.callTool('hub_get_rule', [ruleId: 42, sections: []]))
         Map locals = inner.localVariables.collectEntries { [(it.name): it] }
         then:
-        locals.note == [name: 'note', type: 'string', value: redact ? 'http://x.invalid/?token=***redacted (password)***' : 'http://x.invalid/?token=QTOK333']
+        locals.note == (redact ? [name: 'note', type: 'string', value: 'http://x.invalid/?token=***redacted (password)***', redacted: true] : [name: 'note', type: 'string', value: 'http://x.invalid/?token=QTOK333'])
         locals.site.value == (redact ? 'http://user:***redacted (password)***@h/x' : 'http://user:UPW444@h/x')
+        locals.site.redacted == (redact ? true : null)
         locals.counter == [name: 'counter', type: 'integer', value: 0]
         where:
         redact << [true, false]
+    }
+
+    // A partly masked value must not be written back, so the hub_set_rule read marks it as hub_get_rule does.
+    def 'the hub_set_rule read marks a local variable whose URL was masked, and leaves a plain one unmarked'() {
+        given:
+        nativeState.allLocalVars.site = [type: 'string', value: 'http://user:p@ss@h/x']
+        nativeState.allLocalVars.plain = [type: 'string', value: 'http://192.0.2.1:8080/x?mode=on']
+        when:
+        def document = script.toolSetRule([operation: 'read', ruleId: 42, args: [sections: ['variables']]])
+        then:
+        document.variables.site.value == 'http://user:***redacted (password)***@h/x'
+        document.variables.site.redacted == true
+        document.variables.plain.value == 'http://192.0.2.1:8080/x?mode=on'
+        !document.variables.plain.containsKey('redacted')
+    }
+
+    @spock.lang.Unroll
+    def 'the hub_set_rule read names an unknown section beside its own sections and its guide section (useGateways=#useGateways)'() {
+        given:
+        settingsMap.useGateways = useGateways
+        when:
+        script.toolSetRule([operation: 'read', ruleId: 42, args: [sections: ['bogus']]])
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message == 'Invalid args.sections: "bogus" is not one of actions, conditions, triggers, expressions, variables, settings'
+        when: 'through dispatch the error points at the hub_set_rule guide section'
+        def inner = mcpDriver.parseInner(mcpDriver.callTool('hub_set_rule', [operation: 'read', ruleId: 42, args: [sections: ['bogus']]]))
+        then:
+        inner.error.startsWith('Invalid args.sections: "bogus" is not one of actions, conditions, triggers, expressions, variables, settings')
+        inner.error.contains("set_rule_reference")
+        where:
+        useGateways << [true, false]
     }
 
     @spock.lang.Unroll
