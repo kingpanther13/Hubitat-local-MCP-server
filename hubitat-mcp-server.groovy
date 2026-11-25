@@ -10533,7 +10533,7 @@ private Object _ruleSecretsMasked(Object value, Map lock) {
         if (!(node instanceof CharSequence)) return node
         // A parameter is secret by the short URL names below or by the credential-name test settings use
         // (psw, authToken, clientSecret).
-        // A secret value is masked whole, '?' included (psw=ab?cd); any other value is scanned again, so a nested URL's
+        // A secret value is masked up to the next '&' or '#', '?' included (psw=ab?cd); any other value is scanned again, so a nested URL's
         // own query (?next=http://h/?apikey=X) is judged parameter by parameter.
         Closure query
         query = { String s -> s.replaceAll(/([?&])([^=&\s"'<>#?]+)=([^&\s"'<>#]*)/) { all, sep, name, val ->

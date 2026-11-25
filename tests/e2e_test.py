@@ -7944,7 +7944,7 @@ def updated() {}
             assert [(row.get("name"), row.get("redacted")) for row in local_rows] == [("e2eSessionCookie", True)], local_rows
             # An HTTP Get action keeps its URL, query string included, as a setting: a secret-named query value reads
             # masked, by the short URL names (apikey) and by the credential names settings use (psw, clientSecret),
-            # whole even when the value holds a '?'.
+            # whole even when the value holds a '?', so no tail after it (PSW&) survives.
             self._rm_update(app_id, [self._rm_action("messageActs", "getHTTPGet", [(
                 "httper", "text", "http://192.0.2.1/x?apikey=E2E_SECRET&psw=E2E?PSW&clientSecret=E2E_CLIENT&room=den")])])
             read_settings = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": ["settings"]})

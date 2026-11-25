@@ -409,7 +409,7 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
         and: 'hub_call_rule is named for what it does, not offered as a dry run'
         ex.message.contains('no dry run')
-        ex.message.contains('`hub_call_rule(ruleId=600)` runs every one of the rule\'s actions')
+        ex.message.contains("`hub_call_rule(ruleId=600, action='actions')` runs the rule's actions")
         !ex.message.contains('to trigger it')
     }
 

@@ -220,7 +220,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI uses `hub_call_rule` tool with `action='actions'` (the default). Returns `{success: true, rmAction: 'runAction button'}`: the rule's own Run Actions button, the UI's route for the `runRuleAct` lifecycle verb from matrix §7.
+**Expected**: AI uses `hub_call_rule` tool with `action='actions'`. Returns `{success: true, rmAction: 'runAction button'}`: the rule's own Run Actions button, the UI's route for the `runRuleAct` lifecycle verb from matrix §7.
 
 ### T311 — Stop / Start lifecycle buttons
 

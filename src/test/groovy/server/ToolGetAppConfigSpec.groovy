@@ -1196,6 +1196,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'http://h/y?psw=?abcd&room=den'                         | 'http://h/y?psw=***redacted (password)***&room=den'
         'http://h/z?next=http://i/?a=1&psw=pw?x#frag'           | 'http://h/z?next=http://i/?a=1&psw=***redacted (password)***#frag'
         'http://h/w?q=a?b&room=den'                             | 'http://h/w?q=a?b&room=den'
+        'http://h/a?q=?apikey=X&room=den'                       | 'http://h/a?q=?apikey=***redacted (password)***&room=den'
+        'http://h/t?access_token=T?psw=x&room=den'              | 'http://h/t?access_token=T?psw=***redacted (password)***&room=den'
+        'GET http://h/x?psw=ab?cd<br>then'                      | 'GET http://h/x?psw=***redacted (password)***<br>then'
     }
 
     // The secret word starts the parameter name or follows a separator, so a word that merely ends in one is kept.
