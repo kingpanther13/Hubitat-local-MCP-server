@@ -1173,15 +1173,8 @@ private void _rmNativeRestoreFlags(Long id, Map savedState) {
     if ((live.paused == true) != (savedState.paused == true)) _nrHandle(id).appButtonHandler('pausRule')
 }
 
-// RM's fixAppLabel derives the label from origLabel plus HTML status spans ((Stopped), (Paused),
-// *BROKEN*, ...), sometimes well after the state changes; the user only ever sets origLabel. A
-// snapshot may hold those spans, HTML-stripped to plain text. Compare and restore the name only:
-// the lifecycle state the spans display is verified on its own. Only trailing status spans go, styled or classed;
-// a span the user put in the name stays.
-private String _rmLabelName(label) {
-    (label?.toString() ?: '').replaceAll(/(?:\s*<span\b[^>]*>\s*(?:\*BROKEN\*|\((?:Not Installed|Stopped|Paused|Required Expression false|Repeating)\))\s*<\/span>)+\s*$/, '')
-}
-
+// A snapshot may hold RM's status spans (_rmLabelName), HTML-stripped to plain text. Compare and restore the name
+// only: the lifecycle state the spans display is verified on its own.
 // The live label is the restored name itself, or that name followed only by RM's status spans; the name is the
 // boundary, so a span the user put at the end of the name (even one reading "(Stopped)") is never taken for status.
 private boolean _rmLabelCarriesName(label, String name) {

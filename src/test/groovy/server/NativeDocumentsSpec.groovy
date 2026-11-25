@@ -228,6 +228,25 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
+    // Live (C-7): a local whose value is a URL with token= came back in clear while the same URL in settings was masked.
+    @spock.lang.Unroll
+    def 'hub_get_rule masks a secret URL query value and a URL password in a local variable (redactCredentials=#redact)'() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = redact
+        nativeState.allLocalVars.note = [type: 'string', value: 'http://x.invalid/?token=QTOK333']
+        nativeState.allLocalVars.site = [type: 'string', value: 'http://user:UPW444@h/x']
+        when:
+        def inner = mcpDriver.parseInner(mcpDriver.callTool('hub_get_rule', [ruleId: 42, sections: []]))
+        Map locals = inner.localVariables.collectEntries { [(it.name): it] }
+        then:
+        locals.note == [name: 'note', type: 'string', value: redact ? 'http://x.invalid/?token=***redacted (password)***' : 'http://x.invalid/?token=QTOK333']
+        locals.site.value == (redact ? 'http://user:***redacted (password)***@h/x' : 'http://user:UPW444@h/x')
+        locals.counter == [name: 'counter', type: 'integer', value: 0]
+        where:
+        redact << [true, false]
+    }
+
     @spock.lang.Unroll
     def 'hub_get_rule returns the same document with health and the local variables as their own list (useGateways=#useGateways)'() {
         given:
@@ -1162,11 +1181,13 @@ class NativeDocumentsSpec extends ToolSpecBase {
             [name: 'cpVal1.2', type: 'number', multiple: false, value: 1],
             [name: 'cpVal2.2', type: 'text', multiple: false, value: '482913'],
             [name: 'cpVal2.3', type: 'text', multiple: false, value: '482913'],
+            [name: 'httper.4', type: 'text', multiple: false, value: 'http://user:USERPW888@192.0.2.1/x'],
             [name: 'accessToken', type: 'text', multiple: false, value: 'tok-1']]]) }
         when:
         Map rows = script.toolGetRuleDocument([ruleId: 42, localVariables: true, sections: ['settings']]).settings.collectEntries { [(it.name): it] }
         then:
         rows['httper.1'].value == (redact ? 'http://x.test/api?apikey=***redacted (password)***&mode=on' : 'http://x.test/api?apikey=KEY123&mode=on')
+        rows['httper.4'].value == (redact ? 'http://user:***redacted (password)***@192.0.2.1/x' : 'http://user:USERPW888@192.0.2.1/x')
         ['cpVal1.2', 'cpVal2.2'].every { rows[it].value == (redact ? null : (it == 'cpVal1.2' ? 1 : '482913')) && rows[it].redacted == (redact ? true : null) }
         rows['cpVal2.3'].value == '482913'
         rows['accessToken'].value == '***redacted (access token)***'

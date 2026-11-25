@@ -437,15 +437,16 @@ private String _rmStripTrailingDecoration(Object raw, String suffix) {
 
 // Normalize a ruleId argument that may be a single id or a list of ids into a deduped List<Integer>.
 // Whether each id is a rule is _rmRequireRuleTargets' job.
-private List<Integer> _rmRuleIdListArg(Object raw) {
+private List<Integer> _rmRuleIdListArg(Object raw, boolean visualRules = false) {
     if (raw == null) throw new IllegalArgumentException("ruleId is required")
     def rawList = (raw instanceof List) ? raw : [raw]
-    if (rawList.isEmpty()) throw new IllegalArgumentException("ruleId array must not be empty")
+    String find = "Find rule ids with ${_rmRuleIdSources(visualRules)}."
+    if (rawList.isEmpty()) throw new IllegalArgumentException("ruleId array must not be empty: name one rule id or more. ${find}")
     List<Integer> ids = []
     rawList.each { id ->
         def n = _exactIntId(id)
         if (n == null) {
-            throw new IllegalArgumentException("ruleId '${id}' is not a valid rule id (a positive whole number). Use hub_list_rules to find valid ids.")
+            throw new IllegalArgumentException("${_idShown(id)} is not a valid rule id for ruleId (a positive whole number within the hub's id range). ${find}")
         }
         if (!ids.contains(n)) ids << n
     }
@@ -463,7 +464,7 @@ private List<Integer> _rmRuleIdListArg(Object raw) {
 // Not destructive -- invokes existing user-configured automation.
 def toolRunRmRule(args) {
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
-    List<Integer> ruleIds = _rmRuleIdListArg(args.ruleId)
+    List<Integer> ruleIds = _rmRuleIdListArg(args.ruleId, true)
     // No default: a call that leaves action out must not run every action, skipping the rule's conditions.
     def action = args?.action
     if (!(action in ["actions", "stop", "start", "pause", "resume"])) {
@@ -594,17 +595,19 @@ private Map _rmRequireRuleTargets(List<Integer> ruleIds, String toolName, boolea
         }
     }
     String accepts = visualRules ? "Rule Machine rules, Button Rules and Visual Rules" : "Rule Machine rules and Button Rules"
-    if (missing) {
-        throw new IllegalArgumentException("${_rmNoAppText(missing)}; ${toolName} acts only on ${accepts}. Find rule ids with hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules). Nothing was dispatched.")
-    }
-    if (notRules) {
-        throw new IllegalArgumentException("${_rmNotRuleText(notRules)}; ${toolName} acts only on ${accepts}. Find rule ids with hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules). Nothing was dispatched.")
-    }
+    String find = "; ${toolName} acts only on ${accepts}. Find rule ids with ${_rmRuleIdSources(visualRules)}. Nothing was dispatched."
+    if (missing) throw new IllegalArgumentException("${_rmNoAppText(missing)}${find}")
+    if (notRules) throw new IllegalArgumentException("${_rmNotRuleText(notRules)}${find}")
     if (unreadable) {
         unreadable.each { id, why -> mcpLog("warn", "rm-interop", "${toolName}: app ${id} could not be identified (${why}); nothing dispatched") }
         return [failure: _rmLookupFailure(unreadable), unreadable: unreadable]
     }
     return [types: types]
+}
+
+// Where the runtime tools' rule ids come from; Basic Rules are left out, since these tools refuse them.
+private String _rmRuleIdSources(boolean visualRules) {
+    "hub_list_rules (Rule Machine)${visualRules ? ',' : ' or'} hub_list_apps(nameFilter:'Button Rule') (Button Rules)${visualRules ? ' or hub_get_visual_rule (Visual Rules)' : ''}"
 }
 
 // A rule-tool target whose lookup failed: nothing was run, since the target was never confirmed.
@@ -617,6 +620,14 @@ private Map _rmLookupFailure(Map reasonsById) {
 // Click the rule's Run Actions button (runAction on the main page): runs the action list
 // directly, skipping condition evaluation, exactly as the hub UI does.
 private Map _rmRunActionsButton(Integer ruleId) {
+    // The hub accepts the click on a paused rule but Rule Machine runs nothing, so a paused rule is reported, not clicked.
+    // A flag that cannot be read does not block the run: the click goes ahead.
+    boolean paused = false
+    try { paused = _rmRuntimeFlag(ruleId, "paused") } catch (Exception ignored) { }
+    if (paused) {
+        return [success: false, ruleId: ruleId, dispatched: false, error: "hub_call_rule action=actions: rule ${ruleId} is paused, and Rule Machine does not run a paused rule's actions, so nothing was run.".toString(),
+                note: "Resume it first with action:'resume', then run its actions. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+    }
     try {
         _rmClickAppButton(ruleId, "runAction")
     } catch (Exception e) {
@@ -2746,6 +2757,8 @@ Map _rmPublicLocalVariable(String name, Map row) {
     if (_appConfigMasksSetting(name, row?.type == 'boolean' ? 'bool' : 'text', row?.value)) { result.value = null; result.redacted = true }
     // A {name, value} row: the token pass keys on map keys, so it never sees a local named accessToken.
     else if (_redactsAccessTokens() && name ==~ /(?i)access_?token/ && row?.value instanceof CharSequence) result.value = _accessTokenRedactedMarker()
+    // A string local can hold a URL, whose secret query value or password is masked as in the rule's settings.
+    else if (row?.value instanceof CharSequence) result.value = _ruleSecretsMasked(row.value, [names: [], codes: []])
     result
 }
 

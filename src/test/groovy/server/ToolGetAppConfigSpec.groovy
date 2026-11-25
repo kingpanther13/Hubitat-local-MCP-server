@@ -874,6 +874,45 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
     }
 
+    // Live (C-7): a rule local whose value was a URL with token= came back in clear in appState while settings masked it.
+    def "includeStatus masks a secret URL query value and a URL password in appState strings, nested ones too"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'allLocalVars', value: [note: [type: 'string', value: 'http://x.invalid/?token=QTOK333']]],
+                           [name: 'endpoint', value: 'http://user:UPW444@h/x']])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+        Map state = result.appState.collectEntries { [(it.name): it.value] }
+
+        then:
+        state.allLocalVars.note.value == 'http://x.invalid/?token=***redacted (password)***'
+        state.endpoint == 'http://user:***redacted (password)***@h/x'
+        !JsonOutput.toJson(result).contains('QTOK333') && !JsonOutput.toJson(result).contains('UPW444')
+    }
+
+    def "a URL password in a setting is masked in settings and in the page text"() {
+        given:
+        settingsMap.enableRead = true
+        String url = 'http://user:USERPW888@192.0.2.1/x?mode=on'
+        def sections = [[title: '', input: [], body: [[element: 'paragraph', description: "GET ${url} then".toString()]]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null, sections: sections],
+                               settings: ['httper.1': url]])
+        }
+        registerStatusJson(['httper.1': 'text'])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.settings['httper.1'] == 'http://user:***redacted (password)***@192.0.2.1/x?mode=on'
+        result.page.sections[0].paragraphs[0] == 'GET http://user:***redacted (password)***@192.0.2.1/x?mode=on then'
+        !JsonOutput.toJson(result).contains('USERPW888')
+        result.settingsRedactionNote.contains("the password in a URL's user:password@")
+    }
+
     def "includeStatus masks session cookies, bearer strings and psw names, and judges nested keys and rows by their names"() {
         given:
         settingsMap.enableRead = true
@@ -1199,6 +1238,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'http://h/a?q=?apikey=X&room=den'                       | 'http://h/a?q=?apikey=***redacted (password)***&room=den'
         'http://h/t?access_token=T?psw=x&room=den'              | 'http://h/t?access_token=T?psw=***redacted (password)***&room=den'
         'GET http://h/x?psw=ab?cd<br>then'                      | 'GET http://h/x?psw=***redacted (password)***<br>then'
+        // A URL's own password goes, its user name stays; an email address has no '://', so it is not a URL.
+        'http://user:USERPW888@192.0.2.1/x?mode=on'             | 'http://user:***redacted (password)***@192.0.2.1/x?mode=on'
+        'GET https://:pw1@h/a<br>then'                          | 'GET https://:***redacted (password)***@h/a<br>then'
+        'http://h/cb?next=ftp://u:pw2@f/x'                      | 'http://h/cb?next=ftp://u:***redacted (password)***@f/x'
+        'http://user@h/x'                                       | 'http://user@h/x'
+        'mail bob@example.com or x:y@z'                         | 'mail bob@example.com or x:y@z'
     }
 
     // The secret word starts the parameter name or follows a separator, so a word that merely ends in one is kept.

@@ -362,7 +362,8 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.toLowerCase().contains('must not be empty')
+        // Visual Rules have no private boolean, so they are not offered as an id source here.
+        ex.message == "ruleId array must not be empty: name one rule id or more. Find rule ids with hub_list_rules (Rule Machine) or hub_list_apps(nameFilter:'Button Rule') (Button Rules)."
     }
 
     def "array ruleId sets the private boolean for the whole set in ONE sendAction dispatch"() {
@@ -413,7 +414,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains(message)
         ex.message.contains('hub_set_rule_private_boolean acts only on Rule Machine rules and Button Rules')
-        ex.message.contains('hub_list_apps (Button Rules and Basic Rules)')
+        ex.message.contains("Find rule ids with hub_list_rules (Rule Machine) or hub_list_apps(nameFilter:'Button Rule') (Button Rules). Nothing was dispatched.")
         ex.message.contains('Nothing was dispatched')
         rmUtils.calls.isEmpty()
 

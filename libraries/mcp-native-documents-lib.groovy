@@ -8,7 +8,7 @@ library(name: "McpNativeDocumentsLib", namespace: "mcp", author: "kingpanther13"
 
 private Long _ndId(Object id) {
     Integer exact = _exactIntId(id)
-    if (exact == null) throw new IllegalArgumentException("A positive native application ID is required, got: ${id}.".toString())
+    if (exact == null) throw new IllegalArgumentException("A positive native application ID is required, got: ${_idShown(id)}.".toString())
     exact as Long
 }
 
@@ -111,7 +111,10 @@ private Map _ndRender(Long id, String page) {
 // The document read's section, cursor and limit arguments, checked before anything is read.
 private Map _ndDocumentArgs(Map args, List allowed, String toolName) {
     def sections = args.sections == null ? allowed : args.sections
-    if (!(sections instanceof List) || sections.any { !(it in allowed) }) throw new IllegalArgumentException('Unknown document section')
+    if (!(sections instanceof List) || sections.any { !(it in allowed) }) {
+        def bad = sections instanceof List ? sections.findAll { !(it in allowed) } : sections
+        throw new IllegalArgumentException("${sections instanceof List ? 'Unknown section' : 'sections must be a list of names, not'} ${groovy.json.JsonOutput.toJson(bad)}; ${toolName} sections are ${allowed.join(', ')}. See hub_get_tool_guide(section='${toolName == 'hub_get_rule' ? 'builtin_app_tools_rules' : 'set_rule_reference'}').".toString())
+    }
     boolean paged = args.containsKey('cursor') || args.containsKey('limit')
     if (paged && sections.size() != 1) throw new IllegalArgumentException('Paged reads require exactly one section')
     def cursor = args.containsKey('cursor') ? args.cursor : ''

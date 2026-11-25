@@ -304,6 +304,106 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.note.contains("hub_get_tool_guide(section='builtin_app_tools_rules')")
     }
 
+    // The hub accepts runAction on a paused rule, but Rule Machine runs nothing (live on a C-7).
+    @spock.lang.Unroll
+    def "action=actions on a paused #type is not clicked and says to resume it first"() {
+        given:
+        appTypes[130] = type
+        rule(130, false, true)
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 130, action: 'actions'])
+
+        then:
+        result.success == false
+        result.dispatched == false
+        result.ruleIds == [130]
+        result.error == "hub_call_rule action=actions: rule 130 is paused, and Rule Machine does not run a paused rule's actions, so nothing was run."
+        result.note == "Resume it first with action:'resume', then run its actions. See hub_get_tool_guide(section='builtin_app_tools_rules')."
+        clicks('runAction').isEmpty()
+        rmUtils.calls.isEmpty()
+
+        where:
+        type << ['Rule-5.1', 'Button Rule-5.1']
+    }
+
+    @spock.lang.Unroll
+    def "action=actions clicks runAction when the paused flag reads #why"() {
+        given:
+        rule(131, false, paused)
+        if (statusPage != null) hubGet.register('/installedapp/statusJson/131') { params -> statusPage }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 131, action: 'actions'])
+
+        then:
+        result.success == true
+        result.rmAction == 'runAction button'
+        clicks('runAction').size() == 1
+
+        where:
+        why                    | paused | statusPage
+        'false'                | false  | null
+        'absent (never paused)'| null   | null
+        'unreadable'           | null   | JsonOutput.toJson([installedApp: [id: 131], appSettings: []])
+    }
+
+    def "a batch runs the rule that is not paused and reports the paused one as not run"() {
+        given:
+        rule(132, false, true)
+        rule(133, false, false)
+
+        when:
+        def result = script.toolRunRmRule([ruleId: [132, 133], action: 'actions'])
+
+        then:
+        result.success == false
+        result.partial == true
+        result.failedRuleIds == [132]
+        result.results[0].dispatched == false
+        result.results[0].error.contains('rule 132 is paused')
+        result.results[1].success == true
+        clicks('runAction')*.body.id == ['133']
+    }
+
+    @spock.lang.Unroll
+    def "hub_call_rule via dispatch on a paused rule returns isError with the paused text (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        rule(134, false, true)
+
+        when:
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 134, action: 'actions'])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error.contains('rule 134 is paused')
+        inner.note.contains("action:'resume'")
+        clicks('runAction').isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "hub_call_rule refuses #label with a full sentence naming where rule ids come from"() {
+        when:
+        script.toolRunRmRule([ruleId: ids, action: 'actions'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message == message
+        posts.isEmpty()
+
+        where:
+        label            | ids                         | message
+        'an empty array' | []                          | "ruleId array must not be empty: name one rule id or more. Find rule ids with hub_list_rules (Rule Machine), hub_list_apps(nameFilter:'Button Rule') (Button Rules) or hub_get_visual_rule (Visual Rules)."
+        'an overflow'    | [99999999999999999999G]     | "a number outside the hub's id range is not a valid rule id for ruleId (a positive whole number within the hub's id range). Find rule ids with hub_list_rules (Rule Machine), hub_list_apps(nameFilter:'Button Rule') (Button Rules) or hub_get_visual_rule (Visual Rules)."
+    }
+
     @spock.lang.Unroll
     def "a failed #button click on action=#action says re-issuing is safe"() {
         given:
@@ -860,7 +960,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     @spock.lang.Unroll
     def "a multi-rule #action pauses at the response-budget checkpoint and hands back the remainder"() {
         given: "the budget reads exhausted after the first rule"
-        rule(114, true, true)
+        rule(114, true, false)
         script.metaClass._timeBudgetExceeded = { Long t0 -> true }
 
         when: '114 is handled; 115 is never reached'
@@ -893,7 +993,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('App 20 is a Rule Machine app; hub_call_rule acts only on Rule Machine rules, Button Rules and Visual Rules')
-        ex.message.contains('hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules)')
+        ex.message.contains("hub_list_rules (Rule Machine), hub_list_apps(nameFilter:'Button Rule') (Button Rules) or hub_get_visual_rule (Visual Rules)")
         ex.message.contains('Nothing was dispatched')
         rmUtils.calls.isEmpty()
         posts.isEmpty()

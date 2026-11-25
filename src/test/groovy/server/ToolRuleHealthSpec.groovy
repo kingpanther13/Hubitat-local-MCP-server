@@ -792,6 +792,11 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         'Porch <span>(Stopped)</span> <span>(Paused)</span>'       | 'Porch'
         'Alert When Stopped (Stopped)'                            | 'Alert When Stopped (Stopped)'
         'Living Room (Paused)'                                    | 'Living Room (Paused)'
+        // Live (C-7): hub_list_rules returned these rules' bare names while health kept the spans' text.
+        "Away<span style='color:red'> (Required Expression false)</span>" | 'Away'
+        "Away <span class='text-hubitat-danger'>(Required Expression false)</span> <span class='text-hubitat-warning'>(Repeating)</span>" | 'Away'
+        "Away <span class='text-hubitat-danger'>(Paused)</span>"   | 'Away'
+        'Away (Required Expression false)'                        | 'Away (Required Expression false)'
     }
 
     def "the red-X disabled flag comes from the status page"() {
@@ -1356,17 +1361,41 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         then:
         def refused = thrown(IllegalArgumentException)
         refused.message.contains(message)
+        // A number the request parser wrapped past the long range must not be echoed as if it were the caller's.
+        !refused.message.contains('7766279631452241919')
         hubGet.calls.isEmpty()
 
         where:
         args                                                       | message
+        [ruleId: 99999999999999999999G]                            | "within the hub's id range, got: a number outside the hub's id range."
+        [ruleId: 7766279631452241919L]                             | "within the hub's id range, got: a number outside the hub's id range."
+        [ruleId: 100, sections: 'health']                          | 'sections must be a list of names, not "health"; hub_get_rule sections are actions, conditions, triggers, expressions, settings, localVariables. See hub_get_tool_guide(section=\'builtin_app_tools_rules\').'
+        [ruleId: 100, sections: ['bogus', 'actions']]              | 'Unknown section ["bogus"]; hub_get_rule sections are'
+        [ruleId: 100, sections: ['health']]                        | 'Unknown section ["health"]'
         [:]                                                        | 'ruleId is required'
         [ruleId: 0]                                                | 'positive whole number'
         [ruleId: 4294967396L]                                      | 'positive whole number'
         [ruleId: '4294967396']                                     | 'positive whole number'
         [ruleId: 100.5]                                            | 'positive whole number'
-        [ruleId: 100, sections: ['variables']]                     | 'Unknown document section'
+        [ruleId: 100, sections: ['variables']]                     | 'Unknown section ["variables"]; hub_get_rule sections are actions, conditions, triggers, expressions, settings, localVariables.'
         [ruleId: 100, sections: ['actions', 'triggers'], limit: 5] | 'exactly one section'
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_rule via dispatch names an unknown section, the valid ones and the guide (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('hub_get_rule', [ruleId: 100, sections: ['bogus']])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error == 'Unknown section ["bogus"]; hub_get_rule sections are actions, conditions, triggers, expressions, settings, localVariables. See hub_get_tool_guide(section=\'builtin_app_tools_rules\').'
+        hubGet.calls.isEmpty()
+
+        where:
+        useGateways << [true, false]
     }
 
     @spock.lang.Unroll

@@ -7599,6 +7599,32 @@ def updated() {}
                 undo = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "resume"})
                 assert undo.get("success") is True, undo
             self._rm_wait(lambda: self._rm_health(app_id).get("paused") is False, what="paused=False after the race")
+            # The hub accepts Run Actions on a paused rule but Rule Machine runs nothing, so a paused rule's actions
+            # are refused, not reported as run; the switch the action turns on stays off until the rule is resumed.
+            switch = self._ensure_perm_fixture("switch_b")
+            self._rm_command(switch, "off")
+            assert self._wait_attribute(switch, "switch", "off").get("converged") is True
+            runner, _ = self._rm_rule("PausedRun", [self._rm_switch_action(switch, True)])
+            try:
+                paused_run = self.client.call_tool("hub_call_rule", {"ruleId": runner, "action": "pause"})
+                assert paused_run.get("success") is True, paused_run
+                self._rm_wait(lambda: self._rm_health(runner).get("paused") is True, what="runner paused")
+                try:
+                    skipped = self.client.call_tool("hub_call_rule", {"ruleId": runner, "action": "actions"})
+                except McpToolError as exc:
+                    skipped = _tool_error_payload(exc)
+                assert skipped.get("success") is False and skipped.get("dispatched") is False \
+                    and f"rule {runner} is paused, and Rule Machine does not run a paused rule's actions" in str(skipped.get("error")) \
+                    and "action:'resume'" in str(skipped.get("note")), skipped
+                assert self._wait_attribute(switch, "switch", "on", timeoutMs=5000).get("converged") is False, "a paused rule's actions ran"
+                resumed = self.client.call_tool("hub_call_rule", {"ruleId": runner, "action": "resume"})
+                assert resumed.get("success") is True, resumed
+                ran = self.client.call_tool("hub_call_rule", {"ruleId": runner, "action": "actions"})
+                assert ran.get("success") is True and ran.get("rmAction") == "runAction button", ran
+                assert self._wait_attribute(switch, "switch", "on").get("converged") is True, "the resumed rule's actions did not run"
+            finally:
+                self._delete_native(runner)
+                self._rm_command(switch, "off")
             # A new rule's private boolean starts true, and health reads back each value set.
             assert self._rm_health(app_id).get("privateBoolean") is True
             for value in (False, True):
@@ -7942,16 +7968,25 @@ def updated() {}
             assert "e2e-cookie-value" not in json.dumps(plain), "the cookie local leaked through the rule's page"
             local_rows = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
             assert [(row.get("name"), row.get("redacted")) for row in local_rows] == [("e2eSessionCookie", True)], local_rows
+            # A URL in a local's value has its secret query value masked as the same URL in settings is, in hub_get_rule's
+            # localVariables and in the App Status appState.
+            self._rm_update(app_id, [native_change("variable", operation="create", name="e2eNote", type="string", value="http://x.invalid/?token=E2E_QTOK")])
+            note = next((row for row in self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
+                         if row.get("name") == "e2eNote"), None)
+            assert note is not None and note.get("value") == "http://x.invalid/?token=***redacted (password)***", note
+            noted = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeStatus": True})
+            assert "E2E_QTOK" not in json.dumps(noted), noted.get("appState")
             # An HTTP Get action keeps its URL, query string included, as a setting: a secret-named query value reads
             # masked, by the short URL names (apikey) and by the credential names settings use (psw, clientSecret),
             # whole even when the value holds a '?', so no tail after it (PSW&) survives.
             self._rm_update(app_id, [self._rm_action("messageActs", "getHTTPGet", [(
-                "httper", "text", "http://192.0.2.1/x?apikey=E2E_SECRET&psw=E2E?PSW&clientSecret=E2E_CLIENT&room=den")])])
+                "httper", "text", "http://user:E2E_UPW@192.0.2.1/x?apikey=E2E_SECRET&psw=E2E?PSW&clientSecret=E2E_CLIENT&room=den")])])
             read_settings = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": ["settings"]})
             urls = [row.get("value") for row in read_settings.get("settings") or [] if str(row.get("name", "")).startswith("httper.")]
             masked = "***redacted (password)***"
-            assert urls == [f"http://192.0.2.1/x?apikey={masked}&psw={masked}&clientSecret={masked}&room=den"], urls
-            for secret in ("E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT"):
+            # The URL's own password reads masked too, its user name kept.
+            assert urls == [f"http://user:{masked}@192.0.2.1/x?apikey={masked}&psw={masked}&clientSecret={masked}&room=den"], urls
+            for secret in ("E2E_UPW", "E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT"):
                 assert secret not in json.dumps(read_settings), f"the HTTP action's {secret} came back in clear"
             config = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeSettings": True})
             # includeSettings returns the settings unless the read withholds them, which it says in settingsNote.
@@ -7964,7 +7999,7 @@ def updated() {}
             page_text = json.dumps(config.get("page"))
             if "192.0.2.1/x?apikey=" in page_text:
                 assert f"192.0.2.1/x?apikey={masked}" in page_text, page_text
-            assert not any(secret in json.dumps(config) for secret in ("E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT")), "hub_get_app_config showed a URL secret"
+            assert not any(secret in json.dumps(config) for secret in ("E2E_UPW", "E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT")), "hub_get_app_config showed a URL secret"
             # The tool takes ruleId; a client still sending appId is told so.
             try:
                 stale = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "appId": int(app_id)})
@@ -8983,7 +9018,7 @@ def updated() {}
             parent_run = refused("hub_call_rule", {"ruleId": parent_id, "action": "actions"})
             # The refusal says which apps the tool takes and where each kind of rule id is listed.
             assert f"App {parent_id} is a Rule Machine app; hub_call_rule acts only on Rule Machine rules, Button Rules and Visual Rules" \
-                in str(parent_run.get("error")) and "hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules)" in str(parent_run.get("error")) \
+                in str(parent_run.get("error")) and "hub_list_rules (Rule Machine), hub_list_apps(nameFilter:'Button Rule') (Button Rules) or hub_get_visual_rule (Visual Rules)" in str(parent_run.get("error")) \
                 and "Nothing was dispatched" in str(parent_run.get("error")), parent_run
             parent_read = self.client.call_tool("hub_get_rule", {"ruleId": int(parent_id)})
             assert parent_read.get("localVariables") is None and "actions" not in parent_read \
@@ -9020,6 +9055,20 @@ def updated() {}
                                      ("hub_set_rule", {"operation": "read", "ruleId": wrapped}, "A positive native application ID is required")):
                 overflow = refused(tool, args)
                 assert text in str(overflow.get("error")), (tool, overflow)
+            # A number past the long range is described, not echoed as the wrapped value a parser can make of it.
+            huge = refused("hub_get_rule", {"ruleId": 99999999999999999999})
+            assert "got: a number outside the hub's id range." in str(huge.get("error")) \
+                and "7766279631452241919" not in str(huge.get("error")), huge
+            # A bad sections value is named beside the valid names and the guide section.
+            for sections, text in ((["bogus"], 'Unknown section ["bogus"]'), (["health"], 'Unknown section ["health"]'),
+                                   ("health", 'sections must be a list of names, not "health"')):
+                bad = refused("hub_get_rule", {"ruleId": int(app_id), "sections": sections})
+                assert text in str(bad.get("error")) and "hub_get_rule sections are actions, conditions, triggers, expressions, settings, localVariables." \
+                    in str(bad.get("error")) and "hub_get_tool_guide(section='builtin_app_tools_rules')" in str(bad.get("error")), (sections, bad)
+            # An empty id list is a full sentence pointing at the tools that list the ids hub_call_rule takes.
+            empty = refused("hub_call_rule", {"ruleId": [], "action": "actions"})
+            assert "ruleId array must not be empty: name one rule id or more. Find rule ids with hub_list_rules (Rule Machine), " \
+                "hub_list_apps(nameFilter:'Button Rule') (Button Rules) or hub_get_visual_rule (Visual Rules)." in str(empty.get("error")), empty
             by_string = self.client.call_tool("hub_get_rule", {"ruleId": str(app_id), "sections": []})
             assert str(by_string.get("ruleId")) == str(app_id) and len(by_string.get("localVariables") or []) == 1, by_string
             set_by_string = self._rm_call({"operation": "read", "ruleId": str(app_id), "args": {"sections": []}})
@@ -9321,6 +9370,11 @@ def updated() {}
             assert "SUPPRESSED" in str(edited.get("subscriptionSettle", "")).upper(), edited
             assert not edited["eventSubscriptions"] and not edited["scheduledJobs"], edited
             assert edited["document"]["expressions"]["0"] == [condition]
+            # Rule Machine adds "(Required Expression false)" to the rule's label; health reports the rule's name, as
+            # hub_list_rules does.
+            label = self._rm_health(app_id).get("label")
+            listed = self._rm_listed(app_id)
+            assert "(Required Expression false)" not in str(label) and label == (listed.get("name") or listed.get("label")), (label, listed)
         finally:
             self._delete_native(app_id)
 
