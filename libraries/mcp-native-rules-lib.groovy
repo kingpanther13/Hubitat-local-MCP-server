@@ -512,11 +512,13 @@ def toolRunRmRule(args) {
         results << perRule(ruleIds[i])
     }
     List failed = []
-    // A paused rule's refusal (dispatched:false) sent nothing, so it is not warned about as a lost run.
+    // A paused rule's refusal sent nothing, so it is not warned about as a lost run.
     List paused = []
+    List unread = []
     results.eachWithIndex { r, i ->
         if (r?.success != true) failed << ruleIds[i]
-        if (r?.dispatched == false) paused << ruleIds[i]
+        if (r?.paused == true) paused << ruleIds[i]
+        if (r?.pausedUnread == true) unread << ruleIds[i]
     }
     def out = [
         success: failed.isEmpty() && !budgetPaused,
@@ -550,6 +552,8 @@ def toolRunRmRule(args) {
             out.note = "Budget checkpoint -- re-issue with ruleId=[${reissueIds.join(', ')}] to finish${failed ? " (includes the ${failed.size()} failed id(s), not just the un-reached ones)" : ""}; already-actioned rules no-op safely.".toString()
         }
     }
+    // A click sent without the paused check succeeded, so no other note would mention it.
+    if (unread) out.note = ((out.note ? "${out.note} " : "") + "Rule(s) ${unread.join(', ')}: paused state could not be read; the click was sent; if paused, nothing ran -- check with hub_get_rule.").toString()
     return out
 }
 
@@ -636,10 +640,10 @@ private Map _rmRunActionsButton(Integer ruleId) {
     try { paused = _rmRuntimeFlag(ruleId, "paused") }
     catch (Exception e) {
         unread = e.message ?: e.toString()
-        mcpLog("warn", "rm-interop", "hub_call_rule action=actions: rule ${ruleId}'s paused state could not be read (${unread}); clicking runAction anyway")
+        mcpLog("warn", "rm-interop", "hub_call_rule action=actions: rule ${ruleId}'s paused state could not be read (${unread}); clicking runAction anyway", ruleId.toString())
     }
     if (paused) {
-        return [success: false, ruleId: ruleId, dispatched: false, error: "hub_call_rule action=actions: rule ${ruleId} is paused, and Rule Machine does not run a paused rule's actions, so nothing was run.".toString(),
+        return [success: false, ruleId: ruleId, dispatched: false, paused: true, error: "hub_call_rule action=actions: rule ${ruleId} is paused, and Rule Machine does not run a paused rule's actions, so nothing was run.".toString(),
                 note: "Resume it first with action:'resume', then run its actions. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
     }
     try {
@@ -649,7 +653,7 @@ private Map _rmRunActionsButton(Integer ruleId) {
                 note: "The click may have reached the hub and run the rule's actions before failing. Check the rule's effects and hub_get_logs before retrying, because a retry runs the actions again. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
     }
     Map done = [success: true, ruleId: ruleId, rmAction: "runAction button"]
-    if (unread) done.note = "The rule's paused state could not be read (${unread}), so the click was sent; if the rule is paused, Rule Machine ran nothing. Check with hub_get_rule.".toString()
+    if (unread) { done.pausedUnread = true; done.note = "The rule's paused state could not be read (${unread}), so the click was sent; if the rule is paused, Rule Machine ran nothing. Check with hub_get_rule.".toString() }
     return done
 }
 
@@ -2772,7 +2776,7 @@ Map _rmPublicLocalVariable(String name, Map row) {
     Map result = [name: name, type: row?.type, value: row?.value]
     if (_appConfigMasksSetting(name, row?.type == 'boolean' ? 'bool' : 'text', row?.value)) { result.value = null; result.redacted = true }
     // A {name, value} row: the token pass keys on map keys, so it never sees a local named accessToken.
-    else if (_redactsAccessTokens() && name ==~ /(?i)access_?token/ && row?.value instanceof CharSequence) result.value = _accessTokenRedactedMarker()
+    else if (_redactsAccessTokens() && name ==~ /(?i)access_?token/ && row?.value instanceof CharSequence) { result.value = _accessTokenRedactedMarker(); result.redacted = true }
     // A string local can hold a URL, whose secret query value or password is masked as in the rule's settings; the
     // rest of the value stays, so redacted marks it as unfit to write back.
     else if (row?.value instanceof CharSequence) {

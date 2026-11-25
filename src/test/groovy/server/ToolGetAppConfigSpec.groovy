@@ -868,6 +868,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.appState.find { it.name == 'lv_doorCode' }.value == '***redacted (password)***'
         result.appState.find { it.name == 'history' }.value == [[when: 1, alarmPin: '***redacted (password)***'], 'plain']
         result.appState.find { it.name == 'batches' }.value == [[[apiKey: '***redacted (password)***']], 'plain']
+        and: 'a row masked by name, whole or nested, is marked; a plain row carries no key'
+        ['apiKey', 'allLocalVars', 'lv_doorCode', 'history', 'batches'].every { n -> result.appState.find { it.name == n }.redacted == true }
+        !result.appState.find { it.name == 'paused' }.containsKey('redacted')
         result.statusRedactionNote.contains('***redacted (password)***')
         !JsonOutput.toJson(result).contains('4321') && !JsonOutput.toJson(result).contains('secret-api-key')
         !JsonOutput.toJson(result).contains('nested-api-key')
@@ -880,15 +883,20 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
         registerAppStatus([[name: 'allLocalVars', value: [note: [type: 'string', value: 'http://x.invalid/?token=QTOK333']]],
-                           [name: 'endpoint', value: 'http://user:UPW444@h/x']])
+                           [name: 'endpoint', value: 'http://user:UPW444@h/x'],
+                           [name: 'plainUrl', value: 'http://192.0.2.1:8080/x?mode=on']])
 
         when:
         def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
         Map state = result.appState.collectEntries { [(it.name): it.value] }
+        Map rows = result.appState.collectEntries { [(it.name): it] }
 
         then:
         state.allLocalVars.note.value == 'http://x.invalid/?token=***redacted (password)***'
         state.endpoint == 'http://user:***redacted (password)***@h/x'
+        rows.allLocalVars.redacted == true
+        rows.endpoint.redacted == true
+        rows.plainUrl == [name: 'plainUrl', value: 'http://192.0.2.1:8080/x?mode=on']
         !JsonOutput.toJson(result).contains('QTOK333') && !JsonOutput.toJson(result).contains('UPW444')
     }
 
@@ -1238,6 +1246,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'http://h/a?q=?apikey=X&room=den'                       | 'http://h/a?q=?apikey=***redacted (password)***&room=den'
         'http://h/t?access_token=T?psw=x&room=den'              | 'http://h/t?access_token=T?psw=***redacted (password)***&room=den'
         'GET http://h/x?psw=ab?cd<br>then'                      | 'GET http://h/x?psw=***redacted (password)***<br>then'
+        // Every nested query is judged, however deep.
+        'http://h/?a=?b=?c=?apikey=SECRET'                      | 'http://h/?a=?b=?c=?apikey=***redacted (password)***'
+        'http://h/?a=?b=?c=?d=?e=?apikey=SECRET&room=den'       | 'http://h/?a=?b=?c=?d=?e=?apikey=***redacted (password)***&room=den'
+        'http://h/a?n=http://i/?m=http://j/?o=http://k/?token=T' | 'http://h/a?n=http://i/?m=http://j/?o=http://k/?token=***redacted (password)***'
         // A URL's own password goes, its user name stays; an email address has no '://', so it is not a URL.
         'http://user:USERPW888@192.0.2.1/x?mode=on'             | 'http://user:***redacted (password)***@192.0.2.1/x?mode=on'
         'GET https://:pw1@h/a<br>then'                          | 'GET https://:***redacted (password)***@h/a<br>then'
@@ -1247,6 +1259,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         // The password runs to the authority's last '@'; a raw '/' in it cannot be told from the path, so it stays.
         'http://u:p@ss@h/x'                                     | 'http://u:***redacted (password)***@h/x'
         'http://u:pa/ss@h/x'                                    | 'http://u:pa/ss@h/x'
+        // A URL glued to the text before it is still a URL.
+        '1.http://u:pw@h'                                       | '1.http://u:***redacted (password)***@h'
+        '_http://u:pw@h'                                        | '_http://u:***redacted (password)***@h'
+        'next%3Dhttp://u:pw@h'                                  | 'next%3Dhttp://u:***redacted (password)***@h'
+        'a+http://u:pw@h'                                       | 'a+http://u:***redacted (password)***@h'
+        'x-http://u:pw@h'                                       | 'x-http://u:***redacted (password)***@h'
         'http://192.0.2.1:8080/x?mode=on'                       | 'http://192.0.2.1:8080/x?mode=on'
         'http://192.0.2.1:8080/x?mode=on, mail bob@example.com' | 'http://192.0.2.1:8080/x?mode=on, mail bob@example.com'
     }
@@ -1259,15 +1277,16 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         long elapsed = System.currentTimeMillis() - t0
 
         then:
-        out == text
+        out == (expected ?: text)
         elapsed < 2000
 
         where:
-        shape                 | text
-        'word'                | 'a' * 100000
-        'query pairs'         | 'http://h/x?' + ('a=a&' * 25000)
-        'nested query values' | 'http://h/x' + ('?a=' * 33000)
-        'scheme-like words'   | ('ab://' * 20000)
+        shape                 | text                         | expected
+        'word'                | 'a' * 100000                 | null
+        'query pairs'         | 'http://h/x?' + ('a=a&' * 25000) | null
+        'nested query values' | 'http://h/x' + ('?a=' * 33000)   | null
+        'scheme-like words'   | ('ab://' * 20000)            | null
+        'password of @s'      | 'x://u:' + ('p@' * 50000)    | 'x://u:***redacted (password)***@'
     }
 
     // The secret word starts the parameter name or follows a separator, so a word that merely ends in one is kept.

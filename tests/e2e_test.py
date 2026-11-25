@@ -7616,6 +7616,22 @@ def updated() {}
                 assert skipped.get("success") is False and skipped.get("dispatched") is False \
                     and f"rule {runner} is paused, and Rule Machine does not run a paused rule's actions" in str(skipped.get("error")) \
                     and "action:'resume'" in str(skipped.get("note")), skipped
+                # A batch of paused rules runs none of them, and its note says so instead of warning of a lost run.
+                second, _ = self._rm_rule("PausedRun2", [self._rm_switch_action(switch, True)])
+                try:
+                    paused_second = self.client.call_tool("hub_call_rule", {"ruleId": second, "action": "pause"})
+                    assert paused_second.get("success") is True, paused_second
+                    self._rm_wait(lambda: self._rm_health(second).get("paused") is True, what="second runner paused")
+                    try:
+                        batch = self.client.call_tool("hub_call_rule", {"ruleId": [runner, second], "action": "actions"})
+                    except McpToolError as exc:
+                        batch = _tool_error_payload(exc)
+                    assert batch.get("success") is False \
+                        and [r.get("paused") for r in batch.get("results") or []] == [True, True] \
+                        and f"Rule(s) {runner}, {second} were not run because they are paused" in str(batch.get("note")) \
+                        and "may already have run" not in str(batch.get("note")), batch
+                finally:
+                    self._delete_native(second)
                 assert self._wait_attribute(switch, "switch", "on", timeoutMs=5000).get("converged") is False, "a paused rule's actions ran"
                 resumed = self.client.call_tool("hub_call_rule", {"ruleId": runner, "action": "resume"})
                 assert resumed.get("success") is True, resumed
@@ -7973,20 +7989,27 @@ def updated() {}
             self._rm_update(app_id, [native_change("variable", operation="create", name="e2eNote", type="string", value="http://x.invalid/?token=E2E_QTOK")])
             note = next((row for row in self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
                          if row.get("name") == "e2eNote"), None)
-            assert note is not None and note.get("value") == "http://x.invalid/?token=***redacted (password)***", note
+            assert note is not None and note.get("value") == "http://x.invalid/?token=***redacted (password)***" \
+                and note.get("redacted") is True, note
             noted = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeStatus": True})
             assert "E2E_QTOK" not in json.dumps(noted), noted.get("appState")
+            # A row carrying a marker is marked as not fit to write back.
+            noted_locals = next((row for row in noted.get("appState") or [] if row.get("name") == "allLocalVars"), None)
+            assert noted_locals is not None and noted_locals.get("redacted") is True, noted_locals
             # An HTTP Get action keeps its URL, query string included, as a setting: a secret-named query value reads
             # masked, by the short URL names (apikey) and by the credential names settings use (psw, clientSecret),
             # whole even when the value holds a '?', so no tail after it (PSW&) survives.
+            # The URL's password holds an '@', so it runs to the authority's last '@' and is masked whole.
             self._rm_update(app_id, [self._rm_action("messageActs", "getHTTPGet", [(
-                "httper", "text", "http://user:E2E_UPW@192.0.2.1/x?apikey=E2E_SECRET&psw=E2E?PSW&clientSecret=E2E_CLIENT&room=den")])])
+                "httper", "text", "http://user:E2EPW1@UPW2@192.0.2.1/x?apikey=E2E_SECRET&psw=E2E?PSW&clientSecret=E2E_CLIENT&room=den")])])
             read_settings = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": ["settings"]})
-            urls = [row.get("value") for row in read_settings.get("settings") or [] if str(row.get("name", "")).startswith("httper.")]
+            http_rows = [row for row in read_settings.get("settings") or [] if str(row.get("name", "")).startswith("httper.")]
+            urls = [row.get("value") for row in http_rows]
             masked = "***redacted (password)***"
             # The URL's own password reads masked too, its user name kept.
             assert urls == [f"http://user:{masked}@192.0.2.1/x?apikey={masked}&psw={masked}&clientSecret={masked}&room=den"], urls
-            for secret in ("E2E_UPW", "E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT"):
+            assert all(row.get("redacted") is True for row in http_rows), http_rows
+            for secret in ("E2EPW1", "UPW2", "E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT"):
                 assert secret not in json.dumps(read_settings), f"the HTTP action's {secret} came back in clear"
             config = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeSettings": True})
             # includeSettings returns the settings unless the read withholds them, which it says in settingsNote.
@@ -7999,7 +8022,7 @@ def updated() {}
             page_text = json.dumps(config.get("page"))
             if "192.0.2.1/x?apikey=" in page_text:
                 assert f"192.0.2.1/x?apikey={masked}" in page_text, page_text
-            assert not any(secret in json.dumps(config) for secret in ("E2E_UPW", "E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT")), "hub_get_app_config showed a URL secret"
+            assert not any(secret in json.dumps(config) for secret in ("E2EPW1", "UPW2", "E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT")), "hub_get_app_config showed a URL secret"
             # The tool takes ruleId; a client still sending appId is told so.
             try:
                 stale = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "appId": int(app_id)})

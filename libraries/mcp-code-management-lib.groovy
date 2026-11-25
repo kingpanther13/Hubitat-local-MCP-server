@@ -783,7 +783,7 @@ private void _appConfigAttachStatus(Map result, Integer appId, Object fetched = 
         List redaction = []
         // A client token hides both whatever the settings say, so the settings advice below would mislead it.
         if (callerClient != null) redaction << "This client's token always reads credential-named appState values, URL secrets inside appState strings and access tokens as redacted, whatever the MCP app's settings say."
-        else if (_redactsCredentials()) redaction << "appState values whose names look like credentials, at any depth, read ${_appConfigRedactedMarker()}, as settings do, and so does a secret-named URL query value or a URL's user:password@ password inside any appState string (that row carries redacted: true; do not write its value back); turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
+        else if (_redactsCredentials()) redaction << "appState values whose names look like credentials, at any depth, read ${_appConfigRedactedMarker()}, as settings do, and so does a secret-named URL query value or a URL's user:password@ password inside any appState string (every appState row carrying a marker has redacted: true; do not write its value back); turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
         // Access tokens follow their own setting, so say which way it went when the app stores one; clientTokens is
         // also credential-named, so Hide passwords and credentials masks it whatever Hide access tokens says.
         List held = callerClient == null ? status.appState.findAll { it.name?.toString() in ['accessToken', 'clientTokens'] }*.name*.toString() : []

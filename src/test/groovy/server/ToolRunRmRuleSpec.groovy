@@ -317,6 +317,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         result.success == false
         result.dispatched == false
+        result.paused == true
         result.ruleIds == [130]
         result.error == "hub_call_rule action=actions: rule 130 is paused, and Rule Machine does not run a paused rule's actions, so nothing was run."
         result.note == "Resume it first with action:'resume', then run its actions. See hub_get_tool_guide(section='builtin_app_tools_rules')."
@@ -341,6 +342,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.rmAction == 'runAction button'
         clicks('runAction').size() == 1
         result.note == note
+        result.pausedUnread == (note ? true : null)
 
         where:
         why                    | paused | statusPage
@@ -363,10 +365,30 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.partial == true
         result.failedRuleIds == [132]
         result.results[0].dispatched == false
+        result.results[0].paused == true
         result.results[0].error.contains('rule 132 is paused')
         result.results[1].success == true
         clicks('runAction')*.body.id == ['133']
         result.note == "Rule(s) 132 were not run because they are paused; resume them with action:'resume' first. A repeat of a succeeded id runs that rule's actions again."
+    }
+
+    def "a batch whose rules all ran names the rules whose paused state could not be read"() {
+        given:
+        rule(134, false, false)
+        rule(135, false, null)
+        rule(136, false, null)
+        String unreadable = JsonOutput.toJson([installedApp: [id: 135], appSettings: []])
+        hubGet.register('/installedapp/statusJson/135') { params -> unreadable }
+        hubGet.register('/installedapp/statusJson/136') { params -> unreadable }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: [134, 135, 136], action: 'actions'])
+
+        then:
+        result.success == true
+        clicks('runAction')*.body.id == ['134', '135', '136']
+        result.results*.pausedUnread == [null, true, true]
+        result.note == "Rule(s) 135, 136: paused state could not be read; the click was sent; if paused, nothing ran -- check with hub_get_rule."
     }
 
     def "a batch note says a paused rule was not run and keeps the lost-run warning for a click that failed"() {

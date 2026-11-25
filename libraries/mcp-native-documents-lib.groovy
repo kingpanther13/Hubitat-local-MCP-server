@@ -34,9 +34,10 @@ private List _ndSettings(Long id) {
     response.settings.collect { row ->
         boolean secret = _redactsCredentials() && (row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value) || row.name in lock.names)
         def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : _ruleSecretsMasked(row.value, lock), deviceIds: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
-        if (secret) setting.redacted = true
         // A {name, value} row: the token pass keys on map keys, so it never sees a setting named accessToken.
-        else if (_redactsAccessTokens() && row.name ==~ /(?i)access_?token/ && row.value instanceof CharSequence) setting.value = _accessTokenRedactedMarker()
+        if (!secret && _redactsAccessTokens() && row.name ==~ /(?i)access_?token/ && row.value instanceof CharSequence) setting.value = _accessTokenRedactedMarker()
+        // A value hidden or carrying a marker (an HTTP action URL with its secret masked) must not be written back.
+        if (secret || setting.value != row.value) setting.redacted = true
         setting
     }
 }
@@ -938,7 +939,7 @@ String _ndGuide() {
 
 Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level ruleId identifies the target; args cannot override it or confirm. When mandatory guide acknowledgment is enabled, pass its key as top-level bestPracticeKey alongside operation, ruleId, args and confirm.
 
-Read hub_set_rule(operation:"read",ruleId,args:{sections:[...]}) before editing an existing native rule; hub_get_rule returns the same document from the read-only tools, with the local variables as a localVariables list in place of the variables section. A read does not open the rule's page: it returns health, the same report hub_get_rule returns (broken from the rule's own check, brokenRows for the rows its page marks, paused, stopped, privateBoolean, structuralIssues; see builtin_app_tools_rules). The sections come from native state and typed settings. Sections: actions, conditions, triggers, expressions, variables, settings. variables and settings mask secrets as hub_get_rule does; never write back a value that carries the redacted marker. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
+Read hub_set_rule(operation:"read",ruleId,args:{sections:[...]}) before editing an existing native rule; hub_get_rule returns the same document from the read-only tools, with the local variables as a localVariables list in place of the variables section. A read does not open the rule's page: it returns health, the same report hub_get_rule returns (broken from the rule's own check, brokenRows for the rows its page marks, paused, stopped, privateBoolean, structuralIssues; see builtin_app_tools_rules). The sections come from native state and typed settings. Sections: actions, conditions, triggers, expressions, variables, settings. variables and settings mask secrets as hub_get_rule does; every row that carries a marker has redacted:true, and its value must never be written back. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 
 For large rules, read one section with args:{sections:["settings"],cursor:"",limit:50}. Paging requires exactly one section; limit is 1..100 (default 50). The section keeps its usual map or list shape. Pass the returned top-level nextCursor into args.cursor until nextCursor is null. page returns offset, limit, total and revision, a hash of the complete section; restart if revision changes. Pages may contain fewer than limit rows to fit the response size cap; a row too large to send beside the health alone returns success:false with the health, never truncated. Actions retain native order, settings sort by name, and map sections sort by string key. Omit cursor and limit for an unpaged read; one too large for the response cap returns health and the parts that fit whole, pages the first part that does not (pagedSection, nextCursor) and lists the other parts that do not fit in omittedSections.
 

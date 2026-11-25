@@ -1185,6 +1185,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         def row = script.toolGetRuleDocument([ruleId: 42, localVariables: true, sections: []]).localVariables.find { it.name == 'accessToken' }
         then:
         row.value == (redact ? '***redacted (access token)***' : 'tok-local')
+        row.redacted == (redact ? true : null)
         where:
         redact << [true, false]
     }
@@ -1224,6 +1225,11 @@ class NativeDocumentsSpec extends ToolSpecBase {
         ['cpVal1.2', 'cpVal2.2'].every { rows[it].value == (redact ? null : (it == 'cpVal1.2' ? 1 : '482913')) && rows[it].redacted == (redact ? true : null) }
         rows['cpVal2.3'].value == '482913'
         rows['accessToken'].value == '***redacted (access token)***'
+        and: 'a value carrying any marker is marked, and an unmasked one is not'
+        ['httper.1', 'httper.4'].every { rows[it].redacted == (redact ? true : null) }
+        rows['accessToken'].redacted == true
+        !rows['cCmd.2'].containsKey('redacted')
+        !rows['cpVal2.3'].containsKey('redacted')
         where:
         redact << [true, false]
     }
