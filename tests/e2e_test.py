@@ -7943,14 +7943,15 @@ def updated() {}
             local_rows = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
             assert [(row.get("name"), row.get("redacted")) for row in local_rows] == [("e2eSessionCookie", True)], local_rows
             # An HTTP Get action keeps its URL, query string included, as a setting: a secret-named query value reads
-            # masked, by the short URL names (apikey) and by the credential names settings use (psw, clientSecret).
+            # masked, by the short URL names (apikey) and by the credential names settings use (psw, clientSecret),
+            # whole even when the value holds a '?'.
             self._rm_update(app_id, [self._rm_action("messageActs", "getHTTPGet", [(
-                "httper", "text", "http://192.0.2.1/x?apikey=E2E_SECRET&psw=E2E_PSW&clientSecret=E2E_CLIENT&room=den")])])
+                "httper", "text", "http://192.0.2.1/x?apikey=E2E_SECRET&psw=E2E?PSW&clientSecret=E2E_CLIENT&room=den")])])
             read_settings = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": ["settings"]})
             urls = [row.get("value") for row in read_settings.get("settings") or [] if str(row.get("name", "")).startswith("httper.")]
             masked = "***redacted (password)***"
             assert urls == [f"http://192.0.2.1/x?apikey={masked}&psw={masked}&clientSecret={masked}&room=den"], urls
-            for secret in ("E2E_SECRET", "E2E_PSW", "E2E_CLIENT"):
+            for secret in ("E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT"):
                 assert secret not in json.dumps(read_settings), f"the HTTP action's {secret} came back in clear"
             config = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeSettings": True})
             # includeSettings returns the settings unless the read withholds them, which it says in settingsNote.
@@ -7963,7 +7964,7 @@ def updated() {}
             page_text = json.dumps(config.get("page"))
             if "192.0.2.1/x?apikey=" in page_text:
                 assert f"192.0.2.1/x?apikey={masked}" in page_text, page_text
-            assert not any(secret in json.dumps(config) for secret in ("E2E_SECRET", "E2E_PSW", "E2E_CLIENT")), "hub_get_app_config showed a URL secret"
+            assert not any(secret in json.dumps(config) for secret in ("E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT")), "hub_get_app_config showed a URL secret"
             # The tool takes ruleId; a client still sending appId is told so.
             try:
                 stale = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "appId": int(app_id)})

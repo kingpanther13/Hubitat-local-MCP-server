@@ -1183,8 +1183,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.settingsRedactionNote.contains('lock-code custom action (setCode)')
     }
 
-    // A nested URL carried as a parameter value stops at its own '?', so the parameters inside it are judged too.
-    def "a secret parameter inside a nested URL's query is masked: #url"() {
+    // A secret value is masked whole, '?' included; a nested URL carried in another value has its own parameters judged.
+    def "a secret URL value is masked whole and a nested URL's secret is masked: #url"() {
         expect:
         script._ruleSecretsMasked(url, [names: [], codes: []]) == expected
 
@@ -1192,6 +1192,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         url                                                     | expected
         'http://hub/cb?next=https://api.x.com/v1?apikey=SECRET' | 'http://hub/cb?next=https://api.x.com/v1?apikey=***redacted (password)***'
         'http://h/a?url=http://h/?password=pw'                  | 'http://h/a?url=http://h/?password=***redacted (password)***'
+        'http://h/x?psw=ab?cd&room=den'                         | 'http://h/x?psw=***redacted (password)***&room=den'
+        'http://h/y?psw=?abcd&room=den'                         | 'http://h/y?psw=***redacted (password)***&room=den'
+        'http://h/z?next=http://i/?a=1&psw=pw?x#frag'           | 'http://h/z?next=http://i/?a=1&psw=***redacted (password)***#frag'
+        'http://h/w?q=a?b&room=den'                             | 'http://h/w?q=a?b&room=den'
     }
 
     // The secret word starts the parameter name or follows a separator, so a word that merely ends in one is kept.

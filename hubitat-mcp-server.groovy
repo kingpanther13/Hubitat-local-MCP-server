@@ -5967,7 +5967,7 @@ def getGatewayConfig() {
                 hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, ruleId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
 
                 hub_list_rules: "List the Rule Machine 5.x rules with IDs, labels and status. Button Rules are listed by hub_list_apps and Visual Rules by hub_get_visual_rule",
-                hub_call_rule: "Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (a Visual Rule: pause, resume, and actions on a 2.0 rule). Args: ruleId (id or array of ids), action (actions/stop/start/pause/resume, default actions)",
+                hub_call_rule: "Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (a Visual Rule: pause, resume, and actions on a 2.0 rule). Args: ruleId (id or array of ids), action (actions/stop/start/pause/resume, required)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more Rule Machine rules or Button Rules. Args: ruleId (id or array of ids), value (bool)",
                 hub_set_native_app: "Create, update or drive the native forms of classic apps (Room Lighting, Button Controller and Button Rule, Basic Rule, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, user and community apps). Args: operation?, app_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas. Rule Machine rules use hub_set_rule.",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
@@ -6092,7 +6092,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, ruleId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
                 hub_list_rules: "List the Rule Machine 5.x rules with IDs, labels and status. Button Rules are listed by hub_list_apps and Visual Rules by hub_get_visual_rule",
-                hub_call_rule: "Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (a Visual Rule: pause, resume, and actions on a 2.0 rule). Args: ruleId (id or array of ids), action (actions/stop/start/pause/resume, default actions)",
+                hub_call_rule: "Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (a Visual Rule: pause, resume, and actions on a 2.0 rule). Args: ruleId (id or array of ids), action (actions/stop/start/pause/resume, required)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more Rule Machine rules or Button Rules. Args: ruleId (id or array of ids), value (bool)",
                 hub_get_rule: "Read one Rule Machine rule, Button Rule or Basic Rule without opening its page: its health (broken, broken rows by native id, paused, stopped, private boolean, disabled rows, block structure, live subscription and job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; a Basic Rule's settings. Any other app returns its health alone. Args: ruleId, sections?, cursor?, limit?",
                 hub_delete_native_app: "Delete any classic native app incl. RM rules (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm.",
@@ -10533,11 +10533,15 @@ private Object _ruleSecretsMasked(Object value, Map lock) {
         if (!(node instanceof CharSequence)) return node
         // A parameter is secret by the short URL names below or by the credential-name test settings use
         // (psw, authToken, clientSecret).
-        // A value stops at '?' too, so a nested URL's own query (?next=http://h/?apikey=X) is judged parameter by parameter.
-        String text = !credentials ? node.toString() : node.toString().replaceAll(/([?&])([^=&\s"'<>#?]+)=([^&\s"'<>#?]*)/) { all, sep, name, val ->
+        // A secret value is masked whole, '?' included (psw=ab?cd); any other value is scanned again, so a nested URL's
+        // own query (?next=http://h/?apikey=X) is judged parameter by parameter.
+        Closure query
+        query = { String s -> s.replaceAll(/([?&])([^=&\s"'<>#?]+)=([^&\s"'<>#]*)/) { all, sep, name, val ->
             boolean secret = !(name ==~ /(?i)access_?token/) && (name ==~ /(?i)(?:[\w.\-]*[_.\-])?(?:api_?key|key|token|secret|pass|passwd|password|pwd|auth|sig|signature|pin)/ || _appConfigSecretName(name))
-            secret && val && !val.startsWith('***redacted') ? "${sep}${name}=${marker}".toString() : all
-        }
+            if (!val || val.startsWith('***redacted')) return all
+            secret ? "${sep}${name}=${marker}".toString() : "${sep}${name}=${query.call(val)}".toString()
+        } }
+        String text = !credentials ? node.toString() : query.call(node.toString())
         // In page text, where a PIN sits among other words.
         if (credentials && text =~ /\s/) lock.codes.each { code -> text = text.replaceAll('(?<![\\w.])' + java.util.regex.Pattern.quote(code) + '(?![\\w.])', marker) }
         // Values masked elsewhere in the same response, which a page can print run together with other text.
