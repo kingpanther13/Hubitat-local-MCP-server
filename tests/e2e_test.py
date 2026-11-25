@@ -8030,8 +8030,9 @@ def updated() {}
             def set_redact_tokens(on: bool) -> None:
                 self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings",
                                                          "args": {"settings": {"redactAccessTokens": on}, "confirm": True}})
-            set_redact_tokens(True)
             try:
+                # Inside the try: a write that lands with its response lost still gets the setting turned back off.
+                set_redact_tokens(True)
                 callback = next((row for row in self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
                                  if row.get("name") == "e2eCallback"), None)
                 assert callback is not None and callback.get("value") == "http://192.0.2.1/cb?access_token=***redacted (access token)***" \
