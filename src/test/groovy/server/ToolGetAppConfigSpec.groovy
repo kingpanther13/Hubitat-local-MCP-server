@@ -1267,6 +1267,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'x-http://u:pw@h'                                       | 'x-http://u:***redacted (password)***@h'
         'http://192.0.2.1:8080/x?mode=on'                       | 'http://192.0.2.1:8080/x?mode=on'
         'http://192.0.2.1:8080/x?mode=on, mail bob@example.com' | 'http://192.0.2.1:8080/x?mode=on, mail bob@example.com'
+        // Text that already carries the marker is left as it is, so masking twice changes nothing.
+        'http://u:***redacted (password)***@h/x?psw=***redacted (password)***&room=den' | 'http://u:***redacted (password)***@h/x?psw=***redacted (password)***&room=den'
     }
 
     // Every appState string and string local is scanned, so a long one must not cost quadratic time or the stack.
@@ -1287,6 +1289,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'nested query values' | 'http://h/x' + ('?a=' * 33000)   | null
         'scheme-like words'   | ('ab://' * 20000)            | null
         'password of @s'      | 'x://u:' + ('p@' * 50000)    | 'x://u:***redacted (password)***@'
+        'masked values'       | ('?psw=***redactedA' * 6000) | null
     }
 
     // The secret word starts the parameter name or follows a separator, so a word that merely ends in one is kept.
@@ -1529,7 +1532,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         result.appState.find { it.name == 'accessToken' }.value == shown
+        // A row carrying the marker says so; a plain one has no redacted key.
+        result.appState.find { it.name == 'accessToken' }.redacted == (shown.startsWith('***redacted') ? true : null)
         result.appState.find { it.name == 'paused' }.value == false
+        !result.appState.find { it.name == 'paused' }.containsKey('redacted')
 
         cleanup:
         script.callerClient = null
@@ -1555,6 +1561,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         result.appState.find { it.name == 'clientTokens' }.value == [c1: [label: 'Desk', token: '***redacted (access token)***'],
                                                                      c2: [label: 'Phone', token: '***redacted (access token)***']]
+        result.appState.find { it.name == 'clientTokens' }.redacted == true
         !JsonOutput.toJson(result).contains('client-token-')
     }
 

@@ -10560,8 +10560,10 @@ private Object _ruleSecretsMasked(Object value, Map lock) {
                 String name = pair.group(2)
                 boolean secret = !(name ==~ /(?i)access_?token/) && (name ==~ /(?i)(?:[\w.\-]*[_.\-])?(?:api_?key|key|token|secret|pass|passwd|password|pwd|auth|sig|signature|pin)/ || _appConfigSecretName(name))
                 int from = pair.start(3)
-                int end = !secret ? pair.end() : (stop.find(from) ? stop.start() : text.length())
-                if (secret && end > from && !text.substring(from, end).startsWith('***redacted')) out.append(text.substring(pos, from)).append(marker)
+                // An already masked value is skipped before the stop scan, so a long run of them stays linear.
+                boolean masked = secret && text.startsWith('***redacted', from)
+                int end = (!secret || masked) ? pair.end() : (stop.find(from) ? stop.start() : text.length())
+                if (secret && !masked && end > from) out.append(text.substring(pos, from)).append(marker)
                 else { end = pair.end(); out.append(text.substring(pos, end)) }
                 pos = end
             }
@@ -10569,7 +10571,7 @@ private Object _ruleSecretsMasked(Object value, Map lock) {
         }
         // A URL's own password (scheme://user:password@host), run to the authority's last '@' so p@ss is masked whole; a
         // raw '/' in it cannot be told from the path, so that one stays. The user name stays, and an email address has
-        // no '://'. The scheme is capped at 32 characters, so a long word is not rescanned from each of its letters.
+        // no '://'. The scheme is capped at 32 characters, so each letter of a long word is tried over at most 32 characters.
         if (credentials) text = text.replaceAll(/([A-Za-z][\w+.\-]{0,31}:\/\/[^\s:\/@?#"'<>]*:)[^\s\/?#"'<>]+(?=@)/) { all, pre -> "${pre}${marker}".toString() }
         // In page text, where a PIN sits among other words.
         if (credentials && text =~ /\s/) lock.codes.each { code -> text = text.replaceAll('(?<![\\w.])' + java.util.regex.Pattern.quote(code) + '(?![\\w.])', marker) }
@@ -12778,7 +12780,7 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 `action` (required; a call without it is refused) selects what to do:
 
-- **`actions`**: run the rule's actions directly. A Rule Machine rule's (or Button Rule's) Run Actions button (`runAction`) is clicked, which runs its actions without its triggers or Required Expression; conditions inside the actions (IF blocks, conditional actions) are still evaluated. Rule Machine runs nothing for a paused rule, so a paused Rule Machine rule or Button Rule is not clicked and returns success:false (`dispatched:false`, `paused:true`; in a batch the note says it was not run); resume it first with `resume`. When the paused state cannot be read the click is sent anyway, and the row carries `pausedUnread:true` and a `note` saying so (in a batch, the top-level note names those rules); check with hub_get_rule. A Visual Rule Builder 2.0 rule runs through its builder's run endpoint, whose conditions still pick the branch, and a run the hub declines comes back as success:false with the hub's own message. A Visual Rule Builder 1.0 rule has no run button, so `actions` naming one refuses the whole call before anything runs; pause and resume work on it.
+- **`actions`**: run the rule's actions directly. A Rule Machine rule's (or Button Rule's) Run Actions button (`runAction`) is clicked, which runs its actions without its triggers or Required Expression; conditions inside the actions (IF blocks, conditional actions) are still evaluated. Rule Machine runs nothing for a paused rule, so a paused Rule Machine rule or Button Rule is not clicked and returns success:false (`dispatched:false`, `paused:true`; in a batch the note says it was not run); resume it first with `resume`. When the paused state cannot be read the click is sent anyway, and the row carries `pausedUnread:true` and a `note` saying so (in a batch, the top-level note names those rules; a batch continued across responses can name only the last part's, so read the per-rule `paused`/`pausedUnread` flags in `results`); check with hub_get_rule. A Visual Rule Builder 2.0 rule runs through its builder's run endpoint, whose conditions still pick the branch, and a run the hub declines comes back as success:false with the hub's own message. A Visual Rule Builder 1.0 rule has no run button, so `actions` naming one refuses the whole call before anything runs; pause and resume work on it.
 - **`stop`**: halt the rule's in-progress actions (Rule Machine only).
 - **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged; Rule Machine only).
 - **`pause`** / **`resume`**: pause or resume the rule; a paused rule does not fire on its triggers. A Rule Machine rule's Pause button (`pausRule`) is clicked; a Visual Rule is paused through its builder's pause endpoint, and its paused state is read again afterwards, so an endpoint success that left it unchanged returns success:false.

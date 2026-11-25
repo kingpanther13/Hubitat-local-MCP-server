@@ -391,6 +391,22 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.note == "Rule(s) 135, 136: paused state could not be read; the click was sent; if paused, nothing ran -- check with hub_get_rule."
     }
 
+    def "a batch note keeps the paused-rule sentence and adds the unread-state one after it"() {
+        given:
+        rule(137, false, true)
+        rule(138, false, null)
+        hubGet.register('/installedapp/statusJson/138') { params -> JsonOutput.toJson([installedApp: [id: 138], appSettings: []]) }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: [137, 138], action: 'actions'])
+
+        then:
+        result.failedRuleIds == [137]
+        clicks('runAction')*.body.id == ['138']
+        result.note.startsWith("Rule(s) 137 were not run because they are paused")
+        result.note.endsWith("Rule(s) 138: paused state could not be read; the click was sent; if paused, nothing ran -- check with hub_get_rule.")
+    }
+
     def "a batch note says a paused rule was not run and keeps the lost-run warning for a click that failed"() {
         given:
         rule(132, false, true)
