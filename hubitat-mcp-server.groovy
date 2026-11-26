@@ -664,7 +664,7 @@ Set _alwaysGrantedToolNames() { ["hub_get_tool_guide", "hub_search_tools"] as Se
 // Tools whose appId names an installed app. A client token may not point them at this app: its
 // pages and state carry every access token, and its settings are every client's access.
 private Set _installedAppTargetTools() {
-    return ["hub_get_app_config", "hub_export_native_app", "hub_clone_native_app",
+    return ["hub_get_app_config", "hub_get_app_runtime", "hub_export_native_app", "hub_clone_native_app",
             "hub_set_native_app", "hub_delete_native_app", "hub_set_app_disabled",
             "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule",
             "hub_set_visual_rule", "hub_delete_visual_rule", "hub_call_rule", "hub_set_rule_paused",
@@ -5748,7 +5748,7 @@ def getGatewayConfig() {
         ],
         hub_read_apps_code: [
             description: "Read-only inspection of installed apps, drivers, libraries, code bundles, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, list installed bundles, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
-            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_hpm_packages"],
+            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_get_app_runtime", "hub_list_hpm_packages"],
             summaries: [
                 hub_list_apps: "List installed apps. scope='types' (all app TYPES: community + built-in, each with its menu tab) or 'instances' (running apps with parent/child tree). Args: scope, filter?, nameFilter?, includeHidden?, cursor?",
                 hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), paged 50 at a time, each id usable with hub_create_device. Args: include?, nameFilter?, cursor?",
@@ -5759,6 +5759,7 @@ def getGatewayConfig() {
                 hub_get_backup: "Get source from a backup. Args: backupKey",
                 hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
                 hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values), its form controls and the pages it links to (page.hrefs). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?, summary?",
+                hub_get_app_runtime: "Read bounded non-secret app runtime state from statusJson: relayReady, UUID sampleEpoch, safe subscription count/identities, scheduled-job count, stopped, and app identity. Raw appState/settings are withheld. Args: appId",
                 hub_list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). includeDrift=true surfaces missing-required/orphan components. Args: hpmAppId?, includeDrift?, packageFilter?"
             ],
             searchHints: [
@@ -7129,6 +7130,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         // Hub Admin App Configuration Read
         case "hub_set_rule": return toolSetRule(args)
         case "hub_get_app_config": return toolGetAppConfig(args)
+        case "hub_get_app_runtime": return toolGetAppRuntime(args)
 
         // Hub Admin App/Driver Management
         case "hub_get_source": return toolGetSource(args)

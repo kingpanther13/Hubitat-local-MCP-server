@@ -449,6 +449,98 @@ private String _appConfigNote(String step) {
     return "${step}; see hub_get_tool_guide(section='builtin_app_tools_apps').".toString()
 }
 
+// Read bounded, non-secret runtime state. Missing fields stay unknown; raw appState/settings stay hidden.
+private String _appRuntimeSafeText(Object value) {
+    if (value == null) return null
+    if (!(value instanceof CharSequence) && !(value instanceof Number) && !(value instanceof Boolean)) return null
+    String text = value.toString()
+    if (!text || text.size() > 160 || text ==~ /(?s).*\p{Cntrl}.*/) return null
+    return text
+}
+
+private Map _appRuntimeSubscription(Object raw) {
+    if (!(raw instanceof Map)) return null
+    Map out = [:]
+    [id: ['id', 'subscriptionId'], deviceId: ['deviceId', 'device'], attribute: ['attribute', 'name', 'eventName'], handler: ['handler', 'method']].each { key, names ->
+        for (String name : names) {
+            String value = _appRuntimeSafeText(raw.get(name))
+            if (value != null) { out.put(key, value); break }
+        }
+    }
+    return out.isEmpty() ? null : out
+}
+
+def toolGetAppRuntime(args) {
+    if (args?.appId == null || args.appId.toString().trim() == "") {
+        throw new IllegalArgumentException("appId is required")
+    }
+    String appIdText = args.appId.toString().trim()
+    if (!appIdText.isInteger() || (appIdText as Integer) <= 0) {
+        throw new IllegalArgumentException("appId must be a positive integer: ${appIdText}")
+    }
+    Integer appId = appIdText as Integer
+    String endpoint = "/installedapp/statusJson/${appId}"
+    Map status
+    try {
+        status = _rmFetchStatusJson(appId)
+    } catch (Exception e) {
+        return [success: false, unreadable: true, appId: appId, endpoint: endpoint,
+                error: "App runtime status is unreadable (${e.class.simpleName})."]
+    }
+
+    Map installed = (status.installedApp instanceof Map) ? status.installedApp as Map : [:]
+    Map identity = [:]
+    [id: ['id'], codeId: ['codeId', 'appTypeId'], appTypeId: ['appTypeId', 'typeId'],
+     name: ['name'], appTypeName: ['appTypeName', 'typeName']].each { key, names ->
+        for (String name : names) {
+            String value = _appRuntimeSafeText(installed.get(name))
+            if (value != null) { identity.put(key, value); break }
+        }
+    }
+
+    def state = status.appState
+    boolean stateReadable = state instanceof List
+    Map stateByName = [:]
+    if (stateReadable) {
+        (state as List).each { entry ->
+            if (entry instanceof Map && entry.name != null && !stateByName.containsKey(entry.name.toString())) {
+                stateByName.put(entry.name.toString(), entry.value)
+            }
+        }
+    }
+    def relayRaw = stateByName['relayReady']
+    Boolean relayReady = relayRaw instanceof Boolean ? relayRaw : null
+    boolean relayReadyInvalid = stateReadable && stateByName.containsKey('relayReady') && !(relayRaw instanceof Boolean)
+    def epochRaw = stateByName['sampleEpoch']
+    String sampleEpoch = (epochRaw instanceof String && epochRaw ==~ /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}/) ? epochRaw : null
+    boolean sampleEpochInvalid = stateReadable && stateByName.containsKey('sampleEpoch') && sampleEpoch == null
+
+    Map result = [success: true, unreadable: false, appId: appId, endpoint: endpoint,
+                  sourceIdentity: identity, stateReadable: stateReadable,
+                  relayReady: relayReady, sampleEpoch: sampleEpoch,
+                  relayReadyInvalid: relayReadyInvalid, sampleEpochInvalid: sampleEpochInvalid]
+    if (status.eventSubscriptions instanceof List) {
+        List safeSubscriptions = []
+        boolean identitiesReadable = true
+        (status.eventSubscriptions as List).each { raw ->
+            Map safe = _appRuntimeSubscription(raw)
+            if (safe == null) identitiesReadable = false
+            else safeSubscriptions << safe
+        }
+        result.eventSubscriptionCount = (status.eventSubscriptions as List).size()
+        result.subscriptionIdentities = safeSubscriptions
+        result.subscriptionIdentitiesReadable = identitiesReadable
+    } else {
+        result.eventSubscriptionCount = null
+        result.subscriptionIdentities = []
+        result.subscriptionIdentitiesReadable = false
+    }
+    result.scheduledJobCount = (status.scheduledJobs instanceof List) ? (status.scheduledJobs as List).size() : null
+    def stoppedRaw = status.stopped instanceof Boolean ? status.stopped : stateByName['stopped']
+    result.stopped = stoppedRaw instanceof Boolean ? stoppedRaw : null
+    return result
+}
+
 def toolGetAppConfig(args) {
 
     if (args?.appId == null || args.appId.toString().trim() == "") {
@@ -2942,6 +3034,18 @@ A transport drop can lose the response while the hub still commits this write; v
                 required: ["appId"]
             ]
         ],
+        [
+            name: "hub_get_app_runtime",
+            description: "Read a bounded, non-secret runtime projection for an installed app from Hubitat statusJson: app identity, relayReady, UUID sampleEpoch, subscription count/identities, scheduled-job count, and stopped state. Missing or malformed fields remain unknown; raw appState, settings, tokens, and source are never returned.",
+            inputSchema: [
+                type: "object",
+                additionalProperties: false,
+                properties: [
+                    appId: [type: "integer", description: "Installed-app ID from hub_list_apps(scope='instances') or the Hubitat UI URL."]
+                ],
+                required: ["appId"]
+            ]
+        ],
         // Installed Apps Integration (built-in + user app visibility)
         [
             name: "hub_list_device_dependents",
@@ -2967,7 +3071,7 @@ def _readOnlyToolNames_partCodeManagement() {
         // Apps/drivers (read)
         "hub_list_apps", "hub_list_drivers", "hub_list_libraries", "hub_get_source",
         // Installed apps (read) -- instances list folded into hub_list_apps(scope='instances').
-        "hub_list_device_dependents", "hub_get_app_config"
+        "hub_list_device_dependents", "hub_get_app_config", "hub_get_app_runtime"
     ]
 }
 
@@ -3005,6 +3109,7 @@ def _toolDisplayMeta_partCodeManagement() {
         hub_update_library: [title: "Update Library Code", summary: "Modify an existing library's source code."],
         hub_delete_item: [title: "Delete Code Item", summary: "Permanently delete an app, driver, or library (auto-backs up first)."],
         hub_list_device_dependents: [title: "List Device Dependents", summary: "Find all apps that reference a device."],
-        hub_get_app_config: [title: "Get App Configuration", summary: "Read an installed app's configuration page."]
+        hub_get_app_config: [title: "Get App Configuration", summary: "Read an installed app's configuration page."],
+        hub_get_app_runtime: [title: "Get App Runtime", summary: "Read bounded non-secret runtime state for an installed app."]
     ]
 }

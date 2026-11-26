@@ -504,7 +504,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_list_backups', 'hub_get_backup',
             'hub_list_rooms', 'hub_get_room',
             'hub_list_files', 'hub_read_file',
-            'hub_list_device_dependents', 'hub_get_app_config',
+            'hub_list_device_dependents', 'hub_get_app_config', 'hub_get_app_runtime',
             'hub_list_hpm_packages',
             'hub_list_rules', 'hub_get_rule_health', 'hub_list_rule_local_variables', 'hub_get_visual_rule',
             'hub_list_dashboards', 'hub_get_dashboard',
@@ -568,7 +568,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 113
+        names.size() == 114
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk
