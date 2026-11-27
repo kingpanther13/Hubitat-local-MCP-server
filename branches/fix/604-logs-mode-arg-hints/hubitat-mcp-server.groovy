@@ -6856,7 +6856,7 @@ def toolGetHubLogs(args) {
         boolean listed = args.mode instanceof List
         List takes = modeArgs[m] + (listed && m in ["mcp", "status"] ? ["pageSize"] : [])
         def supplied = (allModeArgs - takes).findAll(this.&_argPresent.curry(args))
-        if (supplied) throw new IllegalArgumentException(_logsArgRefusal(m, supplied, modeArgs, listed))
+        if (supplied) throw new IllegalArgumentException(_logsArgRefusal(m, takes, supplied, modeArgs, listed))
     }
     if (args.mode instanceof List) {
         if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
@@ -6966,8 +6966,7 @@ def toolGetHubLogs(args) {
     }
     return result + _logsPage(mode, rows, query)
 }
-private String _logsArgRefusal(String mode, List supplied, Map modeArgs, boolean listed) {
-    List takes = modeArgs[mode]
+private String _logsArgRefusal(String mode, List takes, List supplied, Map modeArgs, boolean listed) {
     String where = supplied.collect { String p ->
         "${p} applies to ${modeArgs.findAll { it.value.contains(p) }.keySet().join(', ')}"
     }.join("; ")
@@ -26979,7 +26978,7 @@ private boolean _isWholeNumberIn(value, long min, long max) {
 String stripHtmlTags(String s) {
     if (s == null || !s.contains("<")) return s
     return s.replaceAll(/(?is)<(style|script)\b[^>]*>.*?<\/\1\s*>/, "")
-        .replaceAll(/<(?:\/?[A-Za-z][A-Za-z0-9:_-]*(?:\s[^<>]*)?\/?|![^<>]*)>/, "")
+        .replaceAll(/<(?:\/?[A-Za-z][A-Za-z0-9:_-]*(?:\s+(?:[A-Za-z_:@][\w:.-]*\s*=|(?i:checked|selected|disabled|readonly|multiple|required|hidden|open|nowrap)(?![\w:.=-]))[^<>]*)?\s*\/?|![^<>]*)>/, "")
 }
 def formatTimestamp(timestamp) {
     if (!timestamp) return "Never"
