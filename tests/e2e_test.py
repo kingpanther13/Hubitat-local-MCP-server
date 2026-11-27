@@ -12242,6 +12242,13 @@ def updated() {}
         assert got.get("source") == "hub", f"created variable not visible in the hub namespace: {got}"
         assert got.get("value") == "round-trip-v1", f"hub variable value mismatch: {got}"
         assert got.get("type"), f"hub variable read-back carries no type metadata: {got}"
+        # A plain get reads no page, so it carries no page details; includeDependents adds them, and a
+        # local, unshared variable reads false for both Hub Mesh fields.
+        assert "meshShared" not in got and "appsUsing" not in got, f"a plain hub_get_variable read the page: {got}"
+        detailed = self.client.call_tool("hub_read_variables", {
+            "tool": "hub_get_variable", "args": {"name": var_name, "includeDependents": True}})
+        assert detailed.get("meshShared") is False and detailed.get("linked") is False and "detailsError" not in detailed, \
+            f"hub_get_variable(includeDependents) did not carry the Hub Variables page details: {detailed}"
 
         # DELETE -- response carries deleted/previousValue; the gone-check below binds
         # the real effect, so a relay 504 skips the response-shape assertions.
@@ -12272,25 +12279,119 @@ def updated() {}
         except (McpToolError, McpError) as exc:
             assert "not found" in str(exc).lower(), f"unexpected error after delete: {exc}"
 
-        # The delete must leave nothing armed on the Hub Variables page: a same-named variable
-        # created afterwards survives the page's next render (includeDependents renders it).
+        # A same-named variable can be created again right after the delete and keeps its value.
         recreated = self.client.call_tool("hub_manage_variables", {
             "tool": "hub_create_variable",
             "args": {"name": var_name, "type": "String", "value": "round-trip-v2", "confirm": True}})
         assert recreated.get("success") is True, f"re-creating {var_name} after its delete failed: {recreated}"
         dependents = self.client.call_tool("hub_read_variables", {
             "tool": "hub_get_variable", "args": {"name": var_name, "includeDependents": True}})
-        assert not dependents.get("dependentsError"), \
-            f"the dependents read did not render the Hub Variables page, so the check below proves nothing: {dependents}"
-        survived = self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_get_variable", "args": {"name": var_name}})
-        assert survived.get("value") == "round-trip-v2", \
-            f"the re-created {var_name} did not survive a render of the Hub Variables page after the earlier delete: {survived}"
+        assert not dependents.get("dependentsError"), f"the dependents read of {var_name} failed: {dependents}"
+        assert dependents.get("value") == "round-trip-v2", \
+            f"the re-created {var_name} does not hold its new value: {dependents}"
         self._delete_variable_safe(var_name)
         if var_name in self.created_variable_names:
             self.created_variable_names.remove(var_name)
 
-        # Malformed suffixes must be rejected before the wizard creates anything.
+        # A value that does not fit the type is refused before anything is sent, with hub_set_variable's message.
+        bad_value_name = f"{PREFIX}HubVar_BadValue"
+        self.created_variable_names.append(bad_value_name)
+        try:
+            self._expect_tool_refusal("hub_create_variable", {
+                "name": bad_value_name, "type": "Number", "value": "abc", "confirm": True}, "whole number")
+            assert not self._hub_variable_visible_in_bulk(bad_value_name), "a refused create left a variable behind"
+        finally:
+            self._delete_variable_safe(bad_value_name)
+
+        # The hub stores value text as sent, so the tool sends canonical text: "TRUE" reads back as true.
+        # An empty String is a valid value.
+        for extra_name, extra_type, extra_value, expected in ((f"{PREFIX}HubVar_BoolText", "Boolean", "TRUE", True),
+                                                              (f"{PREFIX}HubVar_EmptyStr", "String", "", "")):
+            self.created_variable_names.append(extra_name)
+            try:
+                made_extra = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_variable",
+                    "args": {"name": extra_name, "type": extra_type, "value": extra_value, "confirm": True}})
+                assert made_extra.get("success") is True, f"{extra_type} create from {extra_value!r} failed: {made_extra}"
+                read_extra = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": extra_name}})
+                assert read_extra.get("value") == expected, f"{extra_type} {extra_value!r} read back wrong: {read_extra}"
+            finally:
+                self._delete_variable_safe(extra_name)
+
+        # A value that does not fit an existing hub variable's type is refused before any write: the hub
+        # value stays, and no rule-engine variable of that name appears.
+        num_name = f"{PREFIX}HubVar_Num"
+        self.created_variable_names.append(num_name)
+        try:
+            made = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_create_variable", "args": {"name": num_name, "type": "Number", "value": 3, "confirm": True}})
+            assert made.get("success") is True, f"Number fixture create failed: {made}"
+            self._expect_tool_refusal("hub_set_variable", {"name": num_name, "value": "abc"}, "whole number")
+            kept = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": num_name}})
+            assert kept.get("source") == "hub" and kept.get("value") == 3, f"a refused set changed the hub variable: {kept}"
+            # A Number holds a Java Long, so a value past the int range is accepted and reads back whole.
+            big = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": num_name, "value": "3000000000"}})
+            assert big.get("success") is True and big.get("value") == 3000000000, f"a Long-range set failed: {big}"
+            big_read = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": num_name}})
+            assert big_read.get("value") == 3000000000, f"the Long-range value did not read back: {big_read}"
+            restored = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": num_name, "value": 3}})
+            assert restored.get("success") is True and restored.get("value") == 3, f"setting the Number back failed: {restored}"
+            # Decimal and Boolean refuse a value of the wrong type too, leaving the stored value alone.
+            dec_name = f"{PREFIX}HubVar_Dec"
+            self.created_variable_names.append(dec_name)
+            made_dec = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_create_variable", "args": {"name": dec_name, "type": "Decimal", "value": 1.5, "confirm": True}})
+            assert made_dec.get("success") is True, f"Decimal fixture create failed: {made_dec}"
+            perm = self._ensure_perm_variables("sv_bool", "sv_string")
+            bool_name, str_name = perm["sv_bool"], perm["sv_string"]
+            # A null value on a String hub variable is refused too, rather than stored as empty or "null".
+            for target, wrong, needle in ((dec_name, "abc", "must be a number"), (bool_name, "maybe", "true or false"),
+                                          (str_name, None, "is a String: value must be text, got: null")):
+                before_wrong = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": target}}).get("value")
+                self._expect_tool_refusal("hub_set_variable", {"name": target, "value": wrong}, needle)
+                after_wrong = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": target}}).get("value")
+                assert after_wrong == before_wrong, f"a refused set changed {target}: {before_wrong} -> {after_wrong}"
+            listed = self.client.call_tool("hub_manage_variables", {"tool": "hub_list_variables", "args": {}})
+            assert num_name not in [v.get("name") for v in listed.get("ruleVariables") or []], \
+                f"a refused set created a rule-engine variable {num_name}"
+        finally:
+            self._delete_variable_safe(num_name)
+            self._delete_variable_safe(f"{PREFIX}HubVar_Dec")
+
+        # The hub checks names itself; its refusal (and its naming rules) reaches the caller.
+        bad_name = f"{PREFIX}HubVar[Bad]"
+        try:
+            refused_name = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_create_variable",
+                "args": {"name": bad_name, "type": "String", "value": "x", "confirm": True}})
+        except McpToolError as exc:
+            assert "Use a name of 1-255 characters" in str(exc) and "Nothing was changed" in str(exc), \
+                f"the hub's name refusal did not reach the caller: {exc}"
+        else:
+            raise AssertionError(f"a name with [ ] was not refused: {refused_name}")
+        assert not self._hub_variable_visible_in_bulk(bad_name), "a refused name left a variable behind"
+
+        # A misspelt key in a bulk item fails that item by name, before anything is sent.
+        try:
+            typo_result = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_create_variable",
+                "args": {"variables": [{"nmae": f"{PREFIX}HubVar_Typo", "type": "String", "value": "x"}], "confirm": True}})
+        except McpToolError as exc:
+            typo = _tool_error_payload(exc)
+        else:
+            raise AssertionError(f"a bulk create with a failed item did not set isError: {typo_result}")
+        assert typo.get("createdCount") == 0 and typo.get("failedCount") == 1, f"bulk typo counts are wrong: {typo}"
+        assert "unknown key(s): nmae" in str((typo.get("results") or [{}])[0].get("error")), \
+            f"the bulk typo was not named: {typo}"
+
+        # Malformed suffixes must be rejected before anything is created.
         bad_dt_name = f"{PREFIX}HubVar_DT_Invalid"
         self.created_variable_names.append(bad_dt_name)
         try:
@@ -12304,10 +12405,15 @@ def updated() {}
             else:
                 raise AssertionError(f"malformed DateTime was not refused with isError: {bad_dt}")
             assert not self._hub_variable_visible_in_bulk(bad_dt_name), "invalid DateTime created a variable"
+            # A misspelt key in the {date, time} map is named, not dropped into a different kind.
+            self._expect_tool_refusal("hub_create_variable", {
+                "name": bad_dt_name, "type": "DateTime", "value": {"date": "2026-01-01", "tim": "12:30"},
+                "confirm": True}, "DateTime value accepts only the keys date and time; unknown: tim")
+            assert not self._hub_variable_visible_in_bulk(bad_dt_name), "a DateTime map with an unknown key created a variable"
         finally:
             self._delete_variable_safe(bad_dt_name)
 
-        # DateTime keeps its time: a date-only commit stores the hub's 99:99 no-time sentinel.
+        # A date-and-time create stores the full value; date-only and time-only are separate kinds, below.
         dt_name = f"{PREFIX}HubVar_DT"
         self.created_variable_names.append(dt_name)
         try:
@@ -12337,8 +12443,79 @@ def updated() {}
                 f"DateTime create changed the requested date or time: {dt_value}"
             assert actual_datetime.utcoffset() == expected_datetime.utcoffset(), \
                 f"DateTime offset does not match hub zone {hub_zone}: {dt_value}"
+            # hub_set_variable takes the same DateTime input as the create and stores it on the hub variable.
+            set_dt = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": dt_name, "value": "2026-03-05T08:15"}})
+            assert set_dt.get("success") is True and set_dt.get("source") == "hub", f"DateTime set failed: {set_dt}"
+            reread = str(self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": dt_name}}).get("value"))
+            assert reread.startswith("2026-03-05T08:15"), f"DateTime set did not land on the hub variable: {reread}"
+            listed_dt = self.client.call_tool("hub_read_variables", {"tool": "hub_list_variables", "args": {"type": "DateTime"}})
+            dt_row = next((v for v in listed_dt.get("hubVariables") or [] if v.get("name") == dt_name), None)
+            assert dt_row and dt_row.get("dateTimeKind") == "datetime", f"the list row lacks dateTimeKind: {dt_row}"
+            self._expect_tool_refusal("hub_set_variable", {"name": dt_name, "value": "10:00"}, "is a DateTime with date and time")
+            kept_dt = str(self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": dt_name}}).get("value"))
+            assert kept_dt == reread, f"a refused time-only value changed the date-and-time variable: {reread} -> {kept_dt}"
+            self._expect_tool_refusal("hub_set_variable", {"name": dt_name, "value": {"date": "2026-04-01", "tim": "10:00"}},
+                                      "DateTime value accepts only the keys date and time; unknown: tim")
+            kept_key = str(self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": dt_name}}).get("value"))
+            assert kept_key == reread, f"a refused unknown-key map changed the date-and-time variable: {reread} -> {kept_key}"
+            # The guide points change history at the hub's location events, named variable:<name>.
+            deadline = time.time() + 10.0
+            changes: list = []
+            while not changes and time.time() < deadline:
+                changes = self.client.call_tool("hub_read_diagnostics", {
+                    "tool": "hub_get_logs",
+                    "args": {"mode": "locationEvents", "pattern": f"^variable:{re.escape(dt_name)}$", "pageSize": 5}}).get("entries") or []
+                if not changes:
+                    time.sleep(1.0)
+            assert changes and all(r.get("name") == f"variable:{dt_name}" for r in changes), \
+                f"hub_get_logs(locationEvents, pattern='^variable:{dt_name}$') did not return exactly that variable's events: {changes}"
         finally:
             self._delete_variable_safe(dt_name)
+
+        # Date-only and time-only DateTime variables: the hub marks the missing part with 99:99:99.999-9999
+        # or 9999-99-99, and the reads name the kind.
+        date_name = f"{PREFIX}HubVar_DateOnly"
+        time_name = f"{PREFIX}HubVar_TimeOnly"
+        self.created_variable_names.extend([date_name, time_name])
+        try:
+            for kind_name, initial, kind, marker in ((date_name, "2026-03-05", "date", "2026-03-05T99:99:99.999-9999"),
+                                                     (time_name, "08:15", "time", "9999-99-99T08:15:")):
+                made_kind = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_variable",
+                    "args": {"name": kind_name, "type": "DateTime", "value": initial, "confirm": True}})
+                assert made_kind.get("success") is True and made_kind.get("dateTimeKind") == kind, \
+                    f"{kind}-only DateTime create failed: {made_kind}"
+                read_kind = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": kind_name}})
+                assert read_kind.get("dateTimeKind") == kind and str(read_kind.get("value")).startswith(marker), \
+                    f"{kind}-only DateTime read-back is wrong: {read_kind}"
+            # Each kind takes its own input and stores the marker form; another kind is refused, value unchanged.
+            for kind_name, new_value, stored_prefix, wrong, kind in (
+                    (date_name, "2026-04-01", "2026-04-01T99:99:99.999-9999", "2026-04-01T10:00", "date-only"),
+                    (time_name, "10:30", "9999-99-99T10:30:00.000", "2026-04-01", "time-only")):
+                set_kind = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_set_variable", "args": {"name": kind_name, "value": new_value}})
+                assert set_kind.get("success") is True and str(set_kind.get("value")).startswith(stored_prefix), \
+                    f"{kind} DateTime set failed: {set_kind}"
+                before = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": kind_name}})
+                assert str(before.get("value")).startswith(stored_prefix), f"{kind} DateTime set did not store {stored_prefix}: {before}"
+                self._expect_tool_refusal("hub_set_variable", {"name": kind_name, "value": wrong}, f"is a {kind} DateTime")
+                after = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": kind_name}})
+                assert after.get("value") == before.get("value"), f"a refused {kind} set changed the value: {before} -> {after}"
+                # The stored form written back unchanged is accepted.
+                echoed = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_set_variable", "args": {"name": kind_name, "value": before.get("value")}})
+                assert echoed.get("success") is True and str(echoed.get("value")).startswith(stored_prefix), \
+                    f"writing back the stored {kind} value failed: {echoed}"
+        finally:
+            self._delete_variable_safe(date_name)
+            self._delete_variable_safe(time_name)
 
     @test("hub_variables")
     def test_hub_variable_bulk_create_round_trip(self) -> None:
@@ -12411,8 +12588,14 @@ def updated() {}
             # never add twice). A refused call is retried after the reset and then after two short
             # waits, which stay for runs whose reset fails (no watchdog): the busy budget grows with
             # uptime, so a call just over the limit can clear without one.
-            inc = self.client.call_tool_result("hub_manage_variables", {
-                "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
+            def increment() -> dict:
+                # A refused increment is an isError failure; its payload says why.
+                try:
+                    return self.client.call_tool("hub_manage_variables", {
+                        "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
+                except McpToolError as exc:
+                    return _tool_error_payload(exc)
+            inc = increment()
             for wait_s in (0, 10, 20):
                 if "excessive hub load" not in str(inc.get("error", "")):
                     break
@@ -12425,8 +12608,7 @@ def updated() {}
                 if now_val != 1:
                     inc = {"success": now_val == 6, "previousValue": 1, "value": now_val}
                     break
-                inc = self.client.call_tool_result("hub_manage_variables", {
-                    "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
+                inc = increment()
             assert inc.get("success") is True and inc.get("previousValue") == 1 and inc.get("value") == 6, \
                 f"increment did not add 5 to 1: {inc}"
             self._expect_tool_refusal("hub_set_variable", {"name": names[1], "increment": 1}, "Number or Decimal hub variable")
@@ -12460,9 +12642,8 @@ def updated() {}
 
     @test("hub_variables")
     def test_hub_get_variable_dependents_round_trip(self) -> None:
-        # hub_get_variable(includeDependents=true) answers "which apps reference this hub variable" by
-        # driving the Settings > Hub Variables "Show In Use Apps" reveal (the same in-use registry that
-        # gates hub_delete_variable). An RM rule that references the variable registers as a consumer;
+        # hub_get_variable(includeDependents=true) answers "which apps reference this hub variable" from
+        # the Hub Variables page's in-use registry (the same registry that gates hub_delete_variable). An RM rule that references the variable registers as a consumer;
         # an unreferenced variable has none; an unknown name is a validation error.
         # The reference is a Variable TRIGGER (a single-page trigger reveal), NOT a setVariable action:
         # multi-step ACTION-editor reveals are the path issue #479 tears down on 4.4.5+, so a trigger
@@ -12535,7 +12716,7 @@ def updated() {}
 
         def read() -> dict:
             return self.client.call_tool("hub_read_variables", {
-                "tool": "hub_get_variable", "args": {"name": var_name}})
+                "tool": "hub_get_variable", "args": {"name": var_name, "includeDependents": True}})
 
         try:
             created = self._soft_write(
@@ -12547,6 +12728,11 @@ def updated() {}
                 assert created["response"].get("success") is True, f"hub_create_connector failed: {created}"
             linked = read()
             assert linked.get("deviceId") is not None, f"no connector linked to {var_name}: {linked}"
+            assert linked.get("connectorType") == "Variable" and linked.get("connectorLabel"), \
+                f"hub_get_variable did not report the connector type and label: {linked}"
+            listed_conn = self.client.call_tool("hub_read_variables", {"tool": "hub_list_variables", "args": {"type": "Number"}})
+            conn_row = next((v for v in listed_conn.get("hubVariables") or [] if v.get("name") == var_name), None)
+            assert conn_row and conn_row.get("connectorType") == "Variable", f"the list row lacks connectorType: {conn_row}"
 
             removed = self._soft_write(
                 lambda: self.client.call_tool("hub_manage_variables", {
@@ -12559,19 +12745,20 @@ def updated() {}
                     f"the standing connector should keep this removal from being the hub's last: {removed}"
             cleared = read()
             assert cleared.get("deviceId") is None, f"connector still linked to {var_name}: {cleared}"
+            assert "connectorType" not in cleared, f"a removed connector still reports a type: {cleared}"
         finally:
             self._delete_variable_safe(var_name)
 
     @test("hub_variables")
     def test_hub_set_variable_mesh_validation(self) -> None:
-        # hub_set_variable gained mesh_shared (Hub Mesh share/unshare). Prove the validation contract
+        # hub_set_variable gained meshShared (Hub Mesh share/unshare). Prove the validation contract
         # LIVE with NO mesh state change -- every rejection fires before any hub call and surfaces as an
         # isError validation result the caller can correct and retry.
         absent = f"{PREFIX}NoSuchMeshVar_{int(time.time())}"
         for args, needle, label in (
-            ({"name": absent, "mesh_shared": True}, "hub variable", "mesh_shared on a non-hub-variable"),
-            ({"name": absent}, "value, mesh_shared", "neither value nor mesh_shared"),
-            ({"name": absent, "mesh_shared": "yes"}, "boolean", "non-boolean mesh_shared"),
+            ({"name": absent, "meshShared": True}, "hub variable", "meshShared on a non-hub-variable"),
+            ({"name": absent}, "value, meshShared", "neither value nor meshShared"),
+            ({"name": absent, "meshShared": "yes"}, "boolean", "non-boolean meshShared"),
         ):
             try:
                 detail = self.client.call_tool("hub_set_variable", args)
@@ -12582,17 +12769,17 @@ def updated() {}
 
     @test("hub_variables")
     def test_hub_create_variable_mesh_link_validation(self) -> None:
-        # hub_create_variable gained a Hub Mesh LINK form (mesh_source_hub_id + mesh_source_name), mutually
+        # hub_create_variable gained a Hub Mesh LINK form (meshSourceHubId + meshSourceName), mutually
         # exclusive with the create forms. Assert the MESH-SPECIFIC rejection message (not the destructive-
         # confirm backup message): the suite ensures a recent backup at startup, so requireDestructiveConfirm
         # passes and the mesh validation is what fires -- accepting "backup"/"confirm" here would let a run
         # with no backup green without ever exercising the mesh contract. NOTHING is created either way.
         probe = f"{PREFIX}MeshLinkProbe_{int(time.time())}"
         for args, needle, label in (
-            ({"mesh_source_hub_id": "HUB-A", "mesh_source_name": probe, "name": probe, "confirm": True},
+            ({"meshSourceHubId": "HUB-A", "meshSourceName": probe, "name": probe, "confirm": True},
              "not both", "link mixed with a create field"),
-            ({"mesh_source_hub_id": "HUB-A", "confirm": True},
-             "both mesh_source", "link with only the hub id"),
+            ({"meshSourceHubId": "HUB-A", "confirm": True},
+             "both meshSource", "link with only the hub id"),
         ):
             rejected = False
             detail: Any = None
@@ -12625,14 +12812,23 @@ def updated() {}
         unshared_ok = False
         try:
             # SHARE into the mesh.
-            shared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": True})
+            shared = self.client.call_tool("hub_set_variable", {"name": var_name, "meshShared": True})
             assert shared.get("success") is not False, f"share failed: {shared}"
             assert shared.get("meshShared") is True, f"share did not report meshShared=true: {shared}"
             assert self._poll_mesh_shared(var_name, want=True), \
                 f"{var_name} never appeared in hub_get_hub_mesh sharedHubVariables after sharing"
+            # Both reads show the share from the Hub Variables page; a shared variable is not a linked mirror.
+            detailed = self.client.call_tool("hub_read_variables", {
+                "tool": "hub_get_variable", "args": {"name": var_name, "includeDependents": True}})
+            assert detailed.get("meshShared") is True and detailed.get("linked") is False, \
+                f"hub_get_variable(includeDependents) did not show the share: {detailed}"
+            listed = self.client.call_tool("hub_read_variables", {"tool": "hub_list_variables", "args": {"type": "String"}})
+            row = next((v for v in listed.get("hubVariables") or [] if v.get("name") == var_name), None)
+            assert row and row.get("meshShared") is True and row.get("linked") is False, \
+                f"the hub_list_variables row did not show the share: {row}"
 
             # UNSHARE and assert the teardown caution rides the result note.
-            unshared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
+            unshared = self.client.call_tool("hub_set_variable", {"name": var_name, "meshShared": False})
             assert unshared.get("success") is not False, f"unshare failed: {unshared}"
             assert unshared.get("meshShared") is False, f"unshare did not report meshShared=false: {unshared}"
             note = str(unshared.get("note") or "")
@@ -12645,7 +12841,7 @@ def updated() {}
             # Best-effort: never leave the permanent variable shared if an assertion above bailed mid-cycle.
             if not unshared_ok:
                 try:
-                    self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
+                    self.client.call_tool("hub_set_variable", {"name": var_name, "meshShared": False})
                 except Exception:
                     pass
 
@@ -13469,8 +13665,18 @@ def updated() {}
         result = self.client.call_tool("hub_manage_variables", {
             "tool": "hub_list_variables",
         })
-        # Should return a list or dict with variables
-        assert result is not None, "hub_list_variables returned None"
+        assert isinstance(result, dict) and isinstance(result.get("hubVariables"), list), \
+            f"hub_list_variables returned no hubVariables list: {str(result)[:400]}"
+        # Both reads behind the listing answered: the variable inventory and the Hub Variables page.
+        assert "hubVariablesError" not in result and "detailsError" not in result, \
+            f"hub_list_variables reported a failed read: {result.get('hubVariablesError') or result.get('detailsError')}"
+        # hub_list_variable_changes was removed; variable history is hub_get_logs(mode='locationEvents').
+        try:
+            gone = self.client.call_tool("hub_list_variable_changes", {}, flat=True)
+        except McpError as exc:
+            assert "Unknown tool" in str(exc), f"the removed tool failed for another reason: {exc}"
+        else:
+            raise AssertionError(f"the removed hub_list_variable_changes still answered: {gone}")
 
     @test("system_tools")
     def test_get_hub_info(self) -> None:

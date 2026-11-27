@@ -361,7 +361,6 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         stateMap.accessToken = 'tok'                  // skip createAccessToken
         stateMap.updateCheck = [checkedAt: 1L]        // suppress the immediate check (gate)
         script.metaClass.checkForUpdate = { -> }
-        script.metaClass._subscribeToAllHubVariables = { -> }
         script.metaClass._refreshHubVarInUseRegistrations = { -> }
         script.metaClass._mrtrEnsureCleanupScheduled = { boolean reset -> lifecycleCalls << "mrtrCleanup:${reset}".toString() }
 
@@ -386,7 +385,6 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         stateMap.accessToken = 'tok'
         stateMap.updateCheck = [checkedAt: 1L]
         script.metaClass.checkForUpdate = { -> }
-        script.metaClass._subscribeToAllHubVariables = { -> }
         script.metaClass._refreshHubVarInUseRegistrations = { -> }
         def guard = scriptStaticField('LOAD_GUARD') as Map
         guard.seedScheduled = 1234567890000L
@@ -409,7 +407,6 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         stateMap.remove('updateCheck')                // first install: never checked
         def checkCalls = 0
         script.metaClass.checkForUpdate = { -> checkCalls++ }
-        script.metaClass._subscribeToAllHubVariables = { -> }
         script.metaClass._refreshHubVarInUseRegistrations = { -> }
 
         when:
@@ -426,7 +423,6 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         stateMap.updateCheck = [checkedAt: 1234567890000L]   // already checked before
         def checkCalls = 0
         script.metaClass.checkForUpdate = { -> checkCalls++ }
-        script.metaClass._subscribeToAllHubVariables = { -> }
         script.metaClass._refreshHubVarInUseRegistrations = { -> }
 
         when:

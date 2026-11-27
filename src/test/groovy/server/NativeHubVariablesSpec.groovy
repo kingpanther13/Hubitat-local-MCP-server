@@ -17,7 +17,8 @@ class NativeHubVariablesSpec extends ToolSpecBase {
     private Set hiddenFromModel = [] as Set
     private Set rejectNames = [] as Set
     private Map meshJson = [localLinkedHubVariables: [], availableLinkedHubVariables: [], sharedHubVariables: []]
-    private Map postResponse = [success: true]
+    // null is the hub's success answer: HTTP 204 with an empty body, which hubInternalPostJson returns as null.
+    private Map postResponse = null
 
     def setupSpec() { appExecutor.getLocation() >> sharedLocation }
 
@@ -28,7 +29,6 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         script.metaClass.getAllGlobalVars = { -> variables.collectEntries { name, row -> [name, row.sdk] } }
         script.metaClass.pauseExecution = { Long millis -> }
         script.metaClass.backupItemSource = { String type, String id -> [:] }
-        script.metaClass._findHubVariablesAppId = { -> throw new AssertionError('Supported native endpoint must not open the wizard') }
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30 ->
             requests << [method: 'GET', path: path]
             if (path == '/hub2/hubMeshJson') return JsonOutput.toJson(meshJson)
@@ -40,11 +40,11 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String json, int timeout = 420 ->
             Map body = new JsonSlurper().parseText(json) as Map
             requests << [method: 'POST', path: path, body: body]
-            if (body.name in rejectNames) return [success: false, message: 'Rejected by hub']
-            if (persistWrites && postResponse.success == true) {
+            if (body.name in rejectNames) throw new HttpFailure(400, '{"message":"Use a name of 1-255 characters without leading/trailing spaces, control characters, or quotes, backslashes, ~, [, ], :, <, >."}')
+            if (persistWrites && postResponse == null) {
                 if (path == '/hub2/variables/create') {
                     String sdkType = [integer: 'Number', bigdecimal: 'Decimal', string: 'String', boolean: 'Boolean', datetime: 'DateTime'][body.type]
-                    def value = body.type == 'integer' ? body.value.toInteger() : body.type == 'bigdecimal' ? body.value.toBigDecimal() : body.type == 'boolean' ? body.value.toBoolean() : body.value
+                    def value = body.type == 'integer' ? body.value.toLong() : body.type == 'bigdecimal' ? body.value.toBigDecimal() : body.type == 'boolean' ? body.value.toBoolean() : body.value
                     seed(body.name.toString(), sdkType, value)
                 } else if (path == '/hub2/variables/createConnector') {
                     variables[body.name].sdk.deviceId = 905
@@ -78,9 +78,9 @@ class NativeHubVariablesSpec extends ToolSpecBase {
 
     static class HttpFailure extends RuntimeException {
         Map response
-        HttpFailure(Integer status) {
+        HttpFailure(Integer status, String body = null) {
             super("HTTP ${status}".toString())
-            response = [status: status]
+            response = [status: status, data: body]
         }
     }
 
@@ -153,14 +153,15 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         def result = script.toolCreateVariable([confirm: true, name: 'Missing', type: 'Number', value: 3])
         then:
         !result.success
-        result.error.contains('the hub accepted the create')
-        !result.error.contains('wizard')
-        result.note.contains('hub_get_variable')
+        result.error == "hub_create_variable: the hub accepted the create, but 'Missing' is not visible via getGlobalVar."
+        result.isError == true
+        result.note.startsWith('The hub may have applied part of the change; check the variable with hub_get_variable before retrying.')
         posts().size() == 1
         !variables.containsKey('Missing')
     }
 
-    def 'POST error never retries through the legacy wizard'() {
+    // Defensive: no live capture of a 2xx error body; a success is HTTP 204 with an empty body.
+    def 'a POST answered with an error body instead of the empty 204 is a failure'() {
         given:
         postResponse = [success: false, error: 'Rejected']
         when:
@@ -219,7 +220,23 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         posts().size() == 1
     }
 
-    def 'native dependents list direct and connector users once each without opening a wizard'() {
+    def 'connector removal the hub accepts but does not apply is a failure'() {
+        given:
+        seed('Counter')
+        seedConnector('Counter')
+        persistWrites = false
+        when:
+        def result = script.toolRemoveConnector([confirm: true, name: 'Counter'])
+        then:
+        !result.success
+        result.isError == true
+        result.error == "hub_delete_connector: the hub accepted the connector removal, but variable 'Counter' still has deviceId=905"
+        result.note.startsWith('The hub may have applied part of the change')
+        variables.Counter.sdk.deviceId == 905
+        posts() == [[method: 'POST', path: '/hub2/variables/removeConnector', body: [name: 'Counter', acknowledgeUse: false]]]
+    }
+
+    def 'native dependents list direct and connector users once each'() {
         given:
         seed('Counter', 'Number', 1, [[id: 81, label: 'Heating'], [id: 82, label: 'Dashboard']], [[id: 82, label: 'Dashboard']])
         when:
@@ -345,7 +362,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         then:
         !result.success
         result.error.contains("did not offer connector types for 'Counter'")
-        result.note.startsWith('Nothing was changed')
+        result.note.startsWith('Nothing was changed; retry.')
         posts().isEmpty()
     }
 
@@ -472,20 +489,23 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         result.failedCount == 1
         result.results*.name == ['First', 'Bad', 'Last']
         result.results*.success == [true, false, true]
-        result.results[1].error.contains('Rejected by hub')
+        result.results[1].error == 'Hub Variables create failed: Use a name of 1-255 characters without leading/trailing spaces, control characters, or quotes, backslashes, ~, [, ], :, <, >.'
+        result.results[1].note == 'Nothing was changed: the hub refused the request. Correct what the error names, then retry.'
+        !result.results[0].containsKey('note')
         posts()*.body*.name == ['First', 'Bad', 'Last']
         variables.keySet() == ['First', 'Last'] as Set
     }
 
-    def 'empty Hub Variables body fails instead of opening the wizard (#label)'() {
+    def 'empty Hub Variables body is a model-read failure (#label)'() {
         given:
+        seed('Counter')
         modelBody = body
         when:
-        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        def result = script.toolCreateConnector([confirm: true, name: 'Counter'])
         then:
         !result.success
-        result.error == 'hub_create_variable: Could not read the Hub Variables model: Hub Variables returned an empty response'
-        result.note.startsWith('Nothing was changed')
+        result.error == 'hub_create_connector: Could not read the Hub Variables model: Hub Variables returned an empty response'
+        result.note.startsWith('Nothing was changed; retry.')
         posts().isEmpty()
 
         where:
@@ -495,18 +515,19 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         'blank' | '  '
     }
 
-    def 'Hub Variables endpoint failure other than 404 is raised, not routed to the wizard (#status)'() {
+    def 'every Hub Variables endpoint failure, 404 included, is a model-read failure (#status)'() {
         given:
+        seed('Counter')
         endpointFailure = new HttpFailure(status)
         when:
-        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        def result = script.toolCreateConnector([confirm: true, name: 'Counter'])
         then:
         !result.success
-        result.error == "hub_create_variable: Could not read the Hub Variables model: HTTP ${status}".toString()
+        result.error == "hub_create_connector: Could not read the Hub Variables model: HTTP ${status}".toString()
         posts().isEmpty()
 
         where:
-        status << [500, 302, null]
+        status << [404, 500, 302, null]
     }
 
     def 'unreadable Hub Variables model is reported (#label)'() {
@@ -523,60 +544,32 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         where:
         label            | body                    | expected
         'malformed JSON' | '{"variables": ['       | 'Could not read the Hub Variables JSON model'
+        'login page'     | '<html><title>Login</title></html>' | 'Could not read the Hub Variables JSON model'
         'JSON array'     | '[1, 2]'                | 'Hub Variables returned an unexpected JSON model'
         'no variables'   | '{"variables": "none"}' | 'Hub Variables returned an unexpected JSON model'
     }
 
-    def 'a create reads the model once and validates none of its rows'() {
+    def 'an unreadable 2xx body leaves the outcome to the read-back'() {
+        given: 'hubInternalPostJson reports a non-JSON 2xx body, and the variable did land'
+        postResponse = [_unparseable: true, message: 'hub returned a non-JSON body']
+        int reads = 0
+        script.metaClass.getGlobalVar = { String n -> reads++ == 0 ? null : [name: n, type: 'integer', value: 3L] }
+        when:
+        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        then:
+        result.success
+        posts()*.path == ['/hub2/variables/create']
+    }
+
+    def 'a create sends its POST without reading the Hub Variables page'() {
         given:
         modelBody = '{"variables": [{"name": "Counter"}, "not-a-row", 7]}'
         when:
         def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
         then:
         result.success
-        requests.count { it.method == 'GET' && it.path == '/hub2/variables' } == 1
+        requests.findAll { it.method == 'GET' }.isEmpty()
         posts()*.path == ['/hub2/variables/create']
-    }
-
-    def 'a page that is not the variables model is not the native endpoint (#label)'() {
-        given:
-        modelBody = body
-        when:
-        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
-        then: 'the create reads the model the connector path reads, and reports it the same way'
-        !result.success
-        result.error == "hub_create_variable: Could not read the Hub Variables model: ${expected}".toString()
-        posts().isEmpty()
-
-        where:
-        label          | body                                 | expected
-        'login page'   | '<html><title>Login</title></html>'  | 'Could not read the Hub Variables JSON model'
-        'JSON array'   | '[1, 2]'                             | 'Hub Variables returned an unexpected JSON model'
-        'no variables' | '{"variables": "none"}'              | 'Hub Variables returned an unexpected JSON model'
-    }
-
-    def 'endpoint 404 creates through existing wizard primitives'() {
-        given:
-        endpointFailure = new HttpFailure(404)
-        Map pending = [:]
-        List clicks = []
-        script.metaClass._findHubVariablesAppId = { -> 1424 }
-        script.metaClass._primeHubVarsWizard = { Integer id, String reason -> }
-        script.metaClass._hubVarsFormFields = { Integer id -> ['hbVar', 'varType', 'varValue'] as Set }
-        script.metaClass._rmClickAppButton = { Integer id, String button, String attribute, String page -> clicks << button; [status: 200] }
-        script.metaClass._rmWriteSettingOnPage = { Integer id, String page, String key, Object value, List applied, String typeHint = null, List skipped = null ->
-            if (key == 'hbVar') pending.name = value
-            if (key == 'varType') pending.type = value
-            if (key == 'varValue') seed(pending.name.toString(), pending.type.toString(), value)
-            applied << key
-        }
-        when:
-        def result = script.toolCreateVariable([confirm: true, name: 'Legacy', type: 'Number', value: 4])
-        then:
-        result.success
-        variables.Legacy.sdk.value == 4
-        clicks == ['moreVar']
-        posts().isEmpty()
     }
 
     def 'via dispatch: native create and delete succeed through the tools/call envelope'() {
@@ -630,9 +623,10 @@ class NativeHubVariablesSpec extends ToolSpecBase {
 
     def 'via dispatch: a native runtime failure returns the structured error'() {
         given:
+        seed('Counter')
         modelBody = ''
         when:
-        def response = mcpDriver.callTool('hub_create_variable', [confirm: true, name: 'Counter', type: 'Number', value: 3])
+        def response = mcpDriver.callTool('hub_create_connector', [confirm: true, name: 'Counter'])
         then:
         response.error == null
         response.result.isError

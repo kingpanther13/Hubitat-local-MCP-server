@@ -8,7 +8,7 @@
 
 **Dedicated test-hub prompt:** "Create a disposable test device, inspect its preferences and configuration, and verify boolean, numeric, text and enum changes using an independent native read. Restore each original value and verify restoration, then remove only the device and driver you created. Leave every existing device and automation unchanged."
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 113 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 112 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -544,7 +544,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_update_hub_mesh` with `full_refresh_interval: 300` and reports `applied: ["full_refresh_interval"]`. Does NOT require `confirm` (the change is reversible). Other legs, each optional and applied in a stable order: `enabled: true|false` (⚠️ reports that a hub REBOOT via `hub_reboot` is required before it takes effect — the tool never reboots on its own), `mode_hub_id` (a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `"none"` to go back to local modes), and `peer_hub_id` + `peer_token` TOGETHER (stores a peer hub's mesh token, needed when that peer has UI login security). Rejected by validation (an `isError` result) before any hub call: no settable field at all, a `full_refresh_interval` outside `0|120|300|3600`, a non-boolean `enabled`, and `peer_hub_id` without `peer_token` (or vice versa). Peer hubs are auto-discovered on the LAN so there is no add-peer operation, and per-DEVICE sharing is `hub_update_device` (`meshEnabled` / `meshFullSync`), not this tool. A dropped/empty response, a non-JSON body, and an explicit `success:false` from the peer-token store are each fail-closed with a case-specific note (unconfirmed vs non-JSON vs rejected).
 
-### T14k — share a hub variable over Hub Mesh (hub_set_variable mesh_shared)
+### T14k — share a hub variable over Hub Mesh (hub_set_variable meshShared)
 
 > **DO NOT run on a hub whose mesh peers matter** — sharing/unsharing a variable briefly changes what peers see. Use a throwaway variable and unshare it afterwards.
 
@@ -554,7 +554,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_set_variable` with `name: "vacationMode"` and `mesh_shared: true` (no `value` needed — mesh_shared may stand alone), reports `meshShared: true` and, when the read-back is readable, `meshShareConfirmed: true` (the variable now appears in `hub_get_hub_mesh` `sharedHubVariables`). Then `mesh_shared: false` to stop. `mesh_shared` applies to HUB variables only — a rule-only name is rejected by validation before any hub call (`isError`), as is a call with neither `value` nor `mesh_shared`. Sharing/unsharing is reversible (no `confirm`). Distinct from per-DEVICE sharing (`hub_update_device` `meshEnabled`).
+**Expected**: Calls `hub_set_variable` with `name: "vacationMode"` and `meshShared: true` (no `value` needed — meshShared may stand alone), reports `meshShared: true` and, when the read-back is readable, `meshShareConfirmed: true` (the variable now appears in `hub_get_hub_mesh` `sharedHubVariables`). Then `meshShared: false` to stop. `meshShared` applies to HUB variables only — a rule-only name is rejected by validation before any hub call (`isError`), as is a call with neither `value` nor `meshShared`. Sharing/unsharing is reversible (no `confirm`). Distinct from per-DEVICE sharing (`hub_update_device` `meshEnabled`).
+
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- `hub_get_variable(includeDependents:true)`, then `hub_set_variable(meshShared:true)` and `meshShared:false` on a throwaway `vacationMode`, each with `meshShareConfirmed:true`; the unshare carried the stale-mirror caution.
 
 ### T14l — link a device or variable a peer hub shares (hub_create_device / hub_create_variable mesh link)
 
@@ -566,7 +568,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Reads `hub_get_hub_mesh` to find the peer's `hubId` + `deviceId` in `availableLinkedDevices[]`, then calls `hub_create_device` with `mesh_source_hub_id` + `mesh_source_device_id` + `confirm: true` (NOT `deviceTypeId`). Returns the new local `deviceId` (resolved by a `localLinkedDevices` diff; a read-back lag returns a `warning`, not a failure). The variable analogue is `hub_create_variable` with `mesh_source_hub_id` + `mesh_source_name`. Validation (an `isError` result before any hub call): passing both `deviceTypeId` and the mesh pair, or only one half of the pair, is rejected ("not both" / "BOTH mesh_source_..."). If the peer has UI login security, its mesh token must be stored first via `hub_update_hub_mesh(peer_hub_id, peer_token)` or the link no-ops. Unlink a linked device (local proxy only; peer source untouched) with `hub_delete_device`.
+**Expected**: Reads `hub_get_hub_mesh` to find the peer's `hubId` + `deviceId` in `availableLinkedDevices[]`, then calls `hub_create_device` with `mesh_source_hub_id` + `mesh_source_device_id` + `confirm: true` (NOT `deviceTypeId`). Returns the new local `deviceId` (resolved by a `localLinkedDevices` diff; a read-back lag returns a `warning`, not a failure). The variable analogue is `hub_create_variable` with `meshSourceHubId` + `meshSourceName`. Validation (an `isError` result before any hub call): passing both `deviceTypeId` and the mesh pair, or only one half of the pair, is rejected ("not both" / "BOTH mesh_source_..."). If the peer has UI login security, its mesh token must be stored first via `hub_update_hub_mesh(peer_hub_id, peer_token)` or the link no-ops. Unlink a linked device (local proxy only; peer source untouched) with `hub_delete_device`.
 
 ### T14m — unlink a Hub Mesh linked variable (hub_delete_variable, mesh-aware)
 
@@ -578,7 +580,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Recognizes the DECORATED local name (`"<sourceVar> on <peerName>"`) as a Hub Mesh linked mirror and calls `hub_delete_variable` with `name` + `confirm: true`. When nothing real on this hub uses the mirror (`localLinkedHubVariables[]` row `inUseByApps:false`) it unlinks WITHOUT `force` — even though the hub's generic in-use registry marks the mirror in use (that registration is the mesh link itself, not a consumer) — and returns `{success:true, deleted:true, unlinked:true, source:"hub"}` with a `note` saying only this hub's local copy was removed and the source variable on the peer is untouched. When a real local app uses the mirror (`inUseByApps:true`) the unforced call is refused (`isError`) with a message naming BOTH that it is a linked mirror (peer untouched) AND that real apps will break; `force: true` unlinks anyway. An ordinary (non-mirror) in-use hub var is unchanged — still refused without `force` on the generic registry guard. Teardown ORDER: unlink on the linking hub(s) first, THEN unshare on the owner (`hub_set_variable(mesh_shared=false)`) — unsharing first strands the mirrors, and the unshare result carries a caution saying so. Confirm + a recent backup are still required (`requireDestructiveConfirm`).
+**Expected**: Recognizes the DECORATED local name (`"<sourceVar> on <peerName>"`) as a Hub Mesh linked mirror and calls `hub_delete_variable` with `name` + `confirm: true`. When nothing real on this hub uses the mirror (`localLinkedHubVariables[]` row `inUseByApps:false`) it unlinks WITHOUT `force` — even though the hub's generic in-use registry marks the mirror in use (that registration is the mesh link itself, not a consumer) — and returns `{success:true, deleted:true, unlinked:true, source:"hub"}` with a `note` saying only this hub's local copy was removed and the source variable on the peer is untouched. When a real local app uses the mirror (`inUseByApps:true`) the unforced call is refused (`isError`) with a message naming BOTH that it is a linked mirror (peer untouched) AND that real apps will break; `force: true` unlinks anyway. An ordinary (non-mirror) in-use hub var is unchanged — still refused without `force` on the generic registry guard. Teardown ORDER: unlink on the linking hub(s) first, THEN unshare on the owner (`hub_set_variable(meshShared=false)`) — unsharing first strands the mirrors, and the unshare result carries a caution saying so. Confirm + a recent backup are still required (`requireDestructiveConfirm`).
 
 ### T14n — read the hub network configuration (hub_get_info includeNetwork)
 
@@ -793,6 +795,8 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_manage_variables` → `hub_list_variables`.
 
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- `hub_list_variables` in one call; the four time-only DateTime variables were labelled from `dateTimeKind`.
+
 ### T25 — Discover hub_set_variable (hub_manage_variables)
 
 ```json
@@ -803,6 +807,8 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 ```
 
 **Expected v0.8.0**: Discovers `hub_manage_variables` → `hub_set_variable`.
+
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- `hub_create_variable` (String, `hello`) and a read-back; one retry for the best-practice key.
 
 ### T26 — Discover hub_get_variable (hub_manage_variables)
 
@@ -815,6 +821,8 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 ```
 
 **Expected v0.8.0**: Discovers `hub_manage_variables` → `hub_get_variable`.
+
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- `hub_get_variable` in one call (a rule-engine variable).
 
 ### T27 — Discover hub_list_rooms (hub_manage_rooms)
 
@@ -1296,6 +1304,8 @@ Casual natural language prompts that must route to the correct tool/gateway.
 
 **Expected**: Routes to `hub_list_variables`.
 
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- the `variables` guide, then `hub_list_variables`.
+
 ### T72 — "Save a counter" → hub variables
 
 ```json
@@ -1306,6 +1316,8 @@ Casual natural language prompts that must route to the correct tool/gateway.
 ```
 
 **Expected**: Routes to `hub_set_variable`.
+
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- `hub_get_variable` (not found), `hub_create_variable` (Number, 42) and a read-back; one retry for the best-practice key.
 
 ### T73 — "Show me what's in files" → file manager
 
@@ -1488,6 +1500,50 @@ Complex scenarios spanning multiple tools and gateways.
 ```
 
 **Expected**: All via `hub_manage_variables` (set, get, set, get, list).
+
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass on the result, partial on calls -- `hub_create_variable`, `hub_get_variable`, `hub_set_variable`, `hub_get_variable`, `hub_list_variables`, after 16 calls; the extra ones went to the best-practice key and early reads of the not-yet-created name.
+
+### T86a — Set a time-only DateTime variable from a plain time
+
+```json
+{
+  "setup_prompt": "hub_create_variable name 'BAT_Morning_Start', type 'DateTime', value '07:30' (a time-only variable), confirm true.",
+  "test_prompt": "Change my BAT_Morning_Start variable to 6:45 in the morning.",
+  "teardown_prompt": "hub_delete_variable name 'BAT_Morning_Start', confirm true."
+}
+```
+
+**Expected**: `hub_get_variable` shows `dateTimeKind: "time"` (value `9999-99-99T07:30:00.000<offset>`), then `hub_set_variable` with `value: "06:45"` (or the stored form). The stored value becomes `9999-99-99T06:45:00.000<offset>` and the variable stays time-only. **Fail** if the variable becomes a full date-and-time, or if a value was saved as a rule-engine variable of the same name.
+
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- `hub_get_variable` showed `dateTimeKind: "time"`, then `hub_set_variable(value:"06:45")` stored `9999-99-99T06:45:00.000-0500`; the variable stayed time-only and no rule-engine copy was made.
+
+### T86b — A value that does not fit a hub variable's type is refused
+
+```json
+{
+  "setup_prompt": "hub_create_variable name 'BAT_Guest_Count', type 'Number', value 3, confirm true.",
+  "test_prompt": "Set BAT_Guest_Count to 'a few'.",
+  "teardown_prompt": "hub_delete_variable name 'BAT_Guest_Count', confirm true."
+}
+```
+
+**Expected**: Either the AI reads the variable's type with `hub_get_variable` and declines before writing, or it calls `hub_set_variable`, which returns `isError: true` naming the Number type and the accepted whole-number range. Either way the AI asks for a number. `hub_get_variable` still shows 3, and `hub_list_variables` has no rule-engine variable named `BAT_Guest_Count`.
+
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- `hub_set_variable(value:"a few")` returned `isError` naming the Number type and the whole-number range; the AI asked for a number. The value stayed 3 and no rule-engine copy was made.
+
+### T86c — When did a hub variable last change?
+
+```json
+{
+  "setup_prompt": "hub_create_variable name 'BAT_Alarm_Count', type 'Number', value 1, confirm true; then hub_set_variable it to 2, then to 5.",
+  "test_prompt": "When did BAT_Alarm_Count last change, and what were its recent values?",
+  "teardown_prompt": "hub_delete_variable name 'BAT_Alarm_Count', confirm true."
+}
+```
+
+**Expected**: `hub_get_logs` with `mode: "locationEvents"` and a pattern matching only that variable (ideally anchored, `^variable:BAT_Alarm_Count$`). The answer lists the changes to 2 and 5 with their times. **Partial** if the pattern also returns other variables' rows and the AI filters them itself.
+
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- `hub_get_variable`, then `hub_get_logs(mode:"locationEvents", pattern:"^variable:BAT_Alarm_Count$")`; the answer listed the changes to 1, 2 and 5 with their times. (At b3b5013b the client missed the history section and answered from the MCP write log; `hub_get_variable` now names the location-event history, fixed in 77ceb63a.)
 
 ---
 
@@ -1740,6 +1796,8 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (11 flat + 19
 ```
 
 **v0.7.7**: Calls `hub_list_variables` directly. **v0.8.0**: Via `hub_manage_variables`. Compare discovery efficiency.
+
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- `hub_list_variables` in one call.
 
 ### T113 — Export a rule (moved to gateway in v0.8.0)
 
@@ -2235,6 +2293,8 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 **Expected**: `hub_list_variables`.
 **Equivalent to**: T24
 
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- the `variables` guide, then `hub_list_variables`.
+
 #### T251 — Remember a number for me
 
 ```json
@@ -2659,6 +2719,8 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 **Expected**: `hub_set_variable` → `hub_get_variable` → `hub_set_variable` → `hub_get_variable` → `hub_list_variables`.
 **Equivalent to**: T86
 
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- `hub_set_variable` (a new name, so rule engine, which the AI explained), `hub_get_variable`, `hub_set_variable`, `hub_get_variable`, `hub_list_variables`, in 15 calls; one retry for the best-practice key.
+
 #### T302 — Pause a whole set of automations at once
 
 ```json
@@ -2712,7 +2774,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Cloud controller disable/enable | `hub_call_destructive_ops` (target=cloud, disable\|enable) | hub_manage_destructive_ops | Disabling severs Alexa/Google, cloud dashboards, cloud firmware updates, subscriptions |
 | Network config (static IP / DHCP / Ethernet autoneg / WiFi) | `hub_set_system_settings` (network=...) | core | Can disconnect the hub; confirm-gated |
 | Enable/disable Hub Mesh | `hub_update_hub_mesh` (enabled=...) | hub_manage_devices | Needs a hub reboot to take effect; hub-wide sharing change |
-| Share a device / variable over Hub Mesh | `hub_update_device` (`fields.meshEnabled`) / `hub_set_variable` (mesh_shared) | hub_manage_devices | Reversible; shares one entity into the LAN mesh |
+| Share a device / variable over Hub Mesh | `hub_update_device` (`fields.meshEnabled`) / `hub_set_variable` (meshShared) | hub_manage_devices | Reversible; shares one entity into the LAN mesh |
 | Link a peer hub's shared device / variable | `hub_create_device` / `hub_create_variable` (mesh_source_*) | hub_manage_devices | Creates a local proxy; needs the peer's mesh token if it has UI login security |
 | Unlink a Hub Mesh linked device | `hub_delete_device` | hub_manage_destructive_ops | Removes only the local link; the peer's source device is untouched |
 | Unlink a Hub Mesh linked variable | `hub_delete_variable` (decorated `"<var> on <peer>"` name) | hub_manage_variables | Removes only the local mirror; peer source untouched; `force` only if a real local app uses it (`inUseByApps`) |
@@ -2780,19 +2842,19 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 113 |
+| Total distinct tools in codebase | 112 |
 
 With Developer Mode on, `hub_update_package` joins the flat core tools, so a Developer Mode hub lists one more.
 
-**8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (5), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
+**8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (5), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (2), `hub_read_dashboards` (2)
 
-**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (5), `hub_manage_destructive_ops` (4), `hub_manage_devices` (10), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (5), `hub_manage_destructive_ops` (4), `hub_manage_devices` (10), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (7)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 113 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 112 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -3205,6 +3267,8 @@ This scenario requires no room creation or device command.
 
 **Expected**: AI calls `hub_manage_variables(tool='hub_delete_variable', args={name:'BAT_E2E_DELETE_TEST', confirm:true})`. Result: `{success:true, name:'BAT_E2E_DELETE_TEST', deleted:true, source:'rule_engine', previousValue:'scratch'}`. Follow-up `hub_get_variable` returns "Variable not found". Hub log shows a WARN-level `[developer-mode] hub_delete_variable: removed 'BAT_E2E_DELETE_TEST'` audit entry.
 
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- `hub_delete_variable(confirm:true)` on the rule-engine variable; the read-back said "Variable not found".
+
 ### T225 — hub_delete_variable deletes a hub variable created in the UI
 
 ```json
@@ -3216,6 +3280,8 @@ This scenario requires no room creation or device command.
 
 **Expected**: AI calls `hub_delete_variable(name='BAT_UI_VAR', confirm=true)`. The hub variable is deleted (a hub variable no rule uses needs no force) and `hub_list_variables` no longer lists it.
 
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- `hub_get_variable(includeDependents:true)` showed no consumers, then `hub_delete_variable(confirm:true)`; the read-back said "Variable not found".
+
 ### T226 — hub_delete_variable refuses without confirm flag (the Write master 24h gate)
 
 ```json
@@ -3225,7 +3291,9 @@ This scenario requires no room creation or device command.
 }
 ```
 
-**Expected**: Gateway parameter validation returns an `isError: true` result with message `"Missing required parameter(s): confirm"` and a `parameters` description listing the schema (name, confirm, force). No JSON-RPC error code is set — the validation happens at the gateway layer before tool dispatch. The variable is preserved. AI relays the gate requirement and offers to retry with `confirm=true`.
+**Expected**: Gateway parameter validation returns an `isError: true` result with message `"Missing required parameter for hub_delete_variable: confirm."` and a `parameters` description listing the schema (name, confirm, force). No JSON-RPC error code is set — the validation happens at the gateway layer before tool dispatch. The variable is preserved. AI relays the gate requirement and offers to retry with `confirm=true`.
+
+**Last live run**: 2026-11-21, a C-7 test hub (firmware 2.5.3.123) running commit 77ceb63a, driven by a fresh AI client given only the prompts: pass -- the call without `confirm` was refused with "Missing required parameter for hub_delete_variable: confirm." and the variable was kept.
 
 ### T660 — hub_update_mcp_settings selectedDevices re-scopes the MCP server's device access (add then remove, net no-op)
 

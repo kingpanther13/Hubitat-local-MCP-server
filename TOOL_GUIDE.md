@@ -532,8 +532,8 @@ The hub-LEVEL settings above are `hub_update_hub_mesh`; the per-entity share/lin
 - **Share a device** into the mesh: `hub_update_device(deviceId, fields={meshEnabled: true|false}, confirm=true)`. Its full reference is `hub_get_tool_guide(section='update_device')`.
 - **Link a device** a peer shares: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedDevices[]`. On the resulting LINKED device, `hub_update_device(fields={meshFullSync: true}, confirm=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh.
 - **Unlink a device**: `hub_delete_device(deviceId, confirm=true)` — removes only the local proxy; warns on `appsUsing`, and distinctly when it could not check.
-- **Share a variable**: `hub_set_variable(name, mesh_shared=true|false)` (hub variables only).
-- **Link a variable** a peer shares: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedHubVariables[]`. The variable references are in `hub_get_tool_guide(section='variables')`.
+- **Share a variable**: `hub_set_variable(name, meshShared=true|false)` (hub variables only).
+- **Link a variable** a peer shares: `hub_create_variable(meshSourceHubId, meshSourceName, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedHubVariables[]`. The variable references are in `hub_get_tool_guide(section='variables')`.
 - **Unlink a variable**: `hub_delete_variable(name, confirm=true)` on the local mirror (its DECORATED `"<var> on <peer>"` name) — removes only the local copy, peer untouched; needs `force=true` when a real local app uses it OR when that use can't be confirmed (`inUseByApps` true or unreadable), not when `inUseByApps` is confirmed false. Teardown order: unlink on the linking hub(s) first, THEN unshare on the owner (unsharing first strands the mirrors). Full reference in `hub_get_tool_guide(section='variables')`.
 
 The `createLinked` GET returns 200 with an empty body even when nothing links, so the link tools read mesh state back: a confirmed non-link (the source still shows `linkedLocally:false` in `hub_get_hub_mesh`) returns a FAILURE, not a soft warning; only an unreadable mesh list warns. A no-op is usually transient — the mesh takes time to re-establish a peer connection after that peer reboots/updates and briefly no-ops during that window, then clears — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
@@ -1403,46 +1403,79 @@ Sending a classic definition to CREATE a rule on a hub that offers both builders
 
 ## Hub Variables
 
-Reference for the hub-variable tools (hub_get_variable, hub_create_variable, hub_delete_variable, hub_create_connector). Per-tool details below.
+Reference for the hub-variable tools (hub_list_variables, hub_get_variable, hub_set_variable, hub_create_variable, hub_delete_variable, hub_create_connector, hub_delete_connector). Per-tool details below. Creates, deletes and connector changes go through the hub's own Hub Variables page, one request each, and every write is read back.
 
 When the hub cannot complete a create or delete, the result is `success:false` with `error` and `note`. The note says whether nothing changed or the hub may have applied part of it; in the second case, read the variable with hub_get_variable before retrying.
 
 ### hub_get_variable
 
-The returned `source` field says which one matched (the hub-variable namespace is searched first, then rule-engine variables). For hub variables it also returns metadata: `type`, plus `deviceId`/`attribute` when a connector is linked.
+The returned `source` field says which one matched (the hub-variable namespace is searched first, then rule-engine variables). For hub variables it also returns metadata: `type`, plus `deviceId`/`attribute` when a connector is linked. A plain get makes no hub request.
 
-**`includeDependents=true` — which apps reference a HUB variable.** Opt-in (off by default) because it costs an extra hub read, and on older firmware a click of the Settings → Hub Variables wizard reveal. Run it before renaming or deleting a hub variable to see what would break — the same registry that gates `hub_delete_variable`'s reference-safety refusal (deleting anyway needs `force=true`).
+**`includeDependents=true` — which apps reference a HUB variable, plus its details.** Opt-in (off by default) because it reads the hub's Hub Variables page; that one read also adds the same connector and Hub Mesh fields as `hub_list_variables` (`connectorType`/`connectorLabel`, `meshShared`, `linked`/`sourceHubName`), or `detailsError` when the page cannot be read. Run it before renaming or deleting a hub variable to see what would break — the same registry that gates `hub_delete_variable`'s reference-safety refusal (deleting anyway needs `force=true`).
 
-- **Source:** the hub's own in-use registry. Current firmware serves it as JSON from the Hub Variables page's data endpoint: each variable lists the apps that use it directly and the apps that use its connector device. Older firmware without that endpoint has no pure-GET dependents document, so the fold reads the Hub Variables page, clicks the per-variable "Show In Use Apps" reveal, and parses the revealed app list. The reveal is a transient wizard-UI toggle (dismissed afterward), not a data change — `hub_get_variable` stays read-only either way.
-- **Result:** `appsUsing` is an array of `{id, label}` (the installed-app id and its user-visible label, e.g. `{"id":"21","label":"MyRule"}`), plus `count` and `coverageNote`. On current firmware `appsUsing` also includes apps that use the variable's connector device (each app once), and `connectorAppsUsing` lists those connector users on their own. The full list is returned (no separate cursor on this tool); consumer lists for one variable are small.
-- **Empty vs unknown:** `appsUsing:[]`, `count:0` means the hub variable is registered but no app currently references it. `includeDependents` applies only to hub variables; it is ignored for a rule-engine variable (no hub in-use registry), so no `appsUsing` field appears. If the registry cannot be read (or, on older firmware, the reveal did not render or renders in-use yet lists no consumers), the response carries a case-specific `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
+- **Source:** the hub's own in-use registry, read from the Hub Variables page's data: each variable lists the apps that use it directly and the apps that use its connector device. The read changes nothing.
+- **Result:** `appsUsing` is an array of `{id, label}` (the installed-app id and its user-visible label, e.g. `{"id":"21","label":"MyRule"}`), plus `count` and `coverageNote`. `appsUsing` also includes apps that use the variable's connector device (each app once), and `connectorAppsUsing` lists those connector users on their own. The full list is returned (no separate cursor on this tool); consumer lists for one variable are small.
+- **Empty vs unknown:** `appsUsing:[]`, `count:0` means no app currently references the hub variable. `includeDependents` applies only to hub variables; it is ignored for a rule-engine variable (no hub in-use registry), so no `appsUsing` field appears. If the registry cannot be read, the response carries `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
 - **Coverage caveat:** only apps that register Hub Variable use with the hub appear (Rule Machine, Room Lighting, Thermostat Scheduler, and other registering apps — what the page shows in orange). Apps that never register their use, such as webCoRE pistons, are not covered; `coverageNote` says so.
+
+### When a hub variable changed
+
+The hub records each hub-variable change as a location event named `variable:<name>`. Read them with `hub_get_logs(mode='locationEvents', pattern='^variable:<name>$')`. The pattern is a case-insensitive regex found anywhere in each row's name, description or value, so anchor it as shown and escape regex characters in the name (for example `\Q<name>\E`); otherwise `variable:temp` also matches `variable:temperature`. Rows come newest first, with `since` (strictly after) and `until`, and a cursor for paging. Rows carry the hub's event time, a renamed variable's earlier rows keep its old name, and retention is the hub's own location-event history.
+
+### hub_set_variable: value
+
+For an existing hub variable the value must fit its declared type, and is refused before anything is written otherwise: Number takes a whole number in the 64-bit (Java Long) range (`42`, `"3000000000"`), Decimal a number (`1.5`), Boolean `true`/`false`, String any text. A DateTime keeps its kind (see "DateTime kinds"), hub-local with offsets ignored and seconds dropped: a date-and-time variable takes `2026-03-05T08:15` or `{date, time}`, a date-only one `2026-03-05` or `{date}` (stored as `2026-03-05T99:99:99.999-9999`), a time-only one `08:15` or `{time}` (stored as `9999-99-99T08:15:00.000` plus the hub zone's current offset). Each also takes its own stored form, so a value read with `hub_get_variable` can be written back unchanged. A value of another kind is refused rather than changing the kind. The result's `value` is what was stored. If the hub does not take a valid value (for example a variable linked from another hub over Hub Mesh, which is changed on its source hub), the result is `success:false` and nothing is written elsewhere. A name that is not a hub variable is stored as a rule-engine variable.
 
 ### hub_set_variable: increment
 
-`increment` (a number, negative to subtract) adds to a Number or Decimal hub variable in one hub operation (the platform's addValueToGlobalVar), so two clients incrementing at once cannot lose an update the way a read-then-set can. Send it alone (not with `value` or `mesh_shared`). The result carries `previousValue` and the new `value`, read just before and just after the add, so another client's change in between shows in them; a Number variable rounds a fractional result. A variable linked from another hub over Hub Mesh cannot be incremented here. Because a retried increment adds again, check `value` before retrying a call whose response was lost.
+`increment` (a number, negative to subtract) adds to a Number or Decimal hub variable in one hub operation (the platform's addValueToGlobalVar), with no separate read and write. Send it alone (not with `value` or `meshShared`). The result carries `previousValue` and the new `value`, read just before and just after the add; a Number variable rounds a fractional result. A variable linked from another hub over Hub Mesh cannot be incremented here. Because a retried increment adds again, check `value` before retrying a call whose response was lost.
 
-### hub_list_variables: type
+### hub_list_variables
 
 `type` (Number, Decimal, String, Boolean, DateTime) lists only hub variables of that type; rule-engine variables are left out of a filtered listing.
+
+Each hub variable row carries `name`, `value`, `type`, `deviceId`/`attribute` (its connector device, null without one) and `source:"hub"`, plus from the Hub Variables page:
+- `connectorType` and `connectorLabel` when a connector exists;
+- `meshShared` — this hub shares the variable over Hub Mesh;
+- `linked` — the variable is a Hub Mesh mirror of another hub's variable, with `sourceHubName` naming that hub.
+
+A DateTime row also carries `dateTimeKind` (`datetime`, `date` or `time`), read from its stored value; see "DateTime kinds".
+
+If that page cannot be read, the rows keep their other fields and the response carries `detailsError` (`hub_get_variable(includeDependents=true)` does the same). Which apps use a variable is read one variable at a time with `hub_get_variable(includeDependents=true)`.
+
+### DateTime kinds
+
+The hub stores every DateTime value as `yyyy-MM-ddTHH:mm:ss.SSSZ` in hub time, and only the value tells the kinds apart:
+- date and time: `2026-03-05T08:15:00.000-0500`;
+- date only: the time part is the marker `99:99:99.999-9999`, e.g. `2026-03-05T99:99:99.999-9999`;
+- time only: the date part is the marker `9999-99-99`, e.g. `9999-99-99T08:15:00.000-0500` (the offset is the hub zone's offset when it was written).
+
+`hub_get_variable` and `hub_list_variables` return `value` exactly as stored, plus `dateTimeKind`. Read the 99/9999 parts as "not set", not as a date or time.
 
 ### hub_create_variable
 
 Create a new hub variable (global variable visible to apps and Rule Machine), one at a time or several in one call. Single form: name + type + value.
 
-For DateTime, pass hub-local `yyyy-MM-ddTHH:mm` or `{date,time}`. Supplied offsets are ignored; seconds and fractions are discarded. The stored value uses the hub timezone for that date.
+A DateTime variable is one of three kinds, set by the initial value (hub-local; supplied offsets are ignored, seconds and fractions dropped):
+- date and time: `yyyy-MM-ddTHH:mm` (or a space for the T, or `{date, time}`);
+- date only: `yyyy-MM-dd` (or `{date}`);
+- time only: `HH:mm` (or `{time}`).
+
+A map takes only the keys `date` and `time`; any other key is refused before anything is written (`hub_set_variable` does the same).
+
+The read-back must show the requested kind. "DateTime kinds" above shows how the hub stores each one.
 
 **Bulk form:**
 - `variables=[{name,type,value}, ...]` — mutually exclusive with the single form (i.e. mutually exclusive with `name`/`type`/`value`).
-- Bulk items are created sequentially; each succeeds or fails independently and the result reports per-item status.
+- Bulk items are created in order; each succeeds or fails independently and the result reports per-item status. An item may carry only `name`, `type` and `value`; any other key fails that item and is named in its `error`.
 
 **Why create first (vs hub_set_variable):**
 - Use this before `hub_set_variable` for a name that doesn't exist yet — Hubitat's `setGlobalVar` cannot create, only update.
-- Creation isn't exposed via the public app API, so the tool uses the hub's own Hub Variables page: one create request on current firmware, the Settings → Hub Variables wizard on older firmware. Either way it reads the variable back and fails if it did not appear; on current firmware it also fails when the stored type or value differs from the request.
+- Creation isn't exposed via the public app API, so the tool sends one create request to the hub's own Hub Variables page, reads the variable back, and fails if it did not appear or its stored type, value or DateTime kind differs from the request. When the hub refuses the request, the error carries the hub's reason and nothing is created.
 
 **Constraints:**
-- Name must not contain any of these characters: `' " \ ~ [ : ] < >`. (This applies to the single-form `name` and to each bulk item's `name`.)
-- A String variable's initial value must be non-empty (an empty String reports success but never persists).
+- The hub checks names itself and refuses a bad or duplicate name before writing; its message, which states the naming rules, comes back in `error` (for a bulk item, in that item's `error`).
+- The value goes through the same check as `hub_set_variable` (see "hub_set_variable: value"), so a value that does not fit the type is refused, with the same message, before anything is sent. The hub stores the value text as sent, so the tool sends the canonical text (`TRUE` becomes `true`, `+7` becomes `7`, `1e3` becomes `1000`). An empty String is a valid value.
 
 **Expose to device-only apps:**
 - To also expose the variable to device-only apps, follow up with `hub_create_connector`.
@@ -1454,7 +1487,7 @@ Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale
 DESTRUCTIVE, no undo; requires `confirm=true` plus a backup <24h. Detects whether the name is a hub variable or a rule_engine variable. Deleting a hub variable also deletes its connector device when one exists (`connectorDeleted` in the response).
 
 **Why the reference-safety refusal matters:** deleting a variable something still uses silently breaks it — null lookups → false conditions, and a literal `%varname%` left in substitutions. Without `force=true` the tool refuses when:
-- the hub's own in-use registry marks a hub variable as used (what Settings → Hub Variables shows in orange; Rule Machine and other registering apps appear there). On current firmware this includes apps that use the variable's connector device, and the refusal names each app as `label (id=N)`;
+- the hub's own in-use registry marks a hub variable as used (what Settings → Hub Variables shows in orange; Rule Machine and other registering apps appear there). This includes apps that use the variable's connector device, and the refusal names each app as `label (id=N)`;
 - that registry cannot be read, since unknown is not the same as unused. The refusal includes the reason, and a forced delete returns it in `platformInUseError`;
 - one of this server's child rules names the variable, quoted or as a `%name%` substitution.
 
@@ -1462,28 +1495,24 @@ Apps that never register their use, such as webCoRE pistons, cannot be seen by a
 
 Deleting a Hub Mesh **linked mirror** (a local copy of a peer's shared variable) is an UNLINK — see the "Hub Mesh: sharing and linking hub variables" subsection below. There the generic in-use refusal is relaxed (a clean mirror unlinks without `force`); `force=true` is needed when a real local app uses the mirror OR when that use can't be confirmed (`inUseByApps` true or unreadable), not when `inUseByApps` is confirmed false.
 
-### hub_list_variable_changes
-
-Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. It is not a complete history — an empty or partial result does NOT mean the variable never changed. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
-
 ### hub_create_connector
 
-`connectorType` picks the connector device type; the default is `Variable`. On current firmware the hub lists the types it offers for each variable, and a `connectorType` it does not offer is refused before anything is created (the error lists the offered types). When `connectorType` is omitted and `Variable` is not offered, the first offered type is used. The full Number/Decimal set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance. Older firmware only shows a type chooser for Number/Decimal vars and ignores `connectorType` for String/Boolean/DateTime.
+`connectorType` picks the connector device type; the default is `Variable`. The hub lists the types it offers for each variable, and a `connectorType` it does not offer is refused before anything is created (the error lists the offered types). When `connectorType` is omitted and `Variable` is not offered, the first offered type is used. The full Number/Decimal set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance.
 
 ### hub_delete_connector
 
 Deletes the connector DEVICE backing a hub variable. DESTRUCTIVE and not undoable — the connector device is removed, but the hub variable itself and its value are unchanged. `confirm=true` required. No-op if the variable has no connector.
 
-On current firmware the hub reports which apps use the connector device. Without `force=true` the tool refuses when any app does, naming each as `label (id=N)`, and also when that use cannot be read (the refusal says why). Pass `force=true` to delete anyway; the result's `brokenConsumers` lists the apps that used it. When that use could not be read, the result has `consumersUnknown: true` instead. Older firmware deletes the device without this check.
+The hub reports which apps use the connector device. Without `force=true` the tool refuses when any app does, naming each as `label (id=N)`, and also when that use cannot be read (the refusal says why). Pass `force=true` to delete anyway; the result's `brokenConsumers` lists the apps that used it. When that use could not be read, the result has `consumersUnknown: true` instead. On a hub with the auto-generated Easy Mobile Dashboards, every connector is used by dashboards such as "All Devices" and "Devices without room", so its delete needs `force=true`.
 
 ### Hub Mesh: sharing and linking hub variables
 
 Hub Mesh shares hub variables between Hubitat hubs on the same LAN (not the Z-Wave/Zigbee radio mesh). Two variable operations, folded into the existing tools:
 
-- **Share / unshare** one of THIS hub's variables into the mesh: `hub_set_variable(name, mesh_shared=true|false)`. `mesh_shared` may stand alone or accompany a `value` write. It applies only to HUB variables — a rule_engine-only name is rejected. The result reports `meshShared` and `meshShareConfirmed` (null when the `sharedHubVariables` read-back is unavailable).
-- **Link** a variable a PEER hub shares onto this hub: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedHubVariables[]` (`hubId` + `name`), and is mutually exclusive with the create forms (`name`/`type`/`value` or `variables`). The `createLinkedHubVar` GET returns 200 with an empty body even when nothing links, so the tool reads mesh state back and keys on the source: if the variable links (its name appears in `localLinkedHubVariables[]`, or its `availableLinkedHubVariables[]` row flips `linkedLocally:true`) you get `success`; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
+- **Share / unshare** one of THIS hub's variables into the mesh: `hub_set_variable(name, meshShared=true|false)`. `meshShared` may stand alone or accompany a `value` write. It applies only to HUB variables — a rule_engine-only name is rejected. The result reports `meshShared` and `meshShareConfirmed` (null when the `sharedHubVariables` read-back is unavailable).
+- **Link** a variable a PEER hub shares onto this hub: `hub_create_variable(meshSourceHubId, meshSourceName, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedHubVariables[]` (`hubId` + `name`), and is mutually exclusive with the create forms (`name`/`type`/`value` or `variables`). The `createLinkedHubVar` GET returns 200 with an empty body even when nothing links, so the tool reads mesh state back and keys on the source: if the variable links (its name appears in `localLinkedHubVariables[]`, or its `availableLinkedHubVariables[]` row flips `linkedLocally:true`) you get `success`; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
 - **Unlink** a variable a peer shares (remove this hub's local mirror): `hub_delete_variable(name, confirm=true)` on the LOCAL mirror. The mirror shows up as an ordinary local hub variable whose display name is DECORATED (`"<sourceVar> on <peerName>"`) — pass that decorated name. Unlinking removes only THIS hub's local copy; the peer's source variable is untouched. It needs `force=true` when a real local app uses the mirror (the mesh row's `inUseByApps` is `true`) OR when that use can't be confirmed (the row is missing / `inUseByApps` unreadable); only a clean unlink (`inUseByApps:false`) does NOT require force, even though the hub's generic in-use registry always marks a mirror in-use (that registration is the mesh link itself, not a consumer). A successful unlink returns `unlinked:true`.
-- **Teardown ORDER matters.** To fully undo a shared→linked variable, unlink on the linking hub(s) FIRST (`hub_delete_variable` there), THEN unshare on the owner (`hub_set_variable(name, mesh_shared=false)`). Unsharing first silently STRANDS the mirrors: the owner hub cannot see or notify who linked its variable, so each linking hub keeps a stale local copy (last value, no orphan flag) that consuming apps keep reading. The unshare result carries a caution to this effect.
+- **Teardown ORDER matters.** To fully undo a shared→linked variable, unlink on the linking hub(s) FIRST (`hub_delete_variable` there), THEN unshare on the owner (`hub_set_variable(name, meshShared=false)`). Unsharing first silently STRANDS the mirrors: the owner hub cannot see or notify who linked its variable, so each linking hub keeps a stale local copy (last value, no orphan flag) that consuming apps keep reading. The unshare result carries a caution to this effect.
 
 Read the current mesh variable state (shared/linked/available lists) with `hub_get_hub_mesh`.
 
