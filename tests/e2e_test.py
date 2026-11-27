@@ -14306,6 +14306,19 @@ def updated() {}
                                   "Unknown hub_get_logs argument: source")
         before = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "limit": 0}})
         assert before.get("entries"), f"MCP log before the clear must hold the refusal's line: {before}"
+        # The MCP log takes the Logs page tabs' regex filter, over component and message.
+        hit = self.client.call_tool("hub_read_diagnostics", {
+            "tool": "hub_get_logs", "args": {"mode": "mcp", "pattern": "ARGUMENT: source", "limit": 0}})
+        assert hit.get("entries") and all("argument: source" in (e.get("message") or "") for e in hit["entries"]),             f"pattern must return only the refusal's lines: {hit}"
+        miss = self.client.call_tool("hub_read_diagnostics", {
+            "tool": "hub_get_logs", "args": {"mode": "mcp", "pattern": "BAT_E2E_no_such_line", "limit": 0}})
+        assert miss.get("entries") == [], f"a pattern nothing matches must return no entries: {miss}"
+        # An argument a mode does not take is refused with what that mode takes and where the argument applies.
+        self._expect_tool_refusal("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "hubEvents", "sortBy": "name"}},
+                                  "which takes pattern, patterns, patternMode, limit, cursor, pageSize, since, until. sortBy applies to devices, apps.")
+        self._expect_tool_refusal("hub_read_diagnostics", {
+            "tool": "hub_get_logs", "args": {"mode": ["apps", "hubEvents"], "sortBy": "pct"}},
+            "A list of modes takes only arguments every listed mode accepts")
         # Past logs are not this tool's to delete: the refusal names hub_reboot instead of rebooting.
         self._expect_tool_refusal("hub_manage_logs", {"tool": "hub_delete_logs", "args": {"mode": "past", "confirm": True}},
                                   "hub_reboot(confirm=true, purgeLogs=true)")

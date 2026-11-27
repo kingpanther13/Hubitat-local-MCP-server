@@ -513,6 +513,8 @@ class ToolManageLogsSpec extends ToolSpecBase {
         where:
         args                                                              || says
         [mode: ['locationEvents', 'scheduledJobs'], deviceId: '5']        || "do not apply to log mode 'locationEvents'"
+        [mode: ['apps', 'hubEvents'], sortBy: 'pct']                      || 'sortBy applies to devices, apps. A list of modes takes only arguments every listed mode accepts'
+        [mode: ['mcp', 'status'], pageSize: 5, since: '1h']               || "Parameters since do not apply to log mode 'mcp', which takes level, component, ruleId, pattern, patterns, patternMode, limit, cursor, pageSize."
         [mode: ['hubEvents', 'locationEvents'], cursor: '']               || 'cursor pages one mode'
         [mode: ['hubEvents', 'nope']]                                     || 'Invalid log mode: nope'
         [mode: []]                                                        || 'at least one tab'
@@ -686,6 +688,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         'devices'        | [since: '1h']                   || 'do not apply'
         'scheduledJobs'  | [sortBy: 'pct']                 || 'do not apply'
         'status'         | [limit: 5]                      || 'do not apply'
+        'hubEvents'      | [sortBy: 'name']                || "Parameters sortBy do not apply to log mode 'hubEvents', which takes pattern, patterns, patternMode, limit, cursor, pageSize, since, until. sortBy applies to devices, apps."
+        'status'         | [limit: 5, sortBy: 'pct']       || "Parameters limit, sortBy do not apply to log mode 'status', which takes no arguments. limit applies to past, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp; sortBy applies to devices, apps."
+        'mcp'            | [pattern: '(']                  || 'Invalid regex pattern'
         'devices'        | [sortBy: 'totalMs']             || 'sortBy must be one of'
         'past'           | [since: '31d']                  || '30d cap'
         'past'           | [since: '43201m']               || '30d cap'
@@ -2729,6 +2734,39 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         lower.entries*.message == ['an error']
         upper.entries*.message == ['an error']
+    }
+
+    def "hub_get_logs mode=mcp filters by regex over component and message"() {
+        given:
+        settingsMap.mcpLogLevel = 'debug'
+        script.mcpLog('error', 'server', 'Validation error in hub_get_logs')
+        script.mcpLog('warn', 'write', 'hub_set_variable started')
+        script.mcpLog('info', 'server', 'settings saved')
+
+        expect:
+        script.toolGetHubLogs([mode: 'mcp', limit: 0] + args).entries*.message == messages
+
+        where:
+        args                                                       || messages
+        [pattern: 'VALIDATION']                                    || ['Validation error in hub_get_logs']
+        [pattern: '^write$']                                       || ['hub_set_variable started']
+        [patterns: ['validation', 'saved']]                        || ['Validation error in hub_get_logs', 'settings saved']
+        [patterns: ['server', 'saved'], patternMode: 'all']        || ['settings saved']
+        [pattern: 'hub_', level: 'warn']                           || ['hub_set_variable started']
+        [pattern: 'no such line']                                  || []
+    }
+
+    def "hub_get_logs with a list of modes applies pattern to the MCP log too"() {
+        given:
+        settingsMap.mcpLogLevel = 'debug'
+        script.mcpLog('error', 'server', 'first line')
+        script.mcpLog('error', 'server', 'second line')
+
+        when:
+        def result = script.toolGetHubLogs([mode: ['mcp', 'status'], pattern: 'second'])
+
+        then:
+        result.modes.mcp.entries*.message == ['second line']
     }
 
     def "hub_get_logs mode=mcp with limit 0 returns every stored entry"() {
