@@ -239,8 +239,8 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
 
         where:
         label            | toolName                   | arguments
-        'flat call'      | 'hub_set_rule'             | [rule_id: 777, operation: 'update', confirm: true, args: [changes: [[part: 'trigger', value: [:]]]]]
-        'gateway call'   | 'hub_manage_rule_machine'  | [tool: 'hub_set_rule', args: [rule_id: 777, operation: 'update', confirm: true, args: [changes: [[part: 'trigger', value: [:]]]]]]
+        'flat call'      | 'hub_set_rule'             | [ruleId: 777, operation: 'update', confirm: true, args: [changes: [[part: 'trigger', value: [:]]]]]
+        'gateway call'   | 'hub_manage_rule_machine'  | [tool: 'hub_set_rule', args: [ruleId: 777, operation: 'update', confirm: true, args: [changes: [[part: 'trigger', value: [:]]]]]]
     }
 
     @Unroll
@@ -414,7 +414,6 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub()
         seedLogs([])
         def rmMock = new RMUtilsMock(
-            throwOnGetRuleList4: new NoClassDefFoundError('hubitat.helper.RMUtils'),
             throwOnGetRuleList5: new NoClassDefFoundError('hubitat.helper.RMUtils'),
         )
         rmMock.install()
@@ -435,8 +434,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub()
         seedLogs([])
         def rmMock = new RMUtilsMock(
-            stubRuleList4: [[id: 101], [id: 102], [id: 103]],
-            stubRuleList5: [],
+            stubRuleList5: [[101: 'A'], ['102': 'B'], [103: 'C']],
         )
         rmMock.install()
 
@@ -451,22 +449,22 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         rmMock.uninstall()
     }
 
-    def "env summary marks partial failure when one RMUtils version throws a non-absence error"() {
+    def "env summary marks a failure when RMUtils throws a non-absence error"() {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([])
         def rmMock = new RMUtilsMock(
-            stubRuleList4: [[id: 1]],
-            throwOnGetRuleList5: new RuntimeException('RMUtils v5 internal error'),
+            throwOnGetRuleList5: new RuntimeException('RMUtils internal error'),
         )
         rmMock.install()
 
         when:
         def result = script.toolGenerateBugReport(baseArgs())
 
-        then: 'count from the surviving version is still surfaced, but the report flags partial failure'
-        result.report.contains('**Native Rule Machine rules:** 1')
-        result.report.contains('RMUtils partial failure')
+        then: 'Rule Machine reads as installed, with the count flagged as inaccurate'
+        result.report.contains('**Native Rule Machine rules:** 0')
+        result.report.contains('RMUtils failure')
+        !result.report.contains('not installed')
 
         cleanup:
         rmMock.uninstall()

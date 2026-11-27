@@ -43,9 +43,10 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
             [backupKey: 'rm-rule_42_fixture', ruleId: id]
         }
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30, boolean retry = false ->
-            if (path.startsWith('/app/ruleBuilderJson/')) return [broken: false, stopped: false, paused: false]
+            if (path.startsWith('/app/ruleBuilderJson/')) return JsonOutput.toJson([broken: false, stopped: false, paused: false])
             if (path.startsWith('/installedapp/settings/')) return [settings: []]
-            if (path.startsWith('/installedapp/statusJson/')) return [eventSubscriptions: [], scheduledJobs: []]
+            // The hub answers JSON text; the pre-write health check needs the settings it carries.
+            if (path.startsWith('/installedapp/statusJson/')) return JsonOutput.toJson([appSettings: [], appState: [], eventSubscriptions: [], scheduledJobs: []])
             events << 'open'
             if (renderFails) throw new IllegalStateException('render failed')
             JsonOutput.toJson(form())
@@ -84,7 +85,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
     }
 
     private static Map update() {
-        [rule_id: 42, confirm: true, changes: [
+        [ruleId: 42, confirm: true, changes: [
             [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]],
             [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]]]]
     }
@@ -95,6 +96,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         then:
         result.success
         result.backup.backupKey == 'rm-rule_42_fixture'
+        // Neither the broken pre-check nor the read-back document renders the rule's page.
         events == ['preflight', 'snapshot', 'apply']
     }
 
@@ -187,7 +189,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         result instanceof Map
         result.success == false
         result.partial == false
-        result.rule_id == 42L
+        result.ruleId == 42L
         result.error == 'read unavailable'
         sharedMap('NATIVE_FORM_BUSY').isEmpty()
         sharedMap('NATIVE_FORM_CONTEXTS').size() == 3
@@ -224,14 +226,14 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
 
     def 'a form workflow snapshots before rendering and reuses its recovery handle through submissions'() {
         when:
-        def opened = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open'], [kind: 'open']], confirm: true])
-        def submitted = script.toolCallAppForm([app_id: 42, steps: [[kind: 'submit', expect_page: 'mainPage']], confirm: true])
+        def opened = script.toolCallAppForm([appId: 42, steps: [[kind: 'open'], [kind: 'open']], confirm: true])
+        def submitted = script.toolCallAppForm([appId: 42, steps: [[kind: 'submit', expectPage: 'mainPage']], confirm: true])
         then:
         opened.success && submitted.success
         opened.backup.backupKey == submitted.backup.backupKey
         events == ['snapshot', 'open', 'open', 'submit']
         when:
-        script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+        script.toolCallAppForm([appId: 42, steps: [[kind: 'open']], confirm: true])
         then:
         events.count('snapshot') == 2
     }
@@ -240,14 +242,14 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         given:
         backupFails = true
         when:
-        def refused = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+        def refused = script.toolCallAppForm([appId: 42, steps: [[kind: 'open']], confirm: true])
         then:
         !refused.success && !refused.partial
         events == ['snapshot']
         when:
         backupFails = false
         renderFails = true
-        def partial = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+        def partial = script.toolCallAppForm([appId: 42, steps: [[kind: 'open']], confirm: true])
         then:
         !partial.success && partial.partial
         partial.backup.backupKey == 'rm-rule_42_fixture'
@@ -261,20 +263,20 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
             [backupKey: 'rm-rule_42_baseline', ruleId: id]
         }
         when:
-        def result = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+        def result = script.toolCallAppForm([appId: 42, steps: [[kind: 'open']], confirm: true])
         then:
         result.success
         result.backup.backupKey == 'rm-rule_42_baseline'
         events == ['baseline:pre-native-form', 'open']
         when: 'a sub-page opened directly backs up that page, not the main page that resets its wizard'
         events.clear()
-        script.toolCallAppForm([app_id: 42, steps: [[kind: 'open', page: 'subPage', from: 'mainPage']], confirm: true])
+        script.toolCallAppForm([appId: 42, steps: [[kind: 'open', page: 'subPage', from: 'mainPage']], confirm: true])
         then:
         events == ['baseline:pre-native-form:subPage', 'open']
         when:
         events.clear()
         settingsMap.backupBeforeRuleEdits = false
-        def unprotected = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+        def unprotected = script.toolCallAppForm([appId: 42, steps: [[kind: 'open']], confirm: true])
         then:
         unprotected.success
         unprotected.backup.skipped
@@ -285,7 +287,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         given:
         nativeApp.appType.name = 'Rule Machine'
         when:
-        def result = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+        def result = script.toolCallAppForm([appId: 42, steps: [[kind: 'open']], confirm: true])
         then:
         result.success
         result.backup.skipped

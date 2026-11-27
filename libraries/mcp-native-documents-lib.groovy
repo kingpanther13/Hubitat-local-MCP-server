@@ -7,8 +7,9 @@ library(name: "McpNativeDocumentsLib", namespace: "mcp", author: "kingpanther13"
     variable: ['operation', 'name', 'type', 'value'], required: ['tokens'], delete: ['part', 'id'], order: ['ids'], terminator: ['subtype']]
 
 private Long _ndId(Object id) {
-    if (id == null || !id.toString().isLong() || id.toString().toLong() <= 0L) throw new IllegalArgumentException('A positive native application ID is required')
-    id.toString().toLong()
+    Integer exact = _exactIntId(id)
+    if (exact == null) throw new IllegalArgumentException("A positive native application ID is required, got: ${id}.".toString())
+    exact as Long
 }
 
 private Object _ndJson(Object value) {
@@ -17,9 +18,10 @@ private Object _ndJson(Object value) {
 
 private Object _ndRuleHealth(Long id) { _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}")) }
 
+// A never-written lifecycle flag is false; one stored in any other form than a flag is malformed (null).
 private Boolean _ndNativeFlag(Map health, String name) {
     if (!health.containsKey(name)) return false
-    health.get(name) instanceof Boolean ? health.get(name) : null
+    _appStateFlag(health.get(name))
 }
 
 private List _ndSettings(Long id) {
@@ -28,7 +30,7 @@ private List _ndSettings(Long id) {
     response.settings.collect { row ->
         if (!(row instanceof Map) || !(row.name instanceof String)) throw new IllegalStateException('Unexpected native setting row')
         boolean secret = _redactsCredentials() && (row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value))
-        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
+        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : row.value, deviceIds: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
         if (secret) setting.redacted = true
         setting
     }
@@ -101,9 +103,8 @@ private Map _ndRender(Long id, String page) {
     rendered
 }
 
-Map toolGetRuleDocument(Map args) {
-    Long id = _ndId(args.rule_id)
-    def allowed = ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']
+// The document read's section, cursor and limit arguments, checked before anything is read.
+private Map _ndDocumentArgs(Map args, List allowed, String toolName) {
     def sections = args.sections == null ? allowed : args.sections
     if (!(sections instanceof List) || sections.any { !(it in allowed) }) throw new IllegalArgumentException('Unknown document section')
     boolean paged = args.containsKey('cursor') || args.containsKey('limit')
@@ -112,51 +113,84 @@ Map toolGetRuleDocument(Map args) {
     def limit = args.containsKey('limit') ? args.limit : 50
     if (paged && (!(cursor instanceof String) || !(limit instanceof Number) || !limit.toString().isLong() || limit < 1 || limit > 100))
         throw new IllegalArgumentException('Read cursor must be a string and limit an integer from 1 to 100')
-    if (paged) _parseListCursor(cursor, Integer.MAX_VALUE, 'hub_set_rule')
-    boolean requiredEnabled = _nrHandle(id).getSetting('useST') == true
-    Map nativeState = _nrState(id)
-    def structuralIssues = _ndStructuralIssues(nativeState, requiredEnabled)
-    def document = [rule_id: id, validation: [structuralIssues: structuralIssues, uiChecked: false]]
+    if (paged) _parseListCursor(cursor, Integer.MAX_VALUE, toolName)
+    [sections: sections, paged: paged, cursor: cursor, limit: limit]
+}
+
+// A rule's local variables as name/type/value rows, credential-named values hidden as settings are.
+private List _ndLocalVariables(Long id) {
+    def all = _nrHandle(id).getAllLocalVars()
+    // A rule with no locals answers an empty map, so a null is a failed read, not an empty list.
+    if (all == null) throw new IllegalStateException("Rule ${id}'s local variables could not be read")
+    if (!(all instanceof Map)) throw new IllegalStateException("Rule ${id} returned its local variables in an unexpected shape")
+    all.collect { name, row -> _rmPublicLocalVariable(name?.toString(), row instanceof Map ? [type: row.type?.toString(), value: row.value] : [value: row]) }.sort { it.name }
+}
+
+// localVariables:true is hub_get_rule's read: the local variables ride as their own list instead of the variables section.
+Map toolGetRuleDocument(Map args) {
+    Long id = _ndId(args.ruleId)
+    boolean withLocals = args.localVariables == true
+    String toolName = withLocals ? 'hub_get_rule' : 'hub_set_rule'
+    List allowed = withLocals ? ['actions', 'conditions', 'triggers', 'expressions', 'settings'] : ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']
+    Map read = _ndDocumentArgs(args, allowed, toolName)
+    List sections = read.sections
+    def cursor = read.cursor
+    def limit = read.limit
+    _nrHandle(id)
     try {
-        def health = _ndRuleHealth(id)
-        if (health instanceof Map) document.validation.structuralIssues = _ndStructuralIssues(nativeState + health, requiredEnabled)
-        document.nativeHealth = health instanceof Map && health.broken instanceof Boolean ? [available: true, broken: health.broken, stopped: _ndNativeFlag(health, 'stopped'), paused: _ndNativeFlag(health, 'paused')] : [available: false]
-    } catch (Exception failure) { document.nativeHealth = [available: false, error: failure.message?.toString()] }
-    if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
-        [id: actionId.toString(), value: nativeState.actions instanceof Map ? _nmEntry(nativeState.actions, actionId.toString()) : null]
-    }
-    if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
-    if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
-    if ('expressions' in sections) document.expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
-    if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars().collectEntries { name, row ->
-        Map shown = _rmPublicLocalVariable(name.toString(), row instanceof Map ? row : [value: row])
-        shown.remove('name')
-        [(name): row instanceof Map ? row + shown : shown]
-    }
-    if ('settings' in sections) document.settings = _ndSettings(id)
-    if (paged) {
-        String section = sections[0]
-        def complete = document.get(section)
-        List rows = complete instanceof Map ? complete.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() } :
-            (section == 'settings' ? complete.sort { a, b -> a.name <=> b.name } : complete)
-        int total = rows.size()
-        int start = _parseListCursor(cursor, total, 'hub_set_rule')
-        int end = Math.min(start + limit.toInteger(), total)
-        document.page = [offset: start, limit: limit, total: total,
-            revision: _mrtrSha256(groovy.json.JsonOutput.toJson(_mrtrCanonicalArgs(complete)))]
-        // Match the tools/call JSON-within-text envelope; reserve 1 KiB for its actual request ID and response metadata.
-        int budget = _responseSizeLimitBytes() - 1024
-        while (true) {
-            List selected = rows.subList(start, end)
-            document.put(section, complete instanceof Map ? selected.collectEntries { entry -> [(entry.key): entry.value] } : selected)
-            document.nextCursor = end < total ? end.toString() : null
-            def envelope = jsonRpcResult(0, [content: [[type: 'text', text: groovy.json.JsonOutput.toJson(document)]]])
-            if (groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length <= budget) break
-            if (end - start <= 1) throw new IllegalArgumentException('A native document row or its validation metadata exceeds the response size limit; it cannot be returned without truncation')
-            end = start + (end - start).intdiv(2)
+        def document = [ruleId: id, health: _rmCheckRuleHealth(id as Integer)]
+        // Only these sections come from native state, so a read of health, settings or the locals alone never reads it.
+        Map nativeState = sections.any { it in ['actions', 'conditions', 'triggers', 'expressions'] } ? _nrState(id) : null
+        if (withLocals || 'variables' in sections) {
+            // The health is already read, so a failed locals read is reported beside it rather than losing it.
+            String key = withLocals ? 'localVariables' : 'variables'
+            try {
+                List locals = _ndLocalVariables(id)
+                document.put(key, withLocals ? locals : locals.collectEntries { row -> [(row.name): row.findAll { k, v -> k != 'name' }] })
+            } catch (Exception localsFailure) {
+                mcpLog('warn', 'rm-native', "${toolName}: rule ${id}'s local variables could not be read (${localsFailure.message})")
+                document.put(key, null)
+                document.localVariablesError = (localsFailure.message ?: localsFailure.toString()).toString()
+            }
         }
+        if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
+            [id: actionId.toString(), value: nativeState.actions instanceof Map ? _nmEntry(nativeState.actions, actionId.toString()) : null]
+        }
+        if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
+        if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
+        if ('expressions' in sections) document.expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
+        if ('settings' in sections) document.settings = _ndSettings(id)
+        // A section whose read failed (the locals) is reported by its error, so there is nothing to page.
+        if (read.paged && document.get(sections[0]) != null) {
+            String section = sections[0]
+            def complete = document.get(section)
+            List rows = complete instanceof Map ? complete.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() } :
+                (section == 'settings' ? complete.sort { a, b -> a.name <=> b.name } : complete)
+            int total = rows.size()
+            int start = _parseListCursor(cursor, total, toolName)
+            int end = Math.min(start + limit.toInteger(), total)
+            document.page = [offset: start, limit: limit, total: total,
+                revision: _mrtrSha256(groovy.json.JsonOutput.toJson(_mrtrCanonicalArgs(complete)))]
+            // Match the tools/call JSON-within-text envelope; reserve 1 KiB for its actual request ID and response metadata.
+            int budget = _responseSizeLimitBytes() - 1024
+            while (true) {
+                List selected = rows.subList(start, end)
+                document.put(section, complete instanceof Map ? selected.collectEntries { entry -> [(entry.key): entry.value] } : selected)
+                document.nextCursor = end < total ? end.toString() : null
+                def envelope = jsonRpcResult(0, [content: [[type: 'text', text: groovy.json.JsonOutput.toJson(document)]]])
+                if (groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length <= budget) break
+                if (end - start <= 1) throw new IllegalArgumentException('A native document row or its health exceeds the response size limit; it cannot be returned without truncation')
+                end = start + (end - start).intdiv(2)
+            }
+        }
+        document
+    } catch (IllegalArgumentException refused) {
+        throw refused
+    } catch (Exception failure) {
+        mcpLogError('rm-native', "${toolName} read failed for rule ${id}: ${failure.message}".toString(), failure)
+        [success: false, ruleId: id, error: "Rule ${id} could not be read: ${failure.message ?: failure.toString()}".toString(),
+         note: "The read writes nothing and does not open the rule's page, so retrying once is safe. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
     }
-    document
 }
 
 private List _ndChanges(Object changes, boolean allowEmpty = false) {
@@ -418,7 +452,7 @@ private Map _ndApply(Long id, List changes, boolean created) {
             outcomes << [part: change.part, result: outcome]
             if (outcome?.success != true) {
                 boolean landed = created || outcomes.size() > 1 || outcome?.partial == true
-                return [success: false, partial: landed, rule_id: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()),
+                return [success: false, partial: landed, ruleId: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()),
                     error: outcome?.error?.toString() ?: "Native ${change.part} change did not verify".toString(), note: _ndFailureNote(landed, created)]
             }
         }
@@ -434,7 +468,7 @@ private Map _ndApply(Long id, List changes, boolean created) {
             if (row instanceof Map && row.cond && !_nmActionLabel(id, actionId)) structuralIssues << "Native action ${actionId} is broken: its condition renders nothing".toString()
         }
         if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
-        if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified', note: _ndFailureNote(true, created)]
+        if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, ruleId: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified', note: _ndFailureNote(true, created)]
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
         def doneStatus = done instanceof Map ? done.get('status') : null
         if (doneStatus != null && doneStatus.toString().isInteger() && doneStatus.toInteger() >= 400) throw new IllegalStateException('Native Done was rejected')
@@ -473,11 +507,25 @@ private Map _ndApply(Long id, List changes, boolean created) {
             persistedState.stPrimed == false
         if (actualTriggers && !stopped && !paused && !suppressed && subscriptions.empty && jobs.empty) throw new IllegalStateException('Native triggers have no active subscriptions or scheduled jobs')
         if (created && getAppByAppId(id)?.installed != true) throw new IllegalStateException('Native rule is not installed after Done')
-        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])] +
-            (suppressed ? [subscriptionSettle: 'SUPPRESSED: Required Expression is false'] : [:])
+        Map written = [success: true, ruleId: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.']
+        if (suppressed) written.subscriptionSettle = 'SUPPRESSED: Required Expression is false'
+        // The write is verified by now, so a failed read-back, returned or thrown, must not read as a failed write that a caller would re-send.
+        Map document
+        try { document = toolGetRuleDocument([ruleId: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']]) }
+        catch (Exception readBack) { document = [success: false, error: readBack.message ?: readBack.toString()] }
+        if (document.success == false) {
+            written.documentReadError = document.error
+            written.note = "The changes were written and verified; only reading the rule back failed. Do not send them again: read the rule with hub_set_rule(operation:'read') or hub_get_rule. See hub_get_tool_guide(section='set_rule_reference')."
+        } else if (groovy.json.JsonOutput.toJson(groovy.json.JsonOutput.toJson(written + [document: document])).getBytes("UTF-8").length > _responseSizeLimitBytes() - 1024) {
+            // An oversized result is replaced whole by the size guard, which would drop this receipt and its backup
+            // key; the cloud relay's cap applies, since a detached worker cannot tell which route will deliver it.
+            written.documentOmitted = true
+            written.note = "The changes were written and verified; the rule's document is too large to return with them. Do not send them again: read it one section at a time with hub_set_rule(operation:'read', args:{sections:['actions'], cursor:'', limit:50}) and follow nextCursor. See hub_get_tool_guide(section='set_rule_reference')."
+        } else written.document = document
+        written
     } catch (Exception failure) {
         mcpLogError('rm-native', "hub_set_rule ${created ? 'create' : 'update'} failed for rule ${id}: ${failure.message}".toString(), failure)
-        [success: false, partial: started, rule_id: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()), error: failure.message?.toString(), note: _ndFailureNote(started, created)]
+        [success: false, partial: started, ruleId: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()), error: failure.message?.toString(), note: _ndFailureNote(started, created)]
     }
 }
 
@@ -489,7 +537,7 @@ private String _ndFailureNote(boolean landed, boolean created) {
 }
 
 Map toolUpdateRuleDocument(Map args) {
-    Long id = _ndId(args.rule_id)
+    Long id = _ndId(args.ruleId)
     List changes = _ndChanges(args.changes)
     requireDestructiveConfirm(args.confirm)
     _requireUnprotectedAppMutation(id, 'edit native rule document')
@@ -500,10 +548,33 @@ Map toolUpdateRuleDocument(Map args) {
         _nrHandle(id)
         if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
         try { _ndPreflight(id, changes) }
-        catch (Exception failure) { return [success: false, partial: false, rule_id: id, error: failure.message?.toString()] }
+        catch (Exception failure) { return [success: false, partial: false, ruleId: id, error: failure.message?.toString()] }
+        // A rule that is already broken is refused here, not reported broken after the write; hub_get_rule reports the
+        // same health, so the read and the refusal agree.
+        Map beforeHealth = _rmCheckRuleHealth(id as Integer)
+        // Broken is refused first: broken() answers even when the compiled state went unread, and health also reads
+        // broken for an in-use row whose device is gone, which broken() misses for a condition.
+        if (beforeHealth.broken == true) {
+            String rows = beforeHealth.brokenRows ? ': ' + beforeHealth.brokenRows.collect { "${it.kind} ${it.id}" + (it.text ? " ('${it.text}')" : '') }.unique().join('; ') : ''
+            return [success: false, partial: false, ruleId: id, broken: true, brokenRows: beforeHealth.brokenRows, checkErrors: beforeHealth.checkErrors,
+                error: "Rule ${id} is already broken${rows}; no change was written.".toString(),
+                note: "Repair the broken rows first: open the rule with hub_set_rule(operation:'form') or in the Hubitat UI and replace or remove what refers to the missing device or variable, then retry. hub_get_rule lists the broken rows; see hub_get_tool_guide(section='set_rule_reference').".toString()]
+        }
+        // disabledActions stays null only when the rule's compiled state went unread or is malformed; the writes below
+        // verify against that same state, so a rule whose state cannot be read is not edited either. brokenRows is null
+        // when the device settings went unread, and broken() alone misses a condition whose device was deleted.
+        boolean unread = beforeHealth.broken == null || beforeHealth.disabledActions == null || beforeHealth.brokenRows == null
+        if (unread) {
+            String why = beforeHealth.broken == null ? "broken flag could not be read before the write, so whether it is already broken is unknown" :
+                beforeHealth.disabledActions == null ? "compiled state could not be read before the write, so it is not known to be intact" :
+                "device settings could not be read before the write, so a row whose device was deleted would go unnoticed"
+            return [success: false, partial: false, ruleId: id, broken: beforeHealth.broken, checkErrors: beforeHealth.checkErrors,
+                error: "Rule ${id}'s ${why}; no change was written.".toString(),
+                note: "checkErrors says why. Check that the hub answers with hub_get_info, then read the rule with hub_get_rule: send the update once its health reads broken:false and lists disabledActions and brokenRows. If it stays unreadable, check the rule in the Hubitat UI or with hub_set_rule(operation:'form') before editing it. See hub_get_tool_guide(section='set_rule_reference')."]
+        }
         Map backup
         try { backup = _ndEditBackup(id, 'pre-document-update') }
-        catch (Exception failure) { return [success: false, partial: false, rule_id: id, error: "Pre-edit backup failed; no document changes were applied: ${failure.message}".toString()] }
+        catch (Exception failure) { return [success: false, partial: false, ruleId: id, error: "Pre-edit backup failed; no document changes were applied: ${failure.message}".toString()] }
         attempted = true
         _ndApply(id, changes, false) + [backup: backup]
     } finally {
@@ -520,7 +591,7 @@ private Map _ndEditBackup(Long id, String reason) {
 }
 
 Map toolCreateRuleDocument(Map args) {
-    Long parentId = _ndId(args.parent_id)
+    Long parentId = _ndId(args.parentId)
     def requestedName = args.get('name')
     if (!(requestedName instanceof String) || !requestedName.trim() || requestedName.size() > 200) throw new IllegalArgumentException('A rule name is required (maximum 200 characters)')
     String name = requestedName.trim()
@@ -528,7 +599,7 @@ Map toolCreateRuleDocument(Map args) {
     requireDestructiveConfirm(args.confirm)
     _requireUnprotectedAppMutation(parentId, 'create native rule child')
     def parent = getAppByAppId(parentId)
-    if (parent?.appType?.namespace != 'hubitat' || parent?.appType?.name != 'Rule Machine') throw new IllegalArgumentException('parent_id must identify native Rule Machine')
+    if (parent?.appType?.namespace != 'hubitat' || parent?.appType?.name != 'Rule Machine') throw new IllegalArgumentException('parentId must identify native Rule Machine: hub_list_apps(scope:"instances") lists its app id')
     try { _ndPreflight(null, changes) }
     catch (IllegalArgumentException failure) { return [success: false, partial: false, error: failure.message?.toString()] }
     Long id = null
@@ -546,7 +617,7 @@ Map toolCreateRuleDocument(Map args) {
         _ndApply(id, changes, true)
     } catch (Exception failure) {
         mcpLogError('rm-native', "hub_set_rule create failed for rule ${id} under parent ${parentId}: ${failure.message}".toString(), failure)
-        [success: false, partial: true, rule_id: verifiedChild ? id : null, created: verifiedChild, error: failure.message?.toString(), note: verifiedChild ? _ndFailureNote(true, true) : 'No rule was created.']
+        [success: false, partial: true, ruleId: verifiedChild ? id : null, created: verifiedChild, error: failure.message?.toString(), note: verifiedChild ? _ndFailureNote(true, true) : 'No rule was created.']
     }
 }
 
@@ -570,15 +641,15 @@ private Map _ndOperationSchema(String operation) {
         properties.cursor = [type: 'string']
         properties.limit = [type: 'integer', minimum: 1, maximum: 100]
     } else if (operation == 'create') {
-        properties = [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes]
-        required = ['parent_id', 'name', 'changes']
+        properties = [parentId: [type: 'integer', minimum: 1, description: 'The installed Rule Machine app id (the parent of every rule): hub_list_apps(scope:"instances") lists it as "Rule Machine".'], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes]
+        required = ['parentId', 'name', 'changes']
     } else if (operation == 'update') {
         properties.changes = changes
         required = ['changes']
     } else if (operation == 'form') {
         properties = [steps: [type: 'array', minItems: 1, maxItems: 16, items: [type: 'object', additionalProperties: false,
-            properties: [kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], from: [type: 'string'], expect_page: [type: 'string'], fields: [type: 'object'], activate: [type: 'string']], required: ['kind']]],
-            options_for: [type: 'array', maxItems: 32, items: [type: 'string']]]
+            properties: [kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], from: [type: 'string'], expectPage: [type: 'string'], fields: [type: 'object'], activate: [type: 'string']], required: ['kind']]],
+            optionsFor: [type: 'array', maxItems: 32, items: [type: 'string']]]
         required = ['steps']
     } else throw new IllegalArgumentException('Unknown rule operation; use read, create, update or form')
     [type: 'object', additionalProperties: false, properties: properties, required: required]
@@ -590,7 +661,8 @@ private void _ndValidateSchema(Object value, Map schema, String path, boolean co
         schema.type == 'integer' ? value instanceof Number && value.toString().isLong() : true
     if (!valid || (schema.enum != null && !(value in schema.enum))) throw new IllegalArgumentException("Invalid ${path}")
     if (schema.type == 'object') {
-        if (schema.additionalProperties == false && value.keySet().any { !schema.properties.containsKey(it) }) throw new IllegalArgumentException("Unknown ${path} property")
+        def unknown = schema.additionalProperties == false ? value.keySet().find { !schema.properties.containsKey(it) } : null
+        if (unknown != null) throw new IllegalArgumentException("Unknown ${path} property: ${unknown}".toString())
         if (complete && schema.required?.any { !value.containsKey(it) }) throw new IllegalArgumentException("Missing required ${path} property")
         value.each { key, item -> if (schema.properties?.containsKey(key)) _ndValidateSchema(item, schema.properties.get(key), "${path}.${key}".toString(), complete) }
     } else if (schema.type == 'array') {
@@ -598,12 +670,15 @@ private void _ndValidateSchema(Object value, Map schema, String path, boolean co
         value.each { item -> _ndValidateSchema(item, schema.items, path, complete) }
     } else if (schema.type == 'string') {
         if ((schema.minLength != null && value.trim().size() < schema.minLength) || (schema.maxLength != null && value.size() > schema.maxLength)) throw new IllegalArgumentException("Invalid ${path} length")
-    } else if (schema.minimum != null && value < schema.minimum) throw new IllegalArgumentException("Invalid ${path}")
+    } else if (schema.minimum != null) {
+        if (value < schema.minimum) throw new IllegalArgumentException("Invalid ${path}")
+    }
 }
 
 Map toolSetRule(Map request) {
     if (request.containsKey('confirm') && !(request.confirm instanceof Boolean)) throw new IllegalArgumentException('confirm must be boolean')
-    if (request.containsKey('rule_id')) _ndValidateSchema(request.rule_id, [type: 'integer', minimum: 1], 'rule_id', true)
+    // The rule tools share one id check, so a numeric string or an id past the int range reads as it does in hub_call_rule.
+    if (request.containsKey('ruleId')) _ndId(request.ruleId)
     if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
     if (!request.containsKey('operation')) {
         if (request.args) throw new IllegalArgumentException('Choose an operation before supplying args')
@@ -615,28 +690,40 @@ Map toolSetRule(Map request) {
     Map arguments = request.args ?: [:]
     boolean execute = operation == 'read' || request.confirm == true
     _ndValidateSchema(arguments, schema, 'args', execute)
-    if (operation == 'create' && request.containsKey('rule_id')) throw new IllegalArgumentException('create uses args.parent_id, not rule_id')
+    if (operation == 'create' && request.containsKey('ruleId')) throw new IllegalArgumentException('create uses args.parentId, not ruleId')
     if (!execute) {
         Map properties = [operation: [type: 'string', enum: [operation]], args: schema, confirm: [type: 'boolean'], bestPracticeKey: [type: 'string']]
         List required = ['operation', 'args', 'confirm']
-        if (operation != 'create') { properties.rule_id = [type: 'integer', minimum: 1]; required << 'rule_id' }
-        return [operation: operation, confirm_required: true, inputSchema: [type: 'object', additionalProperties: false, properties: properties, required: required],
+        if (operation != 'create') { properties.ruleId = [type: 'integer', minimum: 1]; required << 'ruleId' }
+        return [operation: operation, confirmRequired: true, inputSchema: [type: 'object', additionalProperties: false, properties: properties, required: required],
             usage: 'Supply these arguments with confirm=true and a recent backup to execute. See set_rule_reference.']
     }
-    if (operation != 'create' && !request.containsKey('rule_id')) throw new IllegalArgumentException('rule_id is required')
-    if (operation == 'read') return toolGetRuleDocument(arguments + [rule_id: request.rule_id])
+    if (operation != 'create' && !request.containsKey('ruleId')) throw new IllegalArgumentException('ruleId is required')
+    if (operation == 'read') return toolGetRuleDocument(arguments + [ruleId: request.ruleId])
     if (operation == 'create') return toolCreateRuleDocument(arguments + [confirm: true])
-    if (operation == 'update') return toolUpdateRuleDocument(arguments + [rule_id: request.rule_id, confirm: true])
-    Long id = _ndId(request.rule_id)
+    if (operation == 'update') return toolUpdateRuleDocument(arguments + [ruleId: request.ruleId, confirm: true])
+    Long id = _ndId(request.ruleId)
     def target = getAppByAppId(id)
-    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || !(target?.appType?.name in ['Rule-5.1', 'Button Rule-5.1', 'Rule Machine'])) throw new IllegalArgumentException('rule_id must identify native Rule-5.1, Button Rule-5.1 or Rule Machine')
-    toolCallAppForm(arguments + [app_id: request.rule_id, confirm: true])
+    boolean rmParent = target?.appType?.namespace == 'hubitat' && target?.appType?.name == 'Rule Machine'
+    if (target?.id?.toString() != id.toString() || !rmParent) _nrRequireEditableRule(target, id)
+    _ndCamelForm(toolCallAppForm(arguments + [ruleId: request.ruleId, confirm: true], 'hub_set_rule'))
+}
+
+// The form tools spell their keys in camelCase; the shared form code writes snake_case, so the result,
+// its completed steps, fields and controls are renamed here. Values (input names, kinds) stay.
+private Map _ndCamelForm(Map result) {
+    Closure camel = { Map row -> row.collectEntries { k, v -> [(k.toString().replaceAll(/_([a-z])/) { all, c -> c.toUpperCase() }): v] } }
+    Map renamed = camel(result)
+    ['completed', 'fields', 'controls'].each { key ->
+        if (renamed.get(key) instanceof List) renamed.put(key, renamed.get(key).collect { it instanceof Map ? camel(it) : it })
+    }
+    renamed
 }
 
 def _getAllToolDefinitions_partNativeDocuments() {
     return [[
       name: 'hub_set_rule', description: 'Read, create or update native Rule Machine rules, or use their native forms. Omit operation for help; select a write operation without confirm for its schema. Writes require confirm=true and a recent backup; partial changes can remain. Guide: set_rule_reference.',
-      inputSchema: [type: 'object', additionalProperties: false, properties: [operation: [type: 'string', enum: ['read', 'create', 'update', 'form']], rule_id: [type: 'integer', minimum: 1], args: [type: 'object'], confirm: [type: 'boolean'], bestPracticeKey: [type: 'string']]]]]
+      inputSchema: [type: 'object', additionalProperties: false, properties: [operation: [type: 'string', enum: ['read', 'create', 'update', 'form']], ruleId: [type: 'integer', minimum: 1], args: [type: 'object'], confirm: [type: 'boolean'], bestPracticeKey: [type: 'string']]]]]
 }
 
 def _readOnlyToolNames_partNativeDocuments() { [] }
@@ -648,13 +735,13 @@ def _toolDisplayMeta_partNativeDocuments() {
 String _ndGuide() {
     return '''## Set Rule Reference
 
-Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level rule_id identifies the target; args cannot override it or confirm. When mandatory guide acknowledgment is enabled, pass its key as top-level bestPracticeKey alongside operation, rule_id, args and confirm.
+Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level ruleId identifies the target; args cannot override it or confirm. When mandatory guide acknowledgment is enabled, pass its key as top-level bestPracticeKey alongside operation, ruleId, args and confirm.
 
-Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
+Read hub_set_rule(operation:"read",ruleId,args:{sections:[...]}) before editing an existing native rule; hub_get_rule returns the same document from the read-only tools, with the local variables as a localVariables list in place of the variables section. A read does not open the rule's page: it returns health, the same report hub_get_rule returns (broken from the rule's own check or a row whose device is gone, brokenRows, paused, stopped, privateBoolean, structuralIssues; see builtin_app_tools_rules). The sections come from native state and typed settings. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 
 For large rules, read one section with args:{sections:["settings"],cursor:"",limit:50}. Paging requires exactly one section; limit is 1..100 (default 50). The section keeps its usual map or list shape. Pass the returned top-level nextCursor into args.cursor until nextCursor is null. page returns offset, limit, total and revision, a hash of the complete section; restart if revision changes. Pages may contain fewer than limit rows to fit the response size cap; an individual oversized row is refused explicitly without truncation. Actions retain native order, settings sort by name, and map sections sort by string key. Omit cursor and limit for an unpaged read.
 
-Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",rule_id,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parent_id,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
+Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",ruleId,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parentId,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine; parentId is the installed Rule Machine app's id, which hub_list_apps(scope:"instances") lists. A failed creation can leave a native child: inspect returned ruleId and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting. An update first reads the same health and, before any backup or write, refuses a rule that is already broken, naming each broken row by kind and native id (trigger 2), or a rule whose broken flag or compiled state cannot be read, with checkErrors saying why: repair broken rows with operation:"form" or in the Hubitat UI.
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.
@@ -669,15 +756,15 @@ Each change is {part,value}. Supported parts:
 
 Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; not every capability-specific variant is supported. Discover native options through operation:"form" when a document contract is unavailable. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback, native editor diagnostics, expression-reference checks and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
 
-Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state and are never part of document reads.
+Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document; a document too large to send with the result is left out (documentOmitted:true), so read it by section. These pages can mutate native state; a document read renders none of them.
 
 ## Native Rule Forms
 
-hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",app_id,...) runs the same steps on any other classic app. Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns created_app_id and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
+hub_set_rule(operation:"form",ruleId,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",appId,...) runs the same steps, with the same keys, on any other classic app. Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns createdAppId and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
 
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. With Hide passwords and credentials on (the default), form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses; with it off they read as stored, except for a per-client token. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. A file-text input takes the file's text, not a path. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
+Submit with {kind:"submit",expectPage:"last returned page",fields:{"native field name":value},activate:"returned controlId"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. With Hide passwords and credentials on (the default), form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses; with it off they read as stored, except for a per-client token. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (labelRestored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. A file-text input takes the file's text, not a path. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.optionsFor:["device field name"] expands device choices on the final returned page.
 
 A batch holds 1 through 16 steps, each using the form the step before it returned, so dependent fields require another submit after they appear. A button handler runs before its step's fields are saved, as in the browser: submit the fields it needs in an earlier step. A button without submitOnChange reloads and needs a separate field submission.
 
-The context expires after five minutes or an app reload and keeps no field values, messages or option labels; limits are 24 KiB of descriptors per app, 96 KiB in all, and eight caller workflows. Opening another app replaces only that caller's context; reopen the previous app before submitting it again. expect_page guards the caller's latest context, not edits in a browser, so avoid editing concurrently. After an error, completed operations stay and the last can be uncertain: inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects; a local link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true, to open separately. No script is evaluated: app JavaScript, custom HTML inputs, external links and other unsupported browser controls are listed in unsupported. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
+The context expires after five minutes or an app reload and keeps no field values, messages or option labels; limits are 24 KiB of descriptors per app, 96 KiB in all, and eight caller workflows. Opening another app replaces only that caller's context; reopen the previous app before submitting it again. expectPage guards the caller's latest context, not edits in a browser, so avoid editing concurrently. After an error, completed operations stay and the last can be uncertain: inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects; a local link or script navigation to the same app or its direct child returns navigatedAppId and navigatedPage with closed:true, to open separately. No script is evaluated: app JavaScript, custom HTML inputs, external links and other unsupported browser controls are listed in unsupported. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
 }

@@ -1733,9 +1733,10 @@ def getToolGuideSections() {
         best_practice_reference: '''If you are calling one of these tools, you must read its section for that section's key:
 native Rule Machine.''',
         set_rule_reference: '''hub_set_rule changes in order
-Reads use native state and typed settings without rendering its editor.
+A read does not open the rule's page.
+An update refuses a rule that is already broken.
 A partial update can leave preceding changes committed; not every capability-specific variant is supported.
-expect_page Even open renders execute app code
+expectPage Even open renders execute app code
 dependent fields require another submit; success means returned, not that the app's intended runtime behavior was independently verified.''',
         device_authorization: '''## Device Authorization (CRITICAL)
 Body.''',
@@ -1800,9 +1801,10 @@ def test_check_tool_guide_generated_unresolvable_section_method_flagged(monkeypa
     "If you are calling one of these tools, you must read its section for that section's key:",
     "native Rule Machine",
     "hub_set_rule", "changes in order",
-    "Reads use native state and typed settings without rendering its editor.",
+    "A read does not open the rule's page",
+    "refuses a rule that is already broken",
     "A partial update can leave preceding changes committed", "not every capability-specific variant is supported",
-    "expect_page", "Even open renders execute app code",
+    "expectPage", "Even open renders execute app code",
     "dependent fields require another submit",
     "not that the app's intended runtime behavior was independently verified",
 ])

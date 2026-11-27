@@ -81,13 +81,13 @@ class NativeFormsSpec extends ToolSpecBase {
     }
 
     private Map open() {
-        script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+        script.toolCallAppForm([appId: 42, steps: [[kind: 'open']], confirm: true])
     }
 
     private Map submit(Map fields = [:], String activate = null, String page = 'edit') {
-        Map step = [kind: 'submit', expect_page: page, fields: fields]
+        Map step = [kind: 'submit', expectPage: page, fields: fields]
         if (activate != null) step.activate = activate
-        script.toolCallAppForm([app_id: 42, steps: [step], confirm: true])
+        script.toolCallAppForm([appId: 42, steps: [step], confirm: true])
     }
 
     def 'open returns native metadata and false zero values without exposing passwords or fetching devices'() {
@@ -108,9 +108,9 @@ class NativeFormsSpec extends ToolSpecBase {
 
     def 'batched field submission uses native wire encoding and keeps navigation parameters'() {
         when:
-        def result = script.toolCallAppForm([app_id: 42, confirm: true, steps: [
+        def result = script.toolCallAppForm([appId: 42, confirm: true, steps: [
             [kind: 'open'],
-            [kind: 'submit', expect_page: 'edit', fields: [enabled: false, count: 0, selection: ['a', 'b'], devices: ['7'], text: 'a+b & <b>text</b>']]
+            [kind: 'submit', expectPage: 'edit', fields: [enabled: false, count: 0, selection: ['a', 'b'], devices: ['7'], text: 'a+b & <b>text</b>']]
         ]])
         then:
         result.success
@@ -361,7 +361,7 @@ class NativeFormsSpec extends ToolSpecBase {
 
     def 'device options expand only on request with native capability and ignored IDs'() {
         when:
-        def result = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], options_for: ['devices'], confirm: true])
+        def result = script.toolCallAppForm([appId: 42, steps: [[kind: 'open']], optionsFor: ['devices'], confirm: true])
         then:
         result.success
         result.fields.find { it.name == 'devices' }.options == [[value: '7', label: 'Fixture one']]
@@ -409,10 +409,10 @@ class NativeFormsSpec extends ToolSpecBase {
 
     def 'batch stops at unavailable future fields and reports completed steps truthfully'() {
         when:
-        def result = script.toolCallAppForm([app_id: 42, confirm: true, steps: [
-            [kind: 'open'], [kind: 'submit', expect_page: 'edit', fields: [count: 2]],
-            [kind: 'submit', expect_page: 'edit', fields: [future: 'unknown']],
-            [kind: 'submit', expect_page: 'edit', activate: 'apply||clicked']
+        def result = script.toolCallAppForm([appId: 42, confirm: true, steps: [
+            [kind: 'open'], [kind: 'submit', expectPage: 'edit', fields: [count: 2]],
+            [kind: 'submit', expectPage: 'edit', fields: [future: 'unknown']],
+            [kind: 'submit', expectPage: 'edit', activate: 'apply||clicked']
         ]])
         then:
         !result.success
@@ -463,8 +463,8 @@ class NativeFormsSpec extends ToolSpecBase {
         model.configPage.sections[0].input << [element: 'paragraph', description:
             "<script>{window.open('/installedapp/configure/42/selectActions?resetScroll=true', '_self')}</script>"]
         when:
-        def result = script.toolCallAppForm([app_id: 42, confirm: true,
-            steps: [[kind: 'open'], [kind: 'submit', expect_page: 'edit', fields: [count: 3]]]])
+        def result = script.toolCallAppForm([appId: 42, confirm: true,
+            steps: [[kind: 'open'], [kind: 'submit', expectPage: 'edit', fields: [count: 3]]]])
         then:
         !result.success
         result.partial
@@ -492,7 +492,7 @@ class NativeFormsSpec extends ToolSpecBase {
         then:
         result.success
         result.closed
-        result.app_id == 42L
+        result.appId == 42L
         result.navigated_app_id == target
         result.navigated_page == 'selectActions'
         !result.containsKey('created_app_id')
@@ -584,7 +584,7 @@ class NativeFormsSpec extends ToolSpecBase {
         then:
         result.success
         result.closed
-        result.app_id == 42L
+        result.appId == 42L
         result.created_app_id == 43L
         calls*.path == ['/installedapp/createchild/hubitat/Example Child/parent/42']
     }
@@ -685,9 +685,9 @@ class NativeFormsSpec extends ToolSpecBase {
         when: 'a later step of the same batch still posts the default'
         assert open().success
         calls.clear()
-        def batch = script.toolCallAppForm([app_id: 42, confirm: true, steps: [
-            [kind: 'submit', expect_page: 'edit', fields: [text: 'typed']],
-            [kind: 'submit', expect_page: 'edit', activate: '_action_update|Done|']]])
+        def batch = script.toolCallAppForm([appId: 42, confirm: true, steps: [
+            [kind: 'submit', expectPage: 'edit', fields: [text: 'typed']],
+            [kind: 'submit', expectPage: 'edit', activate: '_action_update|Done|']]])
         def posts = calls.findAll { it.path == '/installedapp/update/json' }*.body
         then:
         batch.success
@@ -704,8 +704,8 @@ class NativeFormsSpec extends ToolSpecBase {
         model.doneButton = false
         model.cancelButton = false
         when:
-        def plain = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open', page: 'onMeansPage']], confirm: true])
-        def opened = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open', page: 'onMeansPage', from: 'mainPage']], confirm: true])
+        def plain = script.toolCallAppForm([appId: 42, steps: [[kind: 'open', page: 'onMeansPage']], confirm: true])
+        def opened = script.toolCallAppForm([appId: 42, steps: [[kind: 'open', page: 'onMeansPage', from: 'mainPage']], confirm: true])
         calls.clear()
         def done = submit([:], '_action_previous|Done|')
         then:
@@ -716,7 +716,7 @@ class NativeFormsSpec extends ToolSpecBase {
         body._action_previous == 'Done'
         body.pageBreadcrumbs == '%5B%22mainPage%22%5D'
         when:
-        script.toolCallAppForm([app_id: 42, steps: [[kind: 'open', from: 'mainPage']], confirm: true])
+        script.toolCallAppForm([appId: 42, steps: [[kind: 'open', from: 'mainPage']], confirm: true])
         then:
         def refused = thrown(IllegalArgumentException)
         refused.message.contains('requires page')
@@ -729,10 +729,10 @@ class NativeFormsSpec extends ToolSpecBase {
         model.configPage = [name: 'pageTwo', title: 'Step two', nextPage: 'pageThree', donePage: 'pageThree',
                             sections: [[input: [[element: 'input', name: 'second', type: 'text', required: true]]]]]
         model.settings = [:]
-        def opened = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+        def opened = script.toolCallAppForm([appId: 42, steps: [[kind: 'open']], confirm: true])
         calls.clear()
         when:
-        def missing = script.toolCallAppForm([app_id: 42, confirm: true, steps: [[kind: 'submit', expect_page: 'pageTwo', activate: '_action_done|Done|']]])
+        def missing = script.toolCallAppForm([appId: 42, confirm: true, steps: [[kind: 'submit', expectPage: 'pageTwo', activate: '_action_done|Done|']]])
         then:
         opened.controls*.control_id == ['_action_done|Done|']
         opened.controls[0].kind == 'navigation'
@@ -743,7 +743,7 @@ class NativeFormsSpec extends ToolSpecBase {
         when:
         assert open().success
         calls.clear()
-        def done = script.toolCallAppForm([app_id: 42, confirm: true, steps: [[kind: 'submit', expect_page: 'pageTwo', fields: [second: 'two'], activate: '_action_done|Done|']]])
+        def done = script.toolCallAppForm([appId: 42, confirm: true, steps: [[kind: 'submit', expectPage: 'pageTwo', fields: [second: 'two'], activate: '_action_done|Done|']]])
         then:
         done.success
         calls*.path == ['/installedapp/update/json']
@@ -1084,13 +1084,13 @@ class NativeFormsSpec extends ToolSpecBase {
         script.metaClass.mcpLogError = { String component, String message, Exception error -> logged << message }
         when:
         def opened = open()
-        def failed = script.toolSetNativeApp([operation: 'form', app_id: 42, args: [steps: [[kind: 'submit', expect_page: 'nowhere']]], confirm: true])
+        def failed = script.toolSetNativeApp([operation: 'form', appId: 42, args: [steps: [[kind: 'submit', expectPage: 'nowhere']]], confirm: true])
         then:
         opened.success
         opened.page.name == 'edit'
         opened.backup.skipped
         !failed.success
-        logged.any { it.contains('hub_set_native_app form failed for app 42') && it.contains('expect_page does not match') }
+        logged.any { it.contains('hub_set_native_app form failed for app 42') && it.contains('expectPage does not match') }
     }
 
     def 'native Remove is reported unsupported and is never a form control'() {
@@ -1111,13 +1111,25 @@ class NativeFormsSpec extends ToolSpecBase {
     @Unroll
     def 'invalid public step #step fails before rendering'() {
         when:
-        script.toolCallAppForm([app_id: 42, confirm: true, steps: [step]])
+        script.toolCallAppForm([appId: 42, confirm: true, steps: [step]])
         then:
         thrown(IllegalArgumentException)
         calls.empty
         where:
         step << [[kind: 'open', page: '../settings'], [kind: 'open', url: '/anything'], [kind: 'submit', fields: [:]], [kind: 'invoke', method: 'updated'],
-                 [kind: 'submit', expect_page: 'edit', fields: [text: '***redacted (password)***']]]
+                 [kind: 'submit', expectPage: 'edit', fields: [text: '***redacted (password)***']]]
+    }
+
+    @Unroll
+    def 'appId #appId is refused before rendering, through the id check every rule tool shares'() {
+        when:
+        script.toolCallAppForm([appId: appId, confirm: true, steps: [[kind: 'open']]])
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message == 'A positive appId is required'
+        calls.empty
+        where:
+        appId << [4294967338L, '4294967338', 42.5, 0]
     }
 
     def 'sequential explicit opens reuse one caller workflow beyond eight apps'() {
@@ -1126,11 +1138,11 @@ class NativeFormsSpec extends ToolSpecBase {
         when:
         (42L..65L).each { id ->
             model.app.id = id
-            outcomes << script.toolCallAppForm([app_id: id, steps: [[kind: 'open']], confirm: true])
+            outcomes << script.toolCallAppForm([appId: id, steps: [[kind: 'open']], confirm: true])
         }
         calls.clear()
-        def stale = script.toolCallAppForm([app_id: 42, steps: [[kind: 'submit', expect_page: 'edit', fields: [count: 3]]], confirm: true])
-        def current = script.toolCallAppForm([app_id: 65, steps: [[kind: 'submit', expect_page: 'edit', fields: [count: 3]]], confirm: true])
+        def stale = script.toolCallAppForm([appId: 42, steps: [[kind: 'submit', expectPage: 'edit', fields: [count: 3]]], confirm: true])
+        def current = script.toolCallAppForm([appId: 65, steps: [[kind: 'submit', expectPage: 'edit', fields: [count: 3]]], confirm: true])
         then:
         outcomes.every { it.success }
         cachedContexts().size() == 1
@@ -1146,14 +1158,14 @@ class NativeFormsSpec extends ToolSpecBase {
         assert open().success
         script.callerClient = [id: 'a']
         model.app.id = 43
-        assert script.toolCallAppForm([app_id: 43, steps: [[kind: 'open']], confirm: true]).success
+        assert script.toolCallAppForm([appId: 43, steps: [[kind: 'open']], confirm: true]).success
         calls.clear()
         when:
         script.callerClient = [id: 'b']
-        def unbound = script.toolCallAppForm([app_id: 43, steps: [[kind: 'submit', expect_page: 'edit']], confirm: true])
+        def unbound = script.toolCallAppForm([appId: 43, steps: [[kind: 'submit', expectPage: 'edit']], confirm: true])
         script.callerClient = [id: 'a']
         def wrongApp = submit()
-        def bound = script.toolCallAppForm([app_id: 43, steps: [[kind: 'submit', expect_page: 'edit']], confirm: true])
+        def bound = script.toolCallAppForm([appId: 43, steps: [[kind: 'submit', expectPage: 'edit']], confirm: true])
         script.callerClient = null
         model.app.id = 42
         def original = submit()
@@ -1190,7 +1202,7 @@ class NativeFormsSpec extends ToolSpecBase {
         List errors = []
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30, boolean retry = false ->
             calls << [path: path]
-            def nestedResult = script.toolCallAppForm([app_id: 43, steps: [[kind: 'open']], confirm: true])
+            def nestedResult = script.toolCallAppForm([appId: 43, steps: [[kind: 'open']], confirm: true])
             if (nestedResult.success == false) errors << nestedResult.error
             JsonOutput.toJson(model)
         }
@@ -1214,7 +1226,7 @@ class NativeFormsSpec extends ToolSpecBase {
                 nested = true
                 script.callerClient = [id: 'other']
                 try {
-                    def nestedResult = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+                    def nestedResult = script.toolCallAppForm([appId: 42, steps: [[kind: 'open']], confirm: true])
                     if (nestedResult.success == false) errors << nestedResult.error
                 } finally { script.callerClient = null }
             }
@@ -1224,7 +1236,7 @@ class NativeFormsSpec extends ToolSpecBase {
         def owner = open()
         script.callerClient = [id: 'other']
         model.app.id = 43
-        def later = script.toolCallAppForm([app_id: 43, steps: [[kind: 'open']], confirm: true])
+        def later = script.toolCallAppForm([appId: 43, steps: [[kind: 'open']], confirm: true])
         then:
         owner.success
         errors == ['This app already has an active form operation']
@@ -1240,7 +1252,7 @@ class NativeFormsSpec extends ToolSpecBase {
             throw new IOException('native render unavailable')
         }
         when:
-        def failure = script.toolCallAppForm([app_id: 43, steps: [[kind: 'open']], confirm: true])
+        def failure = script.toolCallAppForm([appId: 43, steps: [[kind: 'open']], confirm: true])
         def stale = submit()
         then:
         !failure.success
@@ -1258,6 +1270,8 @@ class NativeFormsSpec extends ToolSpecBase {
         definitions*.name == ['hub_set_rule']
         script._ndOperationSchema('form').properties.steps.maxItems == 16
         script._naOperationSchema('form') == script._ndOperationSchema('form')
+        script._ndOperationSchema('form').properties.keySet() == ['steps', 'optionsFor'] as Set
+        script._ndOperationSchema('form').properties.steps.items.properties.containsKey('expectPage')
         !definitions[0].inputSchema.required?.contains('confirm')
         script._ndGuide().contains('Even open renders execute app code')
     }

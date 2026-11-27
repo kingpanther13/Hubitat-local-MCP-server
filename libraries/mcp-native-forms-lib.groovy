@@ -170,6 +170,9 @@ private Map _nfWire(Map field, String encoded) {
 private void _nfWalk(Object node, Map fields, Map controls, List messages, List unsupported, Map model, int position = 0) {
     if (node instanceof List) { node.eachWithIndex { item, index -> _nfWalk(item, fields, controls, messages, unsupported, model, index) }; return }
     if (!(node instanceof Map)) return
+    // Read before the chain: a comparison chain inside an else-if makes Groovy 2.4 compile the whole chain twice,
+    // and the server class is close to its constant-pool limit.
+    boolean childApp = node.element == 'app' && node.namespace == 'hubitat' && node.appName instanceof String && node.appName && node.name && node.appId?.toString() == model.app?.id?.toString()
     if (node.element == 'input' && node.name && node.type) {
         String name = node.name.toString()
         String type = node.type.toString()
@@ -218,7 +221,7 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             if (fields.containsKey(name) && fields[name] != field) throw new IllegalStateException('Native form contains ambiguous fields')
             fields.put(name, field)
         }
-    } else if (node.element == 'app' && node.namespace == 'hubitat' && node.appName instanceof String && node.appName && node.name && node.appId?.toString() == model.app?.id?.toString()) {
+    } else if (childApp) {
         _nfControl(controls, [name: node.name.toString(), value: node.appName, kind: 'create_child', title: _nfText(node.title)])
     } else if (node.element in ['label', 'mode']) {
         _nfAppField(fields, model, node.element == 'mode', node)
@@ -362,7 +365,7 @@ private Map _nfPublic(Map context, List optionsFor) {
 private Map _nfBackup(Long id, def nativeApp, String page) {
     boolean builtIn = nativeApp?.appType?.namespace == 'hubitat'
     if (builtIn && nativeApp.appType.name == 'Rule Machine') return [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow']
-    if (builtIn && nativeApp.appType.name in ['Rule-5.1', 'Button Rule-5.1']) return _ndEditBackup(id, 'pre-native-form')
+    if (_rmIsEditableRuleType(nativeApp?.appType?.namespace, nativeApp?.appType?.name)) return _ndEditBackup(id, 'pre-native-form')
     if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
     _rmBackupBeforeEdit(id.toInteger(), 'pre-native-form', page)
 }
@@ -394,7 +397,7 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
     Map body = [:] + context.envelope
     supplied.each { name, value ->
         Map field = context.get('fields').get(name)
-        if (!field && context.controls.values().any { it.kind == 'button' && it.name == name }) throw new IllegalArgumentException("${name} is a button on the current native page, not a field; activate its control_id instead")
+        if (!field && context.controls.values().any { it.kind == 'button' && it.name == name }) throw new IllegalArgumentException("${name} is a button on the current native page, not a field; activate its controlId instead")
         if (!field) throw new IllegalArgumentException("Field is not present on the current native page: ${name}")
         body.putAll(_nfWire(field, _nfValue(field, value)))
     }
@@ -421,7 +424,7 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
     String reloadPath = null
     if (activate) {
         control = context.controls[activate]
-        if (!control) throw new IllegalArgumentException('Choose one exact returned native control_id')
+        if (!control) throw new IllegalArgumentException('Choose one exact returned native controlId')
         if (control.disabled) throw new IllegalArgumentException('The native control is disabled')
         if (control.kind == 'local_app' && supplied) throw new IllegalArgumentException('Submit fields separately before opening another native app form')
         if (control.kind == 'create_child' && supplied) throw new IllegalArgumentException('Submit parent fields separately before creating a child')
@@ -532,31 +535,36 @@ private void _nfForget(Long id) {
     if (NATIVE_FORM_CONTEXTS[key]?.app_id == id) NATIVE_FORM_CONTEXTS.remove(key)
 }
 
-Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
-    if (args.keySet().any { !(it in ['app_id', 'steps', 'options_for', 'confirm', 'bestPracticeKey']) } || !args.app_id?.toString()?.isLong() || args.app_id.toString().toLong() < 1) throw new IllegalArgumentException('A positive app_id is required')
+// The form code writes snake_case result keys; both form tools rename them with _ndCamelForm.
+Map toolCallAppForm(Map args, String toolName = 'hub_set_native_app') {
+    String idKey = toolName == 'hub_set_rule' ? 'ruleId' : 'appId'
+    String expectKey = 'expectPage'
+    def rawId = args.get(idKey)
+    if (args.keySet().any { !(it in [idKey, 'steps', 'optionsFor', 'confirm', 'bestPracticeKey']) } || _exactIntId(rawId) == null) throw new IllegalArgumentException("A positive ${idKey} is required".toString())
     if (!(args.steps instanceof List) || args.steps.size() < 1 || args.steps.size() > 16) throw new IllegalArgumentException('Provide 1 through 16 open/submit steps')
-    List optionsFor = args.options_for ?: []
-    if (!(optionsFor instanceof List) || optionsFor.size() > 32 || optionsFor.any { !(it instanceof String) }) throw new IllegalArgumentException('options_for must contain at most 32 field names')
+    List optionsFor = args.optionsFor ?: []
+    if (!(optionsFor instanceof List) || optionsFor.size() > 32 || optionsFor.any { !(it instanceof String) }) throw new IllegalArgumentException('optionsFor must contain at most 32 field names')
     args.steps.each { step ->
         if (!(step instanceof Map) || !(step.kind in ['open', 'submit'])) throw new IllegalArgumentException('Unknown form step')
-        List keys = step.kind == 'open' ? ['kind', 'page', 'from'] : ['kind', 'expect_page', 'fields', 'activate']
-        if (step.keySet().any { !(it in keys) }) throw new IllegalArgumentException('Unknown form step property')
+        List keys = step.kind == 'open' ? ['kind', 'page', 'from'] : ['kind', expectKey, 'fields', 'activate']
+        def unknownKey = step.keySet().find { !(it in keys) }
+        if (unknownKey != null) throw new IllegalArgumentException("Unknown form step property: ${unknownKey}".toString())
         if (step.kind == 'open' && step.page != null && (!(step.page instanceof String) || !(step.page ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('A registered native page name is required')
         if (step.kind == 'open' && step.from != null && (step.page == null || !(step.from instanceof String) || !(step.from ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('from names the parent page of the opened page and requires page')
-        if (step.kind == 'submit' && (!(step.expect_page instanceof String) || (step.get('fields') != null && !(step.get('fields') instanceof Map)))) throw new IllegalArgumentException('Submit requires expect_page and an optional fields object')
-        if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned control_id string')
+        if (step.kind == 'submit' && (!(step.get(expectKey) instanceof String) || (step.get('fields') != null && !(step.get('fields') instanceof Map)))) throw new IllegalArgumentException("Submit requires ${expectKey} and an optional fields object".toString())
+        if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned controlId string')
         def marked = step.get('fields') instanceof Map ? step.get('fields').find { k, v -> _isRedactionMarker(v) } : null
         if (marked) throw new IllegalArgumentException("${marked.key} is the redaction marker, not a value; omit the field to keep the stored one")
     }
     requireDestructiveConfirm(args.confirm)
-    Long id = args.app_id.toString().toLong()
+    Long id = _exactIntId(rawId) as Long
     _requireUnprotectedAppMutation(id, 'edit native form')
     def nativeApp = getAppByAppId(id)
-    if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException('app_id must identify an installed app')
+    if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException("${idKey} must identify an installed app".toString())
     if (nativeApp.disabled == true) throw new IllegalArgumentException('Enable the app before editing its form')
     String key = _nfCallerKey()
     try { _nfAcquire(id) }
-    catch (IllegalStateException busy) { return [success: false, app_id: id, error: busy.message, note: 'Wait for the running form operation to finish, then retry.'] }
+    catch (IllegalStateException busy) { return [success: false, (idKey): id, error: busy.message, note: 'Wait for the running form operation to finish, then retry.'] }
     List completed = []
     List defaultsPosted = []
     List defaultsNotPosted = []
@@ -581,7 +589,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                 model = _nfPage(id, step.page)
             } else {
                 if (!context) throw new IllegalArgumentException('Open the native form first; its context has expired or is unavailable')
-                if (step.expect_page != context.page.name) throw new IllegalArgumentException('expect_page does not match the last returned native page')
+                if (step.get(expectKey) != context.page.name) throw new IllegalArgumentException("${expectKey} does not match the last returned native page".toString())
                 Map plan = _nfPrepare(id, context, step.get('fields') ?: [:], step.activate, toolName)
                 if (backup == null) backup = _nfBackup(id, nativeApp, context.page.name ?: null)
                 attempted = true
@@ -608,12 +616,12 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                 completed << [kind: step.kind, page: context.page.name]
             }
         }
-        [success: true, app_id: id, completed: completed, backup: backup] + _nfDefaultsReport(defaultsPosted, defaultsNotPosted) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true]) + _nfLabelReport(labelOutcome)
+        [success: true, (idKey): id, completed: completed, backup: backup] + _nfDefaultsReport(defaultsPosted, defaultsNotPosted) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true]) + _nfLabelReport(labelOutcome)
     } catch (Exception failure) {
         mcpLogError('rm-native', "${toolName} form failed for app ${id}: ${failure.message}".toString(), failure)
         // A lost response can follow a successful write; stale controls must never be replayed automatically.
         if (attempted) NATIVE_FORM_CONTEXTS.remove(key)
-        [success: false, app_id: id, partial: attempted, completed: completed, error: failure.message?.toString(),
+        [success: false, (idKey): id, partial: attempted, completed: completed, error: failure.message?.toString(),
          reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + _nfDefaultsReport(defaultsPosted, defaultsNotPosted) + (backup == null ? [:] : [backup: backup]) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
     } finally { _nfRelease(id) }
 }

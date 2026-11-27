@@ -370,7 +370,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
     // ---------------- radio reads ----------------
 
-    def "include_devices lists Zigbee devices with their last message, silent ones first"() {
+    def "includeDevices lists Zigbee devices with their last message, silent ones first"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/zigbeeDetails/json') { p -> JsonOutput.toJson([channel: 25]) }
@@ -382,7 +382,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolGetRadioDetails([radio: 'zigbee', include_devices: true])
+        def r = script.toolGetRadioDetails([radio: 'zigbee', includeDevices: true])
 
         then:
         r.zigbeeDevices.devices*.name == ['Silent', 'Stale', 'Fresh']
@@ -390,7 +390,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         r.zigbeeDevices.devices[0].lastMessage == null
     }
 
-    def "include_status adds the Z-Wave JS, Z-Wave local backup and batch firmware pollers"() {
+    def "includeStatus adds the Z-Wave JS, Z-Wave local backup and batch firmware pollers"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true, zwaveJS: false]) }
@@ -399,7 +399,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.register('/hub/zwave/deviceFirmware/batchProgress') { p -> JsonOutput.toJson([success: false, message: 'Batch firmware updates require Z-Wave JS']) }
 
         when:
-        def r = script.toolGetRadioDetails([radio: 'zwave', include_status: true])
+        def r = script.toolGetRadioDetails([radio: 'zwave', includeStatus: true])
 
         then:
         r.status.zwaveJs.zwaveJSReady == false
@@ -408,7 +408,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     }
 
     @Unroll
-    def "node_id adds Z-Wave JS node details only on a Z-Wave JS hub (zwaveJS=#js)"() {
+    def "nodeId adds Z-Wave JS node details only on a Z-Wave JS hub (zwaveJS=#js)"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true, zwaveJS: js]) }
@@ -417,7 +417,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.register('/hub/zwave2/linkReliability/status') { p -> JsonOutput.toJson([running: false]) }
 
         when:
-        def r = script.toolGetRadioDetails([radio: 'zwave', node_id: '5'])
+        def r = script.toolGetRadioDetails([radio: 'zwave', nodeId: '5'])
 
         then:
         r.containsKey('nodeDetails') == js
@@ -428,7 +428,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         js << [true, false]
     }
 
-    def "include_firmware with node_id reads the node's targets, offered updates, progress and batch candidates"() {
+    def "includeFirmware with nodeId reads the node's targets, offered updates, progress and batch candidates"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true]) }
@@ -438,7 +438,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolGetRadioDetails([radio: 'zwave', include_firmware: true, node_id: '9'])
+        def r = script.toolGetRadioDetails([radio: 'zwave', includeFirmware: true, nodeId: '9'])
 
         then:
         r.firmware.node.keySet() == ['details', 'available', 'progress', 'batchCandidates'] as Set
@@ -459,14 +459,14 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         !JsonOutput.toJson(r).contains('"password"')
     }
 
-    def "backup_job_id reads the Z-Wave backup job"() {
+    def "backupJobId reads the Z-Wave backup job"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/zwaveDetails/json') { p -> '{}' }
         hubGet.register('/hub/zwave/localBackup/job/job-1') { p -> JsonOutput.toJson([stage: 'DONE', percent: 100]) }
 
         when:
-        def r = script.toolGetRadioDetails([radio: 'zwave', backup_job_id: 'job-1'])
+        def r = script.toolGetRadioDetails([radio: 'zwave', backupJobId: 'job-1'])
 
         then:
         r.zwaveBackupJob.stage == 'DONE'
@@ -474,14 +474,14 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
     // ---------------- Z-Wave writes ----------------
 
-    def "hub_set_zwave zwave_js switches the stack and is confirm-gated and sent alone"() {
+    def "hub_set_zwave zwaveJs switches the stack and is confirm-gated and sent alone"() {
         given:
         enableWrite()
         hubGet.register('/hub/zwaveDetails/json') { p -> '{"zwaveJS":false}' }
         hubGet.register('/hub/zwave2/enable') { p -> '{"success":true}' }
 
         when:
-        def r = script.toolSetZwave([zwave_js: true, confirm: true])
+        def r = script.toolSetZwave([zwaveJs: true, confirm: true])
 
         then:
         r.success == true
@@ -490,13 +490,13 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.calls*.path == ['/hub/zwaveDetails/json', '/hub/zwave2/enable']
     }
 
-    def "hub_set_zwave zwave_js does nothing when the hub already runs that stack"() {
+    def "hub_set_zwave zwaveJs does nothing when the hub already runs that stack"() {
         given:
         enableWrite()
         hubGet.register('/hub/zwaveDetails/json') { p -> '{"zwaveJS":true}' }
 
         when:
-        def r = script.toolSetZwave([zwave_js: true, confirm: true])
+        def r = script.toolSetZwave([zwaveJs: true, confirm: true])
 
         then:
         r.success == true
@@ -505,14 +505,14 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_set_zwave zwave_js reports #label"() {
+    def "hub_set_zwave zwaveJs reports #label"() {
         given:
         enableWrite()
         hubGet.register('/hub/zwaveDetails/json') { p -> details }
         hubGet.register('/hub/zwave2/enable') { p -> if (failure != null) throw failure; answer }
 
         when:
-        def r = script.toolSetZwave([zwave_js: true, confirm: true])
+        def r = script.toolSetZwave([zwaveJs: true, confirm: true])
 
         then:
         r.success == false
@@ -528,7 +528,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_set_zwave zwave_js is refused before any hub call: #label"() {
+    def "hub_set_zwave zwaveJs is refused before any hub call: #label"() {
         given:
         enableWrite()
 
@@ -541,9 +541,9 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         where:
         label                 | args
-        'no confirm'          | [zwave_js: false]
-        'combined with region'| [zwave_js: true, region: 'US', confirm: true]
-        'not a boolean'       | [zwave_js: 'yes', confirm: true]
+        'no confirm'          | [zwaveJs: false]
+        'combined with region'| [zwaveJs: true, region: 'US', confirm: true]
+        'not a boolean'       | [zwaveJs: 'yes', confirm: true]
     }
 
     def "hub_set_zwave reports the hub's refusal of the stack switch"() {
@@ -553,7 +553,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.register('/hub/zwave2/disable') { p -> '{"success":false,"message":"not available"}' }
 
         when:
-        def r = script.toolSetZwave([zwave_js: false, confirm: true])
+        def r = script.toolSetZwave([zwaveJs: false, confirm: true])
 
         then:
         r.success == false
@@ -567,10 +567,10 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.register('/hub/zwave2/reinterview') { p -> 'ok' }
 
         when:
-        def re = script.toolCallZwave([action: 'reinterview', node_id: '12'])
-        def lt = script.toolCallZwave([action: 'link_test_start', node_id: '12', link_test: [rounds: 5], confirm: true])
-        def ls = script.toolCallZwave([action: 'link_test_stop', node_id: '12'])
-        def cc = script.toolCallZwave([action: 'cc_command', node_id: '12', cc: [command_class: 37, method_name: 'set', args: [true]], confirm: true])
+        def re = script.toolCallZwave([action: 'reinterview', nodeId: '12'])
+        def lt = script.toolCallZwave([action: 'link_test_start', nodeId: '12', linkTest: [rounds: 5], confirm: true])
+        def ls = script.toolCallZwave([action: 'link_test_stop', nodeId: '12'])
+        def cc = script.toolCallZwave([action: 'cc_command', nodeId: '12', cc: [commandClass: 37, methodName: 'set', args: [true]], confirm: true])
 
         then:
         re.success && lt.success && ls.success && cc.success
@@ -586,7 +586,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         def posts = jsonPosts()
 
         when:
-        def r = script.toolCallZwave([action: 'cc_command', node_id: '12', cc: [command_class: '0x25', method_name: 'get', endpoint: '1'], confirm: true])
+        def r = script.toolCallZwave([action: 'cc_command', nodeId: '12', cc: [commandClass: '0x25', methodName: 'get', endpoint: '1'], confirm: true])
 
         then:
         r.success == true
@@ -600,8 +600,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null -> [_unparseable: true, message: '<html>login</html>'] }
 
         when:
-        def cc = script.toolCallZwave([action: 'cc_command', node_id: '12', cc: [command_class: 37, method_name: 'get'], confirm: true])
-        def fw = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start_available', node_id: '4', update_id: 'u-1', confirm: true])
+        def cc = script.toolCallZwave([action: 'cc_command', nodeId: '12', cc: [commandClass: 37, methodName: 'get'], confirm: true])
+        def fw = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start_available', nodeId: '4', updateId: 'u-1', confirm: true])
 
         then:
         cc.success == false
@@ -614,7 +614,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         def posts = jsonPosts()
 
         when:
-        script.toolCallZwave([action: 'link_test_start', node_id: '12'])
+        script.toolCallZwave([action: 'link_test_start', nodeId: '12'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -629,7 +629,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         def posts = jsonPosts()
 
         when:
-        script.toolCallZwave([action: 'cc_command', node_id: node] + extra)
+        script.toolCallZwave([action: 'cc_command', nodeId: node] + extra)
 
         then:
         thrown(IllegalArgumentException)
@@ -637,12 +637,12 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         where:
         label               | node  | extra
-        'no confirm'        | '12'  | [cc: [command_class: 37, method_name: 'get']]
-        'no method'         | '12'  | [cc: [command_class: 37], confirm: true]
-        'node not a number' | 'abc' | [cc: [command_class: 37, method_name: 'get'], confirm: true]
-        'node checked first'| 'abc' | [cc: [command_class: 37, method_name: 'get']]
-        'args not a list'   | '12'  | [cc: [command_class: 37, method_name: 'get', args: 'x'], confirm: true]
-        'class not a number'| '12'  | [cc: [command_class: 'zz', method_name: 'get'], confirm: true]
+        'no confirm'        | '12'  | [cc: [commandClass: 37, methodName: 'get']]
+        'no method'         | '12'  | [cc: [commandClass: 37], confirm: true]
+        'node not a number' | 'abc' | [cc: [commandClass: 37, methodName: 'get'], confirm: true]
+        'node checked first'| 'abc' | [cc: [commandClass: 37, methodName: 'get']]
+        'args not a list'   | '12'  | [cc: [commandClass: 37, methodName: 'get', args: 'x'], confirm: true]
+        'class not a number'| '12'  | [cc: [commandClass: 'zz', methodName: 'get'], confirm: true]
     }
 
     def "local_backup_create starts a job and local_backup_keys normalizes the keys"() {
@@ -653,9 +653,9 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         when:
         def c = script.toolCallZwave([action: 'local_backup_create'])
-        def k = script.toolCallZwave([action: 'local_backup_keys', import_id: 'imp-1',
-                                      security_keys: [S0_Legacy: ' 0xAABBCCDDEEFF00112233445566778899 ', S2_Unauthenticated: 'c' * 32, S2_Authenticated: 'd' * 32,
-                                                      S2_AccessControl: 'e' * 32, long_range: [S2_Authenticated: '0x' + '1' * 32]]])
+        def k = script.toolCallZwave([action: 'local_backup_keys', importId: 'imp-1',
+                                      securityKeys: [S0_Legacy: ' 0xAABBCCDDEEFF00112233445566778899 ', S2_Unauthenticated: 'c' * 32, S2_Authenticated: 'd' * 32,
+                                                      S2_AccessControl: 'e' * 32, longRange: [S2_Authenticated: '0x' + '1' * 32]]])
 
         then:
         c.success == true
@@ -664,7 +664,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         posts[0].path == '/hub/zwave/localBackup/securityKeys/imp-1'
         posts[0].body.securityKeys.S0_Legacy == 'AABBCCDDEEFF00112233445566778899'
         posts[0].body.securityKeysLongRange == [S2_Authenticated: '1' * 32]
-        !posts[0].body.securityKeys.containsKey('long_range')
+        !posts[0].body.securityKeys.containsKey('longRange')
     }
 
     @Unroll
@@ -674,7 +674,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         def posts = jsonPosts()
 
         when:
-        script.toolCallZwave([node_id: '12', confirm: true] + args)
+        script.toolCallZwave([nodeId: '12', confirm: true] + args)
 
         then:
         thrown(IllegalArgumentException)
@@ -682,10 +682,10 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         where:
         label                      | args
-        'camelCase link_test key'  | [action: 'link_test_start', link_test: [intervalMs: 5000]]
-        'negative endpoint'        | [action: 'cc_command', cc: [command_class: 37, method_name: 'get', endpoint: -1]]
-        'oversized command class'  | [action: 'cc_command', cc: [command_class: '99999999999', method_name: 'get']]
-        'unknown cc key'           | [action: 'cc_command', cc: [command_class: 37, method_name: 'get', cmd: 'x']]
+        'snake_case linkTest key'  | [action: 'link_test_start', linkTest: [interval_ms: 5000]]
+        'negative endpoint'        | [action: 'cc_command', cc: [commandClass: 37, methodName: 'get', endpoint: -1]]
+        'oversized command class'  | [action: 'cc_command', cc: [commandClass: '99999999999', methodName: 'get']]
+        'unknown cc key'           | [action: 'cc_command', cc: [commandClass: 37, methodName: 'get', cmd: 'x']]
     }
 
     def "local_backup_download without confirm is refused, and the hub's own error is kept"() {
@@ -694,13 +694,13 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.hubInternalBytes = { String m, String path, Map q = null, Map f = null, int t = 300 -> [status: 200, error: 'Job not complete'] }
 
         when:
-        script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9'])
+        script.toolCallZwave([action: 'local_backup_download', jobId: 'job-9'])
 
         then:
         thrown(IllegalArgumentException)
 
         when:
-        def r = script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9', confirm: true])
+        def r = script.toolCallZwave([action: 'local_backup_download', jobId: 'job-9', confirm: true])
 
         then:
         r.success == false
@@ -716,7 +716,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start', node_id: '12', file_name: 'fw.otz', confirm: true])
+        def r = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start', nodeId: '12', fileName: 'fw.otz', confirm: true])
 
         then:
         r.success == false
@@ -731,7 +731,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         def posts = jsonPosts()
 
         when:
-        script.toolCallZwave([action: 'local_backup_keys', import_id: 'imp-1', security_keys: keys])
+        script.toolCallZwave([action: 'local_backup_keys', importId: 'imp-1', securityKeys: keys])
 
         then:
         thrown(IllegalArgumentException)
@@ -742,8 +742,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         'grant booleans' | [S2_Authenticated: true]
         'short hex'      | [S0_Legacy: 'aabb']
         'unknown name'   | [S2Authenticated: 'a' * 32]
-        'bad long range' | [S0_Legacy: 'a' * 32, long_range: [S0_Legacy: 'a' * 32]]
-        'long range text'| [S0_Legacy: 'a' * 32, long_range: 'b' * 32]
+        'bad long range' | [S0_Legacy: 'a' * 32, longRange: [S0_Legacy: 'a' * 32]]
+        'long range text'| [S0_Legacy: 'a' * 32, longRange: 'b' * 32]
     }
 
     def "local_backup_download saves the finished archive to File Manager"() {
@@ -754,7 +754,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> saved.name = name; saved.size = bytes.length }
 
         when:
-        def r = script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9', confirm: true])
+        def r = script.toolCallZwave([action: 'local_backup_download', jobId: 'job-9', confirm: true])
 
         then:
         r.success == true
@@ -771,7 +771,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> saved << name }
 
         when:
-        def r = script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9', confirm: true])
+        def r = script.toolCallZwave([action: 'local_backup_download', jobId: 'job-9', confirm: true])
 
         then:
         r.success == false
@@ -787,7 +787,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> up.path = path; up.fileName = fileName; [success: true, importId: 'imp-7'] }
 
         when:
-        def r = script.toolCallZwave([action: 'local_backup_import', backup_url: 'https://files.example.com/dir/net.tar.gz?dl=1', confirm: true])
+        def r = script.toolCallZwave([action: 'local_backup_import', backupUrl: 'https://files.example.com/dir/net.tar.gz?dl=1', confirm: true])
 
         then:
         r.success == true
@@ -801,10 +801,10 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         def posts = jsonPosts()
 
         when:
-        def rs = script.toolCallDestructiveOps([target: 'zwave', action: 'local_backup_restore', import_id: 'imp-1', confirm: true])
-        def sa = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start_available', node_id: '4', update_id: 'u-1', confirm: true])
-        def sb = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_start', node_id: '4', batch: [node_ids: ['5', '6']], file_name: 'fw.otz', confirm: true])
-        def sba = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_start_available', node_id: '4', batch: [node_ids: ['5'], inactivity_timeout_seconds: 120], update_id: 'u-1', confirm: true])
+        def rs = script.toolCallDestructiveOps([target: 'zwave', action: 'local_backup_restore', importId: 'imp-1', confirm: true])
+        def sa = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start_available', nodeId: '4', updateId: 'u-1', confirm: true])
+        def sb = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_start', nodeId: '4', batch: [nodeIds: ['5', '6']], fileName: 'fw.otz', confirm: true])
+        def sba = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_start_available', nodeId: '4', batch: [nodeIds: ['5'], inactivityTimeoutSeconds: 120], updateId: 'u-1', confirm: true])
         def ab = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_abort', confirm: true])
 
         then:
@@ -824,7 +824,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null -> [success: false, message: 'Not allowed over Remote Admin'] }
 
         when:
-        def r = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start_available', node_id: '4', update_id: 'u-1', confirm: true])
+        def r = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start_available', nodeId: '4', updateId: 'u-1', confirm: true])
 
         then:
         r.success == false
@@ -840,7 +840,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.register('/hub/matter/wifiCredentials') { p -> JsonOutput.toJson([selectedSsid: 'Home', storedSsid: 'Home', hasStoredPassword: true, passwordPlaceholder: '********']) }
 
         when:
-        def r = script.toolCallMatter([action: 'pair', setup_code: ' 12345678901 '])
+        def r = script.toolCallMatter([action: 'pair', setupCode: ' 12345678901 '])
 
         then:
         r.success == true
@@ -855,7 +855,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         def posts = jsonPosts()
 
         when:
-        def r = script.toolCallMatter([action: 'pair', setup_code: '1'])
+        def r = script.toolCallMatter([action: 'pair', setupCode: '1'])
 
         then:
         r.success == false
@@ -863,18 +863,18 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         posts.isEmpty()
     }
 
-    def "pair on a network without a stored password needs wifi_password"() {
+    def "pair on a network without a stored password needs wifiPassword"() {
         given:
         enableWrite()
         def posts = jsonPosts()
         hubGet.register('/hub/matter/wifiCredentials') { p -> JsonOutput.toJson([selectedSsid: 'Guest', storedSsid: 'Home', hasStoredPassword: true, passwordPlaceholder: '********']) }
 
         when:
-        script.toolCallMatter([action: 'pair', setup_code: '1'])
+        script.toolCallMatter([action: 'pair', setupCode: '1'])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('wifi_password')
+        ex.message.contains('wifiPassword')
         posts.isEmpty()
     }
 
@@ -886,7 +886,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.register('/hub/matter/pair') { p -> '7' }
 
         when:
-        def r = script.toolCallMatter([action: 'pair', setup_code: '123'])
+        def r = script.toolCallMatter([action: 'pair', setupCode: '123'])
 
         then:
         r.success == true
@@ -900,7 +900,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         def posts = jsonPosts()
 
         when:
-        script.toolCallMatter([action: 'pair', setup_code: '1', wifi_ssid: 'Guest', wifi_password: 'pw'])
+        script.toolCallMatter([action: 'pair', setupCode: '1', wifiSsid: 'Guest', wifiPassword: 'pw'])
 
         then:
         posts[0].body == [setupCode: '1', ssid: 'Guest', password: 'pw']
@@ -915,7 +915,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null -> answer }
 
         when:
-        def r = script.toolCallMatter([action: 'pair', setup_code: '1'])
+        def r = script.toolCallMatter([action: 'pair', setupCode: '1'])
 
         then:
         r.success == false
@@ -933,19 +933,19 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.register('/hub/matter/wifiCredentials') { p -> JsonOutput.toJson([selectedSsid: 'Guest', storedSsid: 'Home', hasStoredPassword: true, passwordPlaceholder: '********']) }
 
         when:
-        script.toolCallMatter([action: 'pair', setup_code: '1', wifi_ssid: 'Home'])
+        script.toolCallMatter([action: 'pair', setupCode: '1', wifiSsid: 'Home'])
 
         then:
         posts[0].body == [setupCode: '1', ssid: 'Home', password: '********']
     }
 
-    def "wifi_password without wifi_ssid is refused"() {
+    def "wifiPassword without wifiSsid is refused"() {
         when:
-        script.toolCallMatter([action: 'pair', setup_code: '1', wifi_password: 'pw'])
+        script.toolCallMatter([action: 'pair', setupCode: '1', wifiPassword: 'pw'])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('wifi_ssid')
+        ex.message.contains('wifiSsid')
     }
 
     def "a nodeId of 0 is a failed pairing; cancel_pair calls cancelPair"() {
@@ -956,8 +956,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.register('/hub/matter/cancelPair') { p -> '{"success":true}' }
 
         when:
-        def failed = script.toolCallMatter([action: 'pair', setup_code: '1'])
-        def cancel = script.toolCallMatter([action: 'cancel_pair', node_id: '42'])
+        def failed = script.toolCallMatter([action: 'pair', setupCode: '1'])
+        def cancel = script.toolCallMatter([action: 'cancel_pair', nodeId: '42'])
 
         then:
         failed.success == false
@@ -1529,6 +1529,31 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         r.totalOnHub == 2
     }
 
+    @spock.lang.Unroll
+    def "hub_list_apps instances match nameFilter '#filter' against the app type as well as the name"() {
+        given: 'a Button Rule is named after its button, so only its type says what it is'
+        settingsMap.enableRead = true
+        hubGet.register('/hub2/appsList') { p ->
+            JsonOutput.toJson([apps: [[data: [id: 7, name: 'Button Rules', type: 'Button Rules', disabled: false, user: false, hidden: false],
+                                       children: [[data: [id: 8, name: 'Hall Pico: button 1 pushed', type: 'Button Rule-5.1', disabled: false, user: false, hidden: false], children: []]]],
+                                      [data: [id: 9, name: '<b>Porch</b>', type: 'Room Lights', disabled: false, user: false, hidden: false], children: []]]])
+        }
+
+        when:
+        def r = script.toolListInstalledApps([nameFilter: filter])
+
+        then:
+        r.apps*.id == ids
+
+        where:
+        filter              | ids
+        'Button Rule-5.1'   | [8]
+        'button rule'       | [7, 8]
+        'button 1 pushed'   | [8]
+        'room lights'       | [9]
+        'porch'             | [9]
+    }
+
     def "hub_list_device_dependents adds the apps only getAppsUsingDevice reports"() {
         given:
         childDevicesList << [id: '42', label: 'Kitchen', name: 'Switch']
@@ -1781,7 +1806,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
                 [id: 'api-hubitat-zwave-x', className: 'hubitat.zwave.X', label: 'X', section: 'protocols', topic: 'Z-Wave',
                  methods: [[kind: 'method', name: 'events', signature: 'void events()', summary: 'protocol events between frames']]]]])
 
-    def "platform_api_search pages 25 matches at a time"() {
+    def "platformApiSearch pages 25 matches at a time"() {
         given:
         hubGet.register('/developer-docs/index.json') { p ->
             JsonOutput.toJson([contentRevision: '1', guides: [], pages: [[id: 'api-x', className: 'X', label: 'X', section: 'shared',
@@ -1789,8 +1814,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def first = script.toolGetToolGuide(null, null, [platform_api_search: 'events'])
-        def second = script.toolGetToolGuide(null, first.nextCursor, [platform_api_search: 'events'])
+        def first = script.toolGetToolGuide(null, null, [platformApiSearch: 'events'])
+        def second = script.toolGetToolGuide(null, first.nextCursor, [platformApiSearch: 'events'])
 
         then:
         first.total == 30
@@ -1799,12 +1824,12 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         !second.containsKey('nextCursor')
     }
 
-    def "platform_api_search finds a method on its class page"() {
+    def "platformApiSearch finds a method on its class page"() {
         given:
         hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
 
         when:
-        def r = script.toolGetToolGuide(null, null, [platform_api_search: 'eventsBetween'])
+        def r = script.toolGetToolGuide(null, null, [platformApiSearch: 'eventsBetween'])
 
         then:
         r.success == true
@@ -1814,30 +1839,30 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         !r.containsKey('nextCursor')
     }
 
-    def "platform_api_search matches a class name and a method name together"() {
+    def "platformApiSearch matches a class name and a method name together"() {
         given:
         hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
 
         when:
-        def r = script.toolGetToolGuide(null, null, [platform_api_search: 'DeviceWrapper eventsBetween'])
+        def r = script.toolGetToolGuide(null, null, [platformApiSearch: 'DeviceWrapper eventsBetween'])
 
         then:
         r.total == 1
         r.matches[0].name == 'eventsBetween'
     }
 
-    def "a broad platform_api_search puts shared-API hits ahead of protocol pages"() {
+    def "a broad platformApiSearch puts shared-API hits ahead of protocol pages"() {
         given:
         hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
 
         when:
-        def r = script.toolGetToolGuide(null, null, [platform_api_search: 'events'])
+        def r = script.toolGetToolGuide(null, null, [platformApiSearch: 'events'])
 
         then:
         r.matches.findIndexOf { it.section == 'shared' } < r.matches.findIndexOf { it.section == 'protocols' }
     }
 
-    def "platform_api_page returns a class's methods with full descriptions"() {
+    def "platformApiPage returns a class's methods with full descriptions"() {
         given:
         hubGet.register('/developer-docs/api-com-hubitat-app-devicewrapper.json') { p ->
             JsonOutput.toJson([id: 'api-com-hubitat-app-devicewrapper', className: 'com.hubitat.app.DeviceWrapper', label: 'Device wrapper', section: 'shared',
@@ -1845,8 +1870,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def first = script.toolGetToolGuide(null, null, [platform_api_page: 'api-com-hubitat-app-devicewrapper'])
-        def second = script.toolGetToolGuide(null, first.nextCursor, [platform_api_page: 'api-com-hubitat-app-devicewrapper'])
+        def first = script.toolGetToolGuide(null, null, [platformApiPage: 'api-com-hubitat-app-devicewrapper'])
+        def second = script.toolGetToolGuide(null, first.nextCursor, [platformApiPage: 'api-com-hubitat-app-devicewrapper'])
 
         then:
         first.totalMethods == 45
@@ -1856,7 +1881,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         !second.containsKey('nextCursor')
     }
 
-    def "platform_api_page shortens a page whose descriptions would run past ~60 KB"() {
+    def "platformApiPage shortens a page whose descriptions would run past ~60 KB"() {
         given:
         hubGet.register('/developer-docs/api-big.json') { p ->
             JsonOutput.toJson([id: 'api-big', className: 'Big', label: 'Big', section: 'shared',
@@ -1864,7 +1889,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def first = script.toolGetToolGuide(null, null, [platform_api_page: 'api-big'])
+        def first = script.toolGetToolGuide(null, null, [platformApiPage: 'api-big'])
 
         then:
         first.methods.size() < 40
@@ -1872,7 +1897,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         first.nextCursor == first.methods.size().toString()
     }
 
-    def "platform_api_page cuts a single oversized description and flags it"() {
+    def "platformApiPage cuts a single oversized description and flags it"() {
         given:
         hubGet.register('/developer-docs/api-huge.json') { p ->
             JsonOutput.toJson([id: 'api-huge', className: 'Huge', label: 'Huge', section: 'shared',
@@ -1880,7 +1905,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolGetToolGuide(null, null, [platform_api_page: 'api-huge'])
+        def r = script.toolGetToolGuide(null, null, [platformApiPage: 'api-huge'])
 
         then:
         r.methods[0].description.length() == 20000
@@ -1907,7 +1932,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         label            | size              | invoke
         'full restore'   | 40L * 1024 * 1024 | { s -> s.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://h/x/full.tar.gz', confirm: true]) }
         'database'       | 9L * 1024 * 1024  | { s -> s.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://h/x/db.lzf', confirm: true]) }
-        'Z-Wave import'  | 9L * 1024 * 1024  | { s -> s.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz', confirm: true]) }
+        'Z-Wave import'  | 9L * 1024 * 1024  | { s -> s.toolCallZwave([action: 'local_backup_import', backupUrl: 'https://h/x/net.tar.gz', confirm: true]) }
     }
 
     def "_probeUrl reads the total from a ranged answer"() {
@@ -2047,7 +2072,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         where:
         call << [{ s -> s.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://h/x/full.tar.gz', confirm: true]) },
-                 { s -> s.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz', confirm: true]) }]
+                 { s -> s.toolCallZwave([action: 'local_backup_import', backupUrl: 'https://h/x/net.tar.gz', confirm: true]) }]
     }
 
     def "a backup URL pointing at the hub itself is refused unless it is a File Manager file: #url"() {
@@ -2150,7 +2175,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass._fetchBytesFromUrl = { String url, long cap -> fetched << url; 'NVM'.getBytes('UTF-8') }
 
         when:
-        script.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz'])
+        script.toolCallZwave([action: 'local_backup_import', backupUrl: 'https://h/x/net.tar.gz'])
 
         then:
         def e = thrown(IllegalArgumentException)
@@ -2167,7 +2192,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.register('/hub/matter/wifiCredentials') { p -> JsonOutput.toJson([selectedSsid: '', storedSsid: '', hasStoredPassword: false]) }
 
         when:
-        def r = script.toolCallMatter([action: 'pair', setup_code: '12345678901'])
+        def r = script.toolCallMatter([action: 'pair', setupCode: '12345678901'])
 
         then:
         r.success == ok
@@ -2301,7 +2326,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> ups << path; [success: true] }
 
         when:
-        def r = script.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz', confirm: true])
+        def r = script.toolCallZwave([action: 'local_backup_import', backupUrl: 'https://h/x/net.tar.gz', confirm: true])
 
         then:
         r.success == false
@@ -2335,20 +2360,20 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         where:
         label                 | section  | extra
-        'with a section'      | 'rules'  | [platform_api_search: 'x']
-        'both lookups'        | null     | [platform_api_search: 'x', platform_api_page: 'y']
-        'bad page id'         | null     | [platform_api_page: '../etc']
-        'empty search'        | null     | [platform_api_search: '   ']
+        'with a section'      | 'rules'  | [platformApiSearch: 'x']
+        'both lookups'        | null     | [platformApiSearch: 'x', platformApiPage: 'y']
+        'bad page id'         | null     | [platformApiPage: '../etc']
+        'empty search'        | null     | [platformApiSearch: '   ']
     }
 
     @Unroll
-    def "platform_api_search reaches a client through hub_get_tool_guide dispatch (useGateways=#useGateways)"() {
+    def "platformApiSearch reaches a client through hub_get_tool_guide dispatch (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
 
         when:
-        def response = mcpDriver.callTool('hub_get_tool_guide', [platform_api_search: 'eventsBetween'])
+        def response = mcpDriver.callTool('hub_get_tool_guide', [platformApiSearch: 'eventsBetween'])
 
         then:
         response.error == null

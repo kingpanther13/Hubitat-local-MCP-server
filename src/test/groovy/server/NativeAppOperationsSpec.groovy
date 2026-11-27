@@ -139,7 +139,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
 
     private Map create(Map args) { script.toolSetNativeApp([operation: 'create', args: args, confirm: true]) }
 
-    private Map update(Long id, Map args) { script.toolSetNativeApp([operation: 'update', app_id: id, args: args, confirm: true]) }
+    private Map update(Long id, Map args) { script.toolSetNativeApp([operation: 'update', appId: id, args: args, confirm: true]) }
 
     private void existing(Long id, String typeName = 'Notifier') {
         apps[id] = [id: id, appType: [namespace: 'hubitat', name: typeName], disabled: false]
@@ -154,17 +154,17 @@ class NativeAppOperationsSpec extends ToolSpecBase {
             page(90L, notifierInputs(), [label: 'Front door', installed: true, settings: [origLabel: 'Front door', logging: 'true']])])
 
         when:
-        def result = create([app_type: 'notifier', name: 'Front door', fields: [logging: true]])
+        def result = create([appType: 'notifier', name: 'Front door', fields: [logging: true]])
 
         then:
         result.success
-        result.app_id == 90L
-        result.app_type == 'notifier'
+        result.appId == 90L
+        result.appType == 'notifier'
         result.label == 'Front door'
         result.fields_applied == ['logging', 'origLabel']
         !result.containsKey('backup')
         !result.containsKey('installed')
-        result.note.contains("hub_set_native_app(operation:'update', app_id:90")
+        result.note.contains("hub_set_native_app(operation:'update', appId:90")
         raws == ['/installedapp/createchild/hubitat/Notifier/parent/40']
         posts.size() == 1
         posts[0].path == '/installedapp/update/json'
@@ -182,13 +182,13 @@ class NativeAppOperationsSpec extends ToolSpecBase {
             page(91L, [input('origLabel', 'text', [required: true])], [label: 'Hall', installed: true, settings: [origLabel: 'Hall']])])
 
         when:
-        def result = create([app_type: 'rule_machine', name: 'Hall'])
+        def result = create([appType: 'rule_machine', name: 'Hall'])
 
         then:
         result.success
         raws == ['/installedapp/createchild/hubitat/Rule-5.1/parent/43']
         posts*.body*._action_update == ['Done']
-        result.note.contains("hub_set_rule(operation:'update', rule_id:91")
+        result.note.contains("hub_set_rule(operation:'update', ruleId:91")
     }
 
     def 'a create drops the caller cached form context of the parent page it changed'() {
@@ -199,7 +199,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         sharedMap('NATIVE_FORM_CONTEXTS')[script._nfCallerKey()] = [app_id: 40L, page: [name: 'mainPage']]
 
         when:
-        def result = create([app_type: 'notifier', name: 'N'])
+        def result = create([appType: 'notifier', name: 'N'])
 
         then:
         result.success
@@ -211,7 +211,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         pages['/installedapp/configure/json/40'] = page(40L, [[element: 'app', namespace: 'hubitat', appName: 'Notifier Plus', name: 'other', appId: 40L]])
 
         when:
-        def result = create([app_type: 'notifier', name: 'N'])
+        def result = create([appType: 'notifier', name: 'N'])
 
         then:
         !result.success
@@ -232,8 +232,8 @@ class NativeAppOperationsSpec extends ToolSpecBase {
 
         then:
         !result.success
-        result.app_type == 'notifier'
-        !result.containsKey('app_id')
+        result.appType == 'notifier'
+        !result.containsKey('appId')
         result.error.contains(message)
         result.error.contains('The new app was removed, so nothing was created.')
         result.note.contains("hub_get_tool_guide(section='set_native_app_reference')")
@@ -242,17 +242,17 @@ class NativeAppOperationsSpec extends ToolSpecBase {
 
         where:
         label                     | args                                                                   | message
-        'unknown field'           | [app_type: 'notifier', name: 'N', fields: [nope: 1]]                   | 'Field is not present on the current native page: nope'
-        'button in fields'        | [app_type: 'notifier', name: 'N', fields: [go: 'x']]                   | 'go is a button on the current native page'
-        'bad enum'                | [app_type: 'notifier', name: 'N', fields: [devType: 'Fax']]            | 'Invalid native choice for devType'
-        'unknown device id'       | [app_type: 'notifier', name: 'N', fields: [switches: ['99']]]          | 'Invalid native choice for switches'
-        'device cardinality'      | [app_type: 'notifier', name: 'N', fields: [switches: '7']]             | 'Incorrect cardinality for switches'
-        'required empty for Done' | [app_type: 'notifier']                                                 | 'Complete required native fields before navigating: origLabel'
+        'unknown field'           | [appType: 'notifier', name: 'N', fields: [nope: 1]]                   | 'Field is not present on the current native page: nope'
+        'button in fields'        | [appType: 'notifier', name: 'N', fields: [go: 'x']]                   | 'go is a button on the current native page'
+        'bad enum'                | [appType: 'notifier', name: 'N', fields: [devType: 'Fax']]            | 'Invalid native choice for devType'
+        'unknown device id'       | [appType: 'notifier', name: 'N', fields: [switches: ['99']]]          | 'Invalid native choice for switches'
+        'device cardinality'      | [appType: 'notifier', name: 'N', fields: [switches: '7']]             | 'Incorrect cardinality for switches'
+        'required empty for Done' | [appType: 'notifier']                                                 | 'Complete required native fields before navigating: origLabel'
     }
 
     def 'a label passed as name and in fields is refused from the arguments alone, before any parent is found or rendered'() {
         when:
-        create([app_type: 'notifier', name: 'N', fields: [origLabel: 'M']])
+        create([appType: 'notifier', name: 'N', fields: [origLabel: 'M']])
 
         then:
         def refused = thrown(IllegalArgumentException)
@@ -263,13 +263,37 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         gets.isEmpty()
     }
 
+    @spock.lang.Unroll
+    def 'a button_controller create without buttonDev (#label) is refused before the parent is found or installed'() {
+        given:
+        atomicStateMap.parentAppIds = [:]
+
+        when:
+        create(args)
+
+        then:
+        IllegalArgumentException e = thrown()
+        e.message.contains('button_controller requires fields.buttonDev')
+        e.message.contains('Nothing was created.')
+        gets.isEmpty()
+        raws.isEmpty()
+        posts.isEmpty()
+        deleted.isEmpty()
+
+        where:
+        label            | args
+        'no fields'      | [appType: 'button_controller']
+        'other fields'   | [appType: 'button_controller', fields: [origLabel: 'Kitchen']]
+        'empty buttonDev'| [appType: 'button_controller', fields: [buttonDev: []]]
+    }
+
     def 'name is refused, and the new app removed, when the first page renders no label input'() {
         given:
         parentAt(47L, 'childButtons', 'Button Controller-5.1')
         childAt(92L, 47L, 'Button Controller-5.1', [page(92L, [input('buttonDev', 'capability.pushableButton', [multiple: true, required: true])])])
 
         when:
-        def result = create([app_type: 'button_controller', name: 'Kitchen', fields: [buttonDev: ['7']]])
+        def result = create([appType: 'button_controller', name: 'Kitchen', fields: [buttonDev: ['7']]])
 
         then:
         !result.success
@@ -286,11 +310,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         deleteFails = true
 
         when:
-        def result = create([app_type: 'notifier', name: 'N', fields: [nope: 1]])
+        def result = create([appType: 'notifier', name: 'N', fields: [nope: 1]])
 
         then:
         !result.success
-        result.app_id == 90L
+        result.appId == 90L
         result.error.contains('Removing the unfinished app then failed')
         result.note.contains('hub_delete_native_app')
         posts.isEmpty()
@@ -302,11 +326,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         childAt(90L, 40L, 'Notifier', [{ -> throw new IOException('read timed out') }])
 
         when:
-        def result = create([app_type: 'notifier', name: 'N'])
+        def result = create([appType: 'notifier', name: 'N'])
 
         then:
         !result.success
-        result.app_id == 90L
+        result.appId == 90L
         result.orphan_cleanup == 'removed'
         deleted == [90]
         posts.isEmpty()
@@ -319,12 +343,12 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         postFailure = { String path, Map body -> throw new IOException('read timed out') }
 
         when:
-        def result = create([app_type: 'notifier', name: 'N'])
+        def result = create([appType: 'notifier', name: 'N'])
 
         then:
         !result.success
         result.partial
-        result.app_id == 90L
+        result.appId == 90L
         result.note.contains('do not create it again')
         deleted.isEmpty()
     }
@@ -335,11 +359,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         childAt(90L, 40L, 'Notifier', [page(90L, notifierInputs()), { -> throw new IOException('read timed out') }])
 
         when:
-        def result = create([app_type: 'notifier', name: 'N', fields: [logging: true]])
+        def result = create([appType: 'notifier', name: 'N', fields: [logging: true]])
 
         then:
         !result.success
-        result.app_id == 90L
+        result.appId == 90L
         result.fields_unverified == ['logging', 'origLabel']
         result.error.contains('reading it back failed')
         deleted.isEmpty()
@@ -352,7 +376,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
             page(90L, notifierInputs(), [label: 'N', installed: true, settings: [origLabel: 'N', logging: 'false']])])
 
         when:
-        def result = create([app_type: 'notifier', name: 'N', fields: [logging: true]])
+        def result = create([appType: 'notifier', name: 'N', fields: [logging: true]])
 
         then:
         !result.success
@@ -371,7 +395,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [page(93L, revealed, [settings: [therm: ['7': 'Lamp']]]), DONE]
 
         when:
-        def result = create([app_type: 'thermostat_scheduler', fields: [therm: ['7']]])
+        def result = create([appType: 'thermostat_scheduler', fields: [therm: ['7']]])
 
         then:
         result.success
@@ -392,7 +416,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         childAt(94L, 46L, 'Basic Rule-1.0', [page(94L, inputs, [install: false]), page(94L, inputs, [install: false, settings: [comments: 'note']])])
 
         when:
-        def result = create([app_type: 'basic_rule', fields: [comments: 'note']])
+        def result = create([appType: 'basic_rule', fields: [comments: 'note']])
 
         then:
         result.success
@@ -410,11 +434,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
 
         when:
         def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_native_app',
-            [operation: 'create', args: [app_type: 'notifier', name: 'GW'], confirm: true])
+            [operation: 'create', args: [appType: 'notifier', name: 'GW'], confirm: true])
 
         then:
         result.isError != true
-        result.app_id == 90L
+        result.appId == 90L
         result.label == 'GW'
     }
 
@@ -432,7 +456,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
 
         then:
         result.success
-        result.app_id == 70L
+        result.appId == 70L
         result.fields_applied == ['logging']
         result.defaults_posted == ['count']
         result.backup.skipped == true
@@ -827,13 +851,13 @@ class NativeAppOperationsSpec extends ToolSpecBase {
             openedRule(95L)]
 
         when:
-        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+        def result = create([appType: 'button_rule', controllerId: 60, buttonNumber: 1, event: 'pushed'])
 
         then:
         result.success
-        result.app_id == 95L
+        result.appId == 95L
         result.label == 'Btn: button 1 pushed'
-        result.controller_id == 60L
+        result.controllerId == 60L
         result.backup.skipped == true
         posts*.path == ['/installedapp/btn', '/installedapp/update/json', '/installedapp/update/json', '/installedapp/btn', '/installedapp/update/json']
         posts[0].body.stateAttribute == 'addBut'
@@ -851,11 +875,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [openedRule(95L)]
 
         when:
-        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'held'])
+        def result = create([appType: 'button_rule', controllerId: 60, buttonNumber: 1, event: 'held'])
 
         then:
         result.success
-        result.app_id == 95L
+        result.appId == 95L
         posts*.body*.stateAttribute == ['setBut', null]
     }
 
@@ -867,7 +891,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [controllerPage([input('newBut', 'enum', [multiple: true, submitOnChange: true, options: ['2', '3']]), input('cancelBtn', 'button', [title: 'Cancel'])])]
 
         when:
-        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+        def result = create([appType: 'button_rule', controllerId: 60, buttonNumber: 1, event: 'pushed'])
 
         then:
         !result.success
@@ -888,7 +912,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         pages['/installedapp/configure/json/60'] = controllerPage(inputs)
 
         when:
-        create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+        create([appType: 'button_rule', controllerId: 60, buttonNumber: 1, event: 'pushed'])
 
         then:
         def e = thrown(IllegalArgumentException)
@@ -915,7 +939,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [first]
 
         when:
-        def result = create([app_type: 'notifier', name: 'Front door'])
+        def result = create([appType: 'notifier', name: 'Front door'])
 
         then:
         result.success
@@ -937,7 +961,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [first]
 
         when:
-        def result = create([app_type: 'notifier', name: 'Front door'])
+        def result = create([appType: 'notifier', name: 'Front door'])
 
         then:
         !result.success
@@ -955,7 +979,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [first]
 
         when:
-        def result = create([app_type: 'notifier', name: 'Front door'])
+        def result = create([appType: 'notifier', name: 'Front door'])
 
         then:
         result.committed == false
@@ -971,11 +995,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         if (record != null) apps[90L] = record
 
         when:
-        def result = create([app_type: 'notifier', name: 'N'])
+        def result = create([appType: 'notifier', name: 'N'])
 
         then:
         !result.success
-        result.app_id == 90L
+        result.appId == 90L
         result.error.contains('Created app 90 did not match the native parent and child type')
         result.error.contains('left in place')
         result.note.contains('hub_get_app_config(appId=90)')
@@ -997,11 +1021,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [page(93L, first + [input('heatSet', 'number', [required: true])], [settings: [therm: ['7': 'Lamp']]])]
 
         when:
-        def result = create([app_type: 'thermostat_scheduler', fields: [therm: ['7']]])
+        def result = create([appType: 'thermostat_scheduler', fields: [therm: ['7']]])
 
         then:
         !result.success
-        !result.containsKey('app_id')
+        !result.containsKey('appId')
         result.error == 'The first page accepted therm, but the page that save rendered needs more before its Done (Complete required native fields before navigating: heatSet). ' +
             'The new app was removed, so nothing was created; create without therm and finish it with update or form.'
         !result.error.contains('another call')
@@ -1018,11 +1042,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         deleteSilent = true
 
         when:
-        def result = create([app_type: 'notifier', name: 'N', fields: [nope: 1]])
+        def result = create([appType: 'notifier', name: 'N', fields: [nope: 1]])
 
         then:
         !result.success
-        result.app_id == 90L
+        result.appId == 90L
         result.error.contains('Removing the unfinished app then failed: the app still exists after its force delete')
         !result.error.contains('was removed')
         result.note.contains('Delete app 90 with hub_delete_native_app')
@@ -1036,11 +1060,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         childAt(96L, 48L, 'Group-2.1', [page(96L, inputs), page(96L, inputs, [label: 'Hall group', installed: true, settings: [name: 'Hall group']])])
 
         when:
-        def result = create([app_type: 'groups_scenes', name: 'Hall group'])
+        def result = create([appType: 'groups_scenes', name: 'Hall group'])
 
         then:
         result.success
-        result.app_id == 96L
+        result.appId == 96L
         result.fields_applied == ['name']
         raws == ['/installedapp/createchild/hubitat/Group-2.1/parent/48']
         posts.size() == 1
@@ -1056,11 +1080,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         childAt(97L, 48L, 'Group-2.1', [page(97L, inputs, opts), page(97L, inputs, opts + [label: 'Porch group', installed: true])])
 
         when:
-        def result = create([app_type: 'groups_scenes', name: 'Porch group'])
+        def result = create([appType: 'groups_scenes', name: 'Porch group'])
 
         then:
         result.success
-        result.app_id == 97L
+        result.appId == 97L
         result.label == 'Porch group'
         result.fields_applied == ['label']
         posts.size() == 1
@@ -1077,21 +1101,21 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [page(90L, notifierInputs() + [input('extra', 'text', [required: true])], [settings: [origLabel: 'N']])]
 
         when:
-        def result = create([app_type: 'notifier', name: 'N'])
+        def result = create([appType: 'notifier', name: 'N'])
 
         then:
         !result.success
-        !result.containsKey('app_id')
+        !result.containsKey('appId')
         result.error == 'The hub rendered the first page again instead of accepting its Done, so the app was not installed; the page asks for extra. ' +
             'The new app was removed, so nothing was created.'
-        result.note.contains("hub_set_native_app(operation:'form', app_id:40")
+        result.note.contains("hub_set_native_app(operation:'form', appId:40")
         posts*.body*._action_update == ['Done']
         deleted == [90]
     }
 
     def 'a cached parent that no longer exists is dropped and the refusal names its type'() {
         when:
-        def result = create([app_type: 'notifier', name: 'N'])
+        def result = create([appType: 'notifier', name: 'N'])
 
         then:
         !result.success
@@ -1109,7 +1133,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         sharedMap('NATIVE_FORM_BUSY')[script._nfKey(40L)] = true
 
         when:
-        def result = create([app_type: 'notifier', name: 'N'])
+        def result = create([appType: 'notifier', name: 'N'])
 
         then:
         !result.success
@@ -1128,7 +1152,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         pages['/installedapp/configure/json/70'] = page(70L, notifierInputs(), [settings: [origLabel: 'N']])
 
         when:
-        create([app_type: 'notifier', name: 'N'])
+        create([appType: 'notifier', name: 'N'])
 
         then:
         def refusedCreate = thrown(IllegalArgumentException)
@@ -1243,7 +1267,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         pages['/installedapp/configure/json/40'] = { -> throw failure }
 
         when:
-        def result = create([app_type: 'notifier', name: 'N'])
+        def result = create([appType: 'notifier', name: 'N'])
 
         then:
         !result.success
@@ -1317,7 +1341,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [openedRule(95L)]
 
         when:
-        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'held'])
+        def result = create([appType: 'button_rule', controllerId: 60, buttonNumber: 1, event: 'held'])
 
         then:
         result.success
@@ -1388,11 +1412,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         sharedMap('NATIVE_FORM_BUSY')[script._nfKey(60L)] = true
 
         when:
-        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+        def result = create([appType: 'button_rule', controllerId: 60, buttonNumber: 1, event: 'pushed'])
 
         then:
         !result.success
-        result.controller_id == 60L
+        result.controllerId == 60L
         result.error.contains('active form operation')
         gets.isEmpty()
         posts.isEmpty()
@@ -1459,7 +1483,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [pickerPage(['2', '3'])]
 
         when:
-        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+        def result = create([appType: 'button_rule', controllerId: 60, buttonNumber: 1, event: 'pushed'])
 
         then:
         !result.success
@@ -1467,7 +1491,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         result.error.contains('Its Cancel was pressed, but the controller still renders the Add Button picker')
         !result.note.contains('renders as before')
         !result.note.contains('Nothing was changed')
-        result.note.contains("hub_set_native_app(operation:'form', app_id:60")
+        result.note.contains("hub_set_native_app(operation:'form', appId:60")
     }
 
     def 'a picker Cancel after which the controller renders no Add Button is a partial failure'() {
@@ -1478,7 +1502,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [pickerPage(['2', '3'])]
 
         when:
-        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+        def result = create([appType: 'button_rule', controllerId: 60, buttonNumber: 1, event: 'pushed'])
 
         then:
         !result.success
@@ -1495,7 +1519,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         postFailure = { String path, Map body -> if (path == '/installedapp/btn' && body.name == 'cancelBtn') throw new IOException('read timed out') }
 
         when:
-        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+        def result = create([appType: 'button_rule', controllerId: 60, buttonNumber: 1, event: 'pushed'])
 
         then:
         !result.success
@@ -1511,7 +1535,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [pickerPage(['1', '2']), controllerPage([])]
 
         when:
-        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+        def result = create([appType: 'button_rule', controllerId: 60, buttonNumber: 1, event: 'pushed'])
 
         then:
         !result.success
@@ -1532,7 +1556,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [other == null ? controllerPage([]) : openedRule(other.id)]
 
         when:
-        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+        def result = create([appType: 'button_rule', controllerId: 60, buttonNumber: 1, event: 'pushed'])
 
         then:
         !result.success

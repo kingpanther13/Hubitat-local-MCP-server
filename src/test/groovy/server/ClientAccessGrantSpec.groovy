@@ -256,8 +256,15 @@ class ClientAccessGrantSpec extends ToolSpecBase {
         expect: 'reads and writes on this app are refused; other apps are not'
         script._clientToolDenial('hub_get_app_config', [appId: 7, pageName: 'mainPage']).contains('cannot target the MCP Rule Server app itself')
         script._clientToolDenial('hub_get_app_config', [appId: '7']) != null
-        script._clientToolDenial('hub_set_rule', [operation: 'form', rule_id: 7, confirm: true, args: [steps: [[kind: 'open']]]]) != null
+        script._clientToolDenial('hub_set_rule', [operation: 'form', ruleId: 7, confirm: true, args: [steps: [[kind: 'open']]]]) != null
         script._clientToolDenial('hub_get_app_config', [appId: 12]) == null
+
+        and: 'every spelling a tool parses to the same id: padded, decimal, as a long'
+        script._clientToolDenial('hub_get_app_config', [appId: ' 7']) != null
+        script._clientToolDenial('hub_get_app_config', [appId: '7.0']) != null
+        script._clientToolDenial('hub_get_app_config', [appId: 7L]) != null
+        script._clientToolDenial('hub_call_rule', [ruleId: [' 7'], action: 'stop']) != null
+        script._clientToolDenial('hub_get_app_config', [appId: ' 12']) == null
 
         and: 'through the aliases too: the cloner sourceAppId and the rule tools ruleId'
         script._clientToolDenial('hub_export_native_app', [sourceAppId: 7]) != null
@@ -367,8 +374,8 @@ class ClientAccessGrantSpec extends ToolSpecBase {
         asClient('1')
 
         expect:
-        script._clientToolDenial('hub_set_rule', [operation: 'read', rule_id: 12, args: [:]]) == null
-        script._clientToolDenial('hub_set_rule', [operation: 'form', rule_id: 12, confirm: true, args: [steps: [[kind: 'open']]]]) != null
+        script._clientToolDenial('hub_set_rule', [operation: 'read', ruleId: 12, args: [:]]) == null
+        script._clientToolDenial('hub_set_rule', [operation: 'form', ruleId: 12, confirm: true, args: [steps: [[kind: 'open']]]]) != null
     }
 
     def "a write-off client loses hub_set_native_app like every write tool, and keeps hub_set_rule for its read operation"() {

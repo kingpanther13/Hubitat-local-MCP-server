@@ -253,7 +253,7 @@ def test_device_replace_boundary_requires_access_denial_for_both_positions(denia
 
     def call_tool(name, args):
         assert name == "hub_call_device_replace"
-        assert args.get("list_options") is True or args.get("confirm") is False
+        assert args.get("listOptions") is True or args.get("confirm") is False
         calls.append(args)
         if denial == "accepted":
             return {"success": True}
@@ -264,9 +264,9 @@ def test_device_replace_boundary_requires_access_denial_for_both_positions(denia
     if denial == "access":
         runner._device_replace_boundary_checks("10", "20")
         assert calls == [
-            {"old_device_id": "10", "list_options": True},
-            {"old_device_id": "10", "new_device_id": "20", "confirm": False},
-            {"old_device_id": "20", "new_device_id": "10", "confirm": False},
+            {"oldDeviceId": "10", "listOptions": True},
+            {"oldDeviceId": "10", "newDeviceId": "20", "confirm": False},
+            {"oldDeviceId": "20", "newDeviceId": "10", "confirm": False},
         ]
     else:
         with pytest.raises(AssertionError, match=r"unselected device|reject device access"):
@@ -1540,7 +1540,7 @@ def test_tool_error_payload_recovers_a_structured_refusal_and_tolerates_prose():
 
 def test_plain_failure_helpers_return_only_a_success_false_payload_without_its_own_iserror():
     plain = {"success": False, "error": "App 9 does not exist"}
-    validation = {"success": False, "isError": True, "tool": "hub_delete_item", "error": "item_id is required"}
+    validation = {"success": False, "isError": True, "tool": "hub_delete_item", "error": "itemId is required"}
     # A runtime failure whose tool sets isError itself always raised, and still does.
     self_flagged = {"success": False, "isError": True, "error": "Device metadata fetch failed (/device/fullJson/9)"}
     replies = {"runtime": et.McpToolError("t", json.dumps(plain)),
@@ -1635,7 +1635,7 @@ def test_send_retains_structured_rpc_error_with_mixed_quotes(send_client):
 
 @pytest.mark.parametrize("name,args", [
     ("hub_manage_native_rules_and_apps", {"tool": "hub_set_native_app", "args": {
-        "operation": "create", "args": {"app_type": "basic_rule", "name": "BAT"}, "confirm": True,
+        "operation": "create", "args": {"appType": "basic_rule", "name": "BAT"}, "confirm": True,
     }}),
     ("hub_manage_virtual_device", {"action": "create", "deviceType": "Virtual Switch", "confirm": True}),
     ("hub_manage_virtual_device", {"action": "delete", "deviceNetworkId": "test-dni", "confirm": True}),
@@ -2234,7 +2234,7 @@ def test_call_tool_retains_physical_leg_telemetry_when_a_continuation_504s():
 
     with pytest.raises(et.RelayLostResponseError):
         client.call_tool(
-            "hub_set_rule", {"operation": "update", "rule_id": 42, "args": {"changes": []}, "confirm": True}, flat=True,
+            "hub_set_rule", {"operation": "update", "ruleId": 42, "args": {"changes": []}, "confirm": True}, flat=True,
         )
 
     assert client._last_continuation_rounds == 1
@@ -2365,17 +2365,17 @@ def _native_rule_runner(client):
 def test_create_native_rule_defaults_to_scalar_app_id(monkeypatch):
     calls = []
     runner = _native_rule_runner(SimpleNamespace(call_tool=lambda name, args:
-        calls.append((name, args)) or {"success": True, "rule_id": 41}))
+        calls.append((name, args)) or {"success": True, "ruleId": 41}))
     monkeypatch.setattr(et, "_run_artifact_suffix", lambda: "run_1")
     assert runner._create_native_rule("ScalarCreate") == 41
     assert runner.created_native_app_ids == ["41"]
     assert calls == [("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-        "operation": "create", "args": {"parent_id": 28, "name": "BAT_E2E_ScalarCreate_run_1_1", "changes": []},
+        "operation": "create", "args": {"parentId": 28, "name": "BAT_E2E_ScalarCreate_run_1_1", "changes": []},
         "confirm": True}})]
 
 
 def test_create_native_rule_return_result_preserves_create_envelope():
-    envelope = {"success": True, "rule_id": 42, "results": [{"part": "action", "result": {"success": True}}]}
+    envelope = {"success": True, "ruleId": 42, "results": [{"part": "action", "result": {"success": True}}]}
     changes = [et.native_log("fixture")]
     def call_tool(name, args):
         assert name == "hub_manage_rule_machine"
@@ -2403,7 +2403,7 @@ def test_native_document_update_uses_direct_public_operation():
         calls.append(args) or {"success": True, "results": []}))
     changes = [et.native_log("once")]
     runner._set_rule(42, changes)
-    assert calls == [("hub_set_rule", {"operation": "update", "rule_id": 42,
+    assert calls == [("hub_set_rule", {"operation": "update", "ruleId": 42,
                                      "args": {"changes": changes}, "confirm": True})]
 
 
@@ -2549,7 +2549,7 @@ def test_create_native_rule_never_reissues_after_bounded_absence(monkeypatch):
                 create_calls += 1
                 if create_calls == 1:
                     raise et.RelayLostResponseError("504 Gateway Timeout")
-                return {"success": True, "rule_id": 44}
+                return {"success": True, "ruleId": 44}
             assert name == "hub_read_rules"
             return {"rules": []}
 
@@ -2562,7 +2562,7 @@ def test_create_native_rule_never_reissues_after_bounded_absence(monkeypatch):
 
     result = runner._create_native_rule("LateCommit", return_result=True)
 
-    assert result == (44, {"success": True, "rule_id": 44})
+    assert result == (44, {"success": True, "ruleId": 44})
     attempted_creates = [arguments["args"]["args"]["name"] for name, arguments in calls
                          if name == "hub_manage_rule_machine"]
     assert attempted_creates == [
@@ -2697,7 +2697,7 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
                     "error": "unable to resolve class ClassThatDoesNotExistBatE2eDrv",
                 })
             if (name, tool) == ("hub_manage_code", "hub_delete_item"):
-                assert set(arguments["args"]) == {"type", "item_id", "confirm"}, arguments
+                assert set(arguments["args"]) == {"type", "itemId", "confirm"}, arguments
                 return {"success": True}
             raise AssertionError(f"unexpected direct call: {name} {arguments}")
 
@@ -2895,7 +2895,7 @@ def test_op_key_set_rule_unknown_operation_never_echoes_the_argument():
 
 def test_op_key_gateway_set_rule_edit():
     """Native update timing stays separate from native create timing."""
-    assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {"operation": "update", "rule_id": 5}}) == "hub_set_rule:update"
+    assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {"operation": "update", "ruleId": 5}}) == "hub_set_rule:update"
 
 
 def test_op_key_gateway_other_subtool_uses_sub_tool():
@@ -2907,7 +2907,7 @@ def test_op_key_decodes_stringified_inner_args_before_classifying_edit():
     """Stringified gateway arguments retain the explicit update operation."""
     assert et._op_key(
         "hub_manage_rule_machine",
-        {"tool": "hub_set_rule", "args": json.dumps({"operation": "update", "rule_id": 5})},
+        {"tool": "hub_set_rule", "args": json.dumps({"operation": "update", "ruleId": 5})},
     ) == "hub_set_rule:update"
 
 
@@ -3362,10 +3362,10 @@ class _BundleHub:
     def write_once(self, gateway, tool, args, label):
         self.write_calls.append((tool, dict(args)))
         if tool == "hub_delete_item":
-            self.app_codes.discard(args["item_id"])
+            self.app_codes.discard(args["itemId"])
             if self.drops_deleted_id:
                 for b in self.bundles.values():
-                    b["codeIds"]["apps"] = [a for a in b["codeIds"]["apps"] if a != args["item_id"]]
+                    b["codeIds"]["apps"] = [a for a in b["codeIds"]["apps"] if a != args["itemId"]]
             return {"success": True}
         assert tool == "hub_delete_bundle", tool
         bundle = self.bundles.pop(args["bundleId"])
@@ -3399,7 +3399,7 @@ def test_delete_bundle_uses_logical_write_helper(monkeypatch):
 
     assert hub.write_calls == [
         ("hub_delete_bundle", {"bundleId": "1", "deleteCode": True, "confirm": True}),
-        ("hub_delete_item", {"type": "app", "item_id": "102", "confirm": True}),
+        ("hub_delete_item", {"type": "app", "itemId": "102", "confirm": True}),
         ("hub_delete_bundle", {"bundleId": "2", "confirm": True}),
     ]
     assert {name for name, _ in hub.refusals} == {"hub_delete_bundle", "hub_export_bundle", "hub_install_bundle"}

@@ -167,7 +167,7 @@ def _indexed_settings(settings: dict[str, Any], prefix: str) -> dict[int, Any]:
 def _assert_typed_value(saved: dict[str, Any], field_type: str, value: Any, label: str) -> None:
     """Compare one typed native setting with the value a change requested."""
     if field_type.startswith("capability."):
-        assert sorted(map(str, saved.get("device_ids") or [])) == sorted(map(str, value)), f"{label} device differs"
+        assert sorted(map(str, saved.get("deviceIds") or [])) == sorted(map(str, value)), f"{label} device differs"
     elif field_type == "decimal":
         assert float(saved["value"]) == float(value), f"{label} threshold differs"
     else:

@@ -99,12 +99,12 @@ class MrtrContinuationSpec extends ToolSpecBase {
     }
 
     private Map documentArgs(int ruleId, String message = 'worker edit') {
-        [operation: 'update', rule_id: ruleId, confirm: true, args: [changes: [[part: 'action', value: [type: 'messageActs',
+        [operation: 'update', ruleId: ruleId, confirm: true, args: [changes: [[part: 'action', value: [type: 'messageActs',
             subtype: 'getLogMsg', fields: [[name: 'logmsg.#', type: 'textarea', value: message]]]]]]]
     }
 
     private Map documentResult(Map args) {
-        [success: true, rule_id: args.rule_id, results: args.changes.collect { [part: it.part, result: [success: true]] }]
+        [success: true, ruleId: args.ruleId, results: args.changes.collect { [part: it.part, result: [success: true]] }]
     }
 
     def "argument canonicalization preserves collision-named data and value types"() {
@@ -168,7 +168,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         settingsMap.useGateways = useGateways
         stateMap.lastBackupTimestamp = 1234567890000L
-        def leafArgs = [operation: 'update', rule_id: 782, confirm: true, args: [changes: editShape]]
+        def leafArgs = [operation: 'update', ruleId: 782, confirm: true, args: [changes: editShape]]
         def wireArgs = outer == leaf
             ? leafArgs
             : [tool: leaf, args: leafArgs]
@@ -255,15 +255,15 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def response = modernCall(leaf, args)
         then:
         response.result.isError != true
-        mcpDriver.parseInner(response).confirm_required == true
+        mcpDriver.parseInner(response).get(leaf == 'hub_set_rule' ? 'confirmRequired' : 'confirm_required') == true
         !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
         runInMillisCalls.empty
         where:
         leaf                       | args
-        'hub_set_rule' | [operation: 'create', args: [parent_id: 28, name: 'Unconfirmed', changes: [[part: 'variable', value: [operation: 'create', name: 'Counter', type: 'integer', value: 0]]]], confirm: false]
-        'hub_set_rule'         | [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: false]
-        'hub_set_native_app'   | [operation: 'update', app_id: 42, args: [fields: [comments: 'x']]]
-        'hub_set_native_app'   | [operation: 'form', app_id: 42, args: [steps: [[kind: 'open']]], confirm: false]
+        'hub_set_rule' | [operation: 'create', args: [parentId: 28, name: 'Unconfirmed', changes: [[part: 'variable', value: [operation: 'create', name: 'Counter', type: 'integer', value: 0]]]], confirm: false]
+        'hub_set_rule'         | [operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']]], confirm: false]
+        'hub_set_native_app'   | [operation: 'update', appId: 42, args: [fields: [comments: 'x']]]
+        'hub_set_native_app'   | [operation: 'form', appId: 42, args: [steps: [[kind: 'open']]], confirm: false]
     }
 
     def "hub_set_native_app help is answered inline without a request record or worker"() {
@@ -288,7 +288,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when:
         def response = modernCall('hub_manage_native_rules_and_apps', [tool: 'hub_set_native_app',
-            args: [operation: 'update', app_id: 779, args: [fields: [comments: 'worker']], confirm: true]])
+            args: [operation: 'update', appId: 779, args: [fields: [comments: 'worker']], confirm: true]])
         String requestState = response.result.requestState
 
         then:
@@ -405,6 +405,113 @@ class MrtrContinuationSpec extends ToolSpecBase {
         replay.result.resultType == 'complete'
         mcpDriver.parseInner(replay).results*.ruleId == [11, 12]
         ranWith.size() == 2
+    }
+
+    def "a call_rule continuation sends the un-reached rules ahead of the failed ones"() {
+        given: 'slice one fails 11 and pauses before 12'
+        settingsMap.enableWrite = true
+        def ranWith = []
+        script.metaClass.toolRunRmRule = { Map a ->
+            ranWith << new LinkedHashMap(a)
+            if (ranWith.size() == 1) {
+                return [success: false, partial: true, ruleIds: [11, 12], rmAction: 'stopRule toggle x1',
+                        results: [[success: false, ruleId: 11, error: 'state read timed out']],
+                        failedRuleIds: [11], remainingRuleIds: [12]]
+            }
+            return [success: true, partial: false, ruleIds: a.ruleId, rmAction: 'stopRule toggle x2',
+                    results: a.ruleId.collect { [success: true, ruleId: it] }]
+        }
+        def original = [ruleId: [11, 12], action: 'stop']
+
+        when:
+        def first = modernCall('hub_call_rule', original)
+        def second = modernCall('hub_call_rule', original, first.result.requestState)
+
+        then: 'a failed rule that eats the next slice too cannot keep 12 from running'
+        ranWith[1].ruleId == [12, 11]
+        mcpDriver.parseInner(second).success == true
+    }
+
+    def "a re-queued rule refused before dispatch in a later slice keeps its earlier row, whose click may have landed"() {
+        given: "slice one's pause click on 11 lands but its read-back fails; in slice two 11 cannot be looked up, so 12 and 11 are refused unrun"
+        settingsMap.enableWrite = true
+        def ranWith = []
+        script.metaClass.toolRunRmRule = { Map a ->
+            ranWith << new LinkedHashMap(a)
+            if (ranWith.size() == 1) {
+                return [success: false, partial: false, ruleIds: [11, 12], rmAction: 'pause x1',
+                        results: [[success: false, ruleId: 11, error: 'the pausRule click was accepted, but the rule\'s paused state then read timed out, not true']],
+                        failedRuleIds: [11], remainingRuleIds: [12]]
+            }
+            return script._rmRunGuardFailure([12, 11], [failure: script._rmLookupFailure([11: 'hub busy']), unreadable: [11: 'hub busy']])
+        }
+        def original = [ruleId: [11, 12], action: 'pause']
+
+        when:
+        def first = modernCall('hub_call_rule', original)
+        def terminal = modernCall('hub_call_rule', original, first.result.requestState)
+        def inner = mcpDriver.parseInner(terminal)
+
+        then:
+        ranWith[1].ruleId == [12, 11]
+        inner.success == false
+        inner.results*.ruleId == [11, 12]
+        inner.results.find { it.ruleId == 11 }.error.contains('click was accepted')
+        inner.results.find { it.ruleId == 12 }.dispatched == false
+        inner.failedRuleIds as Set == [11, 12] as Set
+    }
+
+    def "a re-queued rule that succeeds on retry replaces its earlier failed row"() {
+        expect:
+        script._mrtrCollapseRuleResults([[success: false, ruleId: 11, error: 'read-back failed'], [success: true, ruleId: 11]]) ==
+            [[success: true, ruleId: 11]]
+        script._mrtrCollapseRuleResults([[success: false, ruleId: 11, error: 'read-back failed'], [success: false, ruleId: 11, dispatched: false, error: 'Not run']]) ==
+            [[success: false, ruleId: 11, error: 'read-back failed']]
+    }
+
+    def "a target refusal in a later call_rule slice keeps every rule in the terminal result"() {
+        given: 'slice one stops 11; in slice two 13 cannot be looked up, so 12 and 13 are refused unrun'
+        settingsMap.enableWrite = true
+        def ranWith = []
+        script.metaClass.toolRunRmRule = { Map a ->
+            ranWith << new LinkedHashMap(a)
+            if (ranWith.size() == 1) {
+                return [success: false, partial: true, ruleIds: [11, 12, 13], rmAction: 'stopRule toggle x1',
+                        results: [[success: true, ruleId: 11]], remainingRuleIds: [12, 13]]
+            }
+            return script._rmRunGuardFailure([12, 13], [failure: script._rmLookupFailure([13: 'hub busy']), unreadable: [13: 'hub busy']])
+        }
+        def original = [ruleId: [11, 12, 13], action: 'stop']
+
+        when:
+        def first = modernCall('hub_call_rule', original)
+        def terminal = modernCall('hub_call_rule', original, first.result.requestState)
+        def inner = mcpDriver.parseInner(terminal)
+
+        then:
+        terminal.result.isError == true
+        inner.success == false
+        inner.results*.ruleId == [11, 12, 13]
+        inner.results[0].success == true
+        inner.failedRuleIds as Set == [12, 13] as Set
+        inner.results.find { it.ruleId == 13 }.error.contains('hub busy')
+        inner.results.find { it.ruleId == 12 }.error.contains('Not run')
+        inner.error
+        !String.valueOf(inner.note).contains('Nothing was changed')
+    }
+
+    @spock.lang.Unroll
+    def "hub_call_rule action=#action on two rules #verdict continuation-eligible"() {
+        expect: 'a run whose answer was lost may have run, so actions never re-runs itself in a later slice'
+        script._mrtrEligibleCall('hub_call_rule', 'hub_call_rule', [ruleId: [1, 2], action: action]) == eligible
+
+        where:
+        action    | eligible
+        'actions' | false
+        'stop'    | true
+        'pause'   | true
+        'resume'  | true
+        verdict = eligible ? 'is' : 'is not'
     }
 
     def "a continuation is not re-gated after its key rotates, while an initial call still is"() {
@@ -627,7 +734,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         complete.result.resultType == 'complete'
         complete.result.isError != true
         inner.success == true
-        inner.rule_id == 321
+        inner.ruleId == 321
         inner.mrtr.rounds == 1
         leafCalls.get() == 1
 
@@ -659,7 +766,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         complete.result.resultType == 'complete'
         complete.result.isError != true
         !complete.result.containsKey('requestState')
-        mcpDriver.parseInner(complete).rule_id == 322
+        mcpDriver.parseInner(complete).ruleId == 322
         replay.result.resultType == 'complete'
         mcpDriver.parseInner(replay).results == [[part: 'action', result: [success: true]]]
         leafCalls.get() == 1
@@ -1180,10 +1287,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
         then:
         runInMillisCalls.size() == 1
         runInMillisCalls[0][0..1] == [50, 'runMrtrSlice']
-        seen == [documentArgs(654, 'gateway worker').args + [rule_id: 654, confirm: true]]
+        seen == [documentArgs(654, 'gateway worker').args + [ruleId: 654, confirm: true]]
         complete.result.resultType == 'complete'
         complete.result.isError != true
-        inner.rule_id == 654
+        inner.ruleId == 654
         inner.success == true
     }
 
@@ -1221,7 +1328,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         leaf                | leafArgs
         'hub_create_driver' | [source: 'metadata { }', confirm: true]
         'hub_update_driver' | [driverId: '55', source: 'metadata { }', confirm: true]
-        'hub_delete_item'   | [type: 'driver', item_id: '55', confirm: true]
+        'hub_delete_item'   | [type: 'driver', itemId: '55', confirm: true]
     }
 
     def "modern hub_delete_item keeps unproven #itemType deletion on the synchronous path"() {
@@ -1234,7 +1341,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             [success: true, itemType: actual.type]
         }
         def args = [tool: 'hub_delete_item', args: [
-            type: itemType, item_id: '55', confirm: true
+            type: itemType, itemId: '55', confirm: true
         ]]
 
         when:
@@ -1439,7 +1546,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         then:
         replay.result.resultType == 'complete'
         mcpDriver.parseInner(replay).success == true
-        mcpDriver.parseInner(replay).rule_id == 654
+        mcpDriver.parseInner(replay).ruleId == 654
         calls == 1
         runInMillisCalls.size() == 1
 
@@ -2562,6 +2669,35 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         and: 'and it carries the provenance block consumers read'
         outcome.result.mrtr?.continued == true
+    }
+
+    def "a failed rule re-queued into the capped slice stays out of the never-reached list"() {
+        given: 'rule 22 failed in an earlier slice and was re-queued behind the un-reached rule 23; the final slice ran out of budget after 23'
+        Map claim = [claimId: 'cap4', generation: 1]
+        Map rec = [status: 'active', claimId: 'cap4', claimedGeneration: 1, generation: 1,
+                   rounds: script._mrtrMaxContinuationSlices() - 1,
+                   outerTool: 'hub_manage_rule_machine', leafTool: 'hub_call_rule',
+                   startedAt: script.now(), expiresAt: script.now() + 60000L,
+                   aggregate: [kind: 'call_rule',
+                               results: [[ruleId: 21, success: true], [ruleId: 22, success: false]],
+                               ruleIds: [21, 22]]]
+        atomicStateMap.mrtrRequests = ['cap4': rec]
+        script._writeStateCacheInvalidate()
+        Map execArgs = [tool: 'hub_call_rule', args: [ruleId: [23, 22], action: 'stop']]
+        Map slice = [success: true, ruleIds: [23, 22], results: [[ruleId: 23, success: true]],
+                     remainingRuleIds: [22], partial: true]
+
+        when:
+        def outcome = script._mrtrCommitSlice('cap4', rec, claim, execArgs, slice)
+
+        then: 'rule 22 was attempted, so it is a failed rule and not one never reached'
+        outcome.result.status == 'continuation_limit'
+        outcome.result.failedRuleIds == [22]
+        !outcome.result.containsKey('remainingRuleIds')
+        outcome.result.partial == true
+
+        and: 'the re-issue set still carries it'
+        outcome.result.note.contains('Re-issue [22]')
     }
 
     def "an all-SUCCESS batch at the continuation cap is still partial"() {

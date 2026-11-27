@@ -27,9 +27,9 @@ class NativeAppRestorationSpec extends ToolSpecBase {
         !script._budgetAwareTools().contains('hub_set_native_app')
         !script.getReadOnlyToolNames().contains('hub_set_native_app')
         !script.getIdempotentWriteToolNames().contains('hub_set_native_app')
-        script._isActualWriteCall('hub_set_native_app', 'hub_set_native_app', [operation: 'update', app_id: 42, args: [fields: [comments: 'updated']], confirm: true])
+        script._isActualWriteCall('hub_set_native_app', 'hub_set_native_app', [operation: 'update', appId: 42, args: [fields: [comments: 'updated']], confirm: true])
         !script._isActualWriteCall('hub_set_native_app', 'hub_set_native_app', [:])
-        !script._isActualWriteCall('hub_set_native_app', 'hub_set_native_app', [operation: 'update', app_id: 42])
+        !script._isActualWriteCall('hub_set_native_app', 'hub_set_native_app', [operation: 'update', appId: 42])
     }
 
     def 'help needs no best-practice key or hub read and points at the native app guide, which points at the form contract'() {
@@ -65,7 +65,7 @@ class NativeAppRestorationSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = false
         when:
-        script.executeTool('hub_set_native_app', [operation: 'update', app_id: 42, args: [fields: [comments: 'x']], confirm: true])
+        script.executeTool('hub_set_native_app', [operation: 'update', appId: 42, args: [fields: [comments: 'x']], confirm: true])
         then:
         def failure = thrown(IllegalArgumentException)
         failure.message.contains('Write tools are disabled')
@@ -83,8 +83,8 @@ class NativeAppRestorationSpec extends ToolSpecBase {
         failure.message.contains('Unknown')
         where:
         request << ['addTrigger', 'addAction', 'patches', 'walkStep', 'buttonRule', 'settings', 'button', 'pageName', 'stateAttribute', 'guide'].collectMany { key ->
-            [[operation: 'create', args: [app_type: 'notifier', name: 'Rejected shell', (key): [:]], confirm: true],
-             [operation: 'update', app_id: 42, args: [fields: [a: 1], (key): [:]], confirm: true]]
+            [[operation: 'create', args: [appType: 'notifier', name: 'Rejected shell', (key): [:]], confirm: true],
+             [operation: 'update', appId: 42, args: [fields: [a: 1], (key): [:]], confirm: true]]
         }
     }
 
@@ -93,7 +93,7 @@ class NativeAppRestorationSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = script.now()
         script.metaClass.hubInternalGet = { Object... args -> throw new AssertionError('Invalid page must not read native state') }
         when:
-        script.toolSetNativeApp([operation: 'update', app_id: 42, args: [fields: [comments: 'test'], page: '../invalid'], confirm: true])
+        script.toolSetNativeApp([operation: 'update', appId: 42, args: [fields: [comments: 'test'], page: '../invalid'], confirm: true])
         then:
         def failure = thrown(IllegalArgumentException)
         failure.message.contains('page must')
@@ -101,7 +101,7 @@ class NativeAppRestorationSpec extends ToolSpecBase {
 
     def 'a continuation never resumes a hub_set_native_app remainder'() {
         given:
-        def args = [tool: 'hub_set_native_app', args: [operation: 'update', app_id: 42, args: [fields: [a: 1]], confirm: true]]
+        def args = [tool: 'hub_set_native_app', args: [operation: 'update', appId: 42, args: [fields: [a: 1]], confirm: true]]
         def rec = [outerTool: 'hub_manage_native_rules_and_apps', leafTool: 'hub_set_native_app']
         expect:
         script._mrtrContinuation('hub_set_native_app', args, [status: 'in_progress', stepsRemaining: [[page: 'x']], page: 'x'], rec) == null

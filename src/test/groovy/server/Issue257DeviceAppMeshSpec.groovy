@@ -10,7 +10,7 @@ import spock.lang.Shared
  * Issue #257 hub2-source follow-ups (combined PR):
  *  - hub_list_devices scope='all'            -> toolListDevices over the whole Devices page
  *  - hub_set_app_disabled                    -> toolSetAppDisabled (POST /installedapp/disable + read-back)
- *  - hub_get_radio_details include_topology  -> _fetchRadioTopology
+ *  - hub_get_radio_details includeTopology  -> _fetchRadioTopology
  *
  * Mocking: hubInternalGet -> hubGet.register(path) closures; hubInternalPostJson -> script.metaClass.
  */
@@ -131,9 +131,9 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
-    // ---- Item 3: hub_get_radio_details include_topology -------------------
+    // ---- Item 3: hub_get_radio_details includeTopology -------------------
 
-    def "include_topology adds the Z-Wave mesh route map"() {
+    def "includeTopology adds the Z-Wave mesh route map"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/zwaveDetails/json') { params -> JsonOutput.toJson([enabled: true]) }
@@ -143,7 +143,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         hubGet.register('/hub/zwaveTopology') { params -> "01: 06 07" }
 
         when:
-        def result = script.toolGetZwaveDetails([include_topology: true])
+        def result = script.toolGetZwaveDetails([includeTopology: true])
 
         then:
         result.topology != null
@@ -151,7 +151,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         result.topology.zwaveTopologyTable == "01: 06 07"
     }
 
-    def "omitting include_topology leaves topology absent"() {
+    def "omitting includeTopology leaves topology absent"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/zwaveDetails/json') { params -> JsonOutput.toJson([enabled: true]) }
@@ -269,7 +269,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
-    def "include_topology on Zigbee hits the zigbee route endpoint and omits the Z-Wave-only table"() {
+    def "includeTopology on Zigbee hits the zigbee route endpoint and omits the Z-Wave-only table"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/zigbeeDetails/json') { params -> JsonOutput.toJson([enabled: true]) }
@@ -278,7 +278,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolGetZigbeeDetails([include_topology: true])
+        def result = script.toolGetZigbeeDetails([includeTopology: true])
 
         then:
         result.topology.endpoint.contains("zigbee")
@@ -326,7 +326,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
-    def "dispatch: hub_list_devices scope='all' and hub_get_radio_details include_topology route through executeTool"() {
+    def "dispatch: hub_list_devices scope='all' and hub_get_radio_details includeTopology route through executeTool"() {
         given:
         settingsMap.enableRead = true
         settingsMap.selectedDevices = []
@@ -337,7 +337,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
 
         when:
         def devs = script.executeTool("hub_list_devices", [scope: "all"])
-        def radio = script.executeTool("hub_get_radio_details", [radio: "zwave", include_topology: true])
+        def radio = script.executeTool("hub_get_radio_details", [radio: "zwave", includeTopology: true])
 
         then:
         devs.scope == "all"

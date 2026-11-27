@@ -11,14 +11,20 @@ class NativeDocumentsSpec extends ToolSpecBase {
     void setupSpec() { appExecutor.getApp() >> serverApp }
 
     List events
+    List renders
+    Map pageBody
     Map nativeState
     boolean failAction
-    boolean broken
+    Boolean broken
     Map lifecycle
     Map typedSettings
+    List statusSettings
 
     void setup() {
+        statusSettings = []
         events = []
+        renders = []
+        pageBody = null
         failAction = false
         broken = false
         typedSettings = [:]
@@ -32,9 +38,13 @@ class NativeDocumentsSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L
         script.metaClass.getAppByAppId = { Long id -> id == 28L ? [id: 28L, appType: [namespace: 'hubitat', name: 'Rule Machine']] : [id: 42L, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Rule-5.1'], installed: true] }
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean retry = false -> events << 'create'; [status: 302, location: '/installedapp/configure/42'] }
+        def spec = this
         script.metaClass._nrHandle = { Long id ->
             if (id != 42L) throw new IllegalArgumentException('missing rule')
-            new NativeDocumentChild(events, lifecycle, nativeState.allLocalVars, typedSettings)
+            def child = new NativeDocumentChild(events, lifecycle, nativeState.allLocalVars, typedSettings)
+            // The rule's own broken() check, which health reads in place of the compiled flag.
+            child.brokenCheck = { -> spec.broken }
+            child
         }
         script.metaClass._nrState = { Long id -> [:] + nativeState }
         script.metaClass._nmUpsertAction = { Long id, Map value -> events << 'action'; [success: !failAction, partial: failAction, id: '6'] }
@@ -45,9 +55,20 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script.metaClass._nmOrderActions = { Long id, List ids -> events << 'order'; [success: true] }
         script.metaClass._nmAddTerminator = { Long id, String subtype -> events << 'terminator'; [success: true] }
         hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [[name: 'flag', type: 'bool', multiple: false, value: false], [name: 'count', type: 'number', value: 0]]]) }
-        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson([broken: broken] + lifecycle) }
-        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: lifecycle.stopped ? [] : [[name: 'switch']], scheduledJobs: []]) }
+        // /app/ruleBuilderJson serializes the rule's whole state, and statusJson lists the same state as appState rows.
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(nativeState + [broken: broken] + lifecycle) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: lifecycle.stopped ? [] : [[name: 'switch']], scheduledJobs: [],
+            installedApp: [id: 42, label: 'Doc rule', disabled: false, installed: true, appType: [name: 'Rule-5.1', namespace: 'hubitat']],
+            appSettings: statusSettings + (typedSettings.useST == true ? [[name: 'useST', type: 'bool', value: 'true', deviceIdsForDeviceList: [], deviceList: null]] : []), appState: (nativeState + lifecycle).collect { k, v -> [name: k, value: v] }]) }
+        hubGet.register('/installedapp/configure/json/42') { q -> renders << 'mainPage'; pageJson() }
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean retry = false -> events << [path: path, body: body]; lifecycle.stopped = false; lifecycle.paused = false; [status: 200] }
+    }
+
+    // The rule's main page as /installedapp/configure/json renders it.
+    private String pageJson() {
+        JsonOutput.toJson([app: [id: 42, label: 'Doc rule', name: 'Rule-5.1', disabled: false, appType: [namespace: 'hubitat', name: 'Rule-5.1']],
+            configPage: [name: 'mainPage', sections: [[title: '', input: [], body: pageBody ? [pageBody] : []]]],
+            settings: [useST: typedSettings.useST == true]])
     }
 
     private Map logChange() {
@@ -63,11 +84,11 @@ class NativeDocumentsSpec extends ToolSpecBase {
         def beforeAtomic = [:] + atomicStateMap
         def beforeState = [:] + stateMap
         when:
-        def actionPages = (0..1).collect { offset -> script.toolSetRule([operation: 'read', rule_id: 42,
+        def actionPages = (0..1).collect { offset -> script.toolSetRule([operation: 'read', ruleId: 42,
             args: [sections: ['actions'], cursor: offset.toString(), limit: 1]]) }
-        def conditionPages = (0..2).collect { offset -> script.toolSetRule([operation: 'read', rule_id: 42,
+        def conditionPages = (0..2).collect { offset -> script.toolSetRule([operation: 'read', ruleId: 42,
             args: [sections: ['conditions'], cursor: offset.toString(), limit: 1]]) }
-        def settingPages = (0..1).collect { offset -> script.toolSetRule([operation: 'read', rule_id: 42,
+        def settingPages = (0..1).collect { offset -> script.toolSetRule([operation: 'read', ruleId: 42,
             args: [sections: ['settings'], cursor: offset.toString(), limit: 1]]) }
         then:
         actionPages.collectMany { it.actions }*.id == ['3', '1']
@@ -89,17 +110,17 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         nativeState.capabsfalse = ['2': 'two', '1': 'one']
         when:
-        def first = script.toolGetRuleDocument([rule_id: 42, sections: ['conditions'], limit: 1])
+        def first = script.toolGetRuleDocument([ruleId: 42, sections: ['conditions'], limit: 1])
         nativeState.capabsfalse = ['1': 'one', '2': 'two']
-        def reordered = script.toolGetRuleDocument([rule_id: 42, sections: ['conditions'], limit: 1])
+        def reordered = script.toolGetRuleDocument([ruleId: 42, sections: ['conditions'], limit: 1])
         nativeState.capabsfalse['2'] = 'changed outside page'
-        def changed = script.toolGetRuleDocument([rule_id: 42, sections: ['conditions'], limit: 1])
+        def changed = script.toolGetRuleDocument([ruleId: 42, sections: ['conditions'], limit: 1])
         then:
         first.conditions == reordered.conditions && first.conditions == changed.conditions
         first.page.revision == reordered.page.revision
         first.page.revision != changed.page.revision
         first.page.offset == 0 && first.page.limit == 1
-        !script.toolGetRuleDocument([rule_id: 42, sections: ['conditions']]).containsKey('page')
+        !script.toolGetRuleDocument([ruleId: 42, sections: ['conditions']]).containsKey('page')
     }
 
     def 'paging defaults return an explicit final cursor including an empty section'() {
@@ -107,7 +128,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.actions = [:]
         nativeState.actionList = []
         when:
-        def result = script.toolGetRuleDocument([rule_id: 42, sections: ['actions'], cursor: ''])
+        def result = script.toolGetRuleDocument([ruleId: 42, sections: ['actions'], cursor: ''])
         then:
         result.actions == []
         result.page.offset == 0
@@ -121,7 +142,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         script.metaClass._nrHandle = { Long id -> throw new AssertionError('invalid paging must not access native app') }
         when:
-        script.toolSetRule([operation: 'read', rule_id: 42, args: args])
+        script.toolSetRule([operation: 'read', ruleId: 42, args: args])
         then:
         thrown(IllegalArgumentException)
         where:
@@ -135,7 +156,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'cursor at or beyond section end refuses instead of returning a misleading empty page'() {
         when:
-        script.toolSetRule([operation: 'read', rule_id: 42, args: [sections: ['actions'], cursor: cursor]])
+        script.toolSetRule([operation: 'read', ruleId: 42, args: [sections: ['actions'], cursor: cursor]])
         then:
         thrown(IllegalArgumentException)
         where:
@@ -146,13 +167,13 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         String text = ('\u263a"\\\n' * 90)
         nativeState.capabsfalse = ['1': text, '2': text, '3': text]
-        def unpaged = script.toolGetRuleDocument([rule_id: 42, sections: ['conditions']])
+        def unpaged = script.toolGetRuleDocument([ruleId: 42, sections: ['conditions']])
         script.metaClass._responseSizeLimitBytes = { -> 5000 }
         List pages = []
         String cursor = ''
         when:
         while (cursor != null) {
-            def result = script.toolSetRule([operation: 'read', rule_id: 42,
+            def result = script.toolSetRule([operation: 'read', ruleId: 42,
                 args: [sections: ['conditions'], cursor: cursor, limit: 3]])
             pages << result
             cursor = result.nextCursor
@@ -176,7 +197,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script.metaClass._responseSizeLimitBytes = { -> 5000 }
         def before = JsonOutput.toJson(nativeState)
         when:
-        script.toolSetRule([operation: 'read', rule_id: 42, args: [sections: ['conditions'], cursor: '', limit: 1]])
+        script.toolSetRule([operation: 'read', ruleId: 42, args: [sections: ['conditions'], cursor: '', limit: 1]])
         then:
         def failure = thrown(IllegalArgumentException)
         failure.message.contains('exceeds the response size limit')
@@ -184,16 +205,165 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
-    def 'read document returns native stable order typed values and locals without rendering'() {
+    def 'read document returns native stable order typed values and locals, rendering no page'() {
         when:
-        def result = script.executeTool('hub_set_rule', [operation: 'read', rule_id: 42, args: [:]])
+        def result = script.executeTool('hub_set_rule', [operation: 'read', ruleId: 42, args: [:]])
         then:
-        result.rule_id == 42L
+        result.ruleId == 42L
+        !result.containsKey('rule_id')
+        result.health.ok == true
+        result.health.ruleFormat == 'rm'
+        !result.containsKey('validation') && !result.containsKey('nativeHealth')
+        renders == []
         result.actions*.id == ['3', '1']
         result.settings.find { it.name == 'flag' }.value == false
         result.settings.find { it.name == 'count' }.value == 0
         result.variables.counter.value == 0
         events.empty
+    }
+
+    @spock.lang.Unroll
+    def 'hub_get_rule returns the same document with health and the local variables as their own list (useGateways=#useGateways)'() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.useGateways = useGateways
+        nativeState.allLocalVars.doorCode = [type: 'string', value: '4321']
+        when:
+        def response = mcpDriver.callTool('hub_get_rule', [ruleId: 42])
+        def inner = mcpDriver.parseInner(response)
+        def read = script.toolGetRuleDocument([ruleId: 42])
+        then:
+        !response.result.isError
+        inner.ruleId == 42
+        inner.health.ok == true
+        inner.health.privateBoolean == null
+        inner.localVariables == [[name: 'counter', type: 'integer', value: 0], [name: 'doorCode', type: 'string', value: null, redacted: true]]
+        !inner.containsKey('variables')
+        inner.actions*.id == read.actions*.id
+        inner.conditions == read.conditions
+        inner.triggers == read.triggers
+        inner.expressions == read.expressions
+        inner.settings*.name == read.settings*.name
+        !JsonOutput.toJson(inner).contains('4321')
+        events.empty
+        where:
+        useGateways << [true, false]
+    }
+
+    def 'hub_get_rule pages one section and still returns its local variables'() {
+        when:
+        def first = script.toolGetNativeRule([ruleId: 42, sections: ['actions'], cursor: '', limit: 1])
+        def second = script.toolGetNativeRule([ruleId: 42, sections: ['actions'], cursor: first.nextCursor, limit: 1])
+        then:
+        first.actions*.id == ['3']
+        second.actions*.id == ['1']
+        second.nextCursor == null
+        [first, second].every { it.localVariables*.name == ['counter'] && it.health != null && !it.containsKey('conditions') }
+    }
+
+    // A long rule's whole document can exceed the response cap, so its health must stay readable on its own.
+    def 'hub_get_rule with no sections returns the health and local variables alone'() {
+        given:
+        settingsMap.enableRead = true
+        when:
+        def inner = mcpDriver.parseInner(mcpDriver.callTool('hub_get_rule', [ruleId: 42, sections: []]))
+        then:
+        inner.keySet() == ['ruleId', 'health', 'localVariables'] as Set
+        inner.health.ok == true
+        inner.localVariables*.name == ['counter']
+    }
+
+    def 'hub_get_rule reports a failed local-variable read beside the health it read, not as no locals'() {
+        given:
+        script.metaClass._nrHandle = { Long id -> new NativeDocumentChild(events, lifecycle, null, typedSettings) }
+        when:
+        def result = script.toolGetNativeRule([ruleId: 42, sections: ['actions']])
+        then:
+        result.success == null
+        result.containsKey('localVariables') && result.localVariables == null
+        result.localVariablesError.contains("Rule 42's local variables could not be read")
+        result.health.ok == true
+        result.actions*.id == ['3', '1']
+    }
+
+    def 'hub_get_rule reports an unexpected local-variable shape instead of an empty list'() {
+        given:
+        script.metaClass._nrHandle = { Long id -> new Expando(getAllLocalVars: { -> 'unexpected' }) }
+        when:
+        def result = script.toolGetNativeRule([ruleId: 42, sections: ['actions']])
+        then:
+        result.localVariables == null
+        result.localVariablesError.contains('unexpected shape')
+        result.health != null
+    }
+
+    def 'health does not read a status page with no appState as a rule never paused or stopped'() {
+        given:
+        hubGet.register('/installedapp/statusJson/42') { q -> '{}' }
+        when:
+        def health = script.toolGetNativeRule([ruleId: 42, sections: []]).health
+        then:
+        health.stopped == null
+        health.privateBoolean == null
+        !health.ok
+        health.checkErrors.any { it.contains('carried no appState') }
+    }
+
+    def 'hub_get_rule(sections: []) reads health and locals without the native state'() {
+        given:
+        script.metaClass._nrState = { Long id -> throw new IllegalStateException('Native state is unavailable') }
+        when:
+        def result = script.toolGetNativeRule([ruleId: 42, sections: []])
+        then:
+        result.success == null
+        result.health.ok == true
+        result.localVariables*.name == ['counter']
+    }
+
+    def 'hub_get_rule still fails when a section it was asked for needs the native state'() {
+        given:
+        script.metaClass._nrState = { Long id -> throw new IllegalStateException('Native state is unavailable') }
+        when:
+        def result = script.toolGetNativeRule([ruleId: 42, sections: ['triggers']])
+        then:
+        result.success == false
+        result.error.contains('Native state is unavailable')
+        !result.note.contains('Nothing was changed')
+    }
+
+    // Pre-write refusals run with pre-edit backups on, so a check moved below the backup fails here.
+    private List backupsOn() {
+        settingsMap.backupBeforeRuleEdits = true
+        def backups = []
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean force -> backups << id; [backupKey: 'k'] }
+        backups
+    }
+
+    def 'an update whose broken check fails is refused before its backup and any write, with a note that does not say retry'() {
+        given: "the compiled flag says not broken, but the rule's own check, the one health reads, fails"
+        def backups = backupsOn()
+        broken = null
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [logChange()]])
+        then:
+        result.success == false
+        result.partial == false
+        result.broken == null
+        result.error.contains('broken flag could not be read before the write')
+        result.error.contains('no change was written')
+        result.checkErrors == ["the rule's broken() check returned null, not true or false"]
+        result.note.contains('hub_get_rule') && result.note.contains("operation:'form'")
+        !result.note.toLowerCase().contains('retry')
+        backups.isEmpty()
+        events.empty
+        renders.isEmpty()
+    }
+
+    def 'hub_get_rule lists a rule with no locals as an empty list'() {
+        given:
+        nativeState.allLocalVars.clear()
+        expect:
+        script.toolGetNativeRule([ruleId: 42, sections: ['actions']]).localVariables == []
     }
 
     def 'native password and credential-named settings are redacted without rendering or altering false and zero'() {
@@ -208,7 +378,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
             [name: 'count', type: 'number', value: 0]
         ]]) }
         when:
-        def result = script.toolGetRuleDocument([rule_id: 42, sections: ['settings']])
+        def result = script.toolGetRuleDocument([ruleId: 42, sections: ['settings']])
         then:
         def credential = result.settings.find { it.name == 'credential' }
         credential.value == null
@@ -228,9 +398,9 @@ class NativeDocumentsSpec extends ToolSpecBase {
         hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [[name: 'apiKey', type: 'text', value: 'key-1']]]) }
         nativeState.allLocalVars.doorCode = [type: 'string', value: '4321']
         when:
-        def hidden = script.toolGetRuleDocument([rule_id: 42, sections: ['settings', 'variables']])
+        def hidden = script.toolGetRuleDocument([ruleId: 42, sections: ['settings', 'variables']])
         settingsMap.redactCredentials = false
-        def shown = script.toolGetRuleDocument([rule_id: 42, sections: ['settings', 'variables']])
+        def shown = script.toolGetRuleDocument([ruleId: 42, sections: ['settings', 'variables']])
         then:
         hidden.settings[0].value == null && hidden.settings[0].redacted == true
         hidden.variables.doorCode.value == null && hidden.variables.doorCode.redacted == true
@@ -247,14 +417,14 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.predCapabs = [4]
         nativeState.eval = [:]
         when:
-        def document = script.toolGetRuleDocument([rule_id: 42, sections: ['expressions']])
+        def document = script.toolGetRuleDocument([ruleId: 42, sections: ['expressions']])
         then:
-        document.validation.structuralIssues.isEmpty()
+        document.health.structuralIssues.isEmpty()
         nativeState.hasPredicate == true
         nativeState.eval.isEmpty()
         events.isEmpty()
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]], confirm: true])
         then:
         result.success
         events.any { it instanceof Map && it.path == '/installedapp/update/json' }
@@ -266,12 +436,12 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.hasPredicate = false
         nativeState.eval = expression
         when:
-        def document = script.toolGetRuleDocument([rule_id: 42, sections: ['expressions']])
+        def document = script.toolGetRuleDocument([ruleId: 42, sections: ['expressions']])
         then:
-        document.validation.structuralIssues.any { it.contains(expected) }
+        document.health.structuralIssues.any { it.contains(expected) }
         events.isEmpty()
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]], confirm: true])
         then:
         !result.success
         result.error.contains(expected)
@@ -284,7 +454,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'projection suppresses unrequested native sections'() {
         when:
-        def result = script.toolGetRuleDocument([rule_id: 42, sections: ['actions']])
+        def result = script.toolGetRuleDocument([ruleId: 42, sections: ['actions']])
         then:
         result.actions*.id == ['3', '1']
         !result.containsKey('settings')
@@ -293,7 +463,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'unknown change fails before every mutation'() {
         when:
-        script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]], [part: 'state', value: [unsafe: true]]], confirm: true])
+        script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]], [part: 'state', value: [unsafe: true]]], confirm: true])
         then:
         thrown(IllegalArgumentException)
         events.empty
@@ -307,13 +477,13 @@ class NativeDocumentsSpec extends ToolSpecBase {
         def repeated = [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg',
             fields: [[name: 'logmsg.#', type: 'textarea', value: 'one'], [name: 'logmsg.#', type: 'textarea', value: 'two']]]]
         when:
-        script.toolCreateRuleDocument([parent_id: 28, name: 'Repeated create', changes: [logChange(), repeated], confirm: true])
+        script.toolCreateRuleDocument([parentId: 28, name: 'Repeated create', changes: [logChange(), repeated], confirm: true])
         then:
         def created = thrown(IllegalArgumentException)
         created.message == 'changes[1]: Native inputs must not be repeated'
         events.empty
         when:
-        script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange(), repeated], confirm: true])
+        script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange(), repeated], confirm: true])
         then:
         def updated = thrown(IllegalArgumentException)
         updated.message == 'changes[1]: Native inputs must not be repeated'
@@ -330,7 +500,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         def missing = [part: 'condition', value: [id: '99', capability: 'Switch',
             fields: [[name: 'rDev_#', type: 'capability.switch', value: ['7']], [name: 'state_#', type: 'enum', value: 'on']]]]
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange(), missing], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange(), missing], confirm: true])
         then:
         !result.success && !result.partial
         result.error == 'changes[1]: Native row does not exist'
@@ -339,7 +509,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'a variable set carrying a type is refused before any write'() {
         when:
-        script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [
             [part: 'variable', value: [operation: 'set', name: 'counter', type: 'integer', value: 7]]]])
         then:
         def failure = thrown(IllegalArgumentException)
@@ -352,7 +522,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         failAction = true
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]], logChange()], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]], logChange()], confirm: true])
         then:
         !result.success
         result.partial
@@ -368,7 +538,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
             [success: false, partial: true, verificationNeeded: true]
         }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [
             [part: 'variable', value: [operation: 'set', name: 'counter', value: 7]], logChange()]])
         then:
         !result.success && result.partial
@@ -387,7 +557,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
             [status: 200, data: JsonOutput.toJson(response)]
         }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [logChange()]])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [logChange()]])
         then:
         !result.success && result.partial
         result.error.contains('Native form')
@@ -403,7 +573,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
             [status: status, data: response]
         }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [logChange()]])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [logChange()]])
         then:
         result.success
         where:
@@ -415,10 +585,10 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'successful update keeps ID then checks native health and subscriptions after Done'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]]], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]]], confirm: true])
         then:
         result.success
-        result.rule_id == 42L
+        result.ruleId == 42L
         result.eventSubscriptions.size() == 1
         events[0..3] == ['action', 'selectTriggers', 'selectActions', 'mainPage']
         events[4].path == '/installedapp/update/json'
@@ -441,11 +611,11 @@ class NativeDocumentsSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]]], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]]], confirm: true])
 
         then:
         result.success
-        result.rule_id == 42L
+        result.ruleId == 42L
         events[0..4] == ['selectActionsX', 'action', 'selectTriggers', 'selectActionsX', 'selectActions']
         events[5].path == '/installedapp/update/json'
         !events.contains('mainPage')
@@ -472,7 +642,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String name -> events << 'backupReadback'; saved }
         script.metaClass._publishUploadedItemBackup = { String key, Map entry, String protectedKey -> }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [logChange()]])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [logChange()]])
         then:
         result.success && result.backup.backupKey
         events.indexOf('export') < events.indexOf('backupUpload')
@@ -493,11 +663,11 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script.metaClass._nrHandle = { Long id -> new NativeDocumentButtonChild(events, lifecycle, nativeState, typedSettings, brokenEditor) }
 
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [id: '3', type: 'messageActs', subtype: 'getLogMsg', fields: []]]], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'action', value: [id: '3', type: 'messageActs', subtype: 'getLogMsg', fields: []]]], confirm: true])
 
         then:
         result.success == !brokenEditor
-        result.rule_id == 42L
+        result.ruleId == 42L
         events.take(3) == ['action', 'selectTriggers', 'selectActionsX']
         events.contains('selectActions')
         events.any { it instanceof Map && it.path == '/installedapp/update/json' } == !brokenEditor
@@ -510,16 +680,311 @@ class NativeDocumentsSpec extends ToolSpecBase {
         brokenEditor << [false, true]
     }
 
-    def 'broken native health prevents finalization'() {
+    def 'a rule that is already broken is refused before its backup and any change, naming each broken row by kind and native id'() {
+        given: "two triggers whose devices were deleted; the compiled flag still reads false, the rule's own check true"
+        def backups = backupsOn()
+        broken = true
+        nativeState.capabstrue = ['5': 'Porch switch turns on', '6': 'Hall switch turns on']
+        statusSettings = [[name: 'tDev5', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null],
+                          [name: 'tDev6', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null],
+                          [name: 'reltDevice6', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(nativeState + [broken: false] + lifecycle) }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.broken
+        result.brokenRows == [[kind: 'trigger', id: '5', setting: 'tDev5', text: 'Porch switch turns on'],
+                              [kind: 'trigger', id: '6', setting: 'reltDevice6', text: 'Hall switch turns on'],
+                              [kind: 'trigger', id: '6', setting: 'tDev6', text: 'Hall switch turns on']]
+        result.error == "Rule 42 is already broken: trigger 5 ('Porch switch turns on'); trigger 6 ('Hall switch turns on'); no change was written."
+        result.note.contains("operation:'form'")
+        backups.isEmpty()
+        events.empty
+        renders.isEmpty()
+        nativeState.actionList == ['3', '1']
+    }
+
+    def 'a rule whose condition device was deleted is refused as already broken before its backup and any change, though its own broken check says false'() {
+        given: "Rule Machine's broken() misses a deleted condition device; the condition's picker lists no device"
+        def backups = backupsOn()
+        nativeState.actions = ['3': [method: 'getLogMsg', cond: '4'], '1': [method: 'getLogMsg']]
+        statusSettings = [[name: 'rCapab_4', type: 'enum', value: 'Switch', deviceIdsForDeviceList: [], deviceList: null],
+                          [name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.broken == true
+        result.brokenRows == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
+        result.error == "Rule 42 is already broken: condition 4 ('Switch is on'); no change was written."
+        backups.isEmpty()
+        events.empty
+        renders.isEmpty()
+    }
+
+    def 'a condition only a Conditional Trigger binds is in use: its deleted device refuses the update before its backup and any change'() {
+        given: "trigger 5's Conditional Trigger binds condition 4, which no action or expression uses; its picker lists no device"
+        def backups = backupsOn()
+        statusSettings = [[name: 'isCondTrig.5', type: 'bool', value: 'true', deviceIdsForDeviceList: [], deviceList: null],
+                          [name: 'condTrig.5', type: 'enum', value: '4', deviceIdsForDeviceList: [], deviceList: null],
+                          [name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.broken == true
+        result.brokenRows == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
+        result.error == "Rule 42 is already broken: condition 4 ('Switch is on'); no change was written."
+        backups.isEmpty()
+        events.empty
+        renders.isEmpty()
+    }
+
+    def 'an update whose status page carries no appSettings is refused before its backup and any write, as settings that went unread'() {
+        given: "the status page answers without an appSettings list, so condition 4's picker was never read"
+        def backups = backupsOn()
+        nativeState.actions = ['3': [method: 'getLogMsg', cond: '4'], '1': [method: 'getLogMsg']]
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [[name: 'switch']], scheduledJobs: [],
+            installedApp: [id: 42, label: 'Doc rule', disabled: false, installed: true, appType: [name: 'Rule-5.1', namespace: 'hubitat']],
+            appState: (nativeState + lifecycle).collect { k, v -> [name: k, value: v] }]) }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.broken == false
+        result.error == "Rule 42's device settings could not be read before the write, so a row whose device was deleted would go unnoticed; no change was written."
+        result.checkErrors.any { it == "the rule's settings went unread, so brokenRows was not listed" }
+        backups.isEmpty()
+        events.empty
+    }
+
+    def 'the document read reports a deleted condition device as broken although the rule\'s own check says false'() {
+        given: "condition 4 is in use through the Required Expression"
+        typedSettings.useST = true
+        statusSettings = [[name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        when:
+        def health = script.toolGetRuleDocument([ruleId: 42, sections: []]).health
+        then:
+        health.broken == true
+        health.ok == false
+        health.brokenRows == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
+        health.issues.any { it.contains('1 row(s) whose device was deleted') && it.contains("Rule Machine's own check does not flag") }
+        !health.issues.any { it.contains('marks this rule broken') }
+        renders.isEmpty()
+    }
+
+    @spock.lang.Unroll
+    def 'an empty picker on a row that is not in use is not broken (#label)'() {
+        given: "the Required Expression is off, so condition 4 is in use only when an action references it"
+        nativeState.actions = ['3': [method: 'getLogMsg'], '1': [method: 'getLogMsg'], '8': [method: 'getLogMsg', cond: '4']]
+        statusSettings = [[name: setting, type: 'capability.switch', value: null, deviceIdsForDeviceList: [], deviceList: null]]
+        when:
+        def health = script.toolGetRuleDocument([ruleId: 42, sections: []]).health
+        then:
+        health.brokenRows == []
+        health.broken == false
+        health.ok == true
+        where:
+        label                                              | setting
+        'a condition no action or expression uses'         | 'rDev_4'
+        'a trigger picker for a row not yet added'         | 'tDev9'
+        'an action row outside the action list'            | 'onOffSwitch.8'
+    }
+
+    def 'a condition an action uses through an expression is in use, and a null device list reads as no devices'() {
+        given:
+        nativeState.actions = ['3': [method: 'getIfThen', rule: '2'], '1': [method: 'getLogMsg']]
+        nativeState.eval = ['0': [], '2': ['NOT', '4']]
+        statusSettings = [[name: 'rDev_4', type: 'capability.switch', value: null, deviceIdsForDeviceList: null, deviceList: null]]
+        when:
+        def health = script.toolGetRuleDocument([ruleId: 42, sections: []]).health
+        then:
+        health.broken == true
+        health.brokenRows == [[kind: 'condition', id: '4', setting: 'rDev_4', text: 'Switch is on']]
+    }
+
+    def 'an update whose compiled state cannot be read is refused before its backup and any write, though its broken check answers'() {
+        given:
+        def backups = backupsOn()
+        hubGet.register('/app/ruleBuilderJson/42') { q -> throw new RuntimeException('read timed out') }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.broken == false
+        result.error.contains('compiled state could not be read before the write')
+        result.checkErrors.any { it.contains('compiled-state read failed') && it.contains('read timed out') }
+        !result.note.toLowerCase().contains('retry')
+        backups.isEmpty()
+        events.empty
+    }
+
+    def 'an update whose App Status read fails is refused before its backup and any write, since a deleted condition device would go unseen'() {
+        given: "broken() and the compiled state both answer, as they do for a deleted condition device; only the settings read fails"
+        def backups = backupsOn()
+        hubGet.register('/installedapp/statusJson/42') { q -> throw new RuntimeException('read timed out') }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.broken == false
+        result.error == "Rule 42's device settings could not be read before the write, so a row whose device was deleted would go unnoticed; no change was written."
+        result.checkErrors.any { it == "the rule's settings went unread, so brokenRows was not listed" }
+        result.note.contains('brokenRows')
+        backups.isEmpty()
+        events.empty
+    }
+
+    def 'a broken rule whose compiled state cannot be read is refused as already broken, before its backup and any write'() {
+        given:
+        def backups = backupsOn()
+        broken = true
+        hubGet.register('/app/ruleBuilderJson/42') { q -> throw new RuntimeException('read timed out') }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        result.broken == true
+        result.error == 'Rule 42 is already broken; no change was written.'
+        result.checkErrors.any { it.contains('brokenRows was not listed') }
+        result.note.contains("operation:'form'")
+        backups.isEmpty()
+        events.empty
+    }
+
+    def 'the document read reports broken from the rule\'s own check without rendering, while the compiled flag still reads false'() {
+        given:
+        broken = true
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(nativeState + [broken: false] + lifecycle) }
+        when:
+        def document = script.toolGetRuleDocument([ruleId: 42, sections: ['actions']])
+        then:
+        document.health.broken == true
+        document.health.ok == false
+        renders.isEmpty()
+        events.empty
+    }
+
+    def 'the hub_set_rule read keeps its health when the local variables cannot be read'() {
+        given:
+        nativeState.allLocalVars = null
+        when:
+        def document = script.toolSetRule([operation: 'read', ruleId: 42, args: [sections: ['variables', 'actions']]])
+        then:
+        document.success == null
+        document.health.ok == true
+        document.containsKey('variables') && document.variables == null
+        document.localVariablesError.contains('could not be read')
+        document.actions*.id == ['3', '1']
+    }
+
+    def 'a paged hub_set_rule read of the variables section reports a failed locals read instead of paging it'() {
+        given:
+        nativeState.allLocalVars = null
+        when:
+        def document = script.toolSetRule([operation: 'read', ruleId: 42, args: [sections: ['variables'], cursor: '']])
+        then:
+        document.health.ok == true
+        document.variables == null
+        document.localVariablesError
+        !document.containsKey('page')
+    }
+
+    def 'a verified write whose document read-back fails says so in its own key, not as a nested document'() {
+        given:
+        def reads = 0
+        def realRead = script.&toolGetRuleDocument
+        script.metaClass.toolGetRuleDocument = { Map args -> reads++; [success: false, ruleId: 42L, error: 'Rule 42 could not be read: boom', note: 'retrying once is safe'] }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == true
+        reads == 1
+        !result.containsKey('document')
+        result.documentReadError == 'Rule 42 could not be read: boom'
+        result.note.contains('written and verified') && result.note.contains('Do not send them again')
+    }
+
+    def 'a verified write whose document is too large to send keeps its receipt and backup key and leaves the document out'() {
+        given:
+        def backups = backupsOn()
+        script.metaClass.toolGetRuleDocument = { Map args -> [ruleId: 42L, actions: [[id: '1', text: 'x' * 200000]]] }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == true
+        result.ruleId == 42L
+        result.backup.backupKey == 'k'
+        backups == [42]
+        result.documentOmitted == true
+        !result.containsKey('document')
+        result.note.contains('written and verified') && result.note.contains('Do not send them again') && result.note.contains('nextCursor')
+    }
+
+    def 'a verified write whose document fits returns it inline'() {
+        given:
+        script.metaClass.toolGetRuleDocument = { Map args -> [ruleId: 42L, actions: [[id: '1', text: 'x' * 1000]]] }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == true
+        result.document.actions[0].text.size() == 1000
+        !result.containsKey('documentOmitted')
+    }
+
+    def 'a verified write whose document read-back throws is still a successful write with the read error beside it'() {
+        given: "the read-back's rule lookup throws instead of returning a failed read"
+        script.metaClass.toolGetRuleDocument = { Map args -> throw new IllegalStateException('lookup timed out') }
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == true
+        !result.containsKey('document')
+        result.documentReadError == 'lookup timed out'
+        result.note.contains('written and verified') && result.note.contains('Do not send them again')
+    }
+
+    def 'a broken health result does not fail the document read'() {
         given:
         broken = true
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def document = script.toolGetRuleDocument([ruleId: 42, sections: ['actions']])
         then:
-        !result.success
-        result.partial
-        result.broken
-        !events.any { it instanceof Map }
+        document.health.broken == true
+        document.actions*.id == ['3', '1']
+        !document.containsKey('success')
+    }
+
+    def 'Stop Repeating in an IF / Repeat / END-REP / ELSE / END-IF sequence reads with no structural issue'() {
+        given:
+        nativeState.actionList = ['1', '2', '3', '4', '5', '6', '7']
+        nativeState.actions = ['1': [method: 'getIfThen', rule: '1'], '2': [method: 'getRepeat'], '3': [method: 'getLogMsg'],
+                               '4': [method: 'getEndRepeat'], '5': [method: 'getElse'], '6': [method: 'getStopRepeat'], '7': [method: 'getEndIf']]
+        nativeState.eval = ['1': ['4']]
+        when:
+        def document = script.toolGetRuleDocument([ruleId: 42, sections: ['actions']])
+        then:
+        document.health.structuralIssues == []
+        document.health.ok == true
+    }
+
+    def 'a runtime failure in the document read returns success false with a recovery note instead of throwing'() {
+        given:
+        script.metaClass._nrState = { Long id -> throw new IllegalStateException('Native state is unavailable') }
+        when:
+        def result = script.executeTool('hub_set_rule', [operation: 'read', ruleId: 42, args: [:]])
+        then:
+        result.success == false
+        result.ruleId == 42L
+        result.error.contains('Native state is unavailable')
+        result.note.contains("hub_get_tool_guide(section='builtin_app_tools_rules')")
     }
 
     def 'native time triggers use scheduled jobs as activation evidence'() {
@@ -528,11 +993,11 @@ class NativeDocumentsSpec extends ToolSpecBase {
         List jobs = scheduled ? [[handler: 'allHandlerT', status: 'PENDING',
                                  nextRunTime: '2026-10-21T03:59:00+0000']] : []
         hubGet.register('/installedapp/statusJson/42') { q ->
-            JsonOutput.toJson([installedApp: [id: 42, installed: true],
+            JsonOutput.toJson([installedApp: [id: 42, installed: true], appSettings: [],
                               eventSubscriptions: null, scheduledJobs: jobs])
         }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true,
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true,
             changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]]])
         then:
         result.success == scheduled
@@ -553,11 +1018,11 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.hasPredicate = true
         nativeState.stPrimed = false
         hubGet.register('/installedapp/statusJson/42') { q ->
-            JsonOutput.toJson([installedApp: [id: 42, installed: true],
+            JsonOutput.toJson([installedApp: [id: 42, installed: true], appSettings: [],
                               eventSubscriptions: subscriptions, scheduledJobs: []])
         }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true,
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true,
             changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]]])
         then:
         result.success
@@ -574,11 +1039,11 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.hasPredicate = predicate
         nativeState.stPrimed = primed
         hubGet.register('/installedapp/statusJson/42') { q ->
-            JsonOutput.toJson([installedApp: [id: 42, installed: true],
+            JsonOutput.toJson([installedApp: [id: 42, installed: true], appSettings: [],
                               eventSubscriptions: [], scheduledJobs: []])
         }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true,
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true,
             changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]]])
         then:
         !result.success
@@ -596,7 +1061,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'delete and order parts dispatch only fixed model operations'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'delete', value: [part: 'action', id: '1']], [part: 'order', value: [ids: ['3']]]], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'delete', value: [part: 'action', id: '1']], [part: 'order', value: [ids: ['3']]]], confirm: true])
         then:
         result.success
         events[0..1] == ['delete:action:1', 'order']
@@ -604,7 +1069,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'invalid action order is refused before any change or render'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'order', value: [ids: ['3']]]], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'order', value: [ids: ['3']]]], confirm: true])
         then:
         !result.success
         !result.partial
@@ -614,7 +1079,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'invalid typed scalar later in a batch cannot delete earlier actions'() {
         when:
-        script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [
             [part: 'delete', value: [part: 'action', id: '1']],
             [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg',
                 fields: [[name: 'flag.#', type: type, value: value]]]]
@@ -637,7 +1102,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.actionList = ['1', '2', '3']
         nativeState.actions = ['1': [method: 'getIfThen'], '2': [method: 'getLogMsg'], '3': [method: 'getEndIf']]
         when:
-        def refused = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        def refused = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [
             [part: 'delete', value: [part: 'action', id: '3']]
         ]])
         then:
@@ -646,7 +1111,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         refused.error.contains('END-IF')
         events.empty
         when:
-        def accepted = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        def accepted = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [
             [part: 'delete', value: [part: 'action', id: '1']],
             [part: 'delete', value: [part: 'action', id: '3']]
         ]])
@@ -657,7 +1122,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'unknown expression operands are refused before any change or render'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'required', value: [tokens: ['999999']]]], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'required', value: [tokens: ['999999']]]], confirm: true])
         then:
         !result.success
         !result.partial
@@ -667,7 +1132,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'unknown simple action condition refuses the complete batch before rendering'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [
             [part: 'variable', value: [operation: 'set', name: 'counter', value: 7]],
             [part: 'action', value: [type: 'switchActs', subtype: 'getOnOffSwitch', condition: '999999', fields: []]]
         ], confirm: true])
@@ -680,7 +1145,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'new simple conditional action prevents deleting its condition later in the same batch'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [
             [part: 'action', value: [type: 'switchActs', subtype: 'getOnOffSwitch', condition: '4', fields: []]],
             [part: 'delete', value: [part: 'condition', id: '4']]
         ], confirm: true])
@@ -720,7 +1185,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'an action deleted earlier in the batch cannot be edited later in it'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [
             [part: 'delete', value: [part: 'action', id: '1']],
             [part: 'action', value: logChange().value + [id: '1']]
         ]])
@@ -733,7 +1198,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'an action deleted earlier in the batch stays refused for edits after an append'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [
             logChange(),
             [part: 'delete', value: [part: 'action', id: '1']],
             [part: 'action', value: logChange().value + [id: '1']]
@@ -751,7 +1216,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         def condition = [part: 'condition', value: [capability: 'Switch', fields: [
             [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
         when:
-        def actions = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        def actions = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [
             logChange(),
             [part: 'delete', value: [part: 'action', id: '1']],
             [part: 'delete', value: [part: 'action', id: '1']]
@@ -774,7 +1239,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'one appended action leaves room for one unknown action id: a second unknown delete is refused before any write'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [
             logChange(),
             [part: 'delete', value: [part: 'action', id: '4']],
             [part: 'delete', value: [part: 'action', id: '5']]
@@ -899,7 +1364,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'an appended END-IF named by its id and deleted in the same batch leaves its IF open, refused before any write'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [
             [part: 'action', value: [type: 'condActs', subtype: 'getIfThen', fields: [], expression: ['4']]],
             [part: 'terminator', value: [subtype: 'endIf']],
             [part: 'delete', value: [part: 'action', id: '5']]
@@ -1007,7 +1472,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'an order after a new action in the same batch is refused before any write'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [
             logChange(),
             [part: 'order', value: [ids: ['1', '3']]]
         ]])
@@ -1023,7 +1488,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.actionList = ['1', '2', '3', '4']
         nativeState.actions = ['1': [method: 'getLogMsg'], '2': [method: 'getRepeat'], '3': [method: 'getLogMsg'], '4': [method: 'getEndRepeat']]
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [
             [part: 'order', value: [ids: ['1', '4', '3', '2']]]
         ]])
         then:
@@ -1106,7 +1571,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         List received = []
         script.metaClass._nmUpsertAction = { Long id, Map value -> received << value; [success: true] }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [
             [part: 'action', value: [type: 'delayActs', subtype: 'getWaitRule', expression: ['4'], fields: []]],
             [part: 'action', value: [type: 'switchActs', subtype: 'getOnOffSwitch', condition: '4', fields: []]]
         ], confirm: true])
@@ -1119,7 +1584,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'new wait expression without tokens refuses before any mutation'() {
         when:
-        script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [type: 'delayActs', subtype: 'getWaitRule', fields: []]]], confirm: true])
+        script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'action', value: [type: 'delayActs', subtype: 'getWaitRule', fields: []]]], confirm: true])
         then:
         thrown(IllegalArgumentException)
         events.empty
@@ -1127,7 +1592,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'referenced condition deletion is refused before any change or render'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'delete', value: [part: 'condition', id: '4']]], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'delete', value: [part: 'condition', id: '4']]], confirm: true])
         then:
         !result.success
         !result.partial
@@ -1142,7 +1607,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.actions.'6' = [method: 'getEndIf']
         nativeState.actionList = ['3', '1', '6']
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
         result.error.contains('unknown condition')
@@ -1156,7 +1621,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.actions.'6' = [method: 'getEndIf']
         nativeState.actionList = ['3', '1', '6']
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]], confirm: true])
         then:
         !result.success
         result.error.contains('unfinished IF')
@@ -1167,7 +1632,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, true) }
         when:
-        def failed = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def failed = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         !failed.success
         failed.partial
@@ -1178,7 +1643,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.clear()
         lifecycle.broken = false
         script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, false) }
-        def passed = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def passed = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         passed.success
     }
@@ -1189,7 +1654,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script.metaClass._nrStatePatch = { Long id, Map put, List remove = [] -> remove.each { nativeState.remove(it) }; nativeState.putAll(put); [:] }
         script.metaClass._nrHandle = { Long id -> new NativeDocumentConditionalChild(events, lifecycle, conditionLabel) }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         result.success == !refused
         if (refused) {
@@ -1210,7 +1675,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         child.raisesFlag = false
         script.metaClass._nrHandle = { Long id -> child }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         result.success
         events.any { it instanceof Map && it.path == '/installedapp/update/json' }
@@ -1221,7 +1686,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         lifecycle.stopped = true
         lifecycle.paused = true
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         result.success
         result.stopped
@@ -1235,16 +1700,17 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         Map health = [broken: false, stopped: false, paused: false]
         health.put(flag, malformed)
-        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(health) }
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(nativeState + health) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [], scheduledJobs: [], appSettings: [],
+            appState: health.collect { k, v -> [name: k, value: v] }]) }
         when:
-        def document = script.toolGetRuleDocument([rule_id: 42, sections: ['actions']])
+        def document = script.toolGetRuleDocument([ruleId: 42, sections: ['actions']])
         then:
-        document.nativeHealth.available
-        document.nativeHealth.get(flag) == null
-        document.nativeHealth.get(flag == 'stopped' ? 'paused' : 'stopped') == false
+        document.health.get(flag) == null
+        document.health.get(flag == 'stopped' ? 'paused' : 'stopped') == false
         events.empty
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
         !result.partial
@@ -1253,25 +1719,39 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.actionList == ['3', '1']
         where:
         flag      | malformed
-        'stopped' | 'false'
+        'stopped' | 'no'
         'stopped' | null
         'stopped' | 0
-        'paused'  | 'true'
+        'paused'  | 'yes'
         'paused'  | [:]
         'paused'  | []
+    }
+
+    def 'lifecycle flags stored as true or false text read as flags, as hub_list_rules reads them'() {
+        given:
+        lifecycle.stopped = 'true'
+        lifecycle.paused = 'false'
+        when:
+        def document = script.toolGetRuleDocument([ruleId: 42, sections: ['actions']])
+        then:
+        document.health.stopped == true
+        document.health.paused == false
+        script._ndNativeFlag([stopped: 'true'], 'stopped') == true
+        script._ndNativeFlag([paused: 'false'], 'paused') == false
     }
 
     def 'absent native lifecycle flags retain the platform false default'() {
         given:
         hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson([broken: false]) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [[name: 'switch']], scheduledJobs: [], appSettings: [], appState: []]) }
         when:
-        def document = script.toolGetRuleDocument([rule_id: 42, sections: ['actions']])
+        def document = script.toolGetRuleDocument([ruleId: 42, sections: ['actions']])
         then:
-        document.nativeHealth.stopped == false
-        document.nativeHealth.paused == false
+        document.health.stopped == false
+        document.health.paused == false
         events.empty
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         result.success
         !result.stopped
@@ -1279,24 +1759,45 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.any { it instanceof Map && it.body.contains('_action_update=Done') }
     }
 
-    def 'missing native health is unavailable and cannot finalize'() {
+    def 'missing native health refuses the update before anything is written'() {
         given:
+        def backups = backupsOn()
         hubGet.register('/app/ruleBuilderJson/42') { q -> '{}' }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
         !result.partial
-        result.error.contains('unavailable')
+        result.error.contains('compiled state could not be read')
+        result.checkErrors.any { it.contains('compiled-state read failed') }
+        backups.isEmpty()
         !events.any { it instanceof Map }
+    }
+
+    def 'a rule whose stored broken flag is missing and whose broken check fails reads not ok, and the update refuses it the same way'() {
+        given: "Rule Machine state without its broken key, and no answer from the rule's own check"
+        def backups = backupsOn()
+        broken = null
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(nativeState + lifecycle) }
+        when:
+        def health = script.toolGetRuleDocument([ruleId: 42, sections: []]).health
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
+        then:
+        health.broken == null
+        health.ok == false
+        health.checkErrors == result.checkErrors
+        !result.success
+        result.error.contains('broken flag could not be read')
+        backups.isEmpty()
+        events.empty
     }
 
     def 'explicit null activation collections are empty only for the verified installed rule'() {
         given:
         nativeState.capabstrue = [:]
-        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([installedApp: [id: 42, installed: true], eventSubscriptions: null, scheduledJobs: null]) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([installedApp: [id: 42, installed: true], appSettings: [], eventSubscriptions: null, scheduledJobs: null]) }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         result.success
         result.eventSubscriptions == []
@@ -1304,9 +1805,9 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'null activation collections cannot stand in for missing or mismatched rule identity'() {
         given:
-        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([installedApp: [id: 99, installed: true], eventSubscriptions: null, scheduledJobs: null]) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([installedApp: [id: 99, installed: true], appSettings: [], eventSubscriptions: null, scheduledJobs: null]) }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        def result = script.toolUpdateRuleDocument([ruleId: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
         result.partial
@@ -1315,11 +1816,11 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'create rejects deterministic changes before allocating a child'() {
         when:
-        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Rejected create', changes: changes, confirm: true])
+        def result = script.toolCreateRuleDocument([parentId: 28, name: 'Rejected create', changes: changes, confirm: true])
 
         then:
         !result.success && !result.partial
-        !result.rule_id
+        !result.ruleId
         result.error.contains(message)
         events.empty
 
@@ -1334,11 +1835,11 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'create uses native child identity label and actual Done installation'() {
         when:
-        def result = script.executeTool('hub_set_rule', [operation: 'create', confirm: true, args: [parent_id: 28, name: 'New document', changes: [logChange()]]])
+        def result = script.executeTool('hub_set_rule', [operation: 'create', confirm: true, args: [parentId: 28, name: 'New document', changes: [logChange()]]])
         then:
         result.success
         result.created
-        result.rule_id == 42L
+        result.ruleId == 42L
         events[0..3] == ['create', 'initState', 'origLabel:New document', 'label:New document']
         events.find { it instanceof Map }.body.contains('_action_update=Done')
     }
@@ -1348,16 +1849,16 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState = [actionList: [], actions: [:], capabsfalse: [:], capabstrue: [:],
                        eval: [:], allLocalVars: [:]]
         hubGet.register('/installedapp/statusJson/42') { q ->
-            JsonOutput.toJson([installedApp: [id: 42, installed: true],
+            JsonOutput.toJson([installedApp: [id: 42, installed: true], appSettings: [],
                               eventSubscriptions: [], scheduledJobs: []])
         }
         when:
         def result = script.executeTool('hub_set_rule',
-            [operation: 'create', confirm: true, args: [parent_id: 28, name: 'Empty document', changes: []]])
+            [operation: 'create', confirm: true, args: [parentId: 28, name: 'Empty document', changes: []]])
         then:
         result.success
         result.created
-        result.rule_id == 42L
+        result.ruleId == 42L
         result.results == []
         result.document.actions == []
         result.document.conditions == [:]
@@ -1366,7 +1867,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.any { it instanceof Map && it.path == '/installedapp/update/json' }
         when:
         events.clear()
-        script.toolUpdateRuleDocument([rule_id: 42, changes: [], confirm: true])
+        script.toolUpdateRuleDocument([ruleId: 42, changes: [], confirm: true])
         then:
         thrown(IllegalArgumentException)
         events.empty
@@ -1384,28 +1885,28 @@ class NativeDocumentsSpec extends ToolSpecBase {
             [status: 302, location: 'Location: http://127.0.0.1:8080/installedapp/configure/42']
         }
         when:
-        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Header child', changes: [logChange()], confirm: true])
+        def result = script.toolCreateRuleDocument([parentId: 28, name: 'Header child', changes: [logChange()], confirm: true])
         then:
         result.success
-        result.rule_id == 42L
+        result.ruleId == 42L
     }
 
     def 'create refuses an unexpected child parent before changing its state or label'() {
         given:
         script.metaClass.getAppByAppId = { Long id -> id == 28L ? [id: 28L, appType: [namespace: 'hubitat', name: 'Rule Machine']] : [id: 42L, parentAppId: 99L, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
         when:
-        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Wrong child', changes: [logChange()], confirm: true])
+        def result = script.toolCreateRuleDocument([parentId: 28, name: 'Wrong child', changes: [logChange()], confirm: true])
         then:
         !result.success
         result.partial
         !result.created
-        result.rule_id == null
+        result.ruleId == null
         events == ['create']
     }
 
     def 'invalid parent prevents native child creation'() {
         when:
-        script.toolCreateRuleDocument([parent_id: 42, name: 'Bad parent', changes: [logChange()], confirm: true])
+        script.toolCreateRuleDocument([parentId: 42, name: 'Bad parent', changes: [logChange()], confirm: true])
         then:
         thrown(IllegalArgumentException)
         events.empty
@@ -1414,20 +1915,20 @@ class NativeDocumentsSpec extends ToolSpecBase {
     def 'read and write masters and confirmation apply through real dispatcher'() {
         when:
         settingsMap.enableRead = false
-        script.executeTool('hub_set_rule', [operation: 'read', rule_id: 42, args: [:]])
+        script.executeTool('hub_set_rule', [operation: 'read', ruleId: 42, args: [:]])
         then:
         thrown(IllegalArgumentException)
         when:
         settingsMap.enableRead = true
         settingsMap.enableWrite = false
-        script.executeTool('hub_set_rule', [operation: 'update', rule_id: 42, confirm: true, args: [changes: []]])
+        script.executeTool('hub_set_rule', [operation: 'update', ruleId: 42, confirm: true, args: [changes: []]])
         then:
         thrown(IllegalArgumentException)
         when:
         settingsMap.enableWrite = true
-        def probe = script.executeTool('hub_set_rule', [operation: 'update', rule_id: 42, confirm: false, args: [changes: [logChange()]]])
+        def probe = script.executeTool('hub_set_rule', [operation: 'update', ruleId: 42, confirm: false, args: [changes: [logChange()]]])
         then:
-        probe.confirm_required
+        probe.confirmRequired
         probe.operation == 'update'
         events.empty
     }
@@ -1439,8 +1940,10 @@ class NativeDocumentChild {
     Map locals
     Map typedSettings
     NativeDocumentChild(List events, Map lifecycle, Map locals = [:], Map typedSettings = [:]) { this.events = events; this.lifecycle = lifecycle; this.locals = locals; this.typedSettings = typedSettings }
+    Closure brokenCheck = { -> false }
     Object getSetting(String name) { typedSettings.get(name) }
     Map getAllLocalVars() { locals }
+    Object broken() { brokenCheck() }
     void appButtonHandler(String name) {
         events << name
         if (name == 'stopRule') lifecycle.stopped = !lifecycle.stopped

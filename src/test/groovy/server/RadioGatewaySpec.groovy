@@ -122,7 +122,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         !readOnly.contains('hub_set_zwave')
         !readOnly.contains('hub_call_destructive_ops')
 
-        and: 'set_* config writes are idempotent (the zwave_js switch skips a matching stack); call_* operations are not'
+        and: 'set_* config writes are idempotent (the zwaveJs switch skips a matching stack); call_* operations are not'
         idempotent.contains('hub_set_zwave')
         idempotent.contains('hub_set_zigbee')
         !idempotent.contains('hub_call_zwave')
@@ -170,7 +170,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         e.message.contains('SAFETY CHECK FAILED')
     }
 
-    def "hub_set_zigbee channel without power_level is rejected"() {
+    def "hub_set_zigbee channel without powerLevel is rejected"() {
         when: script.toolSetZigbee([channel: 20])
         then: thrown(IllegalArgumentException)
     }
@@ -180,7 +180,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         then: thrown(IllegalArgumentException)
     }
 
-    def "hub_call_zwave per-node action '#action' requires node_id"() {
+    def "hub_call_zwave per-node action '#action' requires nodeId"() {
         when: script.toolCallZwave([action: action])
         then: thrown(IllegalArgumentException)
         where: action << ['repair_node', 'node_refresh', 'node_rediscover', 'node_reinitialize', 'node_replace']
@@ -194,13 +194,13 @@ class RadioGatewaySpec extends ToolSpecBase {
     }
 
     def "hub_call_zwave node_remove is confirm-gated"() {
-        when: script.toolCallZwave([action: 'node_remove', node_id: '7'])
+        when: script.toolCallZwave([action: 'node_remove', nodeId: '7'])
         then:
         def e = thrown(IllegalArgumentException)
         e.message.contains('SAFETY CHECK FAILED')
     }
 
-    def "hub_call_zwave grant_keys requires security_keys; smartstart_delete requires node_dsk"() {
+    def "hub_call_zwave grant_keys requires securityKeys; smartstart_delete requires nodeDsk"() {
         when: script.toolCallZwave([action: 'grant_keys'])
         then: thrown(IllegalArgumentException)
 
@@ -208,7 +208,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         then: thrown(IllegalArgumentException)
     }
 
-    def "hub_call_matter pair requires setup_code; open_pairing_window requires node_id; disable is confirm-gated"() {
+    def "hub_call_matter pair requires setupCode; open_pairing_window requires nodeId; disable is confirm-gated"() {
         when: script.toolCallMatter([action: 'pair'])
         then: thrown(IllegalArgumentException)
 
@@ -230,7 +230,7 @@ class RadioGatewaySpec extends ToolSpecBase {
 
     def "hub_call_destructive_ops rejects a firmware action on the wrong radio"() {
         given: enableWrite()   // sets Write master + a recent backup so requireDestructiveConfirm passes
-        when: script.toolCallDestructiveOps([target: 'zigbee', action: 'device_firmware_start', confirm: true, node_id: '5', file_name: 'fw.bin'])
+        when: script.toolCallDestructiveOps([target: 'zigbee', action: 'device_firmware_start', confirm: true, nodeId: '5', fileName: 'fw.bin'])
         then: thrown(IllegalArgumentException)   // device_firmware_start is Z-Wave only
     }
 
@@ -375,7 +375,7 @@ class RadioGatewaySpec extends ToolSpecBase {
             posted.path = path; posted.body = new JsonSlurper().parseText(body); [nodeId: 9, error: '']
         }
         when:
-        def r = script.executeTool('hub_call_matter', [action: 'pair', setup_code: '12345678901'])
+        def r = script.executeTool('hub_call_matter', [action: 'pair', setupCode: '12345678901'])
         then:
         r.success == true
         r.action == 'pair'
@@ -420,7 +420,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         }
 
         when:
-        def res = script.toolCallZwave([action: 'node_refresh', node_id: '7'])
+        def res = script.toolCallZwave([action: 'node_refresh', nodeId: '7'])
 
         then:
         posted.path == '/hub/zwave/refreshNodeStatus'
@@ -436,7 +436,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         }
 
         when:
-        def res = script.toolCallZwave([action: 'grant_keys', security_keys: [S2Authenticated: true]])
+        def res = script.toolCallZwave([action: 'grant_keys', securityKeys: [S2Authenticated: true]])
 
         then:
         posted.path == '/hub/zwave/securityKeys'
@@ -452,7 +452,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         }
 
         when:
-        def res = script.toolCallZwave([action: 'node_replace', node_id: '9'])
+        def res = script.toolCallZwave([action: 'node_replace', nodeId: '9'])
 
         then:
         posted.path == '/hub2/zwave/nodeReplace'
@@ -469,7 +469,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         }
 
         when:
-        def res = script.toolCallZwave([action: 'smartstart_delete', node_dsk: 'ABCD-1234'])
+        def res = script.toolCallZwave([action: 'smartstart_delete', nodeDsk: 'ABCD-1234'])
 
         then:
         posted.path == '/mobileapi/zwave/smartstart/delete'
@@ -486,7 +486,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         }
 
         when:
-        def res = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start', node_id: '5', file_name: 'fw.gbl', confirm: true])
+        def res = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start', nodeId: '5', fileName: 'fw.gbl', confirm: true])
 
         then:
         posted.path == '/hub/zwave/deviceFirmware/start'
@@ -495,7 +495,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         res.success == true
     }
 
-    def "hub_call_destructive_ops device_firmware_start passes target_index to startBody.target (decoupled from the target selector)"() {
+    def "hub_call_destructive_ops device_firmware_start passes targetIndex to startBody.target (decoupled from the target selector)"() {
         given:
         enableWrite()
         def posted = [:]
@@ -504,10 +504,10 @@ class RadioGatewaySpec extends ToolSpecBase {
         }
 
         when:
-        // `target` here is the radio selector (zwave); target_index=7 is the FIRMWARE index, which must
+        // `target` here is the radio selector (zwave); targetIndex=7 is the FIRMWARE index, which must
         // reach startBody.target — proving the renamed firmware-index arg is decoupled from the selector.
         def res = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start',
-            node_id: '5', file_name: 'fw.gbl', target_index: 7, confirm: true])
+            nodeId: '5', fileName: 'fw.gbl', targetIndex: 7, confirm: true])
 
         then:
         posted.path == '/hub/zwave/deviceFirmware/start'
@@ -581,7 +581,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         hubGet.register('/hub/zwave2/getNodeState') { p -> 'IDLE' }
 
         when:
-        script.toolGetRadioDetails([radio: 'zwave', node_id: '7'])
+        script.toolGetRadioDetails([radio: 'zwave', nodeId: '7'])
 
         then:
         hubGet.calls*.key.contains('/hub/zwave2/getNodeState?node=7')
@@ -594,7 +594,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         hubGet.register('/mobileapi/zwave/smartstart/list') { p -> JsonOutput.toJson([]) }
 
         when:
-        script.toolGetRadioDetails([radio: 'zwave', include_smartstart: true])
+        script.toolGetRadioDetails([radio: 'zwave', includeSmartStart: true])
 
         then: 'the key carries a t= param (its value is now(), fixed by the harness)'
         hubGet.calls*.key.any { it.startsWith('/mobileapi/zwave/smartstart/list?t=') }
@@ -606,7 +606,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         hubGet.register('/hub/zigbee/updateChannelAndPower') { p -> 'ok' }
 
         when:
-        def res = script.toolSetZigbee([channel: 20, power_level: 8, confirm: true])
+        def res = script.toolSetZigbee([channel: 20, powerLevel: 8, confirm: true])
 
         then:
         res.success == true
@@ -619,7 +619,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         hubGet.register('/hub/zwaveNodeRepair2') { p -> 'started' }
 
         when:
-        def res = script.toolCallZwave([action: 'repair_node', node_id: '12'])
+        def res = script.toolCallZwave([action: 'repair_node', nodeId: '12'])
 
         then:
         res.success == true
@@ -632,7 +632,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         hubGet.register('/hub/zwave2/startAntennaTest') { p -> 'started' }
 
         when:
-        def res = script.toolCallZwave([action: 'antenna_test_start', node_id: '9'])
+        def res = script.toolCallZwave([action: 'antenna_test_start', nodeId: '9'])
 
         then:
         res.success == true
@@ -645,16 +645,16 @@ class RadioGatewaySpec extends ToolSpecBase {
         hubGet.register('/hub/matter/openPairingWindow') { p -> JsonOutput.toJson([success: true]) }
 
         when:
-        def res = script.toolCallMatter([action: 'open_pairing_window', node_id: '3001'])
+        def res = script.toolCallMatter([action: 'open_pairing_window', nodeId: '3001'])
 
         then:
         res.success == true
         hubGet.calls*.key.contains('/hub/matter/openPairingWindow?node=3001')
     }
 
-    // ---- include_* read folds ----
+    // ---- include* read folds ----
 
-    def "include_status attaches the zwave/zigbee pollers and omits the dropped matter slot"() {
+    def "includeStatus attaches the zwave/zigbee pollers and omits the dropped matter slot"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true]) }
@@ -664,7 +664,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         hubGet.register('/hub/zigbeeInfo/status') { p -> JsonOutput.toJson([networkState: 'ONLINE']) }
 
         when:
-        def r = script.toolGetRadioDetails([radio: 'zwave', include_status: true])
+        def r = script.toolGetRadioDetails([radio: 'zwave', includeStatus: true])
 
         then:
         r.status?.containsKey('zwaveRepair')
@@ -679,7 +679,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         // matterLogs NOT registered -> _radioGetSafe returns {error}; the read still succeeds.
 
         when:
-        def r = script.toolGetRadioDetails([radio: 'zwave', include_logs: true])
+        def r = script.toolGetRadioDetails([radio: 'zwave', includeLogs: true])
 
         then:
         r instanceof Map          // the base read came back, did not throw
@@ -765,21 +765,21 @@ class RadioGatewaySpec extends ToolSpecBase {
         r.action == 'node_replace_stop'
     }
 
-    def "hub_get_radio_details radio='matter' + node_id polls matterPairDeviceStatus (not the zwave node-state)"() {
+    def "hub_get_radio_details radio='matter' + nodeId polls matterPairDeviceStatus (not the zwave node-state)"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/matterDetails/json') { p -> JsonOutput.toJson([enabled: true]) }
         hubGet.register('/hub/matterPairDeviceStatus?nodeId=3001') { p -> JsonOutput.toJson([initMap: [:], deviceMap: [:]]) }
 
         when:
-        def r = script.toolGetRadioDetails([radio: 'matter', node_id: '3001'])
+        def r = script.toolGetRadioDetails([radio: 'matter', nodeId: '3001'])
 
         then:
         r.matterPairStatus != null
         !r.containsKey('nodeState')
     }
 
-    def "include_status attaches the join/antenna/nodeReplace pollers"() {
+    def "includeStatus attaches the join/antenna/nodeReplace pollers"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true]) }
@@ -788,7 +788,7 @@ class RadioGatewaySpec extends ToolSpecBase {
          '/hub/zwave/nodeReplace/info', '/hub/zigbeeInfo/status'].each { ep -> hubGet.register(ep) { p -> '{}' } }
 
         when:
-        def r = script.toolGetRadioDetails([radio: 'zwave', include_status: true])
+        def r = script.toolGetRadioDetails([radio: 'zwave', includeStatus: true])
 
         then:
         r.status?.containsKey('zwaveJoinDiscovery')
@@ -805,7 +805,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         hubGet.register('/hub/zigbee/updateSettings?rebuildNetworkOnReboot=true&inactiveDevicePingEnabled=true') { p -> 'ok' }
 
         when:
-        def r = script.toolSetZigbee([rebuild_on_reboot: true])
+        def r = script.toolSetZigbee([rebuildOnReboot: true])
 
         then:
         r.success == true
@@ -823,7 +823,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolSetZigbee([rebuild_on_reboot: true])
+        def r = script.toolSetZigbee([rebuildOnReboot: true])
 
         then:
         r.success == false
@@ -844,7 +844,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolSetZigbee([rebuild_on_reboot: true])
+        def r = script.toolSetZigbee([rebuildOnReboot: true])
 
         then:
         r.success == false
@@ -852,14 +852,14 @@ class RadioGatewaySpec extends ToolSpecBase {
         !r.note?.contains('Zigbee radio')
     }
 
-    def "hub_set_zigbee ping_device toggles per-device keep-alive ping"() {
+    def "hub_set_zigbee pingDevice toggles per-device keep-alive ping"() {
         given:
         settingsMap.selectedDevices = [new TestDevice(id: 42)]
         hubGet.register('/device/fullJson/42') { JsonOutput.toJson([device: [id: 42]]) }
         hubGet.register('/hub/zigbee/updatePingDevice/42/true') { p -> 'ok' }
 
         when:
-        def r = script.toolSetZigbee([ping_device: [device_id: '42', enabled: true]])
+        def r = script.toolSetZigbee([pingDevice: [deviceId: '42', enabled: true]])
 
         then:
         r.success == true
@@ -873,7 +873,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         hubGet.register('/hub/zwaveDetails/update?enabled=true&secureJoin=0&longRangeChannel=1') { p -> 'ok' }
 
         when:
-        def r = script.toolSetZwave([long_range_channel: 1])
+        def r = script.toolSetZwave([longRangeChannel: 1])
 
         then:
         r.success == true   // null region param filtered out, no NullPointerException
@@ -884,22 +884,22 @@ class RadioGatewaySpec extends ToolSpecBase {
         then: thrown(IllegalArgumentException)
     }
 
-    def "hub_set_zigbee ping_device requires {device_id, enabled}"() {
-        when: script.toolSetZigbee([ping_device: [enabled: true]])   // missing device_id
+    def "hub_set_zigbee pingDevice requires {deviceId, enabled}"() {
+        when: script.toolSetZigbee([pingDevice: [enabled: true]])   // missing deviceId
         then: thrown(IllegalArgumentException)
 
-        when: script.toolSetZigbee([ping_device: 'not-a-map'])
+        when: script.toolSetZigbee([pingDevice: 'not-a-map'])
         then: thrown(IllegalArgumentException)
     }
 
     def "hub_set_zigbee settings refuses to fabricate an unspecified flag when current state lacks it"() {
         given:
-        // zigbeeDetails comes back MISSING inactiveDevicePingEnabled while ping_inactive is omitted;
+        // zigbeeDetails comes back MISSING inactiveDevicePingEnabled while pingInactive is omitted;
         // updateSettings is intentionally NOT registered so the only success path is the refuse guard.
         hubGet.register('/hub/zigbeeDetails/json') { p -> JsonOutput.toJson([rebuildNetworkOnReboot: false]) }
 
         when:
-        def r = script.toolSetZigbee([rebuild_on_reboot: true])
+        def r = script.toolSetZigbee([rebuildOnReboot: true])
 
         then:
         r.success == false                       // did NOT silently write inactiveDevicePingEnabled=false
@@ -922,7 +922,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         r.success == true
     }
 
-    def "dispatch: hub_set_zigbee ping_device routes through executeTool"() {
+    def "dispatch: hub_set_zigbee pingDevice routes through executeTool"() {
         given:
         settingsMap.enableWrite = true
         settingsMap.selectedDevices = [new TestDevice(id: 42)]
@@ -930,7 +930,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         hubGet.register('/hub/zigbee/updatePingDevice/42/false') { p -> 'ok' }
 
         when:
-        def r = script.executeTool('hub_set_zigbee', [ping_device: [device_id: '42', enabled: false]])
+        def r = script.executeTool('hub_set_zigbee', [pingDevice: [deviceId: '42', enabled: false]])
 
         then:
         r.success == true

@@ -33,7 +33,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
 
     private String key(String section) { script.hubBpsGuideKey(section) as String }
 
-    private static final Map SET_RULE_ARGS = [operation: 'update', rule_id: 5, args: [changes: [[part: 'required', value: [tokens: ['1']]]]], confirm: true]
+    private static final Map SET_RULE_ARGS = [operation: 'update', ruleId: 5, args: [changes: [[part: 'required', value: [tokens: ['1']]]]], confirm: true]
 
     def "gate ON + missing key blocks a write tool with a guide-pointer message and never leaks the key"() {
         given:
@@ -94,8 +94,8 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         where:
         tool                 | args                                     || section
         'hub_set_rule'       | SET_RULE_ARGS                            || 'set_rule_reference'
-        'hub_set_rule' | [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true]     || 'set_rule_reference'
-        'hub_set_native_app' | [operation: 'update', app_id: 42, args: [fields: [comments: 'x']], confirm: true] || 'set_native_app_reference'
+        'hub_set_rule' | [operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']]], confirm: true]     || 'set_rule_reference'
+        'hub_set_native_app' | [operation: 'update', appId: 42, args: [fields: [comments: 'x']], confirm: true] || 'set_native_app_reference'
         'hub_set_hsm'        | [armCommand: 'armHome']                  || 'best_practice_reference'
     }
 
@@ -122,8 +122,8 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         tool                 | args                                 | own                       | other
         'hub_set_rule'       | SET_RULE_ARGS                        | 'set_rule_reference'      | 'best_practice_reference'
         'hub_set_hsm'        | [armCommand: 'armHome']              | 'best_practice_reference' | 'set_rule_reference'
-        'hub_set_rule' | [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true] | 'set_rule_reference' | 'builtin_app_tools_rules'
-        'hub_set_native_app' | [operation: 'form', app_id: 42, args: [steps: [[kind: 'open']]], confirm: true] | 'set_native_app_reference' | 'builtin_app_tools_crud'
+        'hub_set_rule' | [operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']]], confirm: true] | 'set_rule_reference' | 'builtin_app_tools_rules'
+        'hub_set_native_app' | [operation: 'form', appId: 42, args: [steps: [[kind: 'open']]], confirm: true] | 'set_native_app_reference' | 'builtin_app_tools_crud'
     }
 
     /** The value a caller offers for each refusal variant; the clock is the harness default T0. */
@@ -323,7 +323,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         def probe = script.executeTool('hub_set_rule', [operation: 'update', args: [:]])
         then:
         probe.operation == 'update'
-        probe.confirm_required
+        probe.confirmRequired
         probe.inputSchema
     }
 

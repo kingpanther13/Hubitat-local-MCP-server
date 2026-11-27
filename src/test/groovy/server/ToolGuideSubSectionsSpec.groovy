@@ -112,8 +112,8 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         'performance_diagnostics'       | '### hub_get_radio_details'                                      | '### hub_list_devices'
         'builtin_app_tools_overview'    | '## Installed-App & Native-Rule Tools'                        | '### hub_call_rule'
         'builtin_app_tools_apps'        | '### hub_list_hpm_packages'                                   | '### hub_set_rule'
-        'builtin_app_tools_rules'       | '### hub_get_rule_health'                                     | '### hub_list_drivers'
-        'builtin_app_tools_crud'        | '### Safety model for native CRUD'                            | '### hub_get_rule_health'
+        'builtin_app_tools_rules'       | '### hub_get_rule'                                     | '### hub_list_drivers'
+        'builtin_app_tools_crud'        | '### Safety model for native CRUD'                            | '### hub_get_rule'
     }
 
     def "native authoring guides describe the public document and form surfaces"() {

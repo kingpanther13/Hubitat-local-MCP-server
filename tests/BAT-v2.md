@@ -8,11 +8,11 @@
 
 **Dedicated test-hub prompt:** "Create a disposable test device, inspect its preferences and configuration, and verify boolean, numeric, text and enum changes using an independent native read. Restore each original value and verify restoration, then remove only the device and driver you created. Leave every existing device and automation unchanged."
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 113 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 111 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
-> **Supplement**: see [`tests/BAT-rm-native-crud.md`](./BAT-rm-native-crud.md) for the native-RM CRUD suite (T300-T399) -- acceptance gate for the native CRUD tools (`hub_set_rule`, `hub_set_native_app`, `hub_delete_native_app`, `hub_get_rule_health`). Those tools are shipped; all scenarios in that file should pass against the current codebase.
+> **Supplement**: see [`tests/BAT-rm-native-crud.md`](./BAT-rm-native-crud.md) for the native-RM CRUD suite (T300-T399) -- acceptance gate for the native CRUD tools (`hub_set_rule`, `hub_set_native_app`, `hub_delete_native_app`, `hub_get_rule`). Those tools are shipped; all scenarios in that file should pass against the current codebase.
 
 Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt`, and optional `teardown_prompt`. Run each prompt in the same AI session (setup → test → teardown). Each TEST SCENARIO starts a fresh session.
 
@@ -530,7 +530,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Recognizes Hub Mesh as Hubitat's hub-to-hub device/variable sharing over the LAN — NOT the Z-Wave/Zigbee radio mesh (that would be `hub_get_radio_details`) — and calls `hub_get_hub_mesh`. Reports `hubMeshEnabled`, the auto-discovered `peers` (name / ipAddress / hubId, plus any `warning`), the full-sync interval, whether the hub follows a peer's modes (`modeHubId`, `"none"` = local modes), and the shared/linked device + hub-variable lists. `privateDeviceCount` / `localHubVariableCount` are counts only — for the full lists it should point at `hub_list_devices` / `hub_list_variables`. `hubMeshToken` is NOT returned unless `include_token: true` was asked for (it is a credential). Read-only. On firmware without Hub Mesh the call returns `success:false` with an `error` + `note` rather than throwing.
+**Expected**: Recognizes Hub Mesh as Hubitat's hub-to-hub device/variable sharing over the LAN — NOT the Z-Wave/Zigbee radio mesh (that would be `hub_get_radio_details`) — and calls `hub_get_hub_mesh`. Reports `hubMeshEnabled`, the auto-discovered `peers` (name / ipAddress / hubId, plus any `warning`), the full-sync interval, whether the hub follows a peer's modes (`modeHubId`, `"none"` = local modes), and the shared/linked device + hub-variable lists. `privateDeviceCount` / `localHubVariableCount` are counts only — for the full lists it should point at `hub_list_devices` / `hub_list_variables`. `hubMeshToken` is NOT returned unless `includeToken: true` was asked for (it is a credential). Read-only. On firmware without Hub Mesh the call returns `success:false` with an `error` + `note` rather than throwing.
 
 ### T14j — change Hub Mesh settings (⚠️ enable/disable is reboot-gated and hub-wide)
 
@@ -542,9 +542,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_update_hub_mesh` with `full_refresh_interval: 300` and reports `applied: ["full_refresh_interval"]`. Does NOT require `confirm` (the change is reversible). Other legs, each optional and applied in a stable order: `enabled: true|false` (⚠️ reports that a hub REBOOT via `hub_reboot` is required before it takes effect — the tool never reboots on its own), `mode_hub_id` (a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `"none"` to go back to local modes), and `peer_hub_id` + `peer_token` TOGETHER (stores a peer hub's mesh token, needed when that peer has UI login security). Rejected by validation (an `isError` result) before any hub call: no settable field at all, a `full_refresh_interval` outside `0|120|300|3600`, a non-boolean `enabled`, and `peer_hub_id` without `peer_token` (or vice versa). Peer hubs are auto-discovered on the LAN so there is no add-peer operation, and per-DEVICE sharing is `hub_update_device` (`meshEnabled` / `meshFullSync`), not this tool. A dropped/empty response, a non-JSON body, and an explicit `success:false` from the peer-token store are each fail-closed with a case-specific note (unconfirmed vs non-JSON vs rejected).
+**Expected**: Calls `hub_update_hub_mesh` with `fullRefreshInterval: 300` and reports `applied: ["fullRefreshInterval"]`. Does NOT require `confirm` (the change is reversible). Other legs, each optional and applied in a stable order: `enabled: true|false` (⚠️ reports that a hub REBOOT via `hub_reboot` is required before it takes effect — the tool never reboots on its own), `modeHubId` (a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `"none"` to go back to local modes), and `peerHubId` + `peerToken` TOGETHER (stores a peer hub's mesh token, needed when that peer has UI login security). Rejected by validation (an `isError` result) before any hub call: no settable field at all, a `fullRefreshInterval` outside `0|120|300|3600`, a non-boolean `enabled`, and `peerHubId` without `peerToken` (or vice versa). Peer hubs are auto-discovered on the LAN so there is no add-peer operation, and per-DEVICE sharing is `hub_update_device` (`meshEnabled` / `meshFullSync`), not this tool. A dropped/empty response, a non-JSON body, and an explicit `success:false` from the peer-token store are each fail-closed with a case-specific note (unconfirmed vs non-JSON vs rejected).
 
-### T14k — share a hub variable over Hub Mesh (hub_set_variable mesh_shared)
+### T14k — share a hub variable over Hub Mesh (hub_set_variable meshShared)
 
 > **DO NOT run on a hub whose mesh peers matter** — sharing/unsharing a variable briefly changes what peers see. Use a throwaway variable and unshare it afterwards.
 
@@ -554,7 +554,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_set_variable` with `name: "vacationMode"` and `mesh_shared: true` (no `value` needed — mesh_shared may stand alone), reports `meshShared: true` and, when the read-back is readable, `meshShareConfirmed: true` (the variable now appears in `hub_get_hub_mesh` `sharedHubVariables`). Then `mesh_shared: false` to stop. `mesh_shared` applies to HUB variables only — a rule-only name is rejected by validation before any hub call (`isError`), as is a call with neither `value` nor `mesh_shared`. Sharing/unsharing is reversible (no `confirm`). Distinct from per-DEVICE sharing (`hub_update_device` `meshEnabled`).
+**Expected**: Calls `hub_set_variable` with `name: "vacationMode"` and `meshShared: true` (no `value` needed — meshShared may stand alone), reports `meshShared: true` and, when the read-back is readable, `meshShareConfirmed: true` (the variable now appears in `hub_get_hub_mesh` `sharedHubVariables`). Then `meshShared: false` to stop. `meshShared` applies to HUB variables only — a rule-only name is rejected by validation before any hub call (`isError`), as is a call with neither `value` nor `meshShared`. Sharing/unsharing is reversible (no `confirm`). Distinct from per-DEVICE sharing (`hub_update_device` `meshEnabled`).
 
 ### T14l — link a device or variable a peer hub shares (hub_create_device / hub_create_variable mesh link)
 
@@ -566,7 +566,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Reads `hub_get_hub_mesh` to find the peer's `hubId` + `deviceId` in `availableLinkedDevices[]`, then calls `hub_create_device` with `mesh_source_hub_id` + `mesh_source_device_id` + `confirm: true` (NOT `deviceTypeId`). Returns the new local `deviceId` (resolved by a `localLinkedDevices` diff; a read-back lag returns a `warning`, not a failure). The variable analogue is `hub_create_variable` with `mesh_source_hub_id` + `mesh_source_name`. Validation (an `isError` result before any hub call): passing both `deviceTypeId` and the mesh pair, or only one half of the pair, is rejected ("not both" / "BOTH mesh_source_..."). If the peer has UI login security, its mesh token must be stored first via `hub_update_hub_mesh(peer_hub_id, peer_token)` or the link no-ops. Unlink a linked device (local proxy only; peer source untouched) with `hub_delete_device`.
+**Expected**: Reads `hub_get_hub_mesh` to find the peer's `hubId` + `deviceId` in `availableLinkedDevices[]`, then calls `hub_create_device` with `meshSourceHubId` + `meshSourceDeviceId` + `confirm: true` (NOT `deviceTypeId`). Returns the new local `deviceId` (resolved by a `localLinkedDevices` diff; a read-back lag returns a `warning`, not a failure). The variable analogue is `hub_create_variable` with `meshSourceHubId` + `meshSourceName`. Validation (an `isError` result before any hub call): passing both `deviceTypeId` and the mesh pair, or only one half of the pair, is rejected ("not both" / "BOTH meshSource..."). If the peer has UI login security, its mesh token must be stored first via `hub_update_hub_mesh(peerHubId, peerToken)` or the link no-ops. Unlink a linked device (local proxy only; peer source untouched) with `hub_delete_device`.
 
 ### T14m — unlink a Hub Mesh linked variable (hub_delete_variable, mesh-aware)
 
@@ -578,7 +578,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Recognizes the DECORATED local name (`"<sourceVar> on <peerName>"`) as a Hub Mesh linked mirror and calls `hub_delete_variable` with `name` + `confirm: true`. When nothing real on this hub uses the mirror (`localLinkedHubVariables[]` row `inUseByApps:false`) it unlinks WITHOUT `force` — even though the hub's generic in-use registry marks the mirror in use (that registration is the mesh link itself, not a consumer) — and returns `{success:true, deleted:true, unlinked:true, source:"hub"}` with a `note` saying only this hub's local copy was removed and the source variable on the peer is untouched. When a real local app uses the mirror (`inUseByApps:true`) the unforced call is refused (`isError`) with a message naming BOTH that it is a linked mirror (peer untouched) AND that real apps will break; `force: true` unlinks anyway. An ordinary (non-mirror) in-use hub var is unchanged — still refused without `force` on the generic registry guard. Teardown ORDER: unlink on the linking hub(s) first, THEN unshare on the owner (`hub_set_variable(mesh_shared=false)`) — unsharing first strands the mirrors, and the unshare result carries a caution saying so. Confirm + a recent backup are still required (`requireDestructiveConfirm`).
+**Expected**: Recognizes the DECORATED local name (`"<sourceVar> on <peerName>"`) as a Hub Mesh linked mirror and calls `hub_delete_variable` with `name` + `confirm: true`. When nothing real on this hub uses the mirror (`localLinkedHubVariables[]` row `inUseByApps:false`) it unlinks WITHOUT `force` — even though the hub's generic in-use registry marks the mirror in use (that registration is the mesh link itself, not a consumer) — and returns `{success:true, deleted:true, unlinked:true, source:"hub"}` with a `note` saying only this hub's local copy was removed and the source variable on the peer is untouched. When a real local app uses the mirror (`inUseByApps:true`) the unforced call is refused (`isError`) with a message naming BOTH that it is a linked mirror (peer untouched) AND that real apps will break; `force: true` unlinks anyway. An ordinary (non-mirror) in-use hub var is unchanged — still refused without `force` on the generic registry guard. Teardown ORDER: unlink on the linking hub(s) first, THEN unshare on the owner (`hub_set_variable(meshShared=false)`) — unsharing first strands the mirrors, and the unshare result carries a caution saying so. Confirm + a recent backup are still required (`requireDestructiveConfirm`).
 
 ### T14n — read the hub network configuration (hub_get_info includeNetwork)
 
@@ -714,7 +714,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected** (conditional): Calls `hub_create_device` with the chosen `deviceTypeId`, `label="BAT Create From Driver"`, and `confirm=true`. Returns the new `deviceId`. If the picked driver is radio-type, the response carries a radio orphan-shell `warning`. Without `confirm` the call is rejected (an `isError: true` validation result). `hub_create_device` also LINKS a Hub Mesh device via `mesh_source_hub_id` + `mesh_source_device_id` instead of `deviceTypeId` (see T14l); passing both, or only one half of the pair, is rejected by validation.
+**Expected** (conditional): Calls `hub_create_device` with the chosen `deviceTypeId`, `label="BAT Create From Driver"`, and `confirm=true`. Returns the new `deviceId`. If the picked driver is radio-type, the response carries a radio orphan-shell `warning`. Without `confirm` the call is rejected (an `isError: true` validation result). `hub_create_device` also LINKS a Hub Mesh device via `meshSourceHubId` + `meshSourceDeviceId` instead of `deviceTypeId` (see T14l); passing both, or only one half of the pair, is rejected by validation.
 
 ### T19i — hub_get_compatible_devices (pairing instructions lookup)
 
@@ -1676,9 +1676,9 @@ Tests that an agent verifies a rule write from the rule itself and never repeats
 ```
 
 **Expected**:
-- Agent creates the rule with `hub_manage_rule_machine(tool=hub_set_rule, args={operation: "create", args: {parent_id: <Rule Machine app id>, name: "BAT Finding4 Rule", changes: [<switch-on action>]}, confirm: true})`, or creates it and adds the action with one `operation: "update"` call.
+- Agent creates the rule with `hub_manage_rule_machine(tool=hub_set_rule, args={operation: "create", args: {parentId: <Rule Machine app id>, name: "BAT Finding4 Rule", changes: [<switch-on action>]}, confirm: true})`, or creates it and adds the action with one `operation: "update"` call.
 - The write reports `success: true`, and its returned document lists one switch action.
-- Agent verifies with `hub_set_rule(operation: "read", rule_id, args: {sections: ["actions"]})` or `hub_read_apps_code(tool=hub_get_app_config, args={appId: ..., includeSettings: true})`, which shows one "On: BAT Partial Test Switch" action.
+- Agent verifies with `hub_set_rule(operation: "read", ruleId, args: {sections: ["actions"]})` or `hub_read_apps_code(tool=hub_get_app_config, args={appId: ..., includeSettings: true})`, which shows one "On: BAT Partial Test Switch" action.
 - Agent reports the action was added.
 
 **What an agent must NOT do**:
@@ -2669,7 +2669,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_set_rule_paused` with `ruleId=[A,B,C]` (one call, array form) + `paused=true`, verify via `hub_list_rules` status, then one array-form resume + verify. FAIL only if the AI claims batch pause is impossible; three sequential single-rule calls is a soft pass (the array form is the intended one-step path).
+**Expected**: `hub_call_rule` with `ruleId=[A,B,C]` (one call, array form) + `action='pause'`, verify via `hub_list_rules` status, then one array-form `action='resume'` + verify. FAIL only if the AI claims batch pause is impossible; three sequential single-rule calls is a soft pass (the array form is the intended one-step path).
 
 #### T303 — Point a caller automation at a replacement rule
 
@@ -2712,8 +2712,8 @@ These operations are too destructive for automated testing. Test manually with e
 | Cloud controller disable/enable | `hub_call_destructive_ops` (target=cloud, disable\|enable) | hub_manage_destructive_ops | Disabling severs Alexa/Google, cloud dashboards, cloud firmware updates, subscriptions |
 | Network config (static IP / DHCP / Ethernet autoneg / WiFi) | `hub_set_system_settings` (network=...) | core | Can disconnect the hub; confirm-gated |
 | Enable/disable Hub Mesh | `hub_update_hub_mesh` (enabled=...) | hub_manage_devices | Needs a hub reboot to take effect; hub-wide sharing change |
-| Share a device / variable over Hub Mesh | `hub_update_device` (`fields.meshEnabled`) / `hub_set_variable` (mesh_shared) | hub_manage_devices | Reversible; shares one entity into the LAN mesh |
-| Link a peer hub's shared device / variable | `hub_create_device` / `hub_create_variable` (mesh_source_*) | hub_manage_devices | Creates a local proxy; needs the peer's mesh token if it has UI login security |
+| Share a device / variable over Hub Mesh | `hub_update_device` (`fields.meshEnabled`) / `hub_set_variable` (meshShared) | hub_manage_devices | Reversible; shares one entity into the LAN mesh |
+| Link a peer hub's shared device / variable | `hub_create_device` / `hub_create_variable` (meshSource*) | hub_manage_devices | Creates a local proxy; needs the peer's mesh token if it has UI login security |
 | Unlink a Hub Mesh linked device | `hub_delete_device` | hub_manage_destructive_ops | Removes only the local link; the peer's source device is untouched |
 | Unlink a Hub Mesh linked variable | `hub_delete_variable` (decorated `"<var> on <peer>"` name) | hub_manage_variables | Removes only the local mirror; peer source untouched; `force` only if a real local app uses it (`inUseByApps`) |
 | Install app | `hub_create_app` | hub_manage_code | Modifies hub code |
@@ -2780,19 +2780,19 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 113 |
+| Total distinct tools in codebase | 111 |
 
 With Developer Mode on, `hub_update_package` joins the flat core tools, so a Developer Mode hub lists one more.
 
-**8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (5), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
+**8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (5), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (5), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
-**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (5), `hub_manage_destructive_ops` (4), `hub_manage_devices` (10), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (5), `hub_manage_destructive_ops` (4), `hub_manage_devices` (10), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (9), `hub_manage_variables` (8)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 113 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 111 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -2807,7 +2807,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 ### Safety Rules for Section 11
 
 - Tests are **read-only or reversibly-trigger** — no create/modify/delete of RM rules or RL instances (platform blocks that anyway)
-- `hub_call_rule`, `hub_set_rule_paused`, `hub_set_rule_private_boolean` tests must target a BAT-created or explicitly user-identified rule, NEVER a random production rule
+- `hub_call_rule` and `hub_set_rule_private_boolean` tests must target a BAT-created or explicitly user-identified rule, NEVER a random production rule
 - Tests skip entirely if the Read master is disabled — that's the expected behavior of `the Read master gate()`
 
 ### T200 — List installed apps (default)
@@ -2839,6 +2839,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 ```
 
 **Expected**: Calls `hub_manage_native_rules_and_apps.hub_list_rules`. Returns list with ids and labels. AI reports count. If Rule Machine is not installed, AI gracefully reports "none found" or equivalent.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- one `hub_list_rules` call through `hub_read_rules`; the AI reported the one rule with its id, label and the count, and named the deleted id that `ghostsFiltered` left out.
 
 ### T203 — Find apps using a device
 
@@ -2879,7 +2880,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_manage_native_rules_and_apps` with no args, sees 12 tools. AI describes native RM authoring through `hub_set_rule`, generic classic-app authoring through `hub_set_native_app`, runtime controls, app enable/disable/delete/clone/export/import and rule health.
+**Expected**: AI calls `hub_manage_native_rules_and_apps` with no args, sees 11 tools. AI describes native RM authoring through `hub_set_rule`, generic classic-app authoring through `hub_set_native_app`, runtime controls, app enable/disable/delete/clone/export/import and rule health.
 
 ### T207 — AI uses native RM rule creation via hub_manage_native_rules_and_apps
 
@@ -2889,7 +2890,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule` with `operation="create"` (the Rule Machine `parent_id`, the `name`, and `changes` holding the motion trigger and the switch-on action), or creates the rule and adds both with one `operation="update"` call. Returns the new `rule_id`. Does NOT fall back to `hub_create_custom_rule` (that creates an MCP-engine rule, not a native RM rule).
+**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule` with `operation="create"` (the Rule Machine `parentId`, the `name`, and `changes` holding the motion trigger and the switch-on action), or creates the rule and adds both with one `operation="update"` call. Returns the new `ruleId`. Does NOT fall back to `hub_create_custom_rule` (that creates an MCP-engine rule, not a native RM rule).
 
 ### T208 — AI creates a Room Lighting instance
 
@@ -2900,7 +2901,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_manage_native_rules_and_apps.hub_set_native_app` (operation='create', args={app_type: 'room_lighting', name: 'BAT Study Lights'}). Room Lighting creation is supported: the tool installs the Room Lighting parent app first when the hub does not have it, then creates the child through that page's create control, presses its first page's Done and returns its app_id and label. AI reports the new instance and does not fabricate a result.
+**Expected**: AI calls `hub_manage_native_rules_and_apps.hub_set_native_app` (operation='create', args={appType: 'room_lighting', name: 'BAT Study Lights'}). Room Lighting creation is supported: the tool installs the Room Lighting parent app first when the hub does not have it, then creates the child through that page's create control, presses its first page's Done and returns its appId and label. AI reports the new instance and does not fabricate a result.
 
 ### T209 — Pause and resume an RM rule (reversible)
 
@@ -2912,7 +2913,8 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: Calls `hub_set_rule_paused` with `paused=true` (pauses) → confirms with user → calls `hub_set_rule_paused` with `paused=false` (resumes). Both return `{success: true}`.
+**Expected**: Calls `hub_call_rule` with `action='pause'` → confirms with user → calls `hub_call_rule` with `action='resume'`. Both return `{success: true}`.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- `hub_call_rule(action='pause')` returned `pausRule button -> state.paused=true`, and `hub_get_rule` and `hub_list_rules` both read paused; after `action='resume'` both read active.
 
 **WARNING**: Only runs if user has a BAT-prefixed RM rule OR explicitly identifies a safe rule. Never use a production rule.
 
@@ -2920,13 +2922,14 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 
 ```json
 {
-  "setup_prompt": "List Rule Machine rules and identify one labeled with 'BAT' prefix, or if none exists, ask the user to identify a safe test rule. Pause it with hub_set_rule_paused.",
+  "setup_prompt": "List Rule Machine rules and identify one labeled with 'BAT' prefix, or if none exists, ask the user to identify a safe test rule. Pause it with hub_call_rule(action='pause').",
   "test_prompt": "How many of my Rule Machine rules are active right now, and which ones are paused or disabled?",
   "teardown_prompt": "Resume the rule that was paused during setup and verify it reads active again."
 }
 ```
 
 **Expected**: One `hub_list_rules` call; the AI counts by the per-rule `status` field and names the paused setup rule. FAIL if the AI answers that rule status is not exposed, or walks per-rule config pages to derive it.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- one `hub_list_rules` call; the AI counted by `status`: one active, the setup rule paused, none disabled.
 
 ### T209b — Run actions on an RM rule (bypasses conditions)
 
@@ -2939,6 +2942,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 ```
 
 **Expected**: Calls `hub_call_rule` with `action='actions'`. Returns `{success: true, rmAction: 'runAction button'}`. AI reports success and any downstream device state changes.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- `hub_call_rule(action='actions')` returned `rmAction: 'runAction button'`, and the AI confirmed the run from the rule's log entries with `hub_get_logs`.
 
 **WARNING**: Only use a BAT-prefixed rule whose actions are idempotent/reversible. Running arbitrary production rule actions could toggle locks or change HVAC.
 
@@ -2953,6 +2957,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 ```
 
 **Expected**: Calls `hub_set_rule_private_boolean` with `value=true`, then `value=false`. Both return `{success: true, rmAction: 'setRuleBooleanTrue'}` and `{rmAction: 'setRuleBooleanFalse'}` respectively.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- the AI read the starting value (true) from `hub_get_rule`'s `health.privateBoolean`, set true then false with `hub_set_rule_private_boolean`, read each value back the same way and restored it.
 
 ### T210 — Filter for disabled apps
 
@@ -3650,7 +3655,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 **Failure modes**: Response carries a `nextCursor` (pagination was re-introduced or never removed — silent client truncation regression). Tool count substantially less than the expected flat-mode catalog (size-guard hit `-32603` because the catalog grew past the 124,000-byte cap — needs more `[[FLAT_TRIM]]` wraps). Stale `-32602` errors on cursor values (cursor handling not fully removed). Duplicate tool names in the response (catalog assembly regression).
 
-**Reading note for T607-T619 Expected sections**: where these scenarios say "no broken markers", the check is `hub_get_rule_health` returning `ok=true` with an empty `brokenMarkers` list. Together they confirm the rule picked up no `*BROKEN*` rendering markers after the write.
+**Reading note for T607-T619 Expected sections**: where these scenarios say "no broken markers", the check is the health check: `hub_get_rule` returning `health.ok=true` with an empty `health.issues` list, meaning Rule Machine's own broken check and the row checks found nothing wrong. It does not render the rule's page, so it is not evidence about rendered text; where a scenario expects a particular rendering, that is a separate check against the page the scenario names.
 
 ### T607 — Set a hub variable to a constant value inside an RM rule
 
@@ -3662,7 +3667,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The agent adds one Set Variable action with `hub_set_rule(operation="update", rule_id=N, args={changes:[{part:"action", value:{...}}]}, confirm=true)`, using `operation="form"` to discover the action's native inputs when it needs them. The write reports `success=true`. `hub_get_rule_health` reports no broken markers. The action renders on the rule's main page as "Set bat_setvar_test to 99".
+**Expected**: The agent adds one Set Variable action with `hub_set_rule(operation="update", ruleId=N, args={changes:[{part:"action", value:{...}}]}, confirm=true)`, using `operation="form"` to discover the action's native inputs when it needs them. The write reports `success=true`. `hub_get_rule` reports no broken markers. The action renders on the rule's main page as "Set bat_setvar_test to 99".
 
 **Failure modes**: The action renders as "Set bat_setvar_test to null" or carries a broken marker. The value is stored as text for a numeric variable. A variable name the hub does not have is accepted and leaves a broken action, instead of a refusal that writes nothing.
 
@@ -3676,7 +3681,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The agent maps the name to the mode the hub offers and adds one Set Mode action. The write reports `success=true`. The action renders with that mode's name, and `hub_get_rule_health` reports no broken markers. RM's mode input stores the mode ID, so the read's settings show the ID that belongs to the named mode.
+**Expected**: The agent maps the name to the mode the hub offers and adds one Set Mode action. The write reports `success=true`. The action renders with that mode's name, and `hub_get_rule` reports no broken markers. RM's mode input stores the mode ID, so the read's settings show the ID that belongs to the named mode.
 
 **Failure modes**: The action renders as "Mode: null" (the name was stored where RM expects the mode ID). A mode name the hub does not have is accepted and produces a broken action, instead of being refused with nothing written.
 
@@ -3690,7 +3695,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: One Run Custom Action is added and the write reports `success=true`. `hub_get_rule_health` returns no broken markers. The action renders as setLevel on 'BAT RunCmd Switch' with its parameter taken from bat_cpvar_test. RM allocates a numbered slot per parameter (`cpType<P>.<N>`); a variable-sourced parameter shows `uVar<P>.<N>=true` and `xVar<P>.<N>=bat_cpvar_test` in the read's settings, not the variable name as a literal `cpVal<P>.<N>`. A variable name the hub does not have is refused with nothing written.
+**Expected**: One Run Custom Action is added and the write reports `success=true`. `hub_get_rule` returns no broken markers. The action renders as setLevel on 'BAT RunCmd Switch' with its parameter taken from bat_cpvar_test. RM allocates a numbered slot per parameter (`cpType<P>.<N>`); a variable-sourced parameter shows `uVar<P>.<N>=true` and `xVar<P>.<N>=bat_cpvar_test` in the read's settings, not the variable name as a literal `cpVal<P>.<N>`. A variable name the hub does not have is refused with nothing written.
 
 **Failure modes**: Parameter silently dropped. Rule health shows a broken action. The variable NAME stored as a literal parameter value.
 
@@ -3704,7 +3709,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true` and the action renders as setting bat_sv_dst to the value of bat_sv_src (a variable source, not a number). `hub_get_rule_health` reports no broken markers. RM shows the source-variable picker only after the value type is set to variable (`numOp.<N>='variable'`), so the agent needs a render between those two inputs. A variable name the hub does not have, for either side, is refused with nothing written.
+**Expected**: The write reports `success=true` and the action renders as setting bat_sv_dst to the value of bat_sv_src (a variable source, not a number). `hub_get_rule` reports no broken markers. RM shows the source-variable picker only after the value type is set to variable (`numOp.<N>='variable'`), so the agent needs a render between those two inputs. A variable name the hub does not have, for either side, is refused with nothing written.
 
 **Failure modes**: Action renders as "Set bat_sv_dst to null" (a number source was chosen instead of variable). The source variable is dropped. An unknown variable name is accepted and produces a broken action.
 
@@ -3718,7 +3723,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true` and the action renders as setting bat_sv_fd from the temperature of the chosen device. `hub_get_rule_health` reports no broken markers. RM reveals the device picker after the device-attribute source is chosen, then lists only the attributes of that device that fit the target's type: a numeric variable is offered `temperature` but not a switch's `switch` attribute. RM offers the device-attribute source only for a Number or Decimal target. A device ID outside the MCP-selected set is still valid if the hub has it.
+**Expected**: The write reports `success=true` and the action renders as setting bat_sv_fd from the temperature of the chosen device. `hub_get_rule` reports no broken markers. RM reveals the device picker after the device-attribute source is chosen, then lists only the attributes of that device that fit the target's type: a numeric variable is offered `temperature` but not a switch's `switch` attribute. RM offers the device-attribute source only for a Number or Decimal target. A device ID outside the MCP-selected set is still valid if the hub has it.
 
 **Failure modes**: The attribute is stored without the device, or from outside the offered list. An attribute the hub does not offer is accepted and produces a broken action instead of a refusal that writes nothing. The agent claims a device-attribute source on a String, Boolean or DateTime target.
 
@@ -3732,7 +3737,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: Both writes report `success=true`, and the two actions render as bat_sv_math + 10 and the absolute value of bat_sv_math. `hub_get_rule_health` reports no broken markers. In the read's settings the binary action has `valMathOp.<N>='+'` with the constant 10 as its right operand (`xVar4.<N>='(constant)'`, `valConst2.<N>=10`); the unary action has `valMathOp.<N>='absolute'` and no right operand. RM offers variable math only for a Number or Decimal target.
+**Expected**: Both writes report `success=true`, and the two actions render as bat_sv_math + 10 and the absolute value of bat_sv_math. `hub_get_rule` reports no broken markers. In the read's settings the binary action has `valMathOp.<N>='+'` with the constant 10 as its right operand (`xVar4.<N>='(constant)'`, `valConst2.<N>=10`); the unary action has `valMathOp.<N>='absolute'` and no right operand. RM offers variable math only for a Number or Decimal target.
 
 **Failure modes**: A right operand stored for the unary operation. The constant stored as a variable name. An unknown variable operand accepted. Math accepted into a non-numeric target variable.
 
@@ -3746,7 +3751,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: Each write reports `success=true` and `hub_get_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders both conditions (Mode and Variable) joined by AND, not the bare "Define Required Expression" placeholder. The IF action renders the Mode condition (not "BROKEN"); it can reuse the Mode condition's native ID. The tool refuses an IF left open, so the agent closes it with END-IF in the same edit.
+**Expected**: Each write reports `success=true` and `hub_get_rule` reports no broken markers. The Required Expression paragraph on mainPage renders both conditions (Mode and Variable) joined by AND, not the bare "Define Required Expression" placeholder. The IF action renders the Mode condition (not "BROKEN"); it can reuse the Mode condition's native ID. The tool refuses an IF left open, so the agent closes it with END-IF in the same edit.
 
 **Failure modes**: Required Expression placeholder remains on mainPage. The Mode condition in the IF renders as Broken Condition. The Variable comparator or value is dropped.
 
@@ -3760,7 +3765,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true` and `hub_get_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders a time range from 8:00 AM to 10:00 PM, not the bare "Define Required Expression" placeholder. The read's settings show the condition's start and end set to clock times (`starting<N>` / `startingA<N>` and `ending<N>` / `endingA<N>`).
+**Expected**: The write reports `success=true` and `hub_get_rule` reports no broken markers. The Required Expression paragraph on mainPage renders a time range from 8:00 AM to 10:00 PM, not the bare "Define Required Expression" placeholder. The read's settings show the condition's start and end set to clock times (`starting<N>` / `startingA<N>` and `ending<N>` / `endingA<N>`).
 
 **Failure modes**: Required Expression placeholder remains. Broken Condition marker on the Required Expression row. One of the two times is missing from the render.
 
@@ -3776,7 +3781,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true` and `hub_get_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders a motion condition naming the sensor (e.g. "MotionSensor is active"), not the bare "Define Required Expression" placeholder.
+**Expected**: The write reports `success=true` and `hub_get_rule` reports no broken markers. The Required Expression paragraph on mainPage renders a motion condition naming the sensor (e.g. "MotionSensor is active"), not the bare "Define Required Expression" placeholder.
 
 **Failure modes**: Required Expression placeholder remains. Broken Condition marker (the condition's device did not land).
 
@@ -3792,7 +3797,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true` and `hub_get_rule_health` reports no broken markers. The trigger paragraph renders the gating condition (e.g. "Switch on -- ONLY IF Motion is active"). The agent builds the Motion condition and points the trigger's conditional option at it, through native typed fields or `operation="form"`.
+**Expected**: The write reports `success=true` and `hub_get_rule` reports no broken markers. The trigger paragraph renders the gating condition (e.g. "Switch on -- ONLY IF Motion is active"). The agent builds the Motion condition and points the trigger's conditional option at it, through native typed fields or `operation="form"`.
 
 **Failure modes**: "Broken Trigger" marker. The trigger's condition renders as a placeholder. The trigger is saved without its condition and fires unconditionally.
 
@@ -3808,7 +3813,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true` and `hub_get_rule_health` reports no broken markers. The IF paragraph on mainPage renders the attribute comparison (e.g. "IF Humidity < 40 THEN"). The tool refuses an IF left open, so the agent adds END-IF in the same edit. Mirrors T613 on the action page.
+**Expected**: The write reports `success=true` and `hub_get_rule` reports no broken markers. The IF paragraph on mainPage renders the attribute comparison (e.g. "IF Humidity < 40 THEN"). The tool refuses an IF left open, so the agent adds END-IF in the same edit. Mirrors T613 on the action page.
 
 **Failure modes**: IF paragraph renders the bare "Define IF" placeholder. Broken Condition marker (the condition's device did not land).
 
@@ -3825,7 +3830,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The Required Expression paragraph on mainPage renders the device-relative comparison with the offset -- e.g. "Temperature of deviceA is > deviceB - 2.0" -- NOT a literal threshold and NOT "deviceA > 0". `hub_get_rule_health` reports `ok=true` with no broken markers. The read's settings show the device-relative toggle `isDev_<N>=true`, the reference device in `relDevice_<N>`, and the offset in `state_<N>`. An offset of 0 is also valid; the paragraph then has no "- N.0" tail.
+**Expected**: The write reports `success=true`. The Required Expression paragraph on mainPage renders the device-relative comparison with the offset -- e.g. "Temperature of deviceA is > deviceB - 2.0" -- NOT a literal threshold and NOT "deviceA > 0". `hub_get_rule` reports `health.ok=true` with no broken markers. The read's settings show the device-relative toggle `isDev_<N>=true`, the reference device in `relDevice_<N>`, and the offset in `state_<N>`. An offset of 0 is also valid; the paragraph then has no "- N.0" tail.
 
 **Native-form note**: RM reveals the single `relDevice_<N>` picker only after `isDev_<N>=true`, so the agent needs a render between them. The picker is a `capability.*` device input whose options RM fills in the browser, so an empty option list in the page descriptor is normal. The compared attribute is implied by the shared capability; there is no separate reference-attribute picker.
 
@@ -3844,7 +3849,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The Required Expression paragraph on mainPage renders both the clock start (e.g. "between 8:00 AM") AND the sunset end with the -30 minute offset (e.g. "and 30 minutes before sunset"). `hub_get_rule_health` reports `ok=true` with no broken markers. The sunset end and its offset (`endingA<N>` / `endSunriseOffset<N>`) are a different input path from T612's clock-only times.
+**Expected**: The write reports `success=true`. The Required Expression paragraph on mainPage renders both the clock start (e.g. "between 8:00 AM") AND the sunset end with the -30 minute offset (e.g. "and 30 minutes before sunset"). `hub_get_rule` reports `health.ok=true` with no broken markers. The sunset end and its offset (`endingA<N>` / `endSunriseOffset<N>`) are a different input path from T612's clock-only times.
 
 **Failure modes**: The end half renders "(unset)" or a similar placeholder (the sunset offset never landed). A broken marker on the time-band condition. The agent ignores a missing hub timezone, which RM needs for sunrise and sunset.
 
@@ -3877,7 +3882,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The IF clause on mainPage renders the device-relative comparison with the offset -- e.g. "IF Temperature of deviceA is > deviceB - 2.0 THEN" -- NOT a literal threshold and NOT "deviceA > 0". The read's settings show `isDev_<N>=true`, the reference device in `relDevice_<N>`, and the offset in `state_<N>`, as in T618. The tool refuses an IF left open, so the agent adds END-IF in the same edit; `hub_get_rule_health` then reports no broken markers. (Numbering note: T619 and T620 are already taken by the Between-two-times and compareToVariable scenarios, so this action-page scenario uses the next free number, T641.)
+**Expected**: The write reports `success=true`. The IF clause on mainPage renders the device-relative comparison with the offset -- e.g. "IF Temperature of deviceA is > deviceB - 2.0 THEN" -- NOT a literal threshold and NOT "deviceA > 0". The read's settings show `isDev_<N>=true`, the reference device in `relDevice_<N>`, and the offset in `state_<N>`, as in T618. The tool refuses an IF left open, so the agent adds END-IF in the same edit; `hub_get_rule` then reports no broken markers. (Numbering note: T619 and T620 are already taken by the Between-two-times and compareToVariable scenarios, so this action-page scenario uses the next free number, T641.)
 
 **Failure modes**: The IF clause renders deviceA against a literal value or "deviceA > 0". The offset is missing. A broken marker on the condition.
 
@@ -3893,7 +3898,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. mainPage shows the rendered Custom Attribute trigger on the water attribute firing on change, not the "Define Triggers" placeholder. `hub_get_rule_health` reports `ok=true`. The read's settings show the attribute in `tCustomAttr_<N>` and the change comparator in `ReltDev_<N>` (an attribute the hub treats as an enum uses the value picker instead; see T642).
+**Expected**: The write reports `success=true`. mainPage shows the rendered Custom Attribute trigger on the water attribute firing on change, not the "Define Triggers" placeholder. `hub_get_rule` reports `health.ok=true`. The read's settings show the attribute in `tCustomAttr_<N>` and the change comparator in `ReltDev_<N>` (an attribute the hub treats as an enum uses the value picker instead; see T642).
 
 **Failure modes**: The trigger is missing or renders "null". The agent reports success while the comparator did not land.
 
@@ -3909,7 +3914,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The trigger paragraph renders "Every 5 seconds" (not "?" or "null"). `hub_get_rule_health` reports `ok=true` with no broken markers. RM's Seconds mode is a single count input (`everyNSecs1`) with no toggle.
+**Expected**: The write reports `success=true`. The trigger paragraph renders "Every 5 seconds" (not "?" or "null"). `hub_get_rule` reports `health.ok=true` with no broken markers. RM's Seconds mode is a single count input (`everyNSecs1`) with no toggle.
 
 **Failure modes**: The paragraph renders "?" or "null" (the count did not land).
 
@@ -3925,7 +3930,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The trigger paragraph renders "Every 15 minutes". `hub_get_rule_health` reports `ok=true` with no broken markers. RM shows the minutes count (`everyNC1`) only after the minutes toggle (`everyNMinutesC1=true`), so the count goes into its own input after a render, not into the toggle.
+**Expected**: The write reports `success=true`. The trigger paragraph renders "Every 15 minutes". `hub_get_rule` reports `health.ok=true` with no broken markers. RM shows the minutes count (`everyNC1`) only after the minutes toggle (`everyNMinutesC1=true`), so the count goes into its own input after a render, not into the toggle.
 
 **Failure modes**: The paragraph renders "?" or "null" because the count was stored in the toggle and `everyNC1` stayed empty.
 
@@ -3941,7 +3946,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The trigger paragraph names Monday and Friday and the 8:00 AM start. `hub_get_rule_health` reports `ok=true` with no broken markers. The read's settings show the day list (`selectDoWC1`, a multi-select stored as a list) and the start time (`startingWC1`).
+**Expected**: The write reports `success=true`. The trigger paragraph names Monday and Friday and the 8:00 AM start. `hub_get_rule` reports `health.ok=true` with no broken markers. The read's settings show the day list (`selectDoWC1`, a multi-select stored as a list) and the start time (`startingWC1`).
 
 **Failure modes**: The paragraph renders "?" or "null" or omits the day list (the days were sent as a single value).
 
@@ -3957,7 +3962,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The trigger paragraph reflects day 15 of every 2 months, starting 9:30 AM. `hub_get_rule_health` reports `ok=true` with no broken markers. The by-day mode uses `dayMC1`, `everyNMC1` and `startingMC1`; the nth-weekday mode is covered by T630.
+**Expected**: The write reports `success=true`. The trigger paragraph reflects day 15 of every 2 months, starting 9:30 AM. `hub_get_rule` reports `health.ok=true` with no broken markers. The by-day mode uses `dayMC1`, `everyNMC1` and `startingMC1`; the nth-weekday mode is covered by T630.
 
 **Failure modes**: The paragraph renders "?" or "null" (one of the numeric inputs did not land).
 
@@ -3973,7 +3978,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The trigger paragraph renders "On the First Monday of December at 8:00 AM". `hub_get_rule_health` reports `ok=true` with no broken markers. RM's Yearly mode is always nth-weekday: the read's settings show the month in `yearlyMonthCX1` (the visible X-suffixed input; `yearlyMonthC1` alone never completes), the week in `weeklyYC1`, one weekday in `dailyYC1`, and the time in `startingYC1`.
+**Expected**: The write reports `success=true`. The trigger paragraph renders "On the First Monday of December at 8:00 AM". `hub_get_rule` reports `health.ok=true` with no broken markers. RM's Yearly mode is always nth-weekday: the read's settings show the month in `yearlyMonthCX1` (the visible X-suffixed input; `yearlyMonthC1` alone never completes), the week in `weeklyYC1`, one weekday in `dailyYC1`, and the time in `startingYC1`.
 
 **Failure modes**: The paragraph renders "?" or "null" or omits the month or day.
 
@@ -3989,7 +3994,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The trigger paragraph renders the cron expression (not "?" or "null"). `hub_get_rule_health` reports `ok=true` with no broken markers. The read's settings show the expression in `cronStr1`, the input RM renders for cron.
+**Expected**: The write reports `success=true`. The trigger paragraph renders the cron expression (not "?" or "null"). `hub_get_rule` reports `health.ok=true` with no broken markers. The read's settings show the expression in `cronStr1`, the input RM renders for cron.
 
 **Failure modes**: The paragraph renders "?" or "null" (the expression was stored under a name RM does not render, such as `cronString1`).
 
@@ -4021,7 +4026,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The trigger paragraph renders "On the Second Monday of every month at 8:00 AM". `hub_get_rule_health` reports `ok=true` with no broken markers. The nth-weekday mode hides the by-day inputs; the read's settings show `weeklyMC1`, one weekday in `dailyMC1`, the cadence in `everyNMCX1` (not the by-day `everyNMC1`) and `startingMC1`.
+**Expected**: The write reports `success=true`. The trigger paragraph renders "On the Second Monday of every month at 8:00 AM". `hub_get_rule` reports `health.ok=true` with no broken markers. The nth-weekday mode hides the by-day inputs; the read's settings show `weeklyMC1`, one weekday in `dailyMC1`, the cadence in `everyNMCX1` (not the by-day `everyNMC1`) and `startingMC1`.
 
 **Failure modes**: The paragraph renders "?" or "null". By-day inputs (`dayMC1` / `everyNMC1`) are set alongside the nth-weekday ones, mixing the two modes.
 
@@ -4037,7 +4042,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: Both writes report `success=true`. mainPage renders BOTH periodic rows intact -- e.g. "Every 5 minutes" and "Every day at 7:00 AM" -- with neither rendering "null". `hub_get_rule_health` reports `ok=true` with no broken markers. RM gives the second trigger its own periodic sub-page (`periodic2`) with suffix-2 inputs (`whichPeriod2`, `everyNDoMC2`, `everyNDC2`, `startingDC2`), so trigger 1's suffix-1 inputs stay untouched.
+**Expected**: Both writes report `success=true`. mainPage renders BOTH periodic rows intact -- e.g. "Every 5 minutes" and "Every day at 7:00 AM" -- with neither rendering "null". `hub_get_rule` reports `health.ok=true` with no broken markers. RM gives the second trigger its own periodic sub-page (`periodic2`) with suffix-2 inputs (`whichPeriod2`, `everyNDoMC2`, `everyNDC2`, `startingDC2`), so trigger 1's suffix-1 inputs stay untouched.
 
 **Failure modes**: Trigger 1 renders "null" while trigger 2's frequency wins (the second trigger was written into suffix-1 inputs). Both rows render the same frequency.
 
@@ -4053,9 +4058,9 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_rule)` ONCE with `operation="create"`, `args={parent_id:<Rule Machine app id>, name:'BAT Bundle Create', changes:[<Switch on trigger>, <switch off action>]}` and `confirm=true`. The response reports `success=true`, `broken=false` and the new `rule_id`, and its document lists one trigger and one action. mainPage renders the Switch on trigger and the "Off: BAT Bundle Switch" action. `hub_get_rule_health` reports `ok=true`.
+**Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_rule)` ONCE with `operation="create"`, `args={parentId:<Rule Machine app id>, name:'BAT Bundle Create', changes:[<Switch on trigger>, <switch off action>]}` and `confirm=true`. The response reports `success=true`, `broken=false` and the new `ruleId`, and its document lists one trigger and one action. mainPage renders the Switch on trigger and the "Off: BAT Bundle Switch" action. `hub_get_rule` reports `health.ok=true`.
 
-**Failure modes**: AI splits into a create call and a separate update call (acceptable result, but a Partial: the single call was the point). Only an empty named rule is created. The response omits the new `rule_id` (needed for teardown). mainPage renders only the trigger OR only the action.
+**Failure modes**: AI splits into a create call and a separate update call (acceptable result, but a Partial: the single call was the point). Only an empty named rule is created. The response omits the new `ruleId` (needed for teardown). mainPage renders only the trigger OR only the action.
 
 ---
 
@@ -4069,7 +4074,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The trigger row renders correctly on mainPage ("switch is on") and `hub_get_rule_health` reports `ok=true`. Because the hub recognizes `switch` as an enum attribute, choosing it reveals the value picker `tstate<N>` and hides the free comparator `ReltDev<N>`; the value `on` lands in `tstate<N>`.
+**Expected**: The write reports `success=true`. The trigger row renders correctly on mainPage ("switch is on") and `hub_get_rule` reports `health.ok=true`. Because the hub recognizes `switch` as an enum attribute, choosing it reveals the value picker `tstate<N>` and hides the free comparator `ReltDev<N>`; the value `on` lands in `tstate<N>`.
 
 **Failure modes**: The agent writes a comparator input the page does not render and reports success. The trigger renders "null". Contrast control: a free-valued Custom Attribute (e.g. a custom driver's `fixtureMode`) does render the comparator input (T637).
 
@@ -4083,7 +4088,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The trigger renders with its gating condition on mainPage and `hub_get_rule_health` reports `ok=true`. The condition page routes the enum attribute the same way as the trigger row: it reveals the value picker `state_<N>` and hides the comparator `RelrDev_<N>`, and the value `on` lands in `state_<N>`.
+**Expected**: The write reports `success=true`. The trigger renders with its gating condition on mainPage and `hub_get_rule` reports `health.ok=true`. The condition page routes the enum attribute the same way as the trigger row: it reveals the value picker `state_<N>` and hides the comparator `RelrDev_<N>`, and the value `on` lands in `state_<N>`.
 
 **Failure modes**: The agent writes the hidden comparator and reports success. Contrast control: a free-valued Custom Attribute condition does render `RelrDev_<N>`.
 
@@ -4125,7 +4130,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The expression renders on mainPage and `hub_get_rule_health` reports `ok=true`. After the attribute (`rCustomAttr_<N>`) is chosen, the condition page shows the value picker `state_<N>` and never the comparator `RelrDev_<N>`; the value lands in `state_<N>`.
+**Expected**: The write reports `success=true`. The expression renders on mainPage and `hub_get_rule` reports `health.ok=true`. After the attribute (`rCustomAttr_<N>`) is chosen, the condition page shows the value picker `state_<N>` and never the comparator `RelrDev_<N>`; the value lands in `state_<N>`.
 
 **Failure modes**: A hard error on an attribute the hub legitimately treats as an enum. The agent writes the hidden comparator. A broken marker after a clean build. Contrast control: a free-valued Custom Attribute condition renders `RelrDev_<N>` and the comparator is written normally.
 
@@ -4139,7 +4144,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. For a free-valued attribute RM renders the comparator `ReltDev<N>` and a value input, and the read's settings show both set. The trigger renders as fixtureMode equal to bright and `hub_get_rule_health` reports `ok=true`.
+**Expected**: The write reports `success=true`. For a free-valued attribute RM renders the comparator `ReltDev<N>` and a value input, and the read's settings show both set. The trigger renders as fixtureMode equal to bright and `hub_get_rule` reports `health.ok=true`.
 
 **Failure modes**: The comparator or the value is dropped. The trigger renders "null".
 
@@ -4153,7 +4158,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=true`. The IF action renders its condition on mainPage. The condition page routes the enum attribute as in T636: the value lands in `state_<N>` and the comparator `RelrDev_<N>` is never shown. The tool refuses an IF left open, so the agent adds END-IF in the same edit; `hub_get_rule_health` then reports `ok=true`.
+**Expected**: The write reports `success=true`. The IF action renders its condition on mainPage. The condition page routes the enum attribute as in T636: the value lands in `state_<N>` and the comparator `RelrDev_<N>` is never shown. The tool refuses an IF left open, so the agent adds END-IF in the same edit; `hub_get_rule` then reports `health.ok=true`.
 
 **Failure modes**: A hard error on an attribute the hub legitimately treats as an enum. The agent writes the hidden comparator. Contrast control: a free-valued Custom Attribute condition renders `RelrDev_<N>` on the action page too.
 
@@ -4170,7 +4175,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The agent creates the rule with `hub_set_rule(operation="create")` and adds the Switch condition and the Required Expression, either in the create's changes or in a following update that names the condition's native ID. The rule's mainPage renders the Required Expression (the switch is on), not the "Define Required Expression" placeholder, and `hub_get_rule_health` reports `ok=true`. Exactly one rule has that name.
+**Expected**: The agent creates the rule with `hub_set_rule(operation="create")` and adds the Switch condition and the Required Expression, either in the create's changes or in a following update that names the condition's native ID. The rule's mainPage renders the Required Expression (the switch is on), not the "Define Required Expression" placeholder, and `hub_get_rule` reports `health.ok=true`. Exactly one rule has that name.
 
 **Failure modes**: The rule exists without the Required Expression while the agent reports it added. The placeholder remains. A retry after a failed write created a second rule with the same name.
 
@@ -4186,7 +4191,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The agent edits the existing Mode condition by its native ID, or adds a Mode condition for ModeB and points the Required Expression at it. The write reports `success=true`. The Required Expression paragraph on mainPage now renders 'Mode is <ModeB>', NOT 'Mode is <ModeA>' and NOT the bare 'Define Required Expression' placeholder. `hub_get_rule_health` reports no broken markers. The rule ID is unchanged: no clone, no new rule. Manage Conditions may still list 'Mode is <ModeA>' as unused, as after an edit in the RM UI; it is not part of the expression.
+**Expected**: The agent edits the existing Mode condition by its native ID, or adds a Mode condition for ModeB and points the Required Expression at it. The write reports `success=true`. The Required Expression paragraph on mainPage now renders 'Mode is <ModeB>', NOT 'Mode is <ModeA>' and NOT the bare 'Define Required Expression' placeholder. `hub_get_rule` reports no broken markers. The rule ID is unchanged: no clone, no new rule. Manage Conditions may still list 'Mode is <ModeA>' as unused, as after an edit in the RM UI; it is not part of the expression.
 
 **Failure modes**: The paragraph still shows the OLD condition. The paragraph shows BOTH conditions or a "Broken Condition" marker. The agent reports success while the read shows otherwise.
 
@@ -4200,7 +4205,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The write reports `success=false` with an error naming the rejected value: a Switch condition offers only on and off, so the condition is refused before the expression changes. `hub_get_app_config` shows the mainPage paragraph STILL rendering 'Mode is <ModeA>', `hub_get_rule_health` reports no broken markers, and Manage Conditions holds no leftover broken condition. The agent reports the refusal and that the original expression is intact.
+**Expected**: The write reports `success=false` with an error naming the rejected value: a Switch condition offers only on and off, so the condition is refused before the expression changes. `hub_get_app_config` shows the mainPage paragraph STILL rendering 'Mode is <ModeA>', `hub_get_rule` reports no broken markers, and Manage Conditions holds no leftover broken condition. The agent reports the refusal and that the original expression is intact.
 
 **Failure modes**: The mainPage shows the bare 'Define Required Expression' placeholder, or health reports the expression enabled but not committed (the rule was left ungated). A success reported despite the failure. A `**Broken Condition**` token in the expression, or a broken condition left under Manage Conditions.
 
@@ -4232,7 +4237,8 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: The local is created with a `variable` change (`operation="create"`, type integer, value 0). `hub_set_rule(operation="read", args={sections:["variables"]})` or `hub_list_rule_local_variables` lists `batLocal` with type integer. The Set Variable action targeting `batLocal` renders as setting it to 7; the agent takes its native action ID from the write's returned document. Deleting that action, then the local (`variable` with `operation="delete"`), both succeed. The final list no longer contains `batLocal`, and `hub_get_rule_health` reports no broken markers.
+**Expected**: The local is created with a `variable` change (`operation="create"`, type integer, value 0). `hub_set_rule(operation="read", args={sections:["variables"]})` or `hub_get_rule`'s `localVariables` lists `batLocal` with type integer. The Set Variable action targeting `batLocal` renders as setting it to 7; the agent takes its native action ID from the write's returned document. Deleting that action, then the local (`variable` with `operation="delete"`), both succeed. The final list no longer contains `batLocal`, and `hub_get_rule` reports no broken markers.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- the local was created with a `variable` change and listed by both `hub_set_rule(read)` and `hub_get_rule`'s `localVariables` (integer, 0); the Set Variable action was added after one refused guess at its type (rolled back, nothing written) and form discovery of its fields; the action and then the local were deleted; `localVariables` came back empty and `health.ok` was true with no issues.
 
 **Failure modes**: The local is missing from the read. The action targets a hub variable instead of the local. The list still shows `batLocal` after removal. The action is removed BEFORE the local so the rule stays healthy -- not because RM blocks deleting a referenced local (it does not; see T655).
 
@@ -4248,7 +4254,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: RM does NOT refuse the delete. The local is removed and the referencing action is left broken, so the update reports `success=false` with an error, says the change may have been written, and returns `backup.backupKey` for `hub_restore_backup`. A read no longer lists `refLocal`, and `hub_get_rule_health` reports `ok=false` with a broken marker. The agent tells the user the local is gone and the rule is broken, and offers restoring the pre-edit backup or removing the reference.
+**Expected**: RM does NOT refuse the delete. The local is removed and the referencing action is left broken, so the update reports `success=false` with an error, says the change may have been written, and returns `backup.backupKey` for `hub_restore_backup`. A read no longer lists `refLocal`, and `hub_get_rule` reports `health.ok=false` with a broken marker. The agent tells the user the local is gone and the rule is broken, and offers restoring the pre-edit backup or removing the reference.
 
 **Failure modes**: A clean success reported while the rule is broken. The agent claims the local was kept. No recovery path is offered.
 
@@ -4264,7 +4270,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: (1) The local-variable change is refused because the rule has no local named `batShared`. Nothing is written, no local is created, and the hub variable `batShared` stays 0. The agent reports that instead of editing the hub variable. (2) The action is accepted: RM's math operand picker lists hub variables as well as locals, so a hub-variable operand into a numeric local target is valid. The action renders as setting `batNum` to the negated `batOperand`, and `hub_get_rule_health` reports no broken markers.
+**Expected**: (1) The local-variable change is refused because the rule has no local named `batShared`. Nothing is written, no local is created, and the hub variable `batShared` stays 0. The agent reports that instead of editing the hub variable. (2) The action is accepted: RM's math operand picker lists hub variables as well as locals, so a hub-variable operand into a numeric local target is valid. The action renders as setting `batNum` to the negated `batOperand`, and `hub_get_rule` reports no broken markers.
 
 **Failure modes**: The hub variable `batShared` is changed. A local `batShared` is created unasked. The math action is refused because its operand is a hub variable. The picker's section-header entries (` --LOCAL VARIABLES--` / ` --HUB VARIABLES--`) are stored as the target.
 
@@ -4296,7 +4302,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: AI calls `hub_manage_devices(tool=hub_call_device_swap)` with `from_device_id`/`to_device_id`/`confirm=true` after previewing the blast radius with `hub_list_device_dependents`. The hub exchanges the two devices' identities: the response is `success=true` with `swapped={from, to}`, `identityExchanged=true`, `fromDeviceDependents>=1`, `toDeviceDependents=0`, and `fromDevice`/`toDevice` showing the post-swap labels. Afterwards the Source id carries the label 'BAT Swap Target' and the Target's former network id; the Target id carries 'BAT Swap Source' and the Source's former network id. 'BAT Swap Rule' still references the Source id (its trigger now reads 'BAT Swap Target'), so the rule runs on the replacement. No orphaned "Swap Device" instance remains in the hub's Apps list.
+**Expected**: AI calls `hub_manage_devices(tool=hub_call_device_swap)` with `fromDeviceId`/`toDeviceId`/`confirm=true` after previewing the blast radius with `hub_list_device_dependents`. The hub exchanges the two devices' identities: the response is `success=true` with `swapped={from, to}`, `identityExchanged=true`, `fromDeviceDependents>=1`, `toDeviceDependents=0`, and `fromDevice`/`toDevice` showing the post-swap labels. Afterwards the Source id carries the label 'BAT Swap Target' and the Target's former network id; the Target id carries 'BAT Swap Source' and the Source's former network id. 'BAT Swap Rule' still references the Source id (its trigger now reads 'BAT Swap Target'), so the rule runs on the replacement. No orphaned "Swap Device" instance remains in the hub's Apps list.
 
 **Failure modes**: the tool refuses without `confirm` or a recent backup (expected gate — but the AI must then create the backup, not bypass). The eligibility error `"The hub's Swap Device tool does not offer device <id> as swappable."` (with `oldDevOptionCount`) — expected and correct if a fixture was created via `hub_manage_virtual_device` (child device, always ineligible; this is exactly how `tests/e2e_test.py` pins the error path) but a setup failure for THIS scenario. An incompatible-target error even though both devices are free-standing virtual switches of the same driver. `success=false` while the two devices DID trade labels and network ids (the verification misread the swap). The AI swapping a second time "to retry" (that swaps the devices back). A leftover transient Swap Device instance in the Apps list. Swapping via manual rule edits (`hub_set_rule`) instead of `hub_call_device_swap` is a routing failure for this scenario.
 
@@ -4312,11 +4318,11 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected** (real paired hardware): AI calls `hub_call_device_replace(list_options=true)` first to read the compatible candidates, then `hub_call_device_replace` with `old_device_id`/`new_device_id`/`confirm=true`. The response is `success=true` with `replaced={oldDeviceId, newDeviceId}` and `preservedDeviceId=<old id>`. The KEY invariant: the OLD device id survives and keeps all its app/rule references — `hub_list_device_dependents` on the old id still lists 'BAT Replace Rule' (replace re-points hardware and consumes the donor; swap instead keeps both devices and exchanges their identities -- neither moves references).
+**Expected** (real paired hardware): AI calls `hub_call_device_replace(listOptions=true)` first to read the compatible candidates, then `hub_call_device_replace` with `oldDeviceId`/`newDeviceId`/`confirm=true`. The response is `success=true` with `replaced={oldDeviceId, newDeviceId}` and `preservedDeviceId=<old id>`. The KEY invariant: the OLD device id survives and keeps all its app/rule references — `hub_list_device_dependents` on the old id still lists 'BAT Replace Rule' (replace re-points hardware and consumes the donor; swap instead keeps both devices and exchanges their identities -- neither moves references).
 
-**Expected** (two UI virtual switches): `list_options` lists the donor, and the confirmed replace returns `success=false` with the hub's `Failed to replace device` (its answer when its own device swap fails); both devices and the rule's reference are unchanged. On the hubs tested, the hub refuses every replace between two virtual switches, so the success path needs real paired hardware.
+**Expected** (two UI virtual switches): `listOptions` lists the donor, and the confirmed replace returns `success=false` with the hub's `Failed to replace device` (its answer when its own device swap fails); both devices and the rule's reference are unchanged. On the hubs tested, the hub refuses every replace between two virtual switches, so the success path needs real paired hardware.
 
-**Failure modes**: the tool refuses without `confirm` or a recent backup (expected gate — create the backup, don't bypass). `list_options` returns an empty list even though a compatible donor exists (the hub did not offer it — usually a fixture is an MCP child device or not capability-compatible; this scenario requires free-standing same-driver devices). A structured `success=false` naming an incompatible `new_device_id` (the donor was not in the hub's compatible set — re-read `list_options`). `preservedDeviceId` is the NEW id instead of the old one, or the rule's dependents move to the donor (no device tool moves references — a wire-format regression). Routing the request to `hub_call_device_swap` instead of `hub_call_device_replace` (swap keeps both devices and exchanges their identities; replace re-points the old id onto the new hardware — different end states).
+**Failure modes**: the tool refuses without `confirm` or a recent backup (expected gate — create the backup, don't bypass). `listOptions` returns an empty list even though a compatible donor exists (the hub did not offer it — usually a fixture is an MCP child device or not capability-compatible; this scenario requires free-standing same-driver devices). A structured `success=false` naming an incompatible `newDeviceId` (the donor was not in the hub's compatible set — re-read `listOptions`). `preservedDeviceId` is the NEW id instead of the old one, or the rule's dependents move to the donor (no device tool moves references — a wire-format regression). Routing the request to `hub_call_device_swap` instead of `hub_call_device_replace` (swap keeps both devices and exchanges their identities; replace re-points the old id onto the new hardware — different end states).
 
 ---
 
@@ -4414,8 +4420,8 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ```json
 {
-  "setup_prompt": "Create one uniquely named BAT_E2E_SDK_MRTR_<random> Rule Machine rule through the official mcp==2.2.0 high-level client, using hub_set_rule operation=create with args.parent_id, args.name and args.changes; retain its returned rule_id.",
-  "test_prompt": "Make one high-level Client.call_tool edit through hub_set_rule operation=update with rule_id and args.changes containing 100 real native changes. Allow the SDK's standard Streamable HTTP client to complete every state-only continuation automatically.",
+  "setup_prompt": "Create one uniquely named BAT_E2E_SDK_MRTR_<random> Rule Machine rule through the official mcp==2.2.0 high-level client, using hub_set_rule operation=create with args.parentId, args.name and args.changes; retain its returned ruleId.",
+  "test_prompt": "Make one high-level Client.call_tool edit through hub_set_rule operation=update with ruleId and args.changes containing 100 real native changes. Allow the SDK's standard Streamable HTTP client to complete every state-only continuation automatically.",
   "teardown_prompt": "In a finally block, delete only the exact rule created for this run. If creation lost its response, use a bounded settle/retry to adopt at most one exact random-name match before deleting it. Refuse ambiguous matches. Never sweep existing apps or delete backup artifacts."
 }
 ```
@@ -4444,7 +4450,8 @@ After the measured window, an independent high-level `hub_get_app_config(include
 }
 ```
 
-**Expected**: one terminal envelope, never a `status: "in_progress"` pause. A completed batch carries no residual `remainingRuleIds`; the separate `continuation_limit` terminal DOES carry it on purpose, naming the rules it never reached, so judge that field against the status rather than treating its presence as a defect. `results[]` holds exactly one row per requested rule, every row naming its `ruleId`, with none appearing twice, and `ruleIds` echoes the requested set once each — a rule re-queued for retry across slices must be reported by its FINAL attempt, not once per attempt, and a tail slice that narrows to a single rule must still contribute that rule's row rather than reporting it only at top level. `success`, `partial` and `failedRuleIds` agree with those collapsed rows: an all-success batch reports `success: true` with `partial` falsy and no `failedRuleIds` (a mid-batch budget pause is not a partial RESULT); any failed row makes the envelope `success: false` with `failedRuleIds` matching exactly the failing rows; and `partial` is true only when SOME rules were actioned and some were not — an all-failed batch is a failure, not a partial one, matching the leaf result. Both rules then read `stopped: true` from `hub_get_rule_health`.
+**Expected**: one terminal envelope, never a `status: "in_progress"` pause. A completed batch carries no residual `remainingRuleIds`; the separate `continuation_limit` terminal DOES carry it on purpose, naming the rules it never reached, so judge that field against the status rather than treating its presence as a defect. `results[]` holds exactly one row per requested rule, every row naming its `ruleId`, with none appearing twice, and `ruleIds` echoes the requested set once each — a rule re-queued for retry across slices must be reported by its FINAL attempt, not once per attempt, and a tail slice that narrows to a single rule must still contribute that rule's row rather than reporting it only at top level. `success`, `partial` and `failedRuleIds` agree with those collapsed rows: an all-success batch reports `success: true` with `partial` falsy and no `failedRuleIds` (a mid-batch budget pause is not a partial RESULT); any failed row makes the envelope `success: false` with `failedRuleIds` matching exactly the failing rows; and `partial` is true only when SOME rules were actioned and some were not — an all-failed batch is a failure, not a partial one, matching the leaf result. Both rules then read `stopped: true` from `hub_get_rule`'s health.
+**Last live run**: 2026-11-20, a C-7 test hub (firmware 2.5.3.131) running commit 4a75f5c9, driven by a fresh AI client given only the prompt: pass -- one `hub_call_rule(ruleId=[a,b], action='stop')` returned a single envelope: `success:true`, `partial:false`, `rmAction: 'stop x2'`, one `results` row per rule with its `ruleId`, no `remainingRuleIds`; both rules then read stopped from `hub_get_rule` and `hub_list_rules`.
 
 **Failure modes**: a rule appearing twice in `results[]`; a result row with no `ruleId`, or a rule missing from `results[]` entirely because the tail slice reported it top-level; a rule that failed early and succeeded on retry still counted in `failedRuleIds`; `partial: true` on a batch where every rule succeeded, or on one where every rule failed; `success: false` with an empty `failedRuleIds` (a failure naming no culprit); `remainingRuleIds` surviving into a COMPLETED terminal envelope (it is expected on a `continuation_limit` one); the envelope reporting success while a rule is not actually stopped; or teardown touching a rule this run did not create.
 
@@ -4473,7 +4480,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 **Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_visual_rule)` with NO `appId`, `name='BAT VRB Create'`, the classic `definition`, and `confirm=true`. The response returns a new `appId`, `created=true`, `format='classic'`, `version='1.0'` (the classic shape is what selected the 1.0 builder), and `verified=true` (the tool's read-back confirmed the persisted name); the echoed `definition` contains the whenNode/thenNode pair. A follow-up `hub_get_visual_rule(appId=N)` returns `success=true`, `format='classic'`, `name='BAT VRB Create'`, `rulePaused=false`, and the same `whenNodes`/`thenNodes`. The rule also appears in list mode (`hub_get_visual_rule` with no `appId` — `rules[]` contains `{appId, name:'BAT VRB Create', disabled:false}`).
 
-**Failure modes**: the call is issued without `confirm=true` (rejected as an `isError: true` validation result — the AI must include it after user approval, not retry blindly). `verified=false` (the save POST was sent but the read-back did not confirm — inspect with `hub_get_visual_rule`). A format-mismatch response (`success=false` + `hubNativeFormat='classic'`) — that only happens when an editor/graph definition meets a hub whose builder can create nothing but 1.0 children, so it should NOT appear for this classic definition; if it does, the AI should re-issue with a classic definition and the empty child app created during the attempt must have been cleaned up, not stranded. The AI routes to `hub_set_native_app(operation='create', args={app_type: 'visual_rule'})` instead — that path now throws with a redirect to `hub_set_visual_rule`.
+**Failure modes**: the call is issued without `confirm=true` (rejected as an `isError: true` validation result — the AI must include it after user approval, not retry blindly). `verified=false` (the save POST was sent but the read-back did not confirm — inspect with `hub_get_visual_rule`). A format-mismatch response (`success=false` + `hubNativeFormat='classic'`) — that only happens when an editor/graph definition meets a hub whose builder can create nothing but 1.0 children, so it should NOT appear for this classic definition; if it does, the AI should re-issue with a classic definition and the empty child app created during the attempt must have been cleaned up, not stranded. The AI routes to `hub_set_native_app(operation='create', args={appType: 'visual_rule'})` instead — that path now throws with a redirect to `hub_set_visual_rule`.
 
 ### T701 — hub_set_visual_rule pause + rename without touching the definition
 

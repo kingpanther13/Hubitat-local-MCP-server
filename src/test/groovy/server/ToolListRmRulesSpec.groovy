@@ -7,11 +7,10 @@ import support.ToolSpecBase
  * Spec for toolListRmRules (libraries/mcp-native-rules-lib.groovy).
  * Gateway: hub_manage_native_rules_and_apps -> hub_list_rules.
  *
- * Covers: gate-throw, RM 5.x Map shape with Integer key coercion, RM 4.x
- * explicit-fields shape, dedup when same id in both, the "both-absent quiet
- * path" (returns count=0 note without success=false), mixed failure shapes,
- * narrow-scope classifier (MissingMethodException only for getRuleList,
- * Cannot-get-property only with 'helper' substring).
+ * Covers: gate-throw, the single-entry Map shape with Integer key coercion, the
+ * "RM not installed" quiet path (count=0 note without success=false), a hard lookup
+ * failure, the narrow-scope classifier (Cannot-get-property only with the 'helper'
+ * substring), ghost filtering and the status read from name decoration and state.
  */
 class ToolListRmRulesSpec extends ToolSpecBase {
 
@@ -27,10 +26,9 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "filtered rule dispatch reports native type and version from its existing inventory read (useGateways=#useGateways)"() {
+    def "filtered rule dispatch reports native type from its existing inventory read (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        rmUtils.stubRuleList4 = [[id: 413, label: 'Living Room Relax', type: 'Rule-4.1']]
         rmUtils.stubRuleList5 = [[413: 'Living Room Relax'], [832: 'Kitchen']]
         registerRmAppsList([
             [data: [id: 413, name: 'Living Room Relax', type: 'Rule-5.1', disabled: false], children: []],
@@ -47,7 +45,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         inner.rules*.id == [413]
         inner.count == 1
         inner.rules[0].type == 'Rule-5.1'
-        inner.rules[0].rmVersion == '5.x'
         inner.rules[0].status == 'active'
         hubGet.calls*.path == ['/hub2/appsList']
         script._getAllToolDefinitions_partNativeRM().find { it.name == 'hub_list_rules' }
@@ -83,12 +80,10 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         all.count == 110
     }
 
-    def "absent native type keeps the RMUtils type and never guesses a 5.1 type"() {
+    def "absent native type is left null and never guessed"() {
         given:
-        rmUtils.stubRuleList4 = [[id: 100, label: 'Older', type: 'Rule-4.1']]
         rmUtils.stubRuleList5 = [[200: 'Newer']]
         registerRmAppsList([
-            [data: [id: 100, name: 'Older', disabled: false], children: []],
             [data: [id: 200, name: 'Newer', disabled: false], children: []]
         ])
 
@@ -96,10 +91,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         def result = script.toolListRmRules([:])
 
         then:
-        result.rules.find { it.id == 100 }.type == 'Rule-4.1'
-        result.rules.find { it.id == 100 }.rmVersion == '4.x'
         result.rules.find { it.id == 200 }.type == null
-        result.rules.find { it.id == 200 }.rmVersion == '5.x'
         result.rules.every { it.status == 'active' }
     }
 
@@ -175,107 +167,11 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "RM 4.x explicit-fields shape passes all fields through"() {
-        given:
-        rmUtils.stubRuleList4 = [
-            [id: 100, label: 'Alpha', name: 'A', type: 'Rule-4.1']
-        ]
-
-        when:
-        def result = script.toolListRmRules([:])
-
-        then:
-        result.rules.size() == 1
-        def rule = result.rules[0]
-        rule.id == 100
-        rule.label == 'Alpha'
-        rule.name == 'A'
-        rule.type == 'Rule-4.1'
-    }
-
     @spock.lang.Unroll
-    def "hub_list_rules via dispatch passes RM 4.x explicit fields through (useGateways=#useGateways)"() {
-        given:
+    def "#label: quiet path with count 0 and an informational note, success NOT false (useGateways=#useGateways)"() {
+        given: 'Rule Machine is not installed, so RMUtils cannot resolve'
         settingsMap.useGateways = useGateways
-        rmUtils.stubRuleList4 = [
-            [id: 100, label: 'Alpha', name: 'A', type: 'Rule-4.1']
-        ]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_rules', [:])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.rules.size() == 1
-        def rule = inner.rules[0]
-        rule.id == 100
-        rule.label == 'Alpha'
-        rule.name == 'A'
-        rule.type == 'Rule-4.1'
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "same rule id in both v4 and v5 appears exactly once (first-seen wins)"() {
-        given:
-        rmUtils.stubRuleList4 = [[id: 200, label: 'From v4', name: 'From v4', type: 'Rule-4.1']]
-        rmUtils.stubRuleList5 = [[200: 'From v5']]
-
-        when:
-        def result = script.toolListRmRules([:])
-
-        then: 'combined map deduplicates; v4 was registered first'
-        result.rules.size() == 1
-        result.rules[0].id == 200
-        result.rules[0].rmVersion == '4.x'
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_rules via dispatch dedups same id across v4 and v5 (first-seen wins) (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        rmUtils.stubRuleList4 = [[id: 200, label: 'From v4', name: 'From v4', type: 'Rule-4.1']]
-        rmUtils.stubRuleList5 = [[200: 'From v5']]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_rules', [:])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.rules.size() == 1
-        inner.rules[0].id == 200
-        inner.rules[0].rmVersion == '4.x'
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "both-absent quiet path: count=0, informational note, success NOT false"() {
-        given: 'both versions throw NoClassDefFoundError (RM not installed)'
-        rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
-        rmUtils.throwOnGetRuleList5 = new NoClassDefFoundError("hubitat.helper.RMUtils")
-
-        when:
-        def result = script.toolListRmRules([:])
-
-        then: 'quiet: count 0, note mentioning rule machine, but NO success=false'
-        result.count == 0
-        result.note?.toLowerCase()?.contains('rule machine')
-        result.success != false  // unset or truthy
-        result.warning == null
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_rules via dispatch both-absent NoClassDefFound quiet path (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
-        rmUtils.throwOnGetRuleList5 = new NoClassDefFoundError("hubitat.helper.RMUtils")
+        rmUtils.throwOnGetRuleList5 = failure
 
         when:
         def response = mcpDriver.callTool('hub_list_rules', [:])
@@ -285,77 +181,25 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.count == 0
-        inner.note?.toLowerCase()?.contains('rule machine')
+        inner.note == 'Rule Machine not detected on this hub.'
         inner.success != false
         inner.warning == null
 
         where:
-        useGateways << [true, false]
-    }
-
-    def "both-absent via sandbox-wrapped 'Cannot get property helper' shape: quiet path"() {
-        given:
-        // The real Hubitat Groovy sandbox resolves unknown `hubitat.helper.X`
-        // namespace lookups to null, and the subsequent property dereference
-        // throws this shape -- verified via live probe during PR #79 review.
-        // Classifier in libraries/mcp-native-rules-lib.groovy scopes the match to
-        // the 'helper' substring.
-        rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'helper' on null object")
-        rmUtils.throwOnGetRuleList5 = new RuntimeException("Cannot get property 'helper' on null object")
-
-        when:
-        def result = script.toolListRmRules([:])
-
-        then:
-        result.count == 0
-        result.note?.toLowerCase()?.contains('rule machine')
-        result.success != false  // unset or truthy
-        result.warning == null
+        label                                    | failure                                                              | useGateways
+        'NoClassDefFoundError'                   | new NoClassDefFoundError("hubitat.helper.RMUtils")                   | true
+        'NoClassDefFoundError'                   | new NoClassDefFoundError("hubitat.helper.RMUtils")                   | false
+        // The real sandbox resolves an unknown `hubitat.helper.X` lookup to null, and the
+        // dereference throws this shape (live probe during PR #79 review).
+        "sandbox 'Cannot get property helper'"   | new RuntimeException("Cannot get property 'helper' on null object")  | true
+        "sandbox 'Cannot get property helper'"   | new RuntimeException("Cannot get property 'helper' on null object")  | false
     }
 
     @spock.lang.Unroll
-    def "hub_list_rules via dispatch both-absent 'Cannot get property helper' quiet path (useGateways=#useGateways)"() {
+    def "#label surfaces as success:false with the RMUtils error (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'helper' on null object")
-        rmUtils.throwOnGetRuleList5 = new RuntimeException("Cannot get property 'helper' on null object")
-
-        when:
-        def response = mcpDriver.callTool('hub_list_rules', [:])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.count == 0
-        inner.note?.toLowerCase()?.contains('rule machine')
-        inner.success != false
-        inner.warning == null
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "both failed with mixed shapes returns success=false error mentioning both versions"() {
-        given: 'v4 is class-missing but v5 is a hard RuntimeException -- not a quiet path'
-        rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
-        rmUtils.throwOnGetRuleList5 = new RuntimeException("timeout connecting to RM")
-
-        when:
-        def result = script.toolListRmRules([:])
-
-        then:
-        result.success == false
-        result.error?.contains('v4=') == true
-        result.error?.contains('v5=') == true
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_rules via dispatch both-failed mixed shapes returns success=false (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
-        rmUtils.throwOnGetRuleList5 = new RuntimeException("timeout connecting to RM")
+        rmUtils.throwOnGetRuleList5 = failure
 
         when:
         def response = mcpDriver.callTool('hub_list_rules', [:])
@@ -365,187 +209,29 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
-        inner.error?.contains('v4=') == true
-        inner.error?.contains('v5=') == true
+        inner.error.startsWith('RMUtils.getRuleList failed: ')
+        inner.error.contains(fragment)
+        inner.note.contains('Retry')
 
         where:
-        useGateways << [true, false]
+        label                                     | failure                                                              | fragment        | useGateways
+        'a timeout'                               | new RuntimeException("timeout connecting to RM")                     | 'timeout'       | true
+        'a timeout'                               | new RuntimeException("timeout connecting to RM")                     | 'timeout'       | false
+        'Cannot-get-property without helper'      | new RuntimeException("Cannot get property 'label' on null object")   | "'label'"       | true
+        'a MissingMethodException'                | new RuntimeException("No signature of method getRuleList() is applicable") | 'getRuleList' | false
     }
 
-    def "MissingMethodException mentioning getRuleList on one side is quiet (old firmware shape)"() {
-        given: 'v4 throws an MME scoped to getRuleList (old firmware, no getRuleList overload)'
-        rmUtils.throwOnGetRuleList4 = new RuntimeException("No signature of method getRuleList() is applicable")
-        rmUtils.stubRuleList5 = [[500: 'My v5 Rule']]
+    def "only the current Rule Machine list is read"() {
+        given:
+        rmUtils.stubRuleList5 = [[500: 'My Rule']]
 
         when:
         def result = script.toolListRmRules([:])
 
-        then: 'v5 rules are returned without a warning -- the MME was scoped to getRuleList'
-        result.rules.size() == 1
-        result.rules[0].id == 500
-        result.warning == null
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_rules via dispatch MissingMethodException on getRuleList is quiet (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        rmUtils.throwOnGetRuleList4 = new RuntimeException("No signature of method getRuleList() is applicable")
-        rmUtils.stubRuleList5 = [[500: 'My v5 Rule']]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_rules', [:])
-
         then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.rules.size() == 1
-        inner.rules[0].id == 500
-        inner.warning == null
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "MissingMethodException NOT scoped to getRuleList surfaces as a warning"() {
-        given: 'v4 throws an MME for an unrelated method name (not getRuleList)'
-        rmUtils.throwOnGetRuleList4 = new RuntimeException("No signature of method setXYZ() is applicable")
-        rmUtils.stubRuleList5 = [[600: 'My Rule']]
-
-        when:
-        def result = script.toolListRmRules([:])
-
-        then: 'warning surfaced because the MME was not scoped to getRuleList'
-        result.rules.size() == 1
-        result.warning != null
-        result.warning.contains('setXYZ')
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_rules via dispatch MME not scoped to getRuleList surfaces warning (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        rmUtils.throwOnGetRuleList4 = new RuntimeException("No signature of method setXYZ() is applicable")
-        rmUtils.stubRuleList5 = [[600: 'My Rule']]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_rules', [:])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.rules.size() == 1
-        inner.warning != null
-        inner.warning.contains('setXYZ')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "Cannot-get-property with 'helper' substring is quiet (hubitat.helper path)"() {
-        given: "v4 throws the sandbox null-resolution error for hubitat.helper.RMUtils"
-        rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'helper' on null object")
-        rmUtils.stubRuleList5 = [[700: 'Only v5 Rule']]
-
-        when:
-        def result = script.toolListRmRules([:])
-
-        then: 'quiet: the helper-path null-resolution is treated as class-missing'
-        result.rules.size() == 1
-        result.warning == null
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_rules via dispatch Cannot-get-property helper substring is quiet (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'helper' on null object")
-        rmUtils.stubRuleList5 = [[700: 'Only v5 Rule']]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_rules', [:])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.rules.size() == 1
-        inner.warning == null
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "Cannot-get-property WITHOUT 'helper' substring surfaces as a warning"() {
-        given: 'v4 throws a Cannot-get-property error unrelated to the helper path'
-        rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'label' on null object")
-        rmUtils.stubRuleList5 = [[800: 'Rule']]
-
-        when:
-        def result = script.toolListRmRules([:])
-
-        then: 'warning surfaced -- not the helper-path pattern'
-        result.rules.size() == 1
-        result.warning != null
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_rules via dispatch Cannot-get-property WITHOUT helper surfaces warning (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'label' on null object")
-        rmUtils.stubRuleList5 = [[800: 'Rule']]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_rules', [:])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.rules.size() == 1
-        inner.warning != null
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hard RuntimeException on one side with other succeeding surfaces warning"() {
-        given:
-        rmUtils.throwOnGetRuleList4 = new RuntimeException("timeout")
-        rmUtils.stubRuleList5 = [[900: 'My Rule']]
-
-        when:
-        def result = script.toolListRmRules([:])
-
-        then: 'results from v5 present, warning mentions the v4 failure'
-        result.rules.size() == 1
-        result.warning != null
-        result.warning.contains('v4=')
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_rules via dispatch hard RuntimeException on one side surfaces warning (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        rmUtils.throwOnGetRuleList4 = new RuntimeException("timeout")
-        rmUtils.stubRuleList5 = [[900: 'My Rule']]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_rules', [:])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.rules.size() == 1
-        inner.warning != null
-        inner.warning.contains('v4=')
-
-        where:
-        useGateways << [true, false]
+        result.rules*.id == [500]
+        rmUtils.calls.findAll { it.method == 'getRuleList' }*.version == ['5.0']
+        !result.rules[0].containsKey('rmVersion')
     }
 
     def "registerRmRule skips entries with non-Integer-coercible keys and emits a sandbox-safe warn log"() {
@@ -712,17 +398,15 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         [data: [id: id, name: name, type: type, user: true, hidden: false, disabled: disabled], children: []]
     }
 
-    def "flags a paused rule from the appsList (Paused) decoration the RMUtils label lacks (plain + HTML-span, RM 4.x + 5.x)"() {
+    def "flags a paused rule from the appsList (Paused) decoration the RMUtils label lacks (plain + HTML-span, any rule type)"() {
         given: 'clean RMUtils labels; appsList names carry the (Paused) suffix in plain and red-span form'
-        rmUtils.stubRuleList5 = [[401: 'Play room toggle'], [402: 'Hall motion']]
-        // A 4.x rule (explicit-fields shape) proves the annotation is version-agnostic:
-        // it reads entry.label, which registerRmRule fills for both RM versions.
-        rmUtils.stubRuleList4 = [[id: 403, label: 'Garden lights', name: 'Garden lights', type: 'Rule-4.1']]
+        rmUtils.stubRuleList5 = [[401: 'Play room toggle'], [402: 'Hall motion'], [403: 'Garden lights']]
         registerRmAppsList([
             ruleNode(401, 'Play room toggle (Paused)'),
             ruleNode(402, 'Hall motion <span style="color:red">(Paused)</span>'),
-            ruleNode(403, 'Garden lights (Paused)', false, 'Rule-4.1')
+            ruleNode(403, 'Garden lights (Paused)', false, 'Button Rule-5.1')
         ])
+        [401, 402, 403].each { registerRuleState(it, [paused: true]) }
 
         when:
         def result = script.toolListRmRules([:])
@@ -737,8 +421,8 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         r402.paused == true
         r402.status == 'paused'
 
-        and: 'the RM 4.x rule is annotated the same way'
-        r403.rmVersion == '4.x'
+        and: 'a Button Rule is annotated the same way, by the same generic path'
+        r403.type == 'Button Rule-5.1'
         r403.paused == true
         r403.status == 'paused'
     }
@@ -846,6 +530,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then: 'channel A fires and the decoration is stripped from the reported name'
         def r470 = result.rules.find { it.id == 470 }
         r470.status == 'stopped'
+        r470.stopped == true
         r470.label == 'Porch timer'
     }
 
@@ -867,6 +552,181 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         r470.status == 'stopped'
         r470.label == 'Porch timer'
         r470.name == 'Porch timer'
+    }
+
+    private void registerRuleState(int id, Map flags) {
+        hubGet.register("/installedapp/statusJson/${id}".toString()) { params ->
+            groovy.json.JsonOutput.toJson([installedApp: [id: id], appSettings: [],
+                appState: flags.collect { k, v -> [name: k, value: v, type: 'Boolean'] }])
+        }
+    }
+
+    def "a rule both paused and stopped reads both flags from its state, though its name shows only (Stopped)"() {
+        given:
+        rmUtils.stubRuleList5 = [[480: 'Garage loop']]
+        registerRmAppsList([ruleNode(480, 'Garage loop <span style="color:red">(Stopped)</span>')])
+        registerRuleState(480, [paused: true, stopped: true])
+
+        when:
+        def r480 = script.toolListRmRules([:]).rules.find { it.id == 480 }
+
+        then:
+        r480.paused == true
+        r480.status == 'stopped'
+        r480.label == 'Garage loop'
+    }
+
+    def "a decorated row whose state is no longer stopped reads active, with the stale decoration still stripped"() {
+        given:
+        rmUtils.stubRuleList5 = [[481: 'Garage loop']]
+        registerRmAppsList([ruleNode(481, 'Garage loop (Stopped)')])
+        registerRuleState(481, [paused: false])
+
+        when:
+        def r481 = script.toolListRmRules([:]).rules.find { it.id == 481 }
+
+        then:
+        r481.paused == false
+        r481.status == 'active'
+    }
+
+    @spock.lang.Unroll
+    def "a (Stopped) row whose state #what reads #expected"() {
+        given:
+        rmUtils.stubRuleList5 = [[483: 'Garage loop']]
+        registerRmAppsList([ruleNode(483, 'Garage loop (Stopped)')])
+        hubGet.register('/installedapp/statusJson/483') { params ->
+            groovy.json.JsonOutput.toJson([installedApp: [id: 483], appSettings: []] + (appState == 'absent' ? [:] : [appState: appState]))
+        }
+
+        when:
+        def result = script.toolListRmRules([:])
+        def r483 = result.rules.find { it.id == 483 }
+
+        then:
+        r483.status == expected
+        r483.statusSource == source
+        (result.statusSourceNote != null) == (source != null)
+
+        where:
+        what                                  | appState                                    | expected  | source
+        'has no stopped entry'                | [[name: 'paused', value: false]]            | 'active'  | null
+        'has no appState section (a gone app answers {})' | 'absent'                        | 'stopped' | 'name'
+        'arrives as a map'                    | [stopped: false]                            | 'active'  | null
+        'has a malformed stopped entry'       | [[name: 'stopped', value: 'maybe']]         | 'stopped' | 'name'
+        'is in an unexpected shape'           | 'garbage'                                   | 'stopped' | 'name'
+    }
+
+    def "a failed state read keeps the name-derived status for that row and says so"() {
+        given:
+        rmUtils.stubRuleList5 = [[482: 'Garage loop'], [486: 'Porch']]
+        registerRmAppsList([ruleNode(482, 'Garage loop (Paused)'), ruleNode(486, 'Porch (Paused)')])
+        hubGet.register('/installedapp/statusJson/482') { params -> throw new RuntimeException('hub busy') }
+        registerRuleState(486, [paused: true])
+
+        when:
+        def result = script.toolListRmRules([:])
+        def r482 = result.rules.find { it.id == 482 }
+        def r486 = result.rules.find { it.id == 486 }
+
+        then: 'the failed row is marked and listed; the row whose state was read is not'
+        r482.paused == true
+        r482.status == 'paused'
+        r482.statusSource == 'name'
+        !r486.containsKey('statusSource')
+        result.statusSourceNote.contains('rule(s) 482 could not be read')
+        !result.statusSourceNote.contains('486')
+    }
+
+    def "a red-X disabled, decorated row whose state read succeeds keeps disabled first and its state's flags"() {
+        given:
+        rmUtils.stubRuleList5 = [[487: 'Den lights']]
+        registerRmAppsList([ruleNode(487, 'Den lights <span style="color:red">(Paused)</span>', true)])
+        registerRuleState(487, [paused: true, stopped: false])
+
+        when:
+        def result = script.toolListRmRules([:])
+        def r487 = result.rules.find { it.id == 487 }
+
+        then:
+        r487.disabled == true
+        r487.paused == true
+        r487.status == 'disabled'
+        !r487.containsKey('statusSource')
+        result.statusSourceNote == null
+    }
+
+    def "a (Paused) row whose state is also stopped reads stopped, with paused kept"() {
+        given: 'the name shows one decoration; the state carries both flags'
+        rmUtils.stubRuleList5 = [[488: 'Hall loop']]
+        registerRmAppsList([ruleNode(488, 'Hall loop (Paused)')])
+        registerRuleState(488, [paused: true, stopped: true])
+
+        when:
+        def r488 = script.toolListRmRules([:]).rules.find { it.id == 488 }
+
+        then:
+        r488.paused == true
+        r488.status == 'stopped'
+        r488.label == 'Hall loop'
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_rules via dispatch reads state only for decorated rows (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        rmUtils.stubRuleList5 = [[483: 'Hall'], [484: 'Porch'], [485: 'Kitchen']]
+        registerRmAppsList([ruleNode(483, 'Hall'), ruleNode(484, 'Porch (Stopped)'), ruleNode(485, 'Kitchen')])
+        registerRuleState(484, [paused: true, stopped: true])
+        hubGet.calls.clear()
+
+        when:
+        def response = mcpDriver.callTool('hub_list_rules', [:])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        !response.result.isError
+        hubGet.calls*.path == ['/hub2/appsList', '/installedapp/statusJson/484']
+        inner.rules.find { it.id == 484 }.paused == true
+        inner.rules.find { it.id == 484 }.status == 'stopped'
+        inner.rules.findAll { it.id != 484 }.every { it.status == 'active' && it.paused == false }
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "state reads run only for decorated rules on the returned page"() {
+        given: 'decorated rules 10 and 55 land on different pages; 30 is filtered out by label'
+        def label = { int id -> id == 30 ? "Other ${id}".toString() : "Rule ${id.toString().padLeft(3, '0')}".toString() }
+        rmUtils.stubRuleList5 = (1..60).collect { id -> [(id): label(id)] }
+        registerRmAppsList((1..60).collect { id -> ruleNode(id, id in [10, 30, 55] ? "${label(id)} (Paused)".toString() : label(id)) })
+        [10, 30, 55].each { registerRuleState(it, [paused: false]) }
+        def statusReads = { hubGet.calls*.path.findAll { it.startsWith('/installedapp/statusJson/') } }
+
+        when:
+        hubGet.calls.clear()
+        def first = script.toolListRmRules([labelFilter: 'rule', cursor: ''])
+        def firstReads = statusReads()
+        hubGet.calls.clear()
+        def second = script.toolListRmRules([labelFilter: 'rule', cursor: first.nextCursor])
+        def secondReads = statusReads()
+        hubGet.calls.clear()
+        def unpaged = script.toolListRmRules([:])
+        def unpagedReads = statusReads()
+
+        then: 'the filtered-out and off-page decorated rules are never read'
+        first.count == 50
+        first.total == 59
+        firstReads == ['/installedapp/statusJson/10']
+        second.count == 9
+        secondReads == ['/installedapp/statusJson/55']
+        unpagedReads.sort() == ['/installedapp/statusJson/10', '/installedapp/statusJson/30', '/installedapp/statusJson/55']
+
+        and: 'each read settles its row: the state says not paused'
+        first.rules.find { it.id == 10 }.status == 'active'
+        first.rules.find { it.id == 10 }.paused == false
+        second.rules.find { it.id == 55 }.status == 'active'
+        unpaged.rules.every { it.status == 'active' && it.paused == false }
     }
 
     def "does not false-flag a rule the user literally named ending in (Stopped)"() {
@@ -1068,6 +928,5 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
         then:
         result.rules[0].type == 'Rule-5.1'
-        result.rules[0].rmVersion == '5.x'
     }
 }

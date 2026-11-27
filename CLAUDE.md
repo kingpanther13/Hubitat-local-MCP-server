@@ -56,7 +56,7 @@ Tools use exactly one verb from the table below. The table is the canonical list
 | `update` | Write that mutates one or more existing fields in place (PATCH-like) | `rename` |
 | `delete` | Write that destroys an entity (no ID = delete all) | `clear`, `remove` |
 | `set` | Write that assigns a value/state (`set_X_<attr>`) or replaces an entity wholesale (`set_X`, PUT-like) | `pause`, `resume`, `enable`, `disable`, `lock`, `unlock`, `mute`, `unmute`, `start`, `stop`, `open`, `close`, `assign`, `unassign` |
-| `call` | Invoke a method / service / dispatch / device command | `send`, `dispatch`, `invoke`, `request`, `evaluate`, `run`, `force` |
+| `call` | Invoke a method / service / dispatch / device command | `send`, `dispatch`, `invoke`, `request`, `evaluate`, `run`, `force`; also `pause`/`resume`/`start`/`stop` as actions of a `call` tool when they dispatch runtime commands (`hub_call_rule`) |
 | `manage` | Action-dispatch gateway that contains writes (mixed read+write or write-only), plus flat-only top-level tools (see Tool naming) | — |
 | `restore` | Re-apply a prior backup | — |
 | `import` / `export` | Round-trip serialization counterpart | — |
@@ -71,12 +71,14 @@ Rule-engine action subtypes (`cancelTimers`, `cancelDelay`, etc. inside native r
 
 ### Parameter naming
 
-Name parameters unambiguously. `device_id`, not `id`. `user_id`, not `user`. Where the parameter takes a complex value, name the parameter after what it semantically IS, not how it's wired. Anthropic's verified guidance: *"instead of a parameter named user, try a parameter named user_id"* — *writing-tools-for-agents*.
+Parameters are camelCase, matching the hub's own MCP tools (`ruleId`, `appId`, `deviceId`); acronyms count as words (`importUrl`, `nodeDsk`). This covers keys inside an object argument that this server defines (a form step's `expectPage`, `hub_set_native_app`'s `args.appType`), but not hub wire names passed through verbatim. `ToolParameterNamingSpec` fails on a snake_case property in any tool's input schema or in the `args` schemas of `hub_set_rule` / `hub_set_native_app`.
+
+Name parameters unambiguously. `deviceId`, not `id`. `userId`, not `user`. Where the parameter takes a complex value, name the parameter after what it semantically IS, not how it's wired. Anthropic's verified guidance: *"instead of a parameter named user, try a parameter named user_id"* — *writing-tools-for-agents* (the guidance is about unambiguous names, not case).
 
 ### Tool consolidation guidelines
 
-1. **Verb-pair tools.** Two tools doing opposite state mutations on the same noun (enable/disable, pause/resume, lock/unlock, mute/unmute, start/stop, open/close) → merge into a single `set_<noun>_<attribute>` tool. Name the merged tool after the boolean/enum attribute being toggled, NOT after one of the two verbs (so `hub_set_rule_paused`, not `hub_set_rule_state` — the latter reads as a generic edit). Use boolean when binary; enum only when 3+ states or values aren't naturally true/false. Concrete: `pause_rm_rule` + `resume_rm_rule` → `hub_set_rule_paused`.
-2. **Flat multi-action tools.** A flat tool with an action enum is allowed ONLY when (a) actions share a noun, (b) action set is ≤4 verbs, and (c) a full `manage_` gateway would be overkill. Outside that, prefer separate tools or a real gateway. Concrete: `hub_manage_virtual_device` with `action: "create"/"delete"` fits.
+1. **Verb-pair tools.** Two tools doing opposite state mutations on the same noun (enable/disable, pause/resume, lock/unlock, mute/unmute, start/stop, open/close) → merge into a single `set_<noun>_<attribute>` tool. Name the merged tool after the boolean/enum attribute being toggled, NOT after one of the two verbs (so `hub_set_app_disabled`, not `hub_set_app_state` — the latter reads as a generic edit). Use boolean when binary; enum only when 3+ states or values aren't naturally true/false. History: `pause_rm_rule` + `resume_rm_rule` became `hub_set_rule_paused`, which was later folded into `hub_call_rule` as its `pause`/`resume` actions (item 2).
+2. **Flat multi-action tools.** A flat tool with an action enum is allowed ONLY when (a) actions share a noun, (b) action set is ≤4 verbs, and (c) a full `manage_` gateway would be overkill. Outside that, prefer separate tools or a real gateway. Concrete: `hub_manage_virtual_device` with `action: "create"/"delete"` fits. One maintainer-approved exception to the cap: `hub_call_rule` carries five actions (`actions`, `stop`, `start`, `pause`, `resume`), all runtime commands dispatched to one rule.
 3. **Tools always called in sequence.** If callers always invoke A then B with no useful intermediate point, merge them. Anthropic's verified guidance: `get_customer_context` over three separate lookups; `schedule_event` over `list_users` + `list_events` + `create_event` — *writing-tools-for-agents*.
 4. **Overlapping noun + return shape.** Tools that only differ in a filter or projection should merge with an optional parameter. Recent example: PR #208 proposes a 103→95 tool reduction along these lines.
 5. **Single-action edge verbs.** Don't add a new verb for a single-action tool when an existing verb fits. `clear`/`remove` fold into `delete`; `rename` into `update`; `run`/`force` into `call`; `install` into `create`.

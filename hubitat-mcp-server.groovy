@@ -676,8 +676,8 @@ Set _alwaysGrantedToolNames() { ["hub_get_tool_guide", "hub_search_tools"] as Se
 private Set _installedAppTargetTools() {
     return ["hub_get_app_config", "hub_export_native_app", "hub_clone_native_app",
             "hub_set_native_app", "hub_delete_native_app", "hub_set_app_disabled",
-            "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule",
-            "hub_set_visual_rule", "hub_delete_visual_rule", "hub_call_rule", "hub_set_rule_paused",
+            "hub_get_rule", "hub_get_visual_rule",
+            "hub_set_visual_rule", "hub_delete_visual_rule", "hub_call_rule",
             "hub_set_rule_private_boolean", "hub_set_rule"] as Set
 }
 
@@ -686,10 +686,11 @@ private Set _installedAppTargetTools() {
 private boolean _targetsThisApp(Map args) {
     String self = app?.id?.toString()
     if (!self || args == null) return false
-    return ["appId", "app_id", "sourceAppId", "ruleId", "rule_id", "parent_id"].any { key ->
+    return ["appId", "sourceAppId", "ruleId", "parentId"].any { key ->
         def target = args.get(key)
         def ids = (target instanceof Collection) ? target : [target]
-        ids.any { it?.toString() == self }
+        // Compare canonical ids: " 7" or "7.0" names the same app as 7 once a tool parses it.
+        ids.any { it != null && (it.toString() == self || _exactIntId(it)?.toString() == self) }
     }
 }
 
@@ -3249,9 +3250,9 @@ private void _writeAuditLog(Map audit, String phase, Map extra) {
 }
 
 private List _writeTargetKeys() {
-    return ["appId", "nativeAppId", "ruleId", "deviceId", "device_id",
-        "driverId", "roomId", "room_id", "variableName", "name", "id", "jobId", "type", "action", "scope",
-        "backupKey", "ref", "mode", "fileName", "filename", "path"]
+    return ["appId", "nativeAppId", "ruleId", "deviceId",
+        "driverId", "roomId", "variableName", "name", "id", "jobId", "type", "action", "scope",
+        "backupKey", "ref", "mode", "fileName", "path"]
 }
 
 // Identifier-shaped arguments only, from a fixed allowlist; anything that could carry a
@@ -3470,7 +3471,7 @@ def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     if (leaf == "hub_call_rule") {
         def ids = leafArgs.ruleId
         def idCount = (ids instanceof List) ? ids.size() : (ids == null ? 0 : 1)
-        return leafArgs.action in ["stop", "start"] && idCount > 1
+        return leafArgs.action in ["stop", "start", "pause", "resume"] && idCount > 1
     }
     return true
 }
@@ -4439,9 +4440,11 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
 
     if (leafTool == "hub_call_rule" && result.remainingRuleIds instanceof List
             && !result.remainingRuleIds.isEmpty()) {
+        // Un-reached rules go first, so a failed rule that eats a slice's budget again cannot starve them; when every
+        // rule keeps failing, the continuation's slice cap ends the batch.
         def retryIds = []
-        if (result.failedRuleIds instanceof List) retryIds.addAll(result.failedRuleIds)
         retryIds.addAll(result.remainingRuleIds)
+        if (result.failedRuleIds instanceof List) retryIds.addAll(result.failedRuleIds)
         nextLeaf.ruleId = retryIds.unique()
         kind = "call_rule"
     } else if (leafTool == "hub_create_driver" && result.status == "in_progress" &&
@@ -4551,9 +4554,13 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 // Reaching this branch REQUIRES a non-empty remainingRuleIds, and failed is a
                 // different set from not-yet-reached -- so name the un-actioned ids rather than
                 // making the caller diff them out of hub state.
+                // A failed rule re-queued behind the un-reached ones can be left over again: it was reached in an
+                // earlier slice, so it stays in failedRuleIds and out of the never-reached list.
                 if (result instanceof Map && result.remainingRuleIds instanceof List
                         && !(result.remainingRuleIds as List).isEmpty()) {
-                    capped.remainingRuleIds = result.remainingRuleIds
+                    Set reached = banked.collect { it instanceof Map ? it.ruleId?.toString() : null } as Set
+                    def unreached = (result.remainingRuleIds as List).findAll { !(it?.toString() in reached) }
+                    if (unreached) capped.remainingRuleIds = unreached
                 }
                 // partial means some rules were actioned and some were not. Keying it on
                 // "anything banked" would be structurally always true here -- reaching the cap
@@ -4562,8 +4569,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 // ordinary terminal reports a plain failure.
                 //
                 // The formula is deliberately NOT the terminal's `failed.size() < results.size()`:
-                // reaching this branch REQUIRES a non-empty remainingRuleIds, so rules that were
-                // never reached always exist here and the terminal's version never sees them. One
+                // reaching this branch REQUIRES a non-empty remainingRuleIds, so rules not yet actioned
+                // (never reached, or failed and re-queued) always exist here and the terminal's version never sees them. One
                 // success is therefore enough to make this batch some-actioned-some-not, whereas
                 // at the ordinary terminal nothing is left unreached and a mixed row set is the
                 // only way to be partial.
@@ -4648,7 +4655,7 @@ private def _mrtrAggregateTerminal(Map rec, result) {
             out.ruleIds = terminalBank.ruleIds
             // out started as a copy of the LAST slice's envelope, so every field the leaf
             // scopes to that slice describes only its share of the batch: ruleId names the
-            // tail rule, rmAction counts that slice's rules ("stopRule toggle x2" for a batch
+            // tail rule, rmAction counts that slice's rules ("stop x2" for a batch
             // of four), and the leaf's error sentence counts them too ("the other 1 rule(s)
             // WERE actioned" when three were). Drop all three BEFORE the verdict below, so the
             // rebuilt error and the per-rule rows are what carry the batch-wide truth.
@@ -4656,6 +4663,8 @@ private def _mrtrAggregateTerminal(Map rec, result) {
                 out.remove("ruleId")
                 out.remove("rmAction")
                 out.remove("error")
+                // A one-rule last slice's note is about that rule alone, and its results[] row keeps it.
+                if (!(result.results instanceof List)) out.remove("note")
             }
             def failed = out.results.findAll { it instanceof Map && it.success != true }
             out.success = out.success == true && failed.isEmpty()
@@ -4905,7 +4914,7 @@ def _mrtrRecentOperations(int limit = 10) {
         if (callerClient == null && rec.clientLabel) row.client = rec.clientLabel
         if (status == "terminal" && rec.terminalResult instanceof Map) {
             Map result = rec.terminalResult as Map
-            ["success", "appId", "ruleId", "rule_id", "newAppId", "deviceId", "driverId", "error"].each {
+            ["success", "appId", "ruleId", "newAppId", "deviceId", "driverId", "error"].each {
                 if (result.containsKey(it)) row.put(it, result.get(it))
             }
             if (result.device instanceof Map && result.device.id != null) row.deviceId = result.device.id
@@ -5161,9 +5170,10 @@ private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
 // A rule that failed in an earlier slice is RE-QUEUED for retry alongside the remaining
 // ids, so it lands in results[] twice: the banked failure and the retry's outcome. Keep
 // the LAST entry per ruleId -- a rule's final attempt is its actual state -- otherwise a
-// rule that succeeded on retry still poisons success/partial/failedRuleIds. First-appearance
-// order is preserved; entries carrying no ruleId are never collapsed and keep their order
-// after the keyed ones.
+// rule that succeeded on retry still poisons success/partial/failedRuleIds. A retry refused
+// before dispatch (dispatched:false) changed nothing, so the earlier row, which may record a
+// click that landed, is kept instead. First-appearance order is preserved; entries carrying
+// no ruleId are never collapsed and keep their order after the keyed ones.
 private List _mrtrCollapseRuleResults(List entries) {
     def lastByRule = [:]
     def unkeyed = []
@@ -5171,7 +5181,7 @@ private List _mrtrCollapseRuleResults(List entries) {
         def rid = (entry instanceof Map) ? entry.ruleId : null
         if (rid == null) {
             unkeyed << entry
-        } else {
+        } else if (entry.dispatched != false || !lastByRule.containsKey(rid.toString())) {
             lastByRule.put(rid.toString(), entry)
         }
     }
@@ -5234,7 +5244,7 @@ private Map _toolLogDetails(reactiveToolName, toolName, args, Map extra = [:]) {
     def details = [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]
     // A gateway call arrives as the envelope {tool, args}; the leaf's own arguments sit inside it.
     def leafArgs = (reactiveToolName != toolName && args instanceof Map && args.args instanceof Map) ? args.args : args
-    def appId = leafArgs instanceof Map ? (leafArgs.appId ?: leafArgs.nativeAppId ?: leafArgs.rule_id) : null
+    def appId = leafArgs instanceof Map ? (leafArgs.appId ?: leafArgs.nativeAppId ?: (reactiveToolName == 'hub_set_rule' ? leafArgs.ruleId : null)) : null
     if (appId != null && appId.toString()) details.appId = appId.toString()
     return details + extra
 }
@@ -5551,9 +5561,11 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_get_source":
             return "Source file exceeds the inline cap. Use offset/length to read it in chunks, use hub_list_files / hub_read_file via the File Manager bridge, or fetch the source from version control instead."
         case "hub_set_rule":
-            return "operation:'read': page one section, args:{sections:['actions'], cursor:'', limit:50}, and follow nextCursor. A create/update/form write was applied before its response was measured: do NOT resend it. Find a created rule with hub_list_rules(labelFilter:<name>); confirm what landed with hub_set_rule(operation:'read', rule_id, args:{sections:[...]}). An update's pre-edit backup, when pre-edit backups are on, is listed by hub_list_backups(scope:'source'). Smaller batches keep write responses under the cap."
+            return "operation:'read': page one section, args:{sections:['actions'], cursor:'', limit:50}, and follow nextCursor. A create/update/form write was applied before its response was measured: do NOT resend it. Find a created rule with hub_list_rules(labelFilter:<name>); confirm what landed with hub_set_rule(operation:'read', ruleId, args:{sections:[...]}). An update's pre-edit backup, when pre-edit backups are on, is listed by hub_list_backups(scope:'source'). Smaller batches keep write responses under the cap."
+        case "hub_get_rule":
+            return "Pass sections:[] for the rule's health and local variables alone, or page one section, sections:['actions'], cursor:'', limit:50, and follow nextCursor."
         case "hub_get_hub_mesh":
-            return "This tool has no filters or pagination -- the payload is driven by the shared/linked device and hub-variable lists on a large multi-hub mesh. Read the full device inventory via hub_list_devices (which does paginate) instead; note include_token is off by default and does not affect size."
+            return "This tool has no filters or pagination -- the payload is driven by the shared/linked device and hub-variable lists on a large multi-hub mesh. Read the full device inventory via hub_list_devices (which does paginate) instead; note includeToken is off by default and does not affect size."
         default:
             // Default-branch hits are interesting telemetry -- they're the tools we should
             // be adding specific suggestions for. info level so it only surfaces when log
@@ -5768,7 +5780,7 @@ def getGatewayConfig() {
                 hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all (hub scopes also return the automatic-backup schedule and network-share settings). Args: scope?, cursor?",
                 hub_get_backup: "Get source from a backup. Args: backupKey",
                 hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
-                hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values), its form controls and the pages it links to (page.hrefs). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?, summary?",
+                hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values), its form controls and the pages it links to (page.hrefs). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. includeStatus adds the app's state, subscriptions and scheduled jobs. Args: appId, pageName?, includeSettings?, includeStatus?, summary?",
                 hub_list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). includeDrift=true surfaces missing-required/orphan components. Args: hpmAppId?, includeDrift?, packageFilter?"
             ],
             searchHints: [
@@ -5808,7 +5820,7 @@ def getGatewayConfig() {
                 hub_create_driver: "Install new driver. To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. For 1: source|sourceFile|importUrl. For >1: USE BULK (single round-trip: installs=[{source|sourceFile|importUrl},...]). confirm=true",
                 hub_update_app: "Modify existing app code (CRITICAL), and/or enable OAuth on it. To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile over inline source. Args: appId, source|sourceFile|importUrl|resave, oauth ({enabled,client_id?,client_secret?,refresh_secret?} -- enable/configure OAuth, returns the clientId/secret), confirm=true",
                 hub_update_driver: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|importUrl|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile|importUrl},...]). To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. confirm=true",
-                hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), item_id, confirm=true",
+                hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), itemId, confirm=true",
                 hub_create_library: "Install new Groovy library (#include namespace.Name). To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. Args: source|sourceFile|importUrl, confirm=true",
                 hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true",
                 hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code); returns the new bundleId. Args: importUrl (zip), installer?, confirm=true",
@@ -5851,7 +5863,7 @@ def getGatewayConfig() {
                 hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Read master",
                 hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires the Write master",
                 hub_get_device_health: "Check device staleness; run network diagnostics: ICMP-ping arbitrary IPs (router, NAS, server), traceroute to one IPv4, WAN download speedtest; and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), tracerouteHost (IPv4), speedtest (bool), identifyHub",
-                hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + the read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists, Zigbee last-message times, Z-Wave backup jobs, Matter Wi-Fi). Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee), node_id?, include_topology/status/logs/channel_scan/smartstart/firmware/devices?, backup_job_id?. Requires Read master",
+                hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + the read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists, Zigbee last-message times, Z-Wave backup jobs, Matter Wi-Fi). Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee), nodeId?, includeTopology/Status/Logs/ChannelScan/SmartStart/Firmware/Devices?, backupJobId?. Requires Read master",
                 hub_list_captured_states: "List saved device state snapshots",
                 hub_delete_captured_state: "Delete a captured state by stateId, or ALL captured states when stateId is omitted. Args: stateId (optional)"
             ],
@@ -5869,12 +5881,12 @@ def getGatewayConfig() {
             description: "Manage the Z-Wave, Zigbee, and Matter radios: configure (enable/disable, region, channel, power, Z-Wave JS stack) and run lifecycle operations (repair, inclusion/exclusion, node maintenance, replace/remove, Z-Wave JS re-interview/link test/CC commands, Z-Wave network backup and import, Zigbee reboot/rebuild/scan, Matter pair/cancel/window). Reads live in hub_get_radio_details (also in hub_read_diagnostics). DESTRUCTIVE resets + firmware flashes live in hub_manage_destructive_ops (hub_call_destructive_ops).",
             tools: ["hub_get_radio_details", "hub_set_zwave", "hub_set_zigbee", "hub_call_zwave", "hub_call_zigbee", "hub_call_matter"],
             summaries: [
-                hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists, Zigbee last-message times, Z-Wave backup jobs, Matter Wi-Fi). Args: radio?, node_id?, include_topology/status/logs/channel_scan/smartstart/firmware/devices?, backup_job_id?",
-                hub_set_zwave: "Configure the Z-Wave radio: enable/disable, region, long-range channel, or switch the stack to/from Z-Wave JS (reboots). Args: enabled?, region?, long_range_channel?, zwave_js?, confirm (to disable or switch stacks)",
-                hub_set_zigbee: "Configure the Zigbee radio (idempotent): enable/disable, channel + power, radio settings (rebuild-on-reboot, ping-inactive), per-device keep-alive ping. Args: enabled?, channel?, power_level?, rebuild_on_reboot?, ping_inactive?, ping_device?, confirm (to disable)",
-                hub_call_zwave: "Z-Wave lifecycle ops. Args: action (repair_start/cancel, repair_node, inclusion_start/stop, grant_keys/grant_code, exclusion_start/stop ⚠️, node_refresh/rediscover/reinitialize, refresh_stats, node_replace, node_replace_stop, node_remove ⚠️, antenna_test_start/continue, smartstart_delete; Z-Wave JS: reinterview, link_test_start/stop, cc_command ⚠️, local_backup_create/download/import/keys), node_id? (per-node), confirm (exclusion_start/node_remove/link_test_start/cc_command/local_backup_download/local_backup_import)",
+                hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists, Zigbee last-message times, Z-Wave backup jobs, Matter Wi-Fi). Args: radio?, nodeId?, includeTopology/Status/Logs/ChannelScan/SmartStart/Firmware/Devices?, backupJobId?",
+                hub_set_zwave: "Configure the Z-Wave radio: enable/disable, region, long-range channel, or switch the stack to/from Z-Wave JS (reboots). Args: enabled?, region?, longRangeChannel?, zwaveJs?, confirm (to disable or switch stacks)",
+                hub_set_zigbee: "Configure the Zigbee radio (idempotent): enable/disable, channel + power, radio settings (rebuild-on-reboot, ping-inactive), per-device keep-alive ping. Args: enabled?, channel?, powerLevel?, rebuildOnReboot?, pingInactive?, pingDevice?, confirm (to disable)",
+                hub_call_zwave: "Z-Wave lifecycle ops. Args: action (repair_start/cancel, repair_node, inclusion_start/stop, grant_keys/grant_code, exclusion_start/stop ⚠️, node_refresh/rediscover/reinitialize, refresh_stats, node_replace, node_replace_stop, node_remove ⚠️, antenna_test_start/continue, smartstart_delete; Z-Wave JS: reinterview, link_test_start/stop, cc_command ⚠️, local_backup_create/download/import/keys), nodeId? (per-node), confirm (exclusion_start/node_remove/link_test_start/cc_command/local_backup_download/local_backup_import)",
                 hub_call_zigbee: "Zigbee ops. Args: action (radio_reboot, rebuild_network, channel_scan)",
-                hub_call_matter: "Matter ops. Args: action (enable/disable — needs hub reboot, pair, cancel_pair, open_pairing_window), setup_code? + wifi_ssid?/wifi_password? (pair), node_id? (cancel_pair/open_pairing_window), confirm (disable)"
+                hub_call_matter: "Matter ops. Args: action (enable/disable — needs hub reboot, pair, cancel_pair, open_pairing_window), setupCode? + wifiSsid?/wifiPassword? (pair), nodeId? (cancel_pair/open_pairing_window), confirm (disable)"
             ],
             searchHints: [
                 hub_get_radio_details: "zwave zigbee matter thread fabric mesh network firmware channel pan coordinator radio commissioned node topology smartstart status read zwave js interview last message stale wifi backup job",
@@ -5923,14 +5935,13 @@ def getGatewayConfig() {
         ],
         hub_read_rules: [
             description: "Read-only inspection of automation rules: list/inspect MCP custom rules (legacy engine), list native Rule Machine rules + check rule health, and list/read Visual Rules Builder rules. All operations are read-only; rule writes live in hub_manage_custom_rules, hub_manage_rule_machine, and hub_manage_native_rules_and_apps.",
-            tools: ["hub_get_custom_rule", "hub_test_custom_rule", "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule"],
+            tools: ["hub_get_custom_rule", "hub_test_custom_rule", "hub_list_rules", "hub_get_rule", "hub_get_visual_rule"],
             summaries: [
 
                 hub_get_custom_rule: "List MCP custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
                 hub_test_custom_rule: "Dry-run an MCP custom rule without executing actions. Args: ruleId",
-                hub_list_rules: "List all native Rule Machine rules (RM 4.x + 5.x) with IDs and labels",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, plus BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source? (auto|ruleBuilderJson|configPage)",
-                hub_list_rule_local_variables: "List a Rule Machine rule's local variables with their current values. Distinct from hub_list_variables (hub globals). Args: appId",
+                hub_list_rules: "List the Rule Machine 5.x rules with IDs, labels and status. Button Rules are listed by hub_list_apps and Visual Rules by hub_get_visual_rule",
+                hub_get_rule: "Read one Rule Machine rule, Button Rule or Basic Rule without opening its page: its health (broken, broken rows by native id, paused, stopped, private boolean, disabled rows, block structure, live subscription and job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; a Basic Rule's settings. Any other app returns its health alone. Args: ruleId, sections?, cursor?, limit?",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?"
             ],
             searchHints: [
@@ -5938,35 +5949,32 @@ def getGatewayConfig() {
                 hub_get_custom_rule: "read fetch inspect list show custom mcp sandbox rule automation diagnostics",
                 hub_test_custom_rule: "simulate preview validate check automation custom dry run",
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
-                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption visual rules builder button controller basic rule classic app validationErrors",
-                hub_list_rule_local_variables: "rule local variables list allLocalVars per-rule variable name type value rule machine RM setLocalVariable",
+                hub_get_rule: "read get show inspect rule machine rule document actions conditions triggers expressions settings local variables allLocalVars broken validate health diagnostic broken trigger broken action stopped paused private boolean disabled actions visual rules builder button controller basic rule classic app validationErrors",
                 hub_get_visual_rule: "visual rules builder VRB read list show inspect automation json definition when then else nodes graph"
             ]
         ],
         hub_manage_native_rules_and_apps: [
             description: "Native app lifecycle and Rule Machine control. Use hub_set_rule for native RM read/create/update/form operations, and the dedicated tools to delete/clone/export/import apps or run/pause rules. Confirmed writes require a recent hub backup; inspect partial outcomes and native health before retrying. hub_set_native_app creates, updates and drives the forms of every other classic app.",
-            tools: ["hub_set_native_app", "hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
+            tools: ["hub_set_native_app", "hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_private_boolean", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule"],
             summaries: [
-                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
+                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, ruleId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
 
-                hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
-                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start re-initializes the rule).",
-                hub_set_rule_paused: "Pause or resume one or more RM rules in one call (RMUtils). Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
-                hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules (RMUtils). Args: ruleId (id or array of ids), value (bool)",
-                hub_set_native_app: "Create, update or drive the native forms of classic apps (Room Lighting, Button Controller and Button Rule, Basic Rule, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, user and community apps). Args: operation?, app_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas. Rule Machine rules use hub_set_rule.",
+                hub_list_rules: "List the Rule Machine 5.x rules with IDs, labels and status. Button Rules are listed by hub_list_apps and Visual Rules by hub_get_visual_rule",
+                hub_call_rule: "Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (a Visual Rule: pause, resume, and actions on a 2.0 rule). Args: ruleId (id or array of ids), action (actions/stop/start/pause/resume, default actions)",
+                hub_set_rule_private_boolean: "Set the private boolean of one or more Rule Machine rules or Button Rules. Args: ruleId (id or array of ids), value (bool)",
+                hub_set_native_app: "Create, update or drive the native forms of classic apps (Room Lighting, Button Controller and Button Rule, Basic Rule, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, user and community apps). Args: operation?, appId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas. Rule Machine rules use hub_set_rule.",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
-                hub_set_app_disabled: "Enable or disable any installed app without deleting it (reversible red-X). Args: appId, disabled (bool). Read-back verified. For RM rules prefer hub_set_rule_paused.",
+                hub_set_app_disabled: "Enable or disable any installed app without deleting it (reversible red-X). Args: appId, disabled (bool). Read-back verified. For RM rules prefer hub_call_rule pause/resume.",
                 hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner (deep: child apps and pause state copy too, so a clone of an ACTIVE app lands ACTIVE). Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), stageDisabled (opt: disable clone + every descendant immediately), confirm. Returns newAppId.",
                 hub_export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: appId (alias sourceAppId), saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
                 hub_import_native_app: "Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner (the import lands ACTIVE). Args: jsonContent | fromFile, parentHintAppId (existing rule under the target parent — used to seed the cloner), newName (opt), stageDisabled (opt: disable import + every descendant immediately), confirm. Returns newAppId.",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption. Args: appId, source? (auto|ruleBuilderJson|configPage). Returns {ok, broken, source, ruleFormat, issues, ...}. Native documents perform independent compilation checks; visual writes attach health too."
+                hub_get_rule: "Read one Rule Machine rule, Button Rule or Basic Rule without opening its page: its health (broken, broken rows by native id, paused, stopped, private boolean, disabled rows, block structure, live subscription and job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; a Basic Rule's settings. Any other app returns its health alone. Args: ruleId, sections?, cursor?, limit?"
             ],
             searchHints: [
-                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
+                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, ruleId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
 
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
-                hub_call_rule: "trigger fire execute native rule machine rule",
-                hub_set_rule_paused: "pause resume disable enable stop unpause temporarily rule machine rule",
+                hub_call_rule: "trigger fire execute run actions stop start pause resume unpause native rule machine rule visual rule",
                 hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
                 hub_set_native_app: "create edit update modify change configure native classic app room lighting button controller button rule notifier groups scenes basic rule thermostat user community smartapp settings fields form page button",
                 hub_delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app",
@@ -5974,7 +5982,7 @@ def getGatewayConfig() {
                 hub_clone_native_app: "copy duplicate clone existing rule app appCloner template surgical edit",
                 hub_export_native_app: "export serialize download rule app json appCloner backup transfer canonical shape",
                 hub_import_native_app: "import restore upload create rule app from json appCloner backup transfer round trip",
-                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption visual rules builder button controller basic rule classic app validationErrors"
+                hub_get_rule: "read get show inspect rule machine rule document actions conditions triggers expressions settings local variables allLocalVars broken validate health diagnostic broken trigger broken action stopped paused private boolean disabled actions visual rules builder button controller basic rule classic app validationErrors"
             ]
         ],
         hub_manage_mcp: [
@@ -5995,7 +6003,7 @@ def getGatewayConfig() {
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar), waitFor? (summary mode: block until an attribute matches). Configuration mode discovers editable fields, saved preferences, driver identity, and read status before an update.",
                 hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date) with an optional end (until), per-app events (appId), or location and hub events (mode/HSM/hub-variable, reboots/low memory; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?",
-                hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?"
+                hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: includeToken?"
             ],
             searchHints: [
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room stale disabled virtual owned deviceIds wait until poll verify confirm batch multiple devices any all converge across",
@@ -6048,15 +6056,15 @@ def getGatewayConfig() {
             tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_create_device", "hub_list_devices", "hub_get_device", "hub_list_device_events", "hub_get_hub_mesh", "hub_update_hub_mesh"],
             summaries: [
                 hub_call_device_command: "Send one device command, or batch up to 20 mixed commands in one call (commands cannot be combined with waitFor). Args: deviceId, command, parameters?, waitFor? | commands: [{deviceId, command, parameters?}]",
-                hub_call_device_swap: "Swap a device: apps/rules using from_device_id run on to_device_id's hardware afterwards (the hub exchanges the two identities). Args: from_device_id, to_device_id, confirm",
-                hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
+                hub_call_device_swap: "Swap a device: apps/rules using fromDeviceId run on toDeviceId's hardware afterwards (the hub exchanges the two identities). Args: fromDeviceId, toDeviceId, confirm",
+                hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to newDeviceId; listOptions=true reads compatible candidates). Args: oldDeviceId, newDeviceId?, listOptions?, confirm",
                 hub_update_device: "Change a device's Device Info fields, driver preferences, assistants or enabled state after hub_get_device(mode='configuration'). Args: deviceId, fields?, preferences?, confirm (for requiresConfirmation fields)",
                 hub_create_device: "Create a device from a driver-type id (hub_list_drivers include='all'); for LAN/integration/software drivers, NOT radio hardware (pair those). Args: deviceTypeId, label?, confirm",
                 hub_list_devices: "List devices with current states from the hub's Devices page; format='context' = plain-text house snapshot. Args: scope?, format?, labelFilter?, capabilityFilter?, roomFilter?, disabled?, staleHours?, changedSince?, stateFilter?, attributeNames?, fields?, limit?, cursor?, deviceIds?, waitFor? (needs deviceIds, max 20: block until an attribute matches, mode any/all)",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar), waitFor? (summary mode: block until an attribute matches). Configuration mode discovers editable fields and preference definitions/current values before an update.",
                 hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location and hub events (reboots, low memory). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
-                hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
-                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device fields.meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
+                hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: includeToken?",
+                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device fields.meshEnabled). Args: enabled?, fullRefreshInterval? (0/120/300/3600), modeHubId? ('none'=local modes), peerHubId?+peerToken?"
             ],
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
@@ -6073,28 +6081,24 @@ def getGatewayConfig() {
         ],
         hub_manage_rule_machine: [
             description: "Native Rule Machine authoring and runtime control. hub_set_rule provides read/create/update/form operations; call without operation for help or without confirm for a write-operation schema. Confirmed writes require a recent hub backup. Use hub_delete_native_app to delete a rule. Visual Rules Builder has dedicated tools; read-only rule diagnostics are in hub_read_rules.",
-            tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
+            tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_private_boolean", "hub_get_rule", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
             summaries: [
-                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
-                hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (RMUtils — RM only)",
-                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule)",
-                hub_set_rule_paused: "Pause or resume one or more RM rules in one call. Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
-                hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules. Args: ruleId (id or array of ids), value (bool)",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source? (auto|ruleBuilderJson|configPage)",
-                hub_list_rule_local_variables: "List a Rule Machine rule's local variables with their current values. Distinct from hub_list_variables (hub globals). Args: appId",
+                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, ruleId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
+                hub_list_rules: "List the Rule Machine 5.x rules with IDs, labels and status. Button Rules are listed by hub_list_apps and Visual Rules by hub_get_visual_rule",
+                hub_call_rule: "Run the actions of one or more rules, or stop, start, pause or resume them, through each rule's own page buttons (a Visual Rule: pause, resume, and actions on a 2.0 rule). Args: ruleId (id or array of ids), action (actions/stop/start/pause/resume, default actions)",
+                hub_set_rule_private_boolean: "Set the private boolean of one or more Rule Machine rules or Button Rules. Args: ruleId (id or array of ids), value (bool)",
+                hub_get_rule: "Read one Rule Machine rule, Button Rule or Basic Rule without opening its page: its health (broken, broken rows by native id, paused, stopped, private boolean, disabled rows, block structure, live subscription and job counts) and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; a Basic Rule's settings. Any other app returns its health alone. Args: ruleId, sections?, cursor?, limit?",
                 hub_delete_native_app: "Delete any classic native app incl. RM rules (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm.",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?",
                 hub_set_visual_rule: "Create or update a Visual Rules Builder rule — VRB is the primary rule engine; one JSON write with if/then/else gating. Use native document tools for supported RM structures. Args: appId (omit=create), name, definition, paused (opt), confirm.",
                 hub_delete_visual_rule: "Delete a Visual Rules Builder rule (type-gated; returns the pre-delete definition for recovery). Args: appId, confirm."
             ],
             searchHints: [
-                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
+                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, ruleId?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
                 hub_list_rules: "rule machine rules native builtin automation list enumerate RM",
-                hub_call_rule: "trigger fire execute run native rule machine rule stop start",
-                hub_set_rule_paused: "pause resume disable enable stop unpause rule machine rule",
+                hub_call_rule: "trigger fire execute run actions native rule machine rule visual rule stop start pause resume unpause",
                 hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
-                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger multiple flag corruption visual rules builder button controller basic rule classic app validationErrors",
-                hub_list_rule_local_variables: "rule local variables list allLocalVars per-rule variable name type value rule machine RM setLocalVariable",
+                hub_get_rule: "read get show inspect rule machine rule document actions conditions triggers expressions settings local variables allLocalVars broken validate health diagnostic broken trigger broken action stopped paused private boolean disabled actions visual rules builder button controller basic rule classic app validationErrors",
                 hub_delete_native_app: "remove delete destroy rule machine rule native app classic smartapp",
                 hub_get_visual_rule: "visual rules builder VRB read list show inspect automation json definition when then else nodes graph",
                 hub_set_visual_rule: "visual rules builder VRB create edit update make automation rule motion light contact alert schedule json primary engine if then else",
@@ -6569,6 +6573,8 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChec
         // through getHiddenToolNames(); this closes the dispatch surface too) and
         // wrongly imply the tool is callable once the params are supplied.
         if (missing && !getHiddenToolNames().contains(toolName)) {
+            // An unknown key is often a renamed parameter (rule_id for ruleId), so it is named before what is missing.
+            _rejectUnknownArgs(toolName, safeArgs)
             // Missing-param hint only (rare path): rebuild the full catalog here so
             // param descriptions are available. Strip [[FLAT_TRIM]] marker tokens --
             // this error is a client-visible surface where markers would leak.
@@ -6909,12 +6915,12 @@ def _rejectUnknownArgs(toolName, args) {
     throw new IllegalArgumentException("Unknown ${_externalToolName(toolName as String)} argument${unknown.size() == 1 ? '' : 's'}: ${unknown.sort().join(', ')}. Nothing was changed. ${allowed ? "Valid arguments: ${allowed.join(', ')}." : 'This tool takes no arguments.'}${toolName == 'hub_update_device' ? ' Note: device fields go in fields and driver preferences in preferences.' : ''}")
 }
 
-// hub_call_device_replace(list_options: true) short-circuits to a candidate READ before any
+// hub_call_device_replace(listOptions: true) short-circuits to a candidate READ before any
 // write (see toolCallDeviceReplace). It is a read-only MODE of a write tool, so it
 // answers to the Read master rather than the Write master.
 // The tool itself stays a write -- only this argument shape is a read.
 def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
-    return toolName == 'hub_call_device_replace' && (args instanceof Map) && args.list_options == true
+    return toolName == 'hub_call_device_replace' && (args instanceof Map) && args.listOptions == true
 }
 
 // bpsChecked: the key was already validated for this slice's initial call (continuations).
@@ -7173,10 +7179,9 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         // HPM Package State
         case "hub_list_hpm_packages": return toolListHpmPackagesWithDrift(args)
 
-        // Rule Machine Integration (via RMUtils)
+        // Rule Machine runtime
         case "hub_list_rules": return toolListRmRules(args)
         case "hub_call_rule": return toolRunRmRule(args)
-        case "hub_set_rule_paused": return toolSetRulePaused(args)
         case "hub_set_rule_private_boolean": return toolSetRmRuleBoolean(args)
 
         // Native Rule Machine CRUD (hub admin-layer; backups flow through
@@ -7187,8 +7192,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_clone_native_app": return toolCloneNativeApp(args)
         case "hub_export_native_app": return toolExportNativeApp(args)
         case "hub_import_native_app": return toolImportNativeApp(args)
-        case "hub_get_rule_health": return toolCheckRuleHealth(args)
-        case "hub_list_rule_local_variables": return toolListRuleLocalVariables(args)
+        case "hub_get_rule": return toolGetNativeRule(args)
 
         // Visual Rules Builder (Vue-JSON apps; impl in McpVisualRulesLib)
         case "hub_get_visual_rule": return toolGetVisualRule(args)
@@ -7203,7 +7207,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_delete_dashboard": return toolDeleteDashboard(args)
 
         // Tool Guide
-        case "hub_get_tool_guide": return toolGetToolGuide(args.section, args.cursor, [platform_api_search: args.platform_api_search, platform_api_page: args.platform_api_page])
+        case "hub_get_tool_guide": return toolGetToolGuide(args.section, args.cursor, [platformApiSearch: args.platformApiSearch, platformApiPage: args.platformApiPage])
 
         // Tool Search (BM25)
         case "hub_search_tools": return toolSearchTools(args)
@@ -9848,19 +9852,25 @@ def _exceptionStack(Throwable e) {
 // ==================== HPM PACKAGE STATE TOOL IMPLEMENTATIONS ====================
 
 
-/**
- * Coerce a ruleId argument to Integer. Accepts Number or numeric String.
- * Narrow the catch to NumberFormatException only — it's the sole expected
- * failure shape for `String as Integer`; anything else is a real bug and
- * should propagate rather than be rewrapped as an IllegalArgumentException.
- */
+// Coerce an app id argument (Number or numeric String) to Integer through _exactIntId, refusing anything else.
 private Integer normalizeRuleId(def ruleId) {
-    if (ruleId instanceof Number) return ruleId.toInteger()
+    Integer exact = _exactIntId(ruleId)
+    if (exact == null) throw new IllegalArgumentException("The app id must be a positive whole number within the hub's id range, got: ${ruleId}. Find app ids with hub_list_apps or hub_list_rules.")
+    return exact
+}
+
+// An id that is a positive whole number within int range, else null. toInteger() would wrap 4294967696 to 400 and
+// truncate 400.7 to 400, so a destructive tool would act on app 400.
+Integer _exactIntId(Object id) {
     try {
-        return ruleId.toString().trim() as Integer
-    } catch (NumberFormatException e) {
-        throw new IllegalArgumentException("ruleId must be an integer, got: ${ruleId}")
-    }
+        def s = id?.toString()?.trim()
+        if (!s) return null
+        def bd = new BigDecimal(s)
+        if (bd.stripTrailingZeros().scale() > 0) return null
+        int value = bd.intValueExact()
+        // Hub ids start at 1, so 0 and negatives name nothing.
+        return value > 0 ? value : null
+    } catch (Exception ignored) { return null }
 }
 
 // ============ SHARED CLASSIC-DYNAMICPAGE WIZARD PRIMITIVES ============
@@ -10045,7 +10055,7 @@ private Integer _rmCreateChildApp(Integer parentAppId, String namespace = "hubit
 /**
  * Click a button on an app's config page via /installedapp/btn. Used for
  * RM's page-transition buttons: updateRule, pausRule, runAction, editCond,
- * editAct, hasAll, etc. Stable across RM 5.0 and 5.1.
+ * editAct, hasAll, etc.
  *
  * Body format captured live from the Hubitat web UI's hasAll click on
  * firmware 2.5.0.123 (network panel):
@@ -10412,14 +10422,86 @@ private Map _rmFetchStatusJson(Integer appId) {
     return parsed
 }
 
+// An app's stored flag: Hubitat keeps a Boolean, but a new Rule Machine rule stores 'true'/'false' text.
+// Anything else is not a flag and reads null.
+Boolean _appStateFlag(Object value) {
+    if (value instanceof Boolean) return value
+    if (value == "true") return true
+    if (value == "false") return false
+    return null
+}
+
 /**
- * Read a rule's compiled state from its builder-JSON endpoint — the PREFERRED
- * health source across EVERY rule engine (issue #254 + the VRB follow-up).
+ * One read of an app's App Status page (/installedapp/statusJson/<id>): appState as [{name, value}],
+ * eventSubscriptions and scheduledJobs, an absent section reading as an empty list (appStateMissing marks an
+ * absent appState: a gone app answers {}, which must not read as a rule with no flags). appSettings carries each
+ * setting as {name, type, value, deviceIds}, a device picker's devices in deviceIds (its value is null), reading empty
+ * with appSettingsMalformed set when the page's list is absent or not a list, and
+ * installedApp the app's label, red-X flag and type; the page's own installedApp also holds the app type's OAuth
+ * secret, so nothing else of it is kept. With Hide
+ * passwords and credentials on, an appState value whose name looks like a credential reads as the
+ * same marker includeSettings uses; state nests (a rule's allLocalVars map), so map keys are tested
+ * the same way at every level. Access tokens (an accessToken row, the clientTokens map) are masked
+ * whenever tool results mask them. Throws when the page cannot be read.
+ */
+Map _appStatusRead(Integer appId) {
+    def status = _rmFetchStatusJson(appId)
+    def rawState = status.appState
+    List appState
+    if (rawState == null) appState = []
+    else if (rawState instanceof List) appState = rawState
+    else if (rawState instanceof Map) appState = rawState.collect { k, v -> [name: k?.toString(), value: v] }
+    else throw new IllegalStateException("App ${appId}'s status page returned appState in an unexpected shape")
+    def sections = [eventSubscriptions: status.eventSubscriptions, scheduledJobs: status.scheduledJobs]
+    sections.each { key, value ->
+        if (value != null && !(value instanceof List)) throw new IllegalStateException("App ${appId}'s status page returned ${key} in an unexpected shape")
+    }
+    // Only rule health reads the settings (brokenRows and useST), so a malformed list reads empty and is flagged
+    // rather than failing the read.
+    // An absent list is flagged too: it is settings that went unread, not an app with none ([]).
+    boolean settingsMalformed = !(status.appSettings instanceof List)
+    sections.appSettings = settingsMalformed ? null : status.appSettings
+    boolean maskTokens = _redactsAccessTokens()
+    [appStateMissing: rawState == null, appSettingsMalformed: settingsMalformed, appState: appState.findAll { it instanceof Map }.collect { row ->
+        String key = row.name?.toString()
+        def value = _appStateMasked(key, row.value)
+        // A state row is {name, value}, so the central token pass, which keys on the map key, never sees the
+        // row's name; run it on the row as the {name: value} entry it stands for.
+        if (maskTokens) value = _redactAccessTokens([(key): value]).get(key)
+        [name: row.name, value: value]
+     },
+     eventSubscriptions: sections.eventSubscriptions ?: [], scheduledJobs: sections.scheduledJobs ?: [],
+     appSettings: (sections.appSettings ?: []).findAll { it instanceof Map }.collect { row ->
+        def ids = row.deviceIdsForDeviceList instanceof List ? row.deviceIdsForDeviceList : []
+        if (!ids && row.deviceList instanceof Map) ids = row.deviceList.keySet().toList()
+        [name: row.name?.toString(), type: row.type?.toString(), value: _appStateMasked(row.name?.toString(), row.value), deviceIds: ids.collect { it.toString() }]
+     },
+     installedApp: [label: status.installedApp?.label?.toString(), disabled: status.installedApp?.disabled,
+                    typeName: status.installedApp?.appType?.name?.toString(), namespace: status.installedApp?.appType?.namespace?.toString()]]
+}
+
+private Object _appStateMasked(String name, Object value) {
+    if (_appConfigMasksSetting(name, null, value)) return _appConfigRedactedMarker()
+    if (value instanceof Map) return value.collectEntries { k, v -> [(k): _appStateMasked(k?.toString(), v)] }
+    if (value instanceof List) return value.collect { item -> _appStateMasked(name, item) }
+    value
+}
+
+// A flag from _appStatusRead's appState: [present, value], value null when the entry is not a flag;
+// missing when the page carried no appState at all, so absence proves nothing.
+private Map _appStatusFlag(Map status, String name) {
+    if (status?.appStateMissing == true) return [present: false, value: null, missing: true]
+    def entry = (status?.appState ?: []).find { it?.name?.toString() == name }
+    [present: entry != null, value: entry == null ? null : _appStateFlag(entry.value)]
+}
+
+/**
+ * Read a rule's compiled state from its builder-JSON endpoint — the
+ * health source across every rule engine (issue #254 + the VRB follow-up).
  * Returns a normalized map or null when appId is not a recognized rule shape:
  *
- *   - classic Rule Machine -> [ruleFormat:"rm", broken:<bool>, paused, predicate, actionList]
- *     from GET /app/ruleBuilderJson (the real `broken` boolean + predicate/condition
- *     structure, instead of scraping rendered HTML).
+ *   - classic Rule Machine -> [ruleFormat:"rm", broken:<the stored flag, null when absent or not a flag>, paused, actionList, state]
+ *     from GET /app/ruleBuilderJson (the real `broken` boolean and the whole app state).
  *   - graph Visual Rule (VRB 2.0) -> [ruleFormat:"vrb-graph", broken:<validationErrors
  *     non-empty>, validationErrors, paused, label] from GET /app/ruleBuilder20Json. VRB rules ARE
  *     rules — their validationErrors are the engine-native equivalent of RM's broken.
@@ -10427,8 +10509,7 @@ private Map _rmFetchStatusJson(Integer appId) {
  *     shape carries no error field, so there is no structured boolean to report).
  *
  * paused is the compiled Boolean or null; Visual Rule label is the raw own name
- * (graph: without its runtime pause span). Status/markup fallbacks are added by
- * the standalone health wrapper, not the embedded structural verdict.
+ * (graph: without its runtime pause span).
  *
  * SHAPE-CHECK, never status-check: /app/ruleBuilderJson serializes the raw state of
  * ANY installed app and answers HTTP 200 regardless (a nonexistent id returns {}, a
@@ -10439,17 +10520,15 @@ private Map _rmFetchStatusJson(Integer appId) {
  */
 private Map _ruleCompiledState(Integer appId) {
     // readError captures a THROWN read (auth 401/403, hub-down 5xx, timeout) so the caller can
-    // distinguish "this read failed" from "this is a clean non-rule shape". Without it, a
-    // source='ruleBuilderJson' call (which has no HTML fallback) would mis-report a 403 / hub-down
-    // as "nonexistent id / non-rule / old firmware" and misdirect recovery (silent-failure review).
+    // distinguish "this read failed" from "this is a clean non-rule shape", so a 403 or a hub-down
+    // read is not reported as a nonexistent or non-rule app.
     def text
     def readError = null
     try { text = hubInternalGet("/app/ruleBuilderJson/${appId}") } catch (Exception e) { text = null; readError = e.message }
     if (text) {
         def parsed = null
         // A non-JSON 200 (a login/redirect page, a proxy error body) is itself a read failure, not
-        // a clean "not a rule" — capture it so a source='ruleBuilderJson' caller isn't told the
-        // rule is missing when auth/connectivity returned junk (codex review).
+        // a clean "not a rule".
         try { parsed = new groovy.json.JsonSlurper().parseText(text) }
         catch (Exception e) { parsed = null; if (readError == null) readError = "ruleBuilderJson response was not JSON: ${e.message}" }
         if (parsed instanceof Map && !parsed.isEmpty()) {
@@ -10461,25 +10540,20 @@ private Map _ruleCompiledState(Integer appId) {
                         paused: parsed.rulePaused instanceof Boolean ? parsed.rulePaused : null,
                         label: parsed.name?.toString()]
             }
-            if (parsed.containsKey("broken")) {
-                def pred = (parsed.containsKey("hasPredicate") || parsed.containsKey("predCapabs")) ?
-                    [hasPredicate: parsed.hasPredicate == true, predCapabs: parsed.predCapabs ?: []] : null
-                // actionList is RM's own ordered array of action indices — the only display-ordered
-                // source there is (appSettings key order is arbitrary). Carried through raw so
-                // callers reuse this fetch rather than opening a second path to the endpoint.
-                // eval['0'] is the committed Required Expression's token list (the other eval keys
-                // are IF expressions in actions). An eval map without "0" has no committed expression;
-                // no eval map at all leaves it unknown (null), never a false "empty".
-                def reTokens = (parsed.eval instanceof Map) ? ((parsed.eval["0"] instanceof List) ? (parsed.eval["0"] as List).size() : 0) : null
+            // Rule Machine state is known by its broken flag or by its trigger and condition maps, so a
+            // state with the maps and no broken flag is still a rule whose broken reads null.
+            boolean rmMaps = parsed.capabstrue instanceof Map && parsed.capabsfalse instanceof Map
+            if (parsed.containsKey("broken") || rmMaps) {
                 // Native RM treats a never-written pause flag as false. Keep malformed
                 // flags and unrelated broken-only maps unknown rather than guessing.
-                Boolean nativePaused = parsed.paused instanceof Boolean ? parsed.paused :
-                    (!parsed.containsKey("paused") && parsed.broken instanceof Boolean && parsed.capabstrue instanceof Map && parsed.capabsfalse instanceof Map ? false : null)
-                return [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
+                Boolean nativePaused = _appStateFlag(parsed.paused)
+                if (nativePaused == null && !parsed.containsKey("paused") && rmMaps) nativePaused = false
+                // actionList is RM's own display order (appSettings key order is arbitrary); state is the
+                // whole app state, so health reads its runtime flags and structure from this one fetch.
+                return [ruleFormat: "rm", broken: _appStateFlag(parsed.broken), validationErrors: [],
                         paused: nativePaused,
-                        predicate: pred, requiredExpressionTokens: reTokens,
                         actionList: (parsed.actionList instanceof List ? parsed.actionList : null),
-                        endpoint: "ruleBuilderJson"]
+                        state: parsed, endpoint: "ruleBuilderJson"]
             }
         }
     }
@@ -10511,8 +10585,7 @@ private Map _ruleCompiledState(Integer appId) {
  * order) tracking IF / Repeat block depth via a stack. Returns the list
  * of structural issue strings (empty list = balanced).
  *
- * Used by _rmCheckRuleHealth for post-mutation detection AND by
- * _rmDeleteAction's pre-flight refusal, which builds a projected sequence
+ * A deletion pre-flight builds a projected sequence
  * (current minus the removal) and compares projected against current with
  * a `projected - current` set diff. Any
  * NEW issue not present in current means the mutation introduces damage
@@ -10521,11 +10594,9 @@ private Map _ruleCompiledState(Integer appId) {
  * Repeat keeps the issue count flat but swaps "Repeat never closed" for
  * "END-IF closes a Repeat block — mismatched closer".)
  *
- * Asymmetric refusal at the call sites: openers (ifThen / repeat /
- * repeatWhile) added alone are allowed (normal multi-step build state).
- * Branch keywords (elseIf / else) and bare closers (endIf / stopRepeat)
- * are refused if they would render orphaned, because they have no valid
- * follow-up step the caller would naturally do next.
+ * getEndRepeat (END-REP) closes a Repeat / Repeat-While block. getStopRepeat
+ * ("Stop Repeating Actions") is a leaf that may sit anywhere, so the walk
+ * must not treat it as a closer.
  *
  * Partial-commit handling: an entry with `actType` set but `actSubType`
  * null -- or one carrying an explicit `partial: true` -- is REPORTED as a
@@ -10571,12 +10642,12 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
         } else if (aType == "repeatActs") {
             if (sType == "getRepeat" || sType == "getWhile") {
                 stack << [kind: "repeat", openIdx: idx]
-            } else if (sType == "getStopRepeat") {
+            } else if (sType == "getEndRepeat") {
                 if (stack.isEmpty()) {
-                    issues << ("action ${idx} (End Repeat) has no matching Repeat — orphaned closer".toString())
+                    issues << ("action ${idx} (END-REP) has no matching Repeat — orphaned closer".toString())
                 } else if (stack[-1].kind != "repeat") {
                     def open = stack[-1]
-                    issues << ("action ${idx} (End Repeat) closes an IF block opened at action ${open.openIdx} — mismatched block closer".toString())
+                    issues << ("action ${idx} (END-REP) closes an IF block opened at action ${open.openIdx} — mismatched block closer".toString())
                     stack.removeAt(stack.size() - 1)
                 } else {
                     stack.removeAt(stack.size() - 1)
@@ -10586,7 +10657,7 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
     }
     stack.each { open ->
         def label = open.kind == "if" ? "IF" : "Repeat"
-        def closer = open.kind == "if" ? "END-IF" : "End-Repeat"
+        def closer = open.kind == "if" ? "END-IF" : "END-REP"
         issues << ("action ${open.openIdx} (${label}) opened a block that was never closed — rule is missing an ${closer}".toString())
     }
     issues
@@ -10595,7 +10666,7 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
 /**
  * Map a structural actSubType to the actType RM stores alongside it, or null for a leaf subtype.
  * RM 5.1's UI persists actType.<N> only on rows whose editor asked for a capability, so a
- * UI-built ELSE / ELSE-IF / END-IF / Repeat closer carries actSubType.<N> ALONE (our own wizard
+ * UI-built ELSE / ELSE-IF / END-IF / END-REP row carries actSubType.<N> ALONE (our own wizard
  * writer always writes both).
  */
 private String _rmActTypeForStructuralSubType(String subType) {
@@ -10607,7 +10678,7 @@ private String _rmActTypeForStructuralSubType(String subType) {
             return "condActs"
         case "getRepeat":
         case "getWhile":
-        case "getStopRepeat":
+        case "getEndRepeat":
             return "repeatActs"
         default: return null
     }
@@ -10656,36 +10727,30 @@ List _rmOrderedActionIndices(Integer appId) {
 }
 
 /**
- * Every action index carrying an actType.<N> or actSubType.<N> settings row, ascending. Shared by
- * the structural walk's settings fallback and the orphan scan so the two cannot drift.
- */
-private TreeSet _rmScannedActionIndices(Map settingsByName) {
-    def scanned = [] as TreeSet
-    settingsByName?.keySet()?.each { name ->
-        def m = name?.toString() =~ /^act(?:Type|SubType)\.(\d+)$/
-        if (m.matches()) scanned << ((m[0] as List)[1] as Integer)
-    }
-    return scanned
-}
-
-/**
  * Build the structural-balance sequence for a rule. MEMBERSHIP is orderedIndices (the compiled
  * actionList) when the caller has it: appSettings retains rows the rule no longer contains, and
- * walking those makes a balanced rule read as damaged (a stale IF reports "never closed" forever)
- * — _rmOrphanedActionRows reports them separately. Without it, every index either key mentions in
- * numeric order: the pre-membership behaviour, still foolable by a stale row, but the honest best
- * effort when the rule itself cannot be read.
+ * walking those makes a balanced rule read as damaged (a stale IF reports "never closed" forever).
+ * Without it, every index either key mentions is walked in numeric order; a stale row can still
+ * fool that, but it is the best available when the rule itself cannot be read.
  * VALUES always come from settings. excludeIndices (_rmDeleteAction's pre-flight) skips listed
  * indices so the walker sees the post-deletion state.
  */
 private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set), List orderedIndices = null) {
-    def indices = (orderedIndices != null) ? orderedIndices : (_rmScannedActionIndices(settingsByName) as List)
+    def indices = orderedIndices
+    if (indices == null) {
+        def scanned = [] as TreeSet
+        settingsByName?.keySet()?.each { name ->
+            def m = name?.toString() =~ /^act(?:Type|SubType)\.(\d+)$/
+            if (m.matches()) scanned << ((m[0] as List)[1] as Integer)
+        }
+        indices = scanned as List
+    }
     def sequence = []
     indices.each { idx ->
         if (excludeIndices.contains(idx)) return
         def aType = _rmActionSettingText(settingsByName, "actType", idx)
         def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
-        // RM's UI writes no actType on ELSE / ELSE-IF / END-IF -- infer it or the walker sees a leaf.
+        // RM's UI writes no actType on ELSE / ELSE-IF / END-IF / END-REP -- infer it or the walker sees a leaf.
         if (aType == null && sType != null) aType = _rmActTypeForStructuralSubType(sType)
         def entry = [idx: idx, actType: aType, actSubType: sType]
         // The reverse half-pair is an add-action half-commit, not a leaf; mark it for the walker.
@@ -10695,375 +10760,274 @@ private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIn
     sequence
 }
 
-/**
- * Settings rows carrying action content for an index the rule does not contain — a wizard write
- * that never baked, or a deleted action whose settings survived. NOT structural damage (the rule
- * runs exactly as rendered), so they are reported on their own, never in structuralIssues or
- * issues; they stay visible because they explain why a new action allocates above the gap.
- * Empty on both keys is vestigial rather than a leftover. Empty when membership is unknown: with
- * no list of the rule's own actions there is no way to tell a leftover from a live row.
- */
-private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
-    if (orderedIndices == null) return []
-    def inRule = orderedIndices as Set
-    def scanned = _rmScannedActionIndices(settingsByName)
-    def out = []
-    scanned.each { idx ->
-        if (inRule.contains(idx)) return
-        def aType = _rmActionSettingText(settingsByName, "actType", idx)
-        def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
-        if (aType == null && sType == null) return
-        out << ("action ${idx} (actType=${aType ?: 'none'}, actSubType=${sType ?: 'none'}) is present in settings but is NOT one of the rule's actions \u2014 leftover state from an interrupted write or a removed action. It does not run and does not affect block structure; the next add may REUSE index ${idx} (RM reopens a never-closed action editor pre-filled with these leftover fields) rather than allocate above it \u2014 remove the row first if a clean slot matters.".toString())
-    }
-    out
-}
-
-/**
- * Fetch the rule's appSettings and return it keyed by setting name.
- * Shared by every site that needs to read the rule's current state
- * (the structural-balance walker and the multiple-flag-poison check). One
- * statusJson GET per call site instead of one per check.
- */
+// The rule's appSettings keyed by setting name.
 private Map _rmFetchSettingsByName(Integer appId) {
     def status = _rmFetchStatusJson(appId)
     (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
 }
 
-/**
- * Classify a classic app from its configPage app-type so the health report names
- * what it inspected (ruleFormat) instead of leaving it null. Button Controller and
- * Basic Rule use the same classic configPage protocol as Rule Machine, so the
- * generic health detections (configPage.error, multiple-flag poison) apply to them.
- * Uses app.appType.name (the stable type) — NOT app.label, which becomes the user's
- * chosen name. Unknown classic apps fall to "classic-app" (honest: inspected via
- * configPage, no compiled broken boolean).
- */
-private String _classicAppFormat(Map cfg) {
-    def t = cfg?.app?.appType?.name?.toString()?.toLowerCase() ?: ""
-    if (t.startsWith("rule-") || t.contains("rule machine")) return "rm"
+// Basic Rules and Button Controllers get their own ruleFormat so a caller can tell them from Rule Machine;
+// neither has a compiled broken flag.
+private String _classicAppFormat(String typeName) {
+    def t = typeName?.toLowerCase() ?: ""
     if (t.contains("basic rule")) return "basic-rule"
     if (t.contains("button controller")) return "button-controller"
     return "classic-app"
 }
 
-/**
- * Inspect a rule's current state and return a structured health report —
- * works across EVERY rule engine (issue #254 + VRB follow-up). Surfaces
- * problems an LLM caller needs to see and act on without re-investigating
- * via curl.
- *
- *   PREFERRED — the rule's compiled state via _ruleCompiledState(): the
- *     classic RM `broken` boolean (+ predicate) from /app/ruleBuilderJson,
- *     OR a graph Visual Rule's validationErrors from /app/ruleBuilder20Json
- *     (VRB rules are rules too — their validationErrors are that engine's
- *     `broken` equivalent), OR a recognized classic Visual Rule (no boolean).
- *     `ruleFormat` in the result says which engine answered.
- *
- *   RETAINED (HTML / configure-json) — classic RM only: kept as a cross-check
- *     and the fallback when the compiled state is unavailable (older firmware
- *     or a different shape), AND because it detects classes the boolean does
- *     not: configPage.error (page render failure), the '*BROKEN*' label
- *     suffix, '**Broken Trigger/Action/Condition**' paragraph markers,
- *     multiple-flag DB poisoning (schema multiple vs statusJson marshal
- *     flag), and IF/Repeat block imbalance from actType.<N>/actSubType.<N>.
- *     Skipped for Visual Rules (they don't speak this protocol).
- *
- * `source` selects which paths run: "auto" (default — preferred verdict plus
- * the RM HTML detections + a cross-check), "ruleBuilderJson" (compiled state
- * only), or "configPage" (RM HTML only). Neither path is ever dropped.
- *
- * Result shape is backward-compatible with the pre-#254 contract (the RM
- * detection arrays are always present) plus the cross-engine fields broken /
- * source / ruleFormat / validationErrors; predicate is added only when read.
- *
- * hub_set_visual_rule attaches this report to its mutation responses so an LLM
- * sees broken state immediately.
- */
-// Empty health-verdict shell: the stable keys of _rmCheckRuleHealth's report with
-// nothing detected, kept beside the main report shape so the two stay in lockstep.
-private Map _rmEmptyHealthVerdict(Map overrides) {
-    def v = [ok: false, unreadable: false, broken: null, source: "none", ruleFormat: null,
-             label: null, disabled: null, paused: null, configPageError: null,
-             brokenMarkers: [], brokenMarkerCounts: [:],
-             multipleFlagPoison: [], structuralIssues: [], orphanedActionRows: [],
-             validationErrors: [], issues: [], checkErrors: []]
-    v.putAll(overrides ?: [:])
-    return v
+// A Rule Machine rule's app type, of any version ("Rule-5.1", "Button Rule-5.1", older ones); the
+// Rule Machine parent app is not a rule, and neither is a community app whose type has a rule-like name.
+private boolean _rmIsRuleAppType(namespace, name) {
+    return namespace?.toString() == 'hubitat' && name?.toString() ==~ /(Button )?Rule-\d.*/
 }
 
-Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
-    // Defensive guard against a null appId. Reading rule state for a null id
-    // would fire redundant HTTP calls (/app/ruleBuilderJson/null, /installedapp/configure/json/null)
-    // that just throw -- short-circuit instead. (Gemini review, PR #276.) The verdict is unhealthy
-    // AND unreadable: nothing was checked, so ok||unreadable gates treat it as couldn't-check.
-    if (appId == null) {
-        return _rmEmptyHealthVerdict(unreadable: true, issues: ["health check failed: appId is null"])
+// A Visual Rules Builder rule's app type ("Visual Rule Builder 1.0" / "2.0"); the parent app is "Visual Rules Builder".
+private boolean _rmIsVisualRuleType(namespace, name) {
+    return namespace?.toString() == 'hubitat' && name?.toString()?.startsWith("Visual Rule Builder") == true
+}
+
+// The rule tools' one wording for an id with no installed app and for an app that is not a rule.
+String _rmNoAppText(Collection ids) {
+    return "No app with id ${ids.join(', ')} is installed".toString()
+}
+
+// Names the type only: each caller says which types it accepts, since a Visual Rule is a rule to hub_call_rule.
+String _rmNotRuleText(Map typesById) {
+    if (typesById.size() == 1) return typesById.collect { id, typeName -> "App ${id} is a ${typeName} app" }[0].toString()
+    return "Apps ${typesById.collect { id, typeName -> "${id} (${typeName})" }.join(', ')} are other app types".toString()
+}
+
+String _rmMissingAppText(id) {
+    return "${_rmNoAppText([id])}. Find rule ids with hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules).".toString()
+}
+
+// The rule types whose native model hub_set_rule reads and edits.
+boolean _rmIsEditableRuleType(namespace, name) {
+    return namespace?.toString() == 'hubitat' && name?.toString() in ['Rule-5.1', 'Button Rule-5.1']
+}
+
+// The rows a Rule Machine rule can no longer resolve, read from its settings rather than its page: a
+// device setting whose device was deleted keeps its row but lists no device. The setting's suffix is the native
+// row id (tDev<id> or reltDevice<id> a trigger, rDev_<id> or relDevice_<id> a condition, <name>.<id> an action).
+// Only rows in use count: a trigger the rule holds, an action in its action list, and a condition an action, the
+// Required Expression or a held trigger's Conditional Trigger references. A picker left empty while a row is being
+// built, or a spare condition, is not a deleted device.
+private List _rmBrokenRows(Map compiled, List appSettings) {
+    def kinds = ['trigger', 'condition', 'action']
+    def stores = [trigger: compiled.capabstrue, condition: compiled.capabsfalse, action: compiled.actions]
+    def order = compiled.actionList instanceof List ? compiled.actionList.collect { it.toString() } : []
+    def evals = compiled.eval instanceof Map ? compiled.eval : [:]
+    def expressionIds = appSettings.any { it.name == 'useST' && it.value?.toString() == 'true' } ? ['0'] : []
+    def used = []
+    // A Conditional Trigger binds its condition through a condTrig.<trigger id> setting, not the compiled state.
+    // Unticking isCondTrig.<trigger id> keeps condTrig's value, so only a ticked box on a held trigger counts.
+    def ticked = appSettings.findAll { it.name?.startsWith('isCondTrig.') && it.value?.toString() == 'true' }.collect { it.name.substring(11) }
+    if (!(stores.trigger instanceof Map)) ticked = []
+    appSettings.each { setting ->
+        boolean binds = setting.name?.startsWith('condTrig.') && setting.value != null
+        if (binds) binds = setting.name.substring(9) in ticked && stores.trigger.containsKey(setting.name.substring(9))
+        if (binds) used << setting.value.toString()
     }
+    order.each { actionId ->
+        def action = compiled.actions instanceof Map ? _nmEntry(compiled.actions, actionId) : null
+        if (!(action instanceof Map)) return
+        if (action.cond != null) used << action.cond.toString()
+        if (action.rule != null) expressionIds << action.rule.toString()
+    }
+    expressionIds.each { expressionId ->
+        def tokens = _nmEntry(evals, expressionId)
+        if (tokens instanceof List) used.addAll(tokens.collect { it.toString() })
+    }
+    def inUse = [trigger: null, condition: used, action: order]
+    def rows = []
+    appSettings.each { setting ->
+        if (!setting.type?.startsWith('capability') || setting.deviceIds) return
+        String kind = null
+        String id = null
+        ['action': /^.+\.(\d+)$/, 'condition': /^(?:rDev|relDevice)_(\d+)$/, 'trigger': /^(?:tDev|reltDevice)(\d+)$/].find { k, pattern ->
+            def match = setting.name =~ pattern
+            if (match.matches()) { kind = k; id = match.group(1) }
+            kind != null
+        }
+        if (kind == null) return
+        def stored = stores.get(kind)
+        if (!(stored instanceof Map) || !stored.containsKey(id)) return
+        def listed = inUse.get(kind)
+        if (listed != null && !(id in listed)) return
+        Map row = [kind: kind, id: id, setting: setting.name]
+        if (stored.get(id) instanceof String) row.text = stored.get(id)
+        rows << row
+    }
+    rows.unique().sort { a, b -> kinds.indexOf(a.kind) <=> kinds.indexOf(b.kind) ?: a.id.toInteger() <=> b.id.toInteger() ?: a.setting <=> b.setting }
+}
+
+// A disabled-row list from a rule's state: absent means none, a list reads as native ids, anything else is malformed.
+private List _rmDisabledRowIds(Map compiled, String key, List checkErrors) {
+    if (!compiled.containsKey(key) || compiled.get(key) == null) return []
+    def value = compiled.get(key)
+    if (value instanceof Collection) return value.collect { it.toString() }
+    checkErrors << "the rule's ${key} is not a list (${value}), so its disabled rows were not read".toString()
+    return null
+}
+
+/**
+ * Health report for one installed app, read without rendering its page: a Rule Machine page's code rewrites the
+ * rule's state on every render, so a read must not run it. A Rule Machine 5.1 rule or Button Rule answers broken
+ * from its own broken() check (the one Rule Machine runs before it marks a label *BROKEN*), which sees a deleted
+ * trigger device at once but not a deleted condition device; its brokenRows come from its device settings, and a
+ * listed row makes it broken whatever broken() said. Another Rule Machine type reports its
+ * compiled flag and a Visual Rule its engine's verdict. One App Status read supplies the label, the red-X flag,
+ * paused, stopped, privateBoolean, the settings and the live subscription and job counts. checkErrors records a
+ * read that failed, or a flag stored in a form that is not a flag: neither is evidence about the rule, but ok
+ * stays false because part of it went unchecked, and a Rule Machine rule whose broken flag goes unread always has
+ * one. A value the hub does not return reads null.
+ */
+Map _rmCheckRuleHealth(Integer appId) {
     def issues = []
-    def checkErrors = []           // lone-source read failures: visible diagnostics, never gate-failing evidence
-    def label = null
-    Boolean appDisabled = null     // red-X state from the configure-json app block; null = not read
-    Boolean paused = null
-    def configPageError = null
-    def brokenMarkers = []
-    def multipleFlagPoison = []
-    def structuralIssues = []
-    def orphanedActionRows = []
-    def compiledActionList = null  // the rule's own action membership; null = unknown, walker falls back
-    def validationErrors = []      // VRB graph-rule validation problems (its `broken` equivalent)
-    Boolean broken = null          // authoritative boolean: RM compiled state, or VRB validationErrors non-empty
-    def predicate = null           // compact {hasPredicate, predCapabs} from ruleBuilderJson (RM)
-    Integer requiredExpressionTokens = null   // committed Required Expression token count (RM); null = not read
-    String ruleFormat = null       // rm | vrb-graph | vrb-classic | basic-rule | button-controller | classic-app — what was inspected
-    def sourcesUsed = []
-    def compiledReadError = null   // a thrown/bad-200 compiled-state read, surfaced if the HTML path also fails
-    boolean useRuleBuilder = (source != "configPage")
-    boolean useConfigPage = (source != "ruleBuilderJson")
-    // Only a built-in app's page is read. A
-    // user or community app's state can carry Rule Machine's keys without being a rule, and its
-    // default page runs its own code, which can drop a wizard's pending input (Hubitat Package
-    // Manager clears a pending install there).
+    def checkErrors = []
+    def result = [ok: false, unreadable: true, broken: null, ruleFormat: null, label: null, disabled: null,
+                  paused: null, stopped: null, privateBoolean: null, disabledActions: null, disabledTriggers: null,
+                  structuralIssues: [], validationErrors: [], brokenRows: [], eventSubscriptionCount: null, scheduledJobCount: null,
+                  issues: issues, checkErrors: checkErrors]
+    if (appId == null) {
+        issues << "health check failed: appId is null"
+        return result
+    }
     def installed = null
     boolean identified = true
     try { installed = getAppByAppId(appId as Long) }
     catch (Exception lookup) {
-        // The compiled state runs no page code, so it is still read; the page is not.
         identified = false
-        useConfigPage = false
-        checkErrors << "app ${appId}'s page was not read: the app could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app's page runs its own code".toString()
+        checkErrors << "app ${appId} could not be identified (${lookup.message ?: lookup.toString()}), so its type was taken from its status page".toString()
     }
-    if (identified && installed == null) throw new IllegalArgumentException("App ${appId} not found; list installed apps with hub_list_apps")
-    def namespace = installed?.appType?.namespace?.toString()
-    if (identified && namespace != "hubitat") {
-        useRuleBuilder = false; useConfigPage = false
-        label = installed.label?.toString()
-        ruleFormat = "classic-app"
-        checkErrors << "app ${appId} was not read: it is a user or community app, whose state is not a rule's and whose page code can change its own state when rendered; read it with hub_get_app_config".toString()
+    if (identified && installed == null) throw new IllegalArgumentException(_rmMissingAppText(appId))
+    // The App Status page carries the app's label, red-X flag, state, settings and live subscriptions and jobs.
+    Map status = null
+    try { status = _appStatusRead(appId) }
+    catch (Exception statusErr) { checkErrors << "statusJson: ${statusErr.message ?: statusErr.toString()}".toString() }
+    String typeName = installed != null ? installed.appType?.name?.toString() : status?.installedApp?.typeName
+    def namespace = installed != null ? installed.appType?.namespace : status?.installedApp?.namespace
+    boolean visual = _rmIsVisualRuleType(namespace, typeName)
+    boolean ruleType = _rmIsRuleAppType(namespace, typeName)
+    boolean read = !visual && status != null
+    def disabled = status?.installedApp?.disabled != null ? status.installedApp.disabled : installed?.disabled
+    if (disabled != null) result.disabled = (disabled == true)
+    String label = status?.installedApp?.label ?: installed?.label?.toString()
+    Boolean labelPaused = null
+    Boolean labelStopped = null
+    // Rule Machine's own broken check is the verdict; the label's *BROKEN* marker is only a hint when no verdict was read.
+    boolean labelBroken = label?.contains("*BROKEN*") == true
+    // Only real markup is a runtime decoration; a typed suffix is escaped and stays the user's name.
+    // The decoration is kept as evidence for an app whose state carries no flag.
+    while (label != null) {
+        def decoration = label =~ /<[^>]+>\s*\((Paused|Stopped)\)\s*(?:<\/[^>]+>\s*)*$/
+        if (!decoration.find()) break
+        if (decoration.group(1) == "Stopped") labelStopped = true
+        else labelPaused = true
+        label = label.substring(0, decoration.start()).trim()
     }
-
-    // PREFERRED structured source — the compiled-state verdict for ANY rule engine
-    // (classic RM `broken` boolean, graph Visual Rule validationErrors, classic Visual Rule).
-    if (useRuleBuilder) {
+    result.label = label?.replaceAll(/<[^>]+>/, "")?.trim()
+    Map compiled = null
+    if (ruleType) result.ruleFormat = "rm"
+    // Other apps with a type have no compiled state to read. Held in a local: a comparison chain in the if
+    // makes Groovy 2.4 compile the whole statement twice.
+    boolean otherApp = typeName != null && !visual && !ruleType
+    if (otherApp) {
+        result.ruleFormat = _classicAppFormat(typeName)
+    } else {
         def cs = _ruleCompiledState(appId)
-        if (cs != null && cs.ruleFormat == null && cs.readError) compiledReadError = cs.readError
-        if (cs != null && cs.ruleFormat != null) {
-            ruleFormat = cs.ruleFormat
-            sourcesUsed << cs.endpoint
-            broken = cs.broken
-            paused = cs.paused
-            if (cs.label != null) label = cs.label
-            if (cs.predicate != null) predicate = cs.predicate
-            if (cs.requiredExpressionTokens != null) requiredExpressionTokens = cs.requiredExpressionTokens as Integer
-            compiledActionList = _rmCoerceActionIndices(cs.actionList)   // null in -> null out
-            if (cs.validationErrors) validationErrors = cs.validationErrors
-            if (ruleFormat == "rm" && broken == true) {
-                // Not capabsfalse: it lists a rule's conditions whatever their current truth,
-                // so quoting it as "false conditions" points at the wrong cause.
-                issues << "ruleBuilderJson reports broken:true (compiled-state boolean — authoritative).".toString()
-            } else if (ruleFormat == "vrb-graph" && !validationErrors.isEmpty()) {
-                issues << "Visual Rule (graph) has validation errors: ${validationErrors.join('; ')}".toString()
+        if (cs?.ruleFormat != null) {
+            read = true
+            if (!ruleType) result.ruleFormat = cs.ruleFormat
+            result.broken = cs.broken
+            result.paused = cs.paused
+            if (cs.label != null) result.label = cs.label
+            result.validationErrors = cs.validationErrors ?: []
+            if (cs.ruleFormat == "vrb-graph" && result.validationErrors) {
+                issues << "Visual Rule (graph) has validation errors: ${result.validationErrors.join('; ')}".toString()
             }
-        } else if (source == "ruleBuilderJson") {
-            // Distinguish a genuine read failure (auth/connectivity) from a clean negative so we
-            // don't misdirect recovery toward "the rule doesn't exist / wrong firmware".
-            if (cs?.readError) {
-                issues << "source='ruleBuilderJson' requested but the compiled-state read FAILED for app ${appId}: ${cs.readError}. This is likely a hub read error (Hub Security auth or connectivity), not a missing rule — retry with source='auto' for the HTML fallback.".toString()
-            } else {
-                issues << "source='ruleBuilderJson' requested but the compiled-state source is unavailable for app ${appId} (empty {} for a nonexistent id, a non-rule app, or older firmware). Retry with source='auto' to use the HTML fallback.".toString()
-            }
+            if (cs.ruleFormat == "rm") compiled = cs.state
+        } else if (cs?.readError) {
+            checkErrors << "compiled-state read failed: ${cs.readError}".toString()
+        } else if (_rmIsEditableRuleType(namespace, typeName)) {
+            // The read answered, but not with Rule Machine state: that is a failed read, not a rule with no flags.
+            checkErrors << "the rule's compiled state was read but is not Rule Machine state, so its disabled rows were not checked".toString()
         }
     }
-
-    // RETAINED HTML / configure-json path — RM-specific detections (label *BROKEN*, render
-    // markers, multiple-flag poison, structural imbalance) + the cross-check + the fallback
-    // for the preferred source. Visual Rules don't speak this protocol (no *BROKEN* label, no
-    // actType settings), so their validationErrors above ARE the health signal — skip the RM
-    // scans for a known VRB rule.
-    boolean runHtml = useConfigPage && ruleFormat != "vrb-classic" && ruleFormat != "vrb-graph"
-    // The structural verdict scopes by the compiled actionList when there is one. Without it -- an
-    // RM record that carried none, a compiled read that failed, or source='configPage', which skips
-    // that read -- the walk is the whole-settings scan, where leftover rows can read as an unclosed
-    // block, and orphanedActionRows cannot be computed. Say so wherever that scan runs; silence
-    // would read as "no orphans, structure verified". A Visual Rule has no actionList by design and
-    // never reaches the scan.
-    // The condition is the SCAN's own state -- it ran (runHtml) with no compiled list -- not a
-    // guess at why. Keying it on ruleFormat=='rm' missed the case that motivates the note most: a
-    // compiled read that came back empty without erroring leaves ruleFormat null, and the
-    // config-page leg then identifies an RM rule and scans anyway.
-    if (runHtml && compiledActionList == null) {
-        String why = !useRuleBuilder ? "source='configPage' skips ruleBuilderJson" :
-                     (compiledReadError != null ? "ruleBuilderJson could not be read" :
-                      (ruleFormat == "rm" ? "ruleBuilderJson carried no usable actionList"
-                                          : "ruleBuilderJson returned no usable record for this app"))
-        checkErrors << "no compiled actionList was available for app ${appId} (${why}); structuralIssues came from the settings scan (leftover rows may read as an unclosed block) and orphanedActionRows could not be computed".toString()
-    }
-    if (runHtml) {
+    boolean brokenNoted = false
+    boolean editable = _rmIsEditableRuleType(namespace, typeName)
+    // The compiled flag stays false after a trigger device is deleted until the page next renders; the rule's own
+    // check does not wait for that, and runs without the page.
+    if (editable) {
+        result.broken = null
         try {
-            // This reads the app's default page, which can reset a non-RM app's own wizard (HPM
-            // clears its pending install settings there); the settings in the response are app-wide.
-            def cfg = _rmFetchConfigJson(appId)
-            sourcesUsed << "configPage"
-            label = cfg?.app?.label?.toString()
-            // Same fetch already in hand: reporting the red-X state costs nothing and spares
-            // callers a second tool call (hub_list_rules) just to learn whether a rule can run.
-            if (cfg?.app?.disabled != null) appDisabled = (cfg.app.disabled == true)
-            // Recognize the classic app type so the report names what it inspected instead of
-            // leaving ruleFormat null. Button Controller / Basic Rule (and other classic apps)
-            // share RM's configPage protocol, so the generic detections below (configPage.error,
-            // multiple-flag poison) apply to them; only RM has the compiled `broken` boolean and
-            // the actType structural model, so broken stays null for the others.
-            if (ruleFormat == null) ruleFormat = _classicAppFormat(cfg)
-            configPageError = cfg?.configPage?.error
-            if (configPageError) {
-                issues << "configPage.error: ${configPageError}".toString()
-            }
-            if (label?.contains("*BROKEN*")) {
-                issues << "label contains *BROKEN* marker — rule has at least one malformed trigger or action".toString()
-            }
-            // "Use Required Expression" switched on with no committed expression: RM runs the rule
-            // as if there were no gate at all.
-            if (cfg?.settings?.useST?.toString() == "true") {
-                if (ruleFormat == "rm" && requiredExpressionTokens == 0) {
-                    issues << "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED. Rebuild it with hub_set_rule(operation='update') required changes, or turn useST off if no gate is wanted.".toString()
-                } else if (requiredExpressionTokens == null) {
-                    checkErrors << "Required Expression is enabled (useST) but the committed expression was not read, so an ungated rule is not ruled out -- re-check it, or read its expression with hub_get_app_config.".toString()
-                }
-            }
-            // Scan for the broken-state strings RM emits in its rendered output. Read BOTH
-            // formats the hub serves: the body-element format the live UI renderer uses
-            // (sect.body[].description where element is "paragraph"/"href") AND the
-            // paragraphs-array format. Live on fw 2.5.0.143 a deleted-trigger rule's direct
-            // /configure/json puts '**Broken Trigger**' in the body-element format, which a
-            // paragraphs-only scan misses.
-            def paragraphTexts = (cfg?.configPage?.sections ?: []).collectMany { sect ->
-                def fromBody = (sect?.body ?: [])
-                    .findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
-                    .collect { it.description?.toString() ?: "" }
-                def fromParagraphs = (sect?.paragraphs ?: []).collect { it?.toString() ?: "" }
-                fromBody + fromParagraphs
-            }
-            paragraphTexts.each { text ->
-                ["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"].each { marker ->
-                    if (text.contains(marker)) brokenMarkers << marker
-                }
-            }
-            if (brokenMarkers) {
-                issues << "broken markers in render: ${brokenMarkers.unique().join(', ')}".toString()
-            }
-            // Multiple-flag corruption check. Compare schema declaration vs
-            // statusJson appSettings record for each setting that the schema
-            // says is multi.
-            def settingsByName = _rmFetchSettingsByName(appId)
-            def schema = _rmCollectInputSchema(cfg?.configPage)
-            schema.each { name, meta ->
-                if (meta?.multiple == true) {
-                    def rec = settingsByName.get(name)
-                    if (rec != null && rec.multiple != true) {
-                        multipleFlagPoison << name.toString()
-                    }
-                }
-            }
-            if (multipleFlagPoison) {
-                issues << "multiple-flag poison on settings: ${multipleFlagPoison.join(', ')} — re-POST with the 3-field group to recover".toString()
-            }
-            // Structural balance check (defense in depth -- the native document batch check and
-            // _rmDeleteAction's pre-flight refusal block most imbalance at the source; this catches
-            // raw settings writes and the post-response-commit race for non-structural deletes).
-            structuralIssues = _rmStructuralIssuesFromSequence(
-                _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), compiledActionList))
-            orphanedActionRows = _rmOrphanedActionRows(settingsByName, compiledActionList)
-            if (structuralIssues) {
-                issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer, and the fix is simply to add it via addAction(capability='endIf'|'stopRepeat') — do NOT restore. Only if the rule was already complete does this indicate damage (a raw settings write or a mutation that committed post-response), in which case use hub_restore_backup to roll back.".toString())
-            }
-        } catch (Exception e) {
-            if (sourcesUsed.isEmpty()) {
-                // Both sources down: include the compiled-state read failure too so the dual-failure
-                // diagnostic is complete (auth/connectivity often breaks both localhost reads at once).
-                def also = compiledReadError ? " (compiled-state read also failed: ${compiledReadError})" : ""
-                issues << "health check failed: ${e.message}${also}".toString()
-            } else {
-                // The compiled source read CLEAN and only this HTML leg failed: a lone
-                // transient fetch failure is not evidence about the rule, so it must not
-                // ride in issues -- an ok:false verdict here fails every committed-work
-                // gate AND set-diffs as a "new issue" in the replace/patches regression
-                // differ, firing the auto-restore over one localhost GET hiccup. It still
-                // surfaces in checkErrors (visible, non-gating): the render scan is the
-                // cross-check that can show a break before the compiled boolean flips, so
-                // the caller is told this verdict is half-checked and can re-probe.
-                checkErrors << "configPage read failed: ${e.message}".toString()
-            }
+            def flag = _nrHandle(appId as Long).broken()
+            if (flag instanceof Boolean) result.broken = flag
+            else { brokenNoted = true; checkErrors << "the rule's broken() check returned ${flag}, not true or false".toString() }
+        } catch (Exception brokenErr) {
+            brokenNoted = true
+            checkErrors << "the rule's broken() check failed (${brokenErr.message ?: brokenErr.toString()})".toString()
         }
     }
-    // Mirror leg: the compiled-state read failed but the HTML path ran clean. Previously
-    // this was SILENTLY discarded in auto mode (ok:true with the authoritative source
-    // unread) -- surface it the same non-gating way as the HTML-leg failure above.
-    if (compiledReadError != null && !sourcesUsed.isEmpty()) {
-        checkErrors << "compiled-state read failed: ${compiledReadError}".toString()
+    boolean nativeBroken = result.broken == true
+    // Rule Machine's broken() stays false for a condition whose device was deleted (it flags a deleted trigger
+    // device), so a Rule Machine 5.1 rule's or Button Rule's dead pickers are read whatever it answers, and make it broken.
+    boolean scanRows = compiled != null && status != null && (nativeBroken || editable)
+    if (scanRows) result.brokenRows = _rmBrokenRows(compiled, status.appSettings)
+    // Unscanned rows are unknown, not none: broken() misses a deleted condition device, so an editable rule whose
+    // settings or compiled state went unread reads brokenRows null and hub_set_rule refuses to update it.
+    boolean rowsUnread = (editable || nativeBroken) && result.ruleFormat == "rm" && (!scanRows || status.appSettingsMalformed)
+    if (rowsUnread) {
+        result.brokenRows = null
+        checkErrors << (compiled == null ? "the rule's compiled state went unread, so brokenRows was not listed" : "the rule's settings went unread, so brokenRows was not listed").toString()
     }
-    // Cross-check the two RM sources when both ran. They can legitimately disagree in a
-    // transient window: live on fw 2.5.0.143, deleting a rule's trigger device sets the
-    // '*BROKEN*' label immediately while the compiled `broken` boolean stays false until the
-    // rule re-validates (e.g. its config page is rendered), after which `broken` flips true and
-    // the two agree. Surfacing the disagreement (rather than trusting either source alone) is
-    // exactly why issue #254 keeps both paths instead of replacing the HTML scan. VRB rules
-    // have no HTML markers, so the cross-check only applies to classic RM.
-    if (ruleFormat == "rm" || ruleFormat == null) {
-        boolean htmlBroken = (!brokenMarkers.isEmpty()) || (label != null && label.contains("*BROKEN*"))
-        if (broken == true && !htmlBroken && sourcesUsed.contains("configPage")) {
-            issues << "cross-check: ruleBuilderJson broken:true but the HTML render showed no broken markers — the structured source caught a break the render scan missed.".toString()
-        } else if (broken == false && htmlBroken) {
-            issues << "cross-check: HTML broken markers present but ruleBuilderJson broken:false — render text disagrees with the compiled state; treat as suspect and re-read.".toString()
+    if (result.brokenRows) result.broken = true
+    if (result.ruleFormat == "rm" && result.broken == null && !brokenNoted) checkErrors << "the rule's broken flag could not be read, so whether it is broken is unknown".toString()
+    if (labelBroken && result.broken == null) issues << "label contains *BROKEN* marker, a hint that the rule has a malformed trigger or action; no broken verdict could be read to confirm it".toString()
+    boolean rmBroken = result.ruleFormat == "rm" && result.broken == true
+    if (rmBroken) {
+        int deadRows = (result.brokenRows ?: []).collect { [it.kind, it.id] }.unique().size()
+        issues << (nativeBroken ? "Rule Machine marks this rule broken: a trigger, condition or action refers to something that is gone; brokenRows lists the rows whose device is gone." :
+            "the rule refers to ${deadRows} row(s) whose device was deleted, which Rule Machine's own check does not flag; brokenRows lists them.").toString()
+    }
+    if (compiled != null) {
+        result.disabledActions = _rmDisabledRowIds(compiled, "disabledActions", checkErrors)
+        result.disabledTriggers = _rmDisabledRowIds(compiled, "disabledTriggers", checkErrors)
+        boolean useST = status?.appSettings?.any { it.name == "useST" && it.value?.toString() == "true" } == true
+        // Unread settings are not a Required Expression switched off: expression 0 then goes unchecked, so say so.
+        if (status == null || status.appSettingsMalformed) checkErrors << "the rule's settings went unread, so whether its Required Expression is on is unknown and expression 0 was not checked".toString()
+        result.structuralIssues = _ndStructuralIssues(compiled, useST)
+        if (result.structuralIssues) {
+            issues << ("structural imbalance in the rule's actions or expressions: ${result.structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer with a hub_set_rule(operation='update') terminator change (subtype endIf or endRep). Otherwise compare against hub_get_rule(sections:['actions']) before considering a restore.").toString()
         }
     }
-
-    // Per-marker occurrence COUNT (computed before the unique() below loses it). The
-    // deduped brokenMarkers list and the single collapsed "broken markers in render" issue
-    // string both lose multiplicity, so a baseline already carrying one **Broken Condition**
-    // would set-diff to empty against a render with TWO of them and a genuinely-new broken
-    // instance would slip through a string-set delta. Callers comparing two health verdicts
-    // (the replace restore gate) use this count map to detect a NEW broken instance.
-    def brokenMarkerCounts = [:]
-    brokenMarkers.each { m -> brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
-
-    // Stable report shape (backward-compatible with the pre-#254 contract): the RM detection
-    // arrays are always present so existing consumers can read them unconditionally. The new
-    // cross-engine fields (broken / source / ruleFormat / validationErrors) are added alongside;
-    // predicate is included only when the compiled state carried one. The dual-path cost is one
-    // extra localhost GET, not response size — the empty arrays are a few bytes.
-    def result = [
-        // An app that could not be identified may be a user app whose state only looks like a rule's.
-        ok: identified && !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
-        // unreadable: NEITHER source could be read -- a "couldn't check" verdict, not
-        // a "checked and broken" one (ok stays false; there is no positive evidence
-        // either way). Callers gating committed work on ok should treat unreadable
-        // as advisory (a transient fetch failure must not fail a committed op) and
-        // direct the caller to re-verify via hub_get_rule_health.
-        unreadable: sourcesUsed.isEmpty(),
-        broken: broken,
-        source: (sourcesUsed ? sourcesUsed.join("+") : "none"),
-        ruleFormat: ruleFormat,
-        label: label,
-        paused: paused,
-        disabled: appDisabled,
-        configPageError: configPageError,
-        brokenMarkers: brokenMarkers.unique(),
-        brokenMarkerCounts: brokenMarkerCounts,
-        multipleFlagPoison: multipleFlagPoison,
-        structuralIssues: structuralIssues,
-        // Leftover settings rows the rule does not contain. Deliberately outside
-        // `issues` (same reasoning as checkErrors): they are visible state, not a
-        // defect, so they must not flip ok or feed the regression differ.
-        orphanedActionRows: orphanedActionRows,
-        validationErrors: validationErrors,
-        issues: issues,
-        // Half-checked marker: ONE source failed to read while the other read clean.
-        // Deliberately outside `issues` so ok stays evidence-based -- a lone transient
-        // fetch failure neither fails committed-work gates nor feeds the regression
-        // differ (both-sources-down is `unreadable`, not this).
-        checkErrors: checkErrors
-    ]
-    if (predicate != null) result.predicate = predicate
-    if (requiredExpressionTokens != null) result.requiredExpressionTokens = requiredExpressionTokens
+    if (status != null) {
+        result.eventSubscriptionCount = status.eventSubscriptions.size()
+        result.scheduledJobCount = status.scheduledJobs.size()
+        if (!visual) {
+            // A rule or Basic Rule that was never paused has no entry for it, and a rule never stopped has none either.
+            boolean pausable = ruleType || result.ruleFormat == "basic-rule"
+            // A present entry is authoritative; one that is not a flag stays null, neither the compiled value nor the
+            // name's decoration standing in for it, as the toggles refuse it.
+            Map paused = _appStatusFlag(status, "paused")
+            if (paused.present) { result.paused = paused.value; labelPaused = null }
+            else if (result.paused == null && pausable && !paused.missing) result.paused = false
+            Map stopped = _appStatusFlag(status, "stopped")
+            if (stopped.present) labelStopped = null
+            result.stopped = stopped.value != null ? stopped.value : (ruleType && !stopped.present && !stopped.missing ? false : null)
+            Map flags = [paused: paused, stopped: stopped]
+            if (ruleType) { flags.put("private", _appStatusFlag(status, "private")); result.privateBoolean = flags.get("private").value }
+            // An entry that is not a flag is unread, as hub_list_rules and the toggles treat it.
+            flags.each { name, flag -> if (flag.present && flag.value == null) checkErrors << "the app's ${name} state is stored as neither true nor false, so it was not read".toString() }
+            // A status page with no app state left the runtime flags unread, so the rule was not fully checked.
+            if (paused.missing) checkErrors << "the app's status page carried no appState, so paused, stopped and the private boolean were not read".toString()
+        }
+    }
+    if (result.paused == null && labelPaused) result.paused = true
+    if (result.stopped == null && labelStopped) result.stopped = true
+    if (!read) issues << (visual ? "health check failed: the Visual Rule's definition could not be read" : "health check failed: neither the app's status page nor its compiled state could be read").toString()
+    result.unreadable = !read
+    result.ok = read && issues.isEmpty() && checkErrors.isEmpty() && result.broken != true && result.validationErrors.isEmpty()
     return result
 }
 
@@ -11556,7 +11520,7 @@ def _guideSectionForTool(toolName) {
     if (t == 'hub_set_native_app') return 'set_native_app_reference'
     if (t in ['hub_delete_native_app', 'hub_clone_native_app',
               'hub_export_native_app', 'hub_import_native_app']) return 'builtin_app_tools_crud'
-    if (t in ['hub_set_app_disabled', 'hub_call_rule', 'hub_set_rule_paused',
+    if (t in ['hub_set_app_disabled', 'hub_call_rule',
               'hub_set_rule_private_boolean']) return 'builtin_app_tools_rules'
     if (t in ['hub_get_device', 'hub_update_device']) return 'update_device'
     if (t == 'hub_manage_virtual_device') return 'virtual_devices'
@@ -11670,7 +11634,6 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_import_native_app -> builtin_app_tools_crud
 - hub_call_rule -> builtin_app_tools_rules
 - hub_set_app_disabled -> builtin_app_tools_rules
-- hub_set_rule_paused -> builtin_app_tools_rules
 - hub_set_rule_private_boolean -> builtin_app_tools_rules
 - hub_delete_bundle -> bundles
 - hub_export_bundle -> bundles
@@ -11738,7 +11701,7 @@ pointer to THAT tool's own guide section -- follow it for the failing tool's ref
 
 **Flat mode.** With that setting OFF, `tools/list` lists every tool individually and `hub_search_tools` is hidden. A cached call to a gateway name then returns an error naming the sub-tools to call directly. The Read/Write masters, the legacy Custom Rule Engine toggle, Developer Mode and the Advanced per-tool overrides also add or remove `tools/list` entries, so the visible catalog differs per install. After any of these change, the client may need to reconnect.
 
-**Hub API documentation.** `hub_get_tool_guide(platform_api_search='<words>')` searches the hub's own Groovy API reference (firmware 2.5.2+, Settings > For Developers > API documentation) and returns ranked class and method matches with signatures, 25 per page (follow `nextCursor`). `hub_get_tool_guide(platform_api_page='<pageId>')` returns one class with every method's full description, 40 per page (fewer when long descriptions would pass ~60 KB; a description past 20,000 characters is cut and flagged `descriptionTruncated`). Use it when writing or reviewing app and driver code. The docs do not mark which methods the sandbox restricts to system apps, so test a method from a user app before relying on it.
+**Hub API documentation.** `hub_get_tool_guide(platformApiSearch='<words>')` searches the hub's own Groovy API reference (firmware 2.5.2+, Settings > For Developers > API documentation) and returns ranked class and method matches with signatures, 25 per page (follow `nextCursor`). `hub_get_tool_guide(platformApiPage='<pageId>')` returns one class with every method's full description, 40 per page (fewer when long descriptions would pass ~60 KB; a description past 20,000 characters is cut and flagged `descriptionTruncated`). Use it when writing or reviewing app and driver code. The docs do not mark which methods the sandbox restricts to system apps, so test a method from a user app before relying on it.
 
 **Permissions.** Two masters, Read and Write, gate every tool. Both are ON by default, and only an explicit OFF blocks. A tool under an OFF master disappears from `tools/list` and `hub_search_tools`, and a cached call fails with "Read tools are disabled..." or "Write tools are disabled...". Direct the user to the Read/Write toggles in the MCP app settings. On the Advanced: Per-tool Overrides page, individual tools or whole gateways can be switched OFF. These overrides are deny-only (they never re-enable what a master hides), and a cached call fails with "...is disabled in Advanced settings (Per-tool Overrides)...". Destructive writes also need `confirm=true` plus a backup <24h, regardless of the masters. Self-administration tools also need Developer Mode (see hub_update_mcp_settings).
 ''',
@@ -11776,39 +11739,39 @@ Only run Z-Wave radio operations when the user explicitly asks for them.
 **hub_delete_room** - Devices become unassigned (not deleted). List affected devices first with hub_get_room(roomId).
 Dashboards or automations that reference the room may need updating.
 
-**hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Backs up the source to File Manager before deleting, and sends no delete when that backup fails: a missing app or library returns `<Type> N does not exist`, a source the hub cannot read (a missing driver reads this way) says the item may not exist, and a backup file that cannot be written says to retry once File Manager accepts writes. `item_id` is the code id (digits only). A backup of that id under an hour old is reused without a read, so a missing app then reaches the hub, which accepts the delete of a missing app, and the call reports success. A refusal whose message says the item is in use carries a note on what to remove first; a refusal with no message means the item may not exist, so check the list tool. A reply the hub does not clearly confirm returns `success:false` with `response`; check the list tool.
+**hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Backs up the source to File Manager before deleting, and sends no delete when that backup fails: a missing app or library returns `<Type> N does not exist`, a source the hub cannot read (a missing driver reads this way) says the item may not exist, and a backup file that cannot be written says to retry once File Manager accepts writes. `itemId` is the code id (digits only). A backup of that id under an hour old is reused without a read, so a missing app then reaches the hub, which accepts the delete of a missing app, and the call reports success. A refusal whose message says the item is in use carries a note on what to remove first; a refusal with no message means the item may not exist, so check the list tool. A reply the hub does not clearly confirm returns `success:false` with `response`; check the list tool.
 
 ### hub_call_zwave (Z-Wave lifecycle action grouping + routing)
 
 - Action groups: repair_start/repair_cancel + repair_node (network rebuild); inclusion_start/inclusion_stop + grant_keys/grant_code (S2 pairing); exclusion_start/exclusion_stop; node_refresh/node_rediscover/node_reinitialize + refresh_stats (per-node maintenance); node_replace + node_replace_stop; node_remove (failed-node removal); antenna_test_start/antenna_test_continue; smartstart_delete.
 - S2 pairing payloads: grant_keys takes the granted security classes, e.g. {S2AccessControl:true, S2Authenticated:true, S2Unauthenticated:false, S0Unauthenticated:false}; grant_code (DSK confirmation) takes e.g. {accept:true, securityCode:'12345'}.
-- Poll repair/operation progress with hub_get_radio_details(include_status=true). (repair_start duration/disruption and off-peak guidance: see the repair_start note above.)
+- Poll repair/operation progress with hub_get_radio_details(includeStatus=true). (repair_start duration/disruption and off-peak guidance: see the repair_start note above.)
 - Related radio tools: enable/disable, region, long-range channel and the Z-Wave JS stack switch via hub_set_zwave; radio reset (unpairs every device), Z-Wave firmware flashes and the Z-Wave network restore via hub_call_destructive_ops.
 - **Z-Wave JS actions** (the hub must run the Z-Wave JS stack; `zwaveJS` in hub_get_radio_details(radio='zwave')):
-  - `reinterview` (node_id): re-runs the node interview; watch `interviewComplete` / `interviewStage` on the node.
-  - `link_test_start` (node_id, link_test={rounds default 10, interval_ms default 1000}) / `link_test_stop` (node_id): the link reliability test. It switches the device on and off and may leave it in a different state. Read results with hub_get_radio_details(radio='zwave', node_id=N) under `linkReliability`.
-  - `cc_command` (node_id, cc={command_class, method_name, endpoint default 0, args}, confirm=true): sends one command-class method, as the node page's command list does. The node's command classes and methods come from hub_get_radio_details(radio='zwave', node_id=N) `nodeDetails`. It talks to the device directly, outside the device allowlist, so it needs confirm and a recent backup.
-- **Z-Wave network backup** (Z-Wave JS plus the Full Local Backup subscription; `status.zwaveLocalBackup` in hub_get_radio_details(include_status=true) shows `available` and `entitled`):
-  1. `local_backup_create` returns a `jobId`; poll hub_get_radio_details(backup_job_id=<jobId>) until `stage` is DONE.
-  2. `local_backup_download` (job_id = the jobId) saves the archive to File Manager as `zwave-backup-<jobId>.tar.gz`.
-  3. To bring a network in: `local_backup_import` (backup_url, confirm=true, 8 MB max; a Hubitat backup, Z-Wave JS UI backup, archive or raw NVM file) returns an `importId`; poll its job until READY and read its `report`. Supply missing keys with `local_backup_keys` (import_id = the importId, security_keys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, long_range: {S2_Authenticated, S2_AccessControl}}, each a 32-hex-digit network key, a 0x prefix stripped; other names or values are refused). Then restore with hub_call_destructive_ops(target='zwave', action='local_backup_restore', import_id=...).
+  - `reinterview` (nodeId): re-runs the node interview; watch `interviewComplete` / `interviewStage` on the node.
+  - `link_test_start` (nodeId, linkTest={rounds default 10, intervalMs default 1000}) / `link_test_stop` (nodeId): the link reliability test. It switches the device on and off and may leave it in a different state. Read results with hub_get_radio_details(radio='zwave', nodeId=N) under `linkReliability`.
+  - `cc_command` (nodeId, cc={commandClass, methodName, endpoint default 0, args}, confirm=true): sends one command-class method, as the node page's command list does. The node's command classes and methods come from hub_get_radio_details(radio='zwave', nodeId=N) `nodeDetails`. It talks to the device directly, outside the device allowlist, so it needs confirm and a recent backup.
+- **Z-Wave network backup** (Z-Wave JS plus the Full Local Backup subscription; `status.zwaveLocalBackup` in hub_get_radio_details(includeStatus=true) shows `available` and `entitled`):
+  1. `local_backup_create` returns a `jobId`; poll hub_get_radio_details(backupJobId=<jobId>) until `stage` is DONE.
+  2. `local_backup_download` (jobId = the jobId) saves the archive to File Manager as `zwave-backup-<jobId>.tar.gz`.
+  3. To bring a network in: `local_backup_import` (backupUrl, confirm=true, 8 MB max; a Hubitat backup, Z-Wave JS UI backup, archive or raw NVM file) returns an `importId`; poll its job until READY and read its `report`. Supply missing keys with `local_backup_keys` (importId = the importId, securityKeys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, longRange: {S2_Authenticated, S2_AccessControl}}, each a 32-hex-digit network key, a 0x prefix stripped; other names or values are refused). Then restore with hub_call_destructive_ops(target='zwave', action='local_backup_restore', importId=...).
 
 ### hub_set_zigbee (configure the Zigbee radio: enable/disable, channel/power, radio settings, per-device ping)
 
 - Idempotent config, one operation per call; read current values first with hub_get_radio_details(radio='zigbee'). Disabling the radio strands every Zigbee device and is confirm-gated (confirm=true + backup <24h).
 - **Channel changes** can drop devices that do not follow the new channel (they may need re-pairing); a channel/power update returns a `warning` describing the disruption.
-- **Radio settings** (rebuild_on_reboot / ping_inactive) MERGE over current values -- an unspecified flag is preserved, so pass only the flag you intend to change.
+- **Radio settings** (rebuildOnReboot / pingInactive) MERGE over current values -- an unspecified flag is preserved, so pass only the flag you intend to change.
 - **Sibling tools:** for reboot / rebuild-network / channel-scan use hub_call_zigbee; for radio reset or firmware flash use hub_call_destructive_ops.
 
 ### hub_call_destructive_ops — firmware-flash action reference
 
 The radio firmware-flash `action` values (the bullet above summarizes these as "a firmware flash"; an interrupted flash can brick hardware — never power-cycle during one):
-- `device_firmware_start` — Z-Wave device firmware OTA. Requires `node_id` + `file_name` (`file_name` comes from hub_get_radio_details(include_firmware=true)); optional `target_index` (the firmware target from `firmware.node.details`) defaults to 0, the device's main firmware.
-- `device_firmware_start_available` — flash the update the hub's firmware service offers for a node. Requires `node_id` + `update_id` (from hub_get_radio_details(include_firmware=true, node_id=N) `firmware.node.available`).
-- `device_firmware_batch_start` / `device_firmware_batch_start_available` (Z-Wave JS) — flash several matching devices in one run: `node_id` is the source node, `batch.node_ids` the nodes to update (from `firmware.node.batchCandidates`), plus `file_name` (and optional `target_index`, default 0) or `update_id`. `batch.inactivity_timeout_seconds` (default 600) gives up on a silent device. Follow the run in `status.zwaveFirmwareBatch` (include_status=true); stop it with `device_firmware_batch_abort`.
-- `device_firmware_abort` — abort an in-progress Z-Wave device flash. Requires `node_id`.
+- `device_firmware_start` — Z-Wave device firmware OTA. Requires `nodeId` + `fileName` (`fileName` comes from hub_get_radio_details(includeFirmware=true)); optional `targetIndex` (the firmware target from `firmware.node.details`) defaults to 0, the device's main firmware.
+- `device_firmware_start_available` — flash the update the hub's firmware service offers for a node. Requires `nodeId` + `updateId` (from hub_get_radio_details(includeFirmware=true, nodeId=N) `firmware.node.available`).
+- `device_firmware_batch_start` / `device_firmware_batch_start_available` (Z-Wave JS) — flash several matching devices in one run: `nodeId` is the source node, `batch.nodeIds` the nodes to update (from `firmware.node.batchCandidates`), plus `fileName` (and optional `targetIndex`, default 0) or `updateId`. `batch.inactivityTimeoutSeconds` (default 600) gives up on a silent device. Follow the run in `status.zwaveFirmwareBatch` (includeStatus=true); stop it with `device_firmware_batch_abort`.
+- `device_firmware_abort` — abort an in-progress Z-Wave device flash. Requires `nodeId`.
 - Firmware 2.5.2 refuses device firmware updates over Remote Admin; the hub's refusal message is returned.
-- `local_backup_restore` (target=zwave) — replaces the hub's Z-Wave network with an imported backup (`import_id` from hub_call_zwave local_backup_import, READY with every key supplied). Z-Wave devices are unavailable while Z-Wave JS restarts; poll the returned `jobId` with hub_get_radio_details(backup_job_id=...).
+- `local_backup_restore` (target=zwave) — replaces the hub's Z-Wave network with an imported backup (`importId` from hub_call_zwave local_backup_import, READY with every key supplied). Z-Wave devices are unavailable while Z-Wave JS restarts; poll the returned `jobId` with hub_get_radio_details(backupJobId=...).
 - `zwave_chip_firmware` — flash the hub's own Z-Wave radio chip (no extra args).
 - `zigbee_firmware` — update the Zigbee radio to the latest firmware (no extra args).
 
@@ -11816,23 +11779,23 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 ### hub_call_matter (Matter radio: enable/disable, pair, cancel_pair, open pairing window)
 
-- `action=pair` (the 11- or 21-digit Matter setup code, or the MT: QR payload) uses the pairing request firmware 2.5.2 introduced, which carries Wi-Fi credentials for Wi-Fi Matter devices. Without `wifi_ssid` the hub's selected network is sent, as the web UI does; when that is the network the hub stores a password for, the hub's own password placeholder keeps the stored password. A network without a stored password needs `wifi_password` (`""` for an open network), and the call is refused when the hub's network cannot be read. Firmware before 2.5.2 pairs with the setup code alone. Thread devices ignore the credentials. Read the stored network with hub_get_radio_details(radio='matter') `wifiCredentials` (the password is never returned).
-- A started pairing returns its `nodeId`; poll it with hub_get_radio_details(radio='matter', node_id=<nodeId>) and stop it with `action=cancel_pair` (node_id). A nodeId of 0 or an `error` means the pairing did not start. Firmware before 2.5.2 pairs with the setup code alone (any Wi-Fi arguments are ignored).
+- `action=pair` (the 11- or 21-digit Matter setup code, or the MT: QR payload) uses the pairing request firmware 2.5.2 introduced, which carries Wi-Fi credentials for Wi-Fi Matter devices. Without `wifiSsid` the hub's selected network is sent, as the web UI does; when that is the network the hub stores a password for, the hub's own password placeholder keeps the stored password. A network without a stored password needs `wifiPassword` (`""` for an open network), and the call is refused when the hub's network cannot be read. Firmware before 2.5.2 pairs with the setup code alone. Thread devices ignore the credentials. Read the stored network with hub_get_radio_details(radio='matter') `wifiCredentials` (the password is never returned).
+- A started pairing returns its `nodeId`; poll it with hub_get_radio_details(radio='matter', nodeId=<nodeId>) and stop it with `action=cancel_pair` (nodeId). A nodeId of 0 or an `error` means the pairing did not start. Firmware before 2.5.2 pairs with the setup code alone (any Wi-Fi arguments are ignored).
 - Matter requires a C-8 / C-8 Pro hub on supported firmware; the failure note repeats this.
-- `action=open_pairing_window` opens a share window for a commissioned node_id; the response carries the setup code to add that device to another fabric.
+- `action=open_pairing_window` opens a share window for a commissioned nodeId; the response carries the setup code to add that device to another fabric.
 - To RESET the Matter fabric (wipes commissioning, unpairs every Matter device) use hub_call_destructive_ops(target='matter', action='reset').
 
 ### hub_set_zwave (configure the Z-Wave radio: enable/disable, region, long-range channel, Z-Wave JS stack)
 
 - Config updates preserve the radio's other current settings: a region or long-range-channel change keeps the current `enabled` and `secureJoin` values. The hub's zwaveDetails update is a full-replacement endpoint (it takes the complete param set, not a partial patch), so the tool reads current state first and overrides only what you changed.
 - Disabling the radio strands every Z-Wave device, so it is confirm-gated (confirm=true plus a hub backup <24h).
-- `zwave_js=true` switches the hub to the Z-Wave JS stack (C-5, C-7, C-8 on firmware 2.5.2+; `zwaveJSAvailable` in hub_get_radio_details(radio='zwave') says whether it is offered) and `zwave_js=false` back to the legacy stack. The hub REBOOTS immediately, so it is confirm-gated and must be sent alone. It reads the running stack first: a hub already on the requested stack is left alone (`changed: false`), and an unreadable stack is refused, so a repeated call never reboots twice. After the reboot, `status.zwaveJs` (include_status=true) shows when the stack is ready and how many nodes still await their interview.
+- `zwaveJs=true` switches the hub to the Z-Wave JS stack (C-5, C-7, C-8 on firmware 2.5.2+; `zwaveJSAvailable` in hub_get_radio_details(radio='zwave') says whether it is offered) and `zwaveJs=false` back to the legacy stack. The hub REBOOTS immediately, so it is confirm-gated and must be sent alone. It reads the running stack first: a hub already on the requested stack is left alone (`changed: false`), and an unreadable stack is refused, so a repeated call never reboots twice. After the reboot, `status.zwaveJs` (includeStatus=true) shows when the stack is ready and how many nodes still await their interview.
 - Scope routing: for repair / inclusion (join + S2 grants) / exclusion / per-node maintenance use hub_call_zwave; for radio reset or firmware flash use hub_call_destructive_ops.
 
 ### hub_call_zigbee (non-idempotent Zigbee radio ops)
 - Actions: radio_reboot (restart the Zigbee chip), rebuild_network (rebuild the mesh), channel_scan (trigger an energy scan). No confirm gate, but the Write master applies.
 - rebuild_network takes time; Zigbee devices may be briefly unresponsive during the rebuild.
-- Read channel_scan results with hub_get_radio_details(include_channel_scan=true).
+- Read channel_scan results with hub_get_radio_details(includeChannelScan=true).
 - For enable/disable, channel, or power use hub_set_zigbee (idempotent config); for radio reset or firmware flash use hub_call_destructive_ops.
 
 
@@ -11908,26 +11871,26 @@ A malformed `waitFor` spec is rejected before the command fires, so the device i
 
 Drives the hub's built-in Swap Device tool; use to move automations onto new hardware or swap out a failing device without editing each automation.
 
-The hub exchanges the two device records' identities -- name, label, network id, driver, room, notes and current state; event history stays with the id -- and leaves every app and rule reference on its id. Afterwards `from_device_id` (the id its apps use) is the replacement hardware, and `to_device_id` holds the old device's identity, so any app that used `to_device_id` now runs on the OLD hardware. Check `hub_list_device_dependents` for BOTH ids before swapping. The tool verifies the swap by that exchange and returns `swapped`, `identityExchanged`, the post-swap `fromDevice` / `toDevice`, and `fromDeviceDependents` / `toDeviceDependents` (how many apps used each id before the swap); it suggests removing `to_device_id` only when nothing used it. Running it again swaps the devices back, so never retry a swap whose outcome is unconfirmed -- inspect both devices with `hub_get_device` first. The swap runs when the hub renders the transient Swap Device instance's page, and every render swaps again, so the tool renders it once and deletes it; a `leftoverSwapInstance` in the result must be deleted without opening its page.
+The hub exchanges the two device records' identities -- name, label, network id, driver, room, notes and current state; event history stays with the id -- and leaves every app and rule reference on its id. Afterwards `fromDeviceId` (the id its apps use) is the replacement hardware, and `toDeviceId` holds the old device's identity, so any app that used `toDeviceId` now runs on the OLD hardware. Check `hub_list_device_dependents` for BOTH ids before swapping. The tool verifies the swap by that exchange and returns `swapped`, `identityExchanged`, the post-swap `fromDevice` / `toDevice`, and `fromDeviceDependents` / `toDeviceDependents` (how many apps used each id before the swap); it suggests removing `toDeviceId` only when nothing used it. Running it again swaps the devices back, so never retry a swap whose outcome is unconfirmed -- inspect both devices with `hub_get_device` first. The swap runs when the hub renders the transient Swap Device instance's page, and every render swaps again, so the tool renders it once and deletes it; a `leftoverSwapInstance` in the result must be deleted without opening its page.
 
-The hub only offers compatible replacement devices: an incompatible to_device_id fails with a structured error listing the compatible options. Child devices (including every MCP-created virtual device) are not eligible.
+The hub only offers compatible replacement devices: an incompatible toDeviceId fails with a structured error listing the compatible options. Child devices (including every MCP-created virtual device) are not eligible.
 
 ### hub_call_device_replace
 
-DESTRUCTIVE. Re-points `old_device_id` onto `new_device_id`'s node; the new hardware adopts the OLD id, so the old device's rules and dashboard tiles stay intact. Use when a Z-Wave/Zigbee device died and you paired a compatible replacement.
+DESTRUCTIVE. Re-points `oldDeviceId` onto `newDeviceId`'s node; the new hardware adopts the OLD id, so the old device's rules and dashboard tiles stay intact. Use when a Z-Wave/Zigbee device died and you paired a compatible replacement.
 
 Differs from `hub_call_device_swap`, which keeps BOTH devices and exchanges their identities (the replacement takes over the old id; the old device moves to the replacement's id).
 
 **Two-step flow:**
-1. Call with `list_options=true` first to read the hub's compatible replacement candidates for `old_device_id` (read-only, no confirm).
-2. Pick one as `new_device_id`, then call again with `confirm=true`.
+1. Call with `listOptions=true` first to read the hub's compatible replacement candidates for `oldDeviceId` (read-only, no confirm).
+2. Pick one as `newDeviceId`, then call again with `confirm=true`.
 
-**Apply-path pre-flight** (in addition to the standard destructive checklist above — backup <24h, user approval, `confirm=true`): a compatible `new_device_id`.
+**Apply-path pre-flight** (in addition to the standard destructive checklist above — backup <24h, user approval, `confirm=true`): a compatible `newDeviceId`.
 
 **Parameters:**
-- `old_device_id` — the device to replace; its id is preserved. Comes from `hub_list_devices`.
-- `new_device_id` — the compatible replacement device; its hardware is adopted under the old id. Required to apply; omit when `list_options=true`.
-- `confirm` — required to apply (omit for `list_options`); must be true. Confirms a backup <24h + user approval (see the standard destructive checklist above).
+- `oldDeviceId` — the device to replace; its id is preserved. Comes from `hub_list_devices`.
+- `newDeviceId` — the compatible replacement device; its hardware is adopted under the old id. Required to apply; omit when `listOptions=true`.
+- `confirm` — required to apply (omit for `listOptions`); must be true. Confirms a backup <24h + user approval (see the standard destructive checklist above).
 
 ### hub_create_device
 
@@ -12073,10 +12036,10 @@ Reads `/hub2/hubMeshJson` — Hub Mesh is Hubitat's hub-to-hub DEVICE/VARIABLE s
 
 - `hubMeshEnabled` (boolean; null when the firmware did not report it), `fullRefreshInterval` (seconds: 0 = never, 120, 300, 3600).
 - `peers` — the auto-discovered peer hubs, as the hub reports them (`name`, `ipAddress`, `hubId`, plus `warning` when the hub flags one, e.g. a missing mesh token).
-- `modeHubId` — the peer whose location modes this hub follows; `'none'` = this hub uses its own local modes. Round-trips straight into `hub_update_hub_mesh(mode_hub_id)`.
+- `modeHubId` — the peer whose location modes this hub follows; `'none'` = this hub uses its own local modes. Round-trips straight into `hub_update_hub_mesh(modeHubId)`.
 - `sharedDevices` (this hub's devices shared INTO the mesh: id, name, childCount), `localLinkedDevices` (remote devices linked ONTO this hub: id, name, childCount, appsUsing), `availableLinkedDevices` (remote shared devices not yet linked here: hubId, hubName, deviceId, deviceDisplayName), and the hub-variable analogues `sharedHubVariables` / `localLinkedHubVariables` / `availableLinkedHubVariables`.
 - `privateDeviceCount` / `localHubVariableCount` — COUNTS only: the unshared-device list can be hundreds of entries and local variables duplicate `hub_list_variables`; read the full lists there.
-- `hubMeshToken` — this hub's own mesh auth token, returned ONLY with `include_token: true` (it is a credential, needed by peers when this hub has UI login security).
+- `hubMeshToken` — this hub's own mesh auth token, returned ONLY with `includeToken: true` (it is a credential, needed by peers when this hub has UI login security).
 
 On firmware without Hub Mesh the call returns the structured `success:false` error instead of throwing.
 
@@ -12085,9 +12048,9 @@ On firmware without Hub Mesh the call returns the structured `success:false` err
 PATCH-like write over Hub Mesh's hub-level settings; every parameter optional, validation fires before any hub call, and each applied field is echoed in `applied` (a mid-way leg failure returns `success:false` with `applied` carrying what already committed). Legs, in apply order:
 
 - `enabled` → `/hub/advanced/enableHubMesh|disableHubMesh`. ⚠️ Takes effect only after a hub REBOOT (`hub_reboot`); the tool never reboots on its own.
-- `full_refresh_interval` → `/device/setHubMeshFullRefreshInterval/<s>`; only 0 (never), 120, 300, or 3600 — the values the hub's own picker offers.
-- `mode_hub_id` → `/device/followModes/<hubId|none>`; a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `'none'` for local modes.
-- `peer_hub_id` + `peer_token` (TOGETHER) → `POST /device/setHubMeshToken`; stores that peer's mesh token here, needed when the peer has UI login security. Read the token on the PEER via its own `hub_get_hub_mesh(include_token=true)`. An all-digits `peer_hub_id` is sent as a JSON number, matching the hub UI's wire format.
+- `fullRefreshInterval` → `/device/setHubMeshFullRefreshInterval/<s>`; only 0 (never), 120, 300, or 3600 — the values the hub's own picker offers.
+- `modeHubId` → `/device/followModes/<hubId|none>`; a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `'none'` for local modes.
+- `peerHubId` + `peerToken` (TOGETHER) → `POST /device/setHubMeshToken`; stores that peer's mesh token here, needed when the peer has UI login security. Read the token on the PEER via its own `hub_get_hub_mesh(includeToken=true)`. An all-digits `peerHubId` is sent as a JSON number, matching the hub UI's wire format.
 
 Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`fields.meshEnabled`), not this tool; `fields.meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
 
@@ -12096,13 +12059,13 @@ Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabl
 The hub-LEVEL settings above are `hub_update_hub_mesh`; the per-entity share/link operations are folded into the device and variable tools (no dedicated tools):
 
 - **Share a device** into the mesh: `hub_update_device(deviceId, fields={meshEnabled: true|false}, confirm=true)`. Its full reference is `hub_get_tool_guide(section='update_device')`.
-- **Link a device** a peer shares: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedDevices[]`. On the resulting LINKED device, `hub_update_device(fields={meshFullSync: true}, confirm=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh.
+- **Link a device** a peer shares: `hub_create_device(meshSourceHubId, meshSourceDeviceId, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedDevices[]`. On the resulting LINKED device, `hub_update_device(fields={meshFullSync: true}, confirm=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh.
 - **Unlink a device**: `hub_delete_device(deviceId, confirm=true)` — removes only the local proxy; warns on `appsUsing`, and distinctly when it could not check.
-- **Share a variable**: `hub_set_variable(name, mesh_shared=true|false)` (hub variables only).
-- **Link a variable** a peer shares: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedHubVariables[]`. The variable references are in `hub_get_tool_guide(section='variables')`.
+- **Share a variable**: `hub_set_variable(name, meshShared=true|false)` (hub variables only).
+- **Link a variable** a peer shares: `hub_create_variable(meshSourceHubId, meshSourceName, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedHubVariables[]`. The variable references are in `hub_get_tool_guide(section='variables')`.
 - **Unlink a variable**: `hub_delete_variable(name, confirm=true)` on the local mirror (its DECORATED `"<var> on <peer>"` name) — removes only the local copy, peer untouched; needs `force=true` when a real local app uses it OR when that use can't be confirmed (`inUseByApps` true or unreadable), not when `inUseByApps` is confirmed false. Teardown order: unlink on the linking hub(s) first, THEN unshare on the owner (unsharing first strands the mirrors). Full reference in `hub_get_tool_guide(section='variables')`.
 
-The `createLinked` GET returns 200 with an empty body even when nothing links, so the link tools read mesh state back: a confirmed non-link (the source still shows `linkedLocally:false` in `hub_get_hub_mesh`) returns a FAILURE, not a soft warning; only an unreadable mesh list warns. A no-op is usually transient — the mesh takes time to re-establish a peer connection after that peer reboots/updates and briefly no-ops during that window, then clears — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
+The `createLinked` GET returns 200 with an empty body even when nothing links, so the link tools read mesh state back: a confirmed non-link (the source still shows `linkedLocally:false` in `hub_get_hub_mesh`) returns a FAILURE, not a soft warning; only an unreadable mesh list warns. A no-op is usually transient — the mesh takes time to re-establish a peer connection after that peer reboots/updates and briefly no-ops during that window, then clears — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peerHubId, peerToken)`, read from the peer's OWN `hub_get_hub_mesh(includeToken=true)`).
 
 ### hub_update_package
 
@@ -12212,7 +12175,7 @@ If even one selected value exceeds the response budget, the tool returns `conten
 Hub Mesh shares devices between Hubitat hubs on the same LAN (not the Z-Wave/Zigbee radio mesh). Three device operations, split across tools:
 
 - **Share / unshare** one of THIS hub's devices into the mesh: `hub_update_device(deviceId, fields={meshEnabled: true|false}, confirm=true)`. No dedicated tool — it is a device property. (`meshFullSync` is NOT a share flag: it applies to a LINKED device, below.)
-- **Link** a device a PEER hub shares onto this hub: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedDevices[]` (`hubId` + `deviceId`). The result carries the new local `deviceId` (resolved by a `localLinkedDevices` diff). On that resulting linked device, `hub_update_device(fields={meshFullSync: true}, confirm=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh. Linking a device already linked here returns `success` with `alreadyLinked:true` (no fresh link is issued). The `createLinked` GET returns 200 with an empty body even when nothing actually links, so the tool reads mesh state back and keys on the source: if the device links (it drops out of `availableLinkedDevices[]` or its row flips `linkedLocally:true`) you get `success` with the new id; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
+- **Link** a device a PEER hub shares onto this hub: `hub_create_device(meshSourceHubId, meshSourceDeviceId, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedDevices[]` (`hubId` + `deviceId`). The result carries the new local `deviceId` (resolved by a `localLinkedDevices` diff). On that resulting linked device, `hub_update_device(fields={meshFullSync: true}, confirm=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh. Linking a device already linked here returns `success` with `alreadyLinked:true` (no fresh link is issued). The `createLinked` GET returns 200 with an empty body even when nothing actually links, so the tool reads mesh state back and keys on the source: if the device links (it drops out of `availableLinkedDevices[]` or its row flips `linkedLocally:true`) you get `success` with the new id; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peerHubId, peerToken)`, read from the peer's OWN `hub_get_hub_mesh(includeToken=true)`).
 - **Unlink** a linked device: `hub_delete_device(deviceId, confirm=true)`. This removes ONLY the local proxy; the source device on the peer hub is untouched. The tool warns when the linked device is in use by local apps (`appsUsing`), which will break.
 
 Read the current mesh state (shared/linked/available lists, per-device `appsUsing`) with `hub_get_hub_mesh`; the hub-level mesh settings are in `hub_update_hub_mesh`.
@@ -12460,16 +12423,16 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 - Covers radio details (firmware, home/PAN ID, channel, device nodes), mesh topology, per-node state, lifecycle status pollers, channel scan, SmartStart entries, and firmware-eligible devices.
 - Pairs with the write tools in hub_manage_radio (hub_set_zwave / hub_set_zigbee / hub_call_zwave / hub_call_zigbee / hub_call_matter) and the destructive resets/firmware in hub_call_destructive_ops.
-- include_topology shape (Z-Wave/Zigbee only): Z-Wave returns nodes+connectors plus the raw route table; Zigbee returns children+neighbors+routes.
-- node_id result location: Z-Wave node state lands under result.nodeState (plain text; 'Done' when idle); Matter commissioning status (radio='matter') lands under result.matterPairStatus.
-- include_status (result.status) contents: Z-Wave repair stage, heal-running flag, exclusion status, join discovery, antenna-test progress, node-replace status/info, and Zigbee network status (panId/extendedPanId/networkState). Matter commissioning status is per-node instead: radio='matter' + node_id.
-- include_channel_scan: run a fresh scan with hub_call_zigbee action='channel_scan' first, then read result.channelScan.
-- include_smartstart: each entry's nodeDSK feeds hub_call_zwave action='smartstart_delete'.
-- include_firmware: shape {devices:[{nodeId,label}], files}; feeds hub_call_destructive_ops firmware actions. With node_id it adds `firmware.node`: `details` (the device's firmware targets), `available` (updates the hub's firmware service offers, each with an updateId), `progress`, and `batchCandidates` (other nodes a batch run can include, Z-Wave JS).
-- include_status also carries `zwaveJs` (Z-Wave JS readiness, version and interview progress), `zwaveLocalBackup` ({available, entitled, firmwareVersion, zwaveJSVersion}) and `zwaveFirmwareBatch` (a batch firmware run; "requires Z-Wave JS" on the legacy stack).
-- node_id on a Z-Wave JS hub also returns `nodeDetails` (interview state and the node's command classes with their methods, which feed hub_call_zwave cc_command) and `linkReliability` (the link test status).
-- include_devices (Zigbee): every Zigbee device with `lastMessage` (the last radio message the hub received) and `minutesSinceLastMessage`; silent devices sort first. Use it to find Zigbee devices that have dropped off the mesh.
-- backup_job_id: the stage, percent and report of a Z-Wave backup, import or restore job (`zwaveBackupJob`).
+- includeTopology shape (Z-Wave/Zigbee only): Z-Wave returns nodes+connectors plus the raw route table; Zigbee returns children+neighbors+routes.
+- nodeId result location: Z-Wave node state lands under result.nodeState (plain text; 'Done' when idle); Matter commissioning status (radio='matter') lands under result.matterPairStatus.
+- includeStatus (result.status) contents: Z-Wave repair stage, heal-running flag, exclusion status, join discovery, antenna-test progress, node-replace status/info, and Zigbee network status (panId/extendedPanId/networkState). Matter commissioning status is per-node instead: radio='matter' + nodeId.
+- includeChannelScan: run a fresh scan with hub_call_zigbee action='channel_scan' first, then read result.channelScan.
+- includeSmartStart: each entry's nodeDSK feeds hub_call_zwave action='smartstart_delete'.
+- includeFirmware: shape {devices:[{nodeId,label}], files}; feeds hub_call_destructive_ops firmware actions. With nodeId it adds `firmware.node`: `details` (the device's firmware targets), `available` (updates the hub's firmware service offers, each with an updateId), `progress`, and `batchCandidates` (other nodes a batch run can include, Z-Wave JS).
+- includeStatus also carries `zwaveJs` (Z-Wave JS readiness, version and interview progress), `zwaveLocalBackup` ({available, entitled, firmwareVersion, zwaveJSVersion}) and `zwaveFirmwareBatch` (a batch firmware run; "requires Z-Wave JS" on the legacy stack).
+- nodeId on a Z-Wave JS hub also returns `nodeDetails` (interview state and the node's command classes with their methods, which feed hub_call_zwave cc_command) and `linkReliability` (the link test status).
+- includeDevices (Zigbee): every Zigbee device with `lastMessage` (the last radio message the hub received) and `minutesSinceLastMessage`; silent devices sort first. Use it to find Zigbee devices that have dropped off the mesh.
+- backupJobId: the stage, percent and report of a Z-Wave backup, import or restore job (`zwaveBackupJob`).
 - radio='matter' also returns `wifiCredentials`: the networks the hub sees, the selected and stored SSID, and whether a password is stored (never the password).
 
 ### hub_get_device_health (device-staleness check + LAN/WAN network probes)
@@ -12588,12 +12551,13 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 - **hub_list_device_dependents** — check it before deleting, disabling or replacing a device. `appsUsing` rows carry id, name (the app type), label, trueLabel and disabled.
 - **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
   - The page's links are in `page.hrefs`: `{page, title}` for a sub-page, `{url, title}` for an external link, with the summary the page prints under a link as `description`. A sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
-  - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
+  - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its id (this tool returns it as control_id; the form tools take and return controlId) after opening the same page.
   - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds; a `page.hrefs` entry whose summary holds one (the main page's action link) carries the same `disabled` list. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
-  - Each input is the field hub_set_native_app(operation='form') returns; a device picker adds `selected`, its devices with labels. `unsupported` lists page parts a form cannot drive, such as a community app's create button. When the page cannot be modelled, `formError` says why: inputs carry no values and there are no controls.
+  - Each input carries the fields hub_set_native_app(operation='form') returns, spelled snake_case here (submit_on_change, option_keys) where the form results use camelCase; a device picker adds `selected`, its devices with labels. `unsupported` lists page parts a form cannot drive, such as a community app's create button. When the page cannot be modelled, `formError` says why: inputs carry no values and there are no controls.
   - `appType.namespace` and `appType.name` name the type; `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
   - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs read as in the form tools: a password input carries no value and `redacted: true`; a credential-named input reads the marker. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - `includeStatus=true` adds the app's App Status lists, for any app and also with `summary=true`: `appState` (the app's stored state as `[{name, value}]`; a community app's working data, a webCoRE piston's definition, logs and trace), `eventSubscriptions` and `scheduledJobs`. With Hide passwords and credentials on, a value whose name looks like a credential reads `***redacted (password)***`, also inside nested maps (a rule's local variables); `statusRedactionNote` says so. Access tokens (an `accessToken` entry, each per-client token in `clientTokens`) read `***redacted (access token)***` whenever Hide access tokens is on, and always for a per-client token; `statusRedactionNote` also says whether an app's stored token is shown; for a per-client token it says both are always hidden. A status page that carried no app state reads `appState: []` with `appStateMissing: true`, unlike an app whose state is empty. When the lists would push the response past the size cap (a webCoRE piston's state can), `appState` lists names only with its values omitted, `statusTruncated` is true and `statusTruncatedNote` says what was cut; if that is still too large, `eventSubscriptions` and `scheduledJobs` are cut too, with `eventSubscriptionsTotal` / `scheduledJobsTotal` giving their full counts, and as a last resort `appState` is left out with `appStateTotal` giving its count. When the status page cannot be read the three lists are omitted and `statusNote` says why. hub_get_rule counts a rule's subscriptions and jobs from the same read.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
@@ -12621,25 +12585,21 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - Data-quality warning types in dataQualityWarnings[]: heid-whitespace-normalized (padded heID normalized; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid, skipped-malformed-component
   - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via hub_update_app are not detectable
 
-### hub_manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules
+### hub_manage_native_rules_and_apps (11 tools) — read, trigger, AND full CRUD on native RM rules
 
-RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
-(These four tools and hub_get_rule_health are also in hub_manage_rule_machine. The reads, hub_list_rules and hub_get_rule_health, are also in hub_read_rules.)
+Rule runtime control surface (hub_list_rules = Read master; hub_call_rule and the private boolean = Write master):
+(hub_list_rules, hub_call_rule, hub_set_rule_private_boolean and hub_get_rule are also in hub_manage_rule_machine, with hub_set_rule. The reads hub_list_rules and hub_get_rule are also in hub_read_rules.)
 
-- **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live **status** — "active" | "paused" | "stopped" | "disabled" | "unknown" — plus **disabled** / **paused** booleans (omitted on the "unknown" path) and, only when detected, **requiredExpressionFalse: true**.
-  - **disabled** is the app's red-X enable/disable flag, read straight from /hub2/appsList (data.disabled).
-  - **paused** is decoration-detected. Rule Machine surfaces a paused rule ONLY as a "(Paused)" suffix appended to the app's /hub2/appsList name; the RMUtils label for the same rule stays clean (live-verified). So the appsList name and the RMUtils label are BOTH HTML-stripped (tags removed, entities decoded, trimmed — the appsList name comes decoded, the RMUtils label comes entity-escaped like "Heat On &lt;67" and can carry trailing spaces) and diffed: equal → no decoration; appsList == label + remainder → the remainder is the decoration ("(Paused)" ⇒ paused, "(Required Expression false)" ⇒ requiredExpressionFalse). A rule the user literally NAMED "... (Paused)" is NOT false-flagged: the RMUtils label carries the same suffix, so the remainder is empty.
-  - **stopped** is the runtime "(Stopped)" decoration after hub_call_rule(action="stop"), detected by the SAME appsList-vs-RMUtils-label diff the paused check uses (a rule literally NAMED "... (Stopped)" carries the suffix in both strings, so it is not false-flagged). The suffix is stripped from the returned label/name in the encoding they already use; hub_call_rule(action="start") removes it. CAVEAT: this decoration appears here only when the hub's list source decorates the label, which many firmwares do NOT do -- the authoritative stopped check is hub_get_rule_health's `stopped` field, which prefers explicit statusJson state and falls back to config-page markup when state is unavailable.
-  - **precedence** governs only the **status** summary (disabled > stopped > paused > active). The disabled/paused booleans are independent facts: a rule paused first and red-X disabled afterward keeps its "(Paused)" decoration, so it truthfully reads disabled:true AND paused:true with status:"disabled".
-  - **status "unknown"** is per-rule, not just per-list. Tree-level: /hub2/appsList was momentarily unreadable, so NO rule has data — the whole list is returned unfiltered (post-delete ghosts may linger) with a result-level **statusNote**. Per-entry: the tree read fine but ONE rule's node is under-populated (data.disabled absent, node name null, or the RMUtils label null), so just THAT rule is "unknown" while the rest keep real statuses. Either way the disabled/paused booleans are omitted (a value the data can't support is never asserted).
-  - This status detection covers Rule Machine rules. For the enabled/disabled state of other classic automation apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances'), whose entries carry a disabled flag.
-- **hub_call_rule** — trigger one or more RM rules (ruleId takes an id or an array; rule/actions dispatch the whole set in one RMUtils call, stop/start toggle per rule with per-rule results + failedRuleIds/remainingRuleIds on partial batches)
-  - action="rule" (default): full evaluation (triggers + conditions + actions)
-  - action="actions": run actions only, skip conditions
-  - action="stop": stop running actions
-  - action="start": restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged)
-- **hub_set_rule_paused** — pause (paused=true) or resume (paused=false) one or more rules in ONE call (ruleId takes an id or an array; multi-id batches existence-check every id first); reversible
-- **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only)
+- **hub_list_rules** — lists Rule Machine 5.x rules, each with a live **status** ("active" | "paused" | "stopped" | "disabled" | "unknown"), the **disabled** and **paused** booleans (omitted when unknown) and, only when detected, **requiredExpressionFalse: true**.
+  - **disabled** is the app's red-X flag from /hub2/appsList.
+  - **paused** and **stopped** come from Rule Machine's name decoration. The appsList name and the RMUtils label are compared with markup stripped and entities decoded; the text the appsList name adds — "(Paused)", "(Stopped)", "(Required Expression false)" — sets the flag. A rule literally NAMED "... (Paused)" or "... (Stopped)" carries the suffix in both strings and is not flagged. A stopped rule's label and name come back without the decoration, in the encoding they already use.
+  - The name shows one decoration at a time ("(Stopped)" hides "(Paused)"), so a decorated row also reads that rule's own paused/stopped state; undecorated rows make no extra read. If that read fails, the name decides and the row carries **statusSource: "name"**, with **statusSourceNote** listing those ids. Rule Machine refreshes the decoration when the rule's page renders: hub_call_rule(action="stop"/"start"/"pause"/"resume") renders it, so the list is current after an MCP stop, start, pause or resume (unless that render failed, which the call's note reports; hub_get_rule then reads the flag), while a stop made elsewhere shows once the rule's page is next opened.
+  - **status** precedence is disabled > stopped > paused > active; the booleans stay independent (a paused rule disabled later reads disabled:true, paused:true, status:"disabled").
+  - **unknown**: when /hub2/appsList cannot be read, every rule is unknown, the list is unfiltered (deleted rules may linger) and the result carries **statusNote**; when one rule's entry lacks data, only that rule is unknown.
+  - For one rule's state call hub_get_rule. Button Rules, Basic Rules and other classic apps (Room Lighting, Notifier, Button Controllers) are listed, with their disabled flag, by hub_list_apps (scope='instances'; nameFilter matches the app type too, so 'Button Rule' finds Button Rules), and Visual Rules by hub_get_visual_rule.
+- **hub_call_rule** — run, stop, start, pause or resume one or more rules (ruleId takes an id or an array): Rule Machine rules and Button Rules, and Visual Rules for pause, resume and (Visual Rule Builder 2.0 only) actions. Each rule is acted on in turn, with per-rule results and failedRuleIds/remainingRuleIds on a partial batch; see hub_call_rule below.
+- **hub_set_rule_private_boolean** — set the private boolean of one or more Rule Machine rules in one RMUtils dispatch (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only); hub_get_rule reads it back as health.privateBoolean. It is the only rule tool that dispatches through RMUtils, so the hub's per-app load limiter can refuse it: a refusal changes nothing, and a reset of the app runtime statistics (hub_delete_logs(mode='appRuntimeStats', confirm=true), or the server's automatic reset) followed by a retry clears it.
+- Every id is checked before anything is dispatched: an id with no app, or an app that is not a rule (the Rule Machine parent app, a Basic Rule, any other app), refuses the whole call, a batch included; a lookup that fails refuses it too, with success:false. The refusal names the tools that list each kind of rule id.
 
 Native CRUD (also requires the Write master):
 - **hub_set_native_app** — create, update or drive the forms of every classic app other than Rule Machine rules (see set_native_app_reference). Rule Machine rules use hub_set_rule.
@@ -12650,22 +12610,24 @@ Native CRUD (also requires the Write master):
 - **hub_import_native_app** — creates the app from that JSON under the parent of `parentHintAppId`; the import is active unless `stageDisabled`, with the same failure contract as clone.
 
 - Clone and import read the parent's child apps first: if that read fails nothing is created and the call can be retried, and an ambiguous new child is never guessed at. When staging reaches its continuation limit, the error keeps newAppId, stagedDisabled, stageFailures and stageRemaining: disable those apps directly instead of creating again.
-- **hub_get_rule_health** — read-only health check on any installed app (Rule Machine AND Visual Rules Builder). Args: appId, source (auto|ruleBuilderJson|configPage, default auto). Prefers the compiled-state verdict: the classic RM `broken` boolean (/app/ruleBuilderJson) or a graph Visual Rule's validationErrors (/app/ruleBuilder20Json); for classic RM the HTML render scan is retained as cross-check + fallback. Returns ok / broken / source / ruleFormat / label / paused / stopped / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / orphanedActionRows (leftover actType/actSubType rows that are not among the rule's actions -- diagnostic only, never affects ok) / validationErrors / issues (+ predicate when read). Pause state comes from the rule's compiled Boolean or status state; tagged runtime decoration is a fallback. `paused:null` means unknown. Explicit stopped state outranks config-page markup. Literal `(Paused)` and `(Stopped)` name suffixes are preserved; Visual Rule labels come from their own document unless configPage is forced. Embedded write-response health carries compiled paused only; the standalone read adds status/markup fallbacks, stopped, and live subscription/job counts.
+- **hub_get_rule** — read-only: one rule's health, document and local variables; see hub_get_rule below.
 
-For reading a native RM rule without editor renders, use hub_set_rule(operation='read'). hub_get_app_config remains available for native configuration diagnostics.
+hub_get_app_config remains available for native configuration diagnostics; with includeStatus=true it also returns any app's appState, eventSubscriptions and scheduledJobs.
 
 For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
 ### Safety model for native CRUD
 1. With backupBeforeRuleEdits on (default), each hub_set_rule update batch, and a native form workflow before its first step, saves a native snapshot to File Manager; backup.backupKey restores the configuration from before it. A failed snapshot stops the edit.
 2. Native form writes check field types and cardinality before submitting. An omitted input keeps its stored value; an unset input with a page default is saved with that default, as the browser does.
-3. A stored setting does not prove runtime behavior: check partial outcomes and hub_get_rule_health after a write.
+3. A stored setting does not prove runtime behavior: check partial outcomes and hub_get_rule after a write.
 4. Deletes are soft by default; force=true also removes children.
 
 ### CRUD workflow example
-  hub_set_rule(operation="create", args={parent_id:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true) → app_id
-  hub_get_rule_health(appId=<app_id>) → ok=true, no configPageError or brokenMarkers
-  hub_delete_native_app(appId=<app_id>, force=true, confirm=true) → {backup: {backupKey: "rm-rule_<app_id>_..."}}
+  hub_create_backup(confirm=true, bestPracticeKey=<backup key>) → a hub backup, which the writes below require within 24 hours
+  hub_set_rule(operation="create", args={parentId:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true, bestPracticeKey=<set_rule_reference key>) → ruleId
+  hub_get_rule(ruleId=<ruleId>) → health.ok=true, health.issues:[]
+  hub_delete_native_app(appId=<ruleId>, force=true, confirm=true, bestPracticeKey=<builtin_app_tools_crud key>) → {backup: {backupKey: "rm-rule_<ruleId>_..."}}
+  (bestPracticeKey is needed while mandatory guide acknowledgment is on, the default; reads take none.)
 
 ### hub_list_drivers (list device driver TYPES on the hub)
 
@@ -12678,40 +12640,34 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 ### hub_call_rule
 
-`action` selects which Rule Machine verb to invoke (default `rule`):
+`action` selects what to do (default `actions`):
 
-- **`rule`** → `runRule`: re-evaluate the rule's conditions, then run the matching true/false action set.
-- **`actions`**: click the rule's Run Actions button (`runAction`) to run the action list directly, skipping condition evaluation.
-- **`stop`**: halt the rule's in-progress actions.
-- **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged).
+- **`actions`**: run the rule's actions directly, skipping condition evaluation. A Rule Machine rule's Run Actions button (`runAction`) is clicked; a Visual Rule Builder 2.0 rule runs through its builder's run endpoint, whose conditions still pick the branch, and a run the hub declines comes back as success:false with the hub's own message. A Visual Rule Builder 1.0 rule has no run button, so `actions` naming one refuses the whole call before anything runs; pause and resume work on it.
+- **`stop`**: halt the rule's in-progress actions (Rule Machine only).
+- **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged; Rule Machine only).
+- **`pause`** / **`resume`**: pause or resume the rule; a paused rule does not fire on its triggers. A Rule Machine rule's Pause button (`pausRule`) is clicked; a Visual Rule is paused through its builder's pause endpoint, and its paused state is read again afterwards, so an endpoint success that left it unchanged returns success:false.
 
-`actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. Only `rule` still goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation).
+Every action on a Rule Machine rule drives the rule's own page buttons (`runAction`, `stopRule`, `pausRule`), one rule at a time, not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. `stop`, `start`, `pause` and `resume` read the rule's state first and leave a rule already in the target state alone (rmAction:"noop"), so they are safe to repeat; a repeated `actions` runs the actions again. After a stop, start, pause or resume click the rule's page is rendered once, so hub_list_rules shows the new status at once (when that render fails, the result's note says so and hub_list_rules may show the old status until the rule's page is next opened; repeating the call does not refresh it, since the rule is already in the target state, so check the flag with hub_get_rule), and the flag is read again: the hub accepts a click that changes nothing, so a flag still not in the target state returns success:false, and hub_get_rule shows where the rule ended up. `stop` or `start` naming a Visual Rule, which has no stop, refuses the whole call before anything runs. Send hub_call_rule calls one at a time: a toggle reads the rule's state and then clicks, so two overlapping calls on one rule can both click and undo each other (the read after the click reports it as success:false); to act on several rules, name them all in one call's `ruleId` array. An id with no app, or an app that is not a rule (the Rule Machine parent app, a Basic Rule, any other app), is refused for every action before anything is dispatched, as it is by hub_set_rule_private_boolean, which acts only on Rule Machine rules and Button Rules.
 
-### hub_get_rule_health
+### hub_get_rule
 
-Rule Machine, Visual Rules Builder, and the other supported classic apps (Button Controller, Basic Rule) share RM's configPage protocol.
+`hub_get_rule(ruleId, sections?, cursor?, limit?)` reads one Rule Machine rule, Button Rule or Basic Rule. It returns `ruleId`, `health`, `localVariables` and, for a Rule Machine 5.1 rule or Button Rule, the document hub_set_rule(operation='read') returns: `actions`, `conditions`, `triggers`, `expressions` and `settings`, all by default, or the ones named in `sections`; `sections: []` returns the health and local variables alone. A long rule's whole document can exceed the response size cap, so read its health with `sections: []` and its rows one section at a time. Page one section with `cursor` ("" first, then each `nextCursor`) and `limit` (1-100, default 50), exactly as the hub_set_rule read does (see set_rule_reference). A Basic Rule returns `health`, `localVariables: null` and its `settings` (the same `[{name, type, multiple, value, deviceIds}]` rows; whole, so `cursor` and `limit` are refused; `settingsError` says why when they cannot be read). Any other app returns `health`, `localVariables: null` and a `note`: a Visual Rule's definition is read with hub_get_visual_rule, any other app's configuration and App Status with hub_get_app_config(includeStatus: true).
 
-`ruleFormat` says which engine answered: `rm` / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
+- `localVariables`: `[{name, type, value}]`, the rule's own list, including a value the running rule just set. `type` is Rule Machine's token (integer, bigdecimal, string, boolean, datetime), the value a hub_set_rule variable change takes. A credential-named variable's value is hidden (`redacted:true`) while credential hiding is on. Hub globals are read with hub_list_variables.
+- If the local variables alone cannot be read, `localVariables` is null and `localVariablesError` says why; the health and the requested sections still return.
+- The read writes nothing and does not open the app's page, so it never runs the app's page code. A read that fails returns `success:false` with `error` and `note`; retrying it once is safe.
 
-The report surfaces the compiled-state broken verdict, validationErrors, config-page render errors, RM `*BROKEN*` / `**Broken Trigger|Action|Condition**` markers, multiple-flag corruption, structural IF/Repeat imbalance, and a compiled-vs-HTML cross-check.
+`health` has the same shape here, in hub_set_rule's read and in the update pre-check:
 
-**`source` parameter — which source(s) to read:**
-- `auto` (default): the preferred compiled-state verdict plus the RM HTML render detections + a cross-check.
-- `ruleBuilderJson`: the compiled-state verdict only.
-- `configPage`: the legacy RM HTML render scan only.
+- `ruleFormat` says what was inspected: `rm` (any Rule Machine rule or Button Rule) / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
+- **Rule Machine**: `broken` comes from the rule's own broken() check (a Rule Machine 5.1 rule or Button Rule; an older rule type reports its stored flag), so a rule whose trigger device was deleted reads broken without anyone opening it. That check misses a condition whose device was deleted, so a Rule Machine 5.1 rule or Button Rule with any `brokenRows` entry also reads `broken:true` and `ok:false`, and an issue says Rule Machine's own check does not flag it. `brokenRows` (`[{kind: trigger|action|condition, id, setting, text?}]`) lists each row in use (a trigger, an action in the action list, or a condition an action, the Required Expression or a trigger's Conditional Trigger uses) whose device setting no longer names a device: `id` is the row's native id, the one hub_set_rule changes and operation:'form' use (trigger 2 is `tDev2`), `setting` the setting that lost its device, and `text` the trigger's or condition's stored description. A row that is broken for another reason (a deleted variable) is not listed, so `broken:true` with no rows means the broken row has no device setting. `brokenRows` is null when it was not listed because the rule's compiled state or settings went unread; checkErrors says which. `disabledActions` and `disabledTriggers` (native ids of rows switched off; `[]` when none), `structuralIssues` (the IF/Repeat block and expression check hub_set_rule runs) and `privateBoolean`.
+- **Visual Rules Builder**: the engine's own verdict, a graph rule's `validationErrors` (broken when non-empty), and its pause state from its builder, with the rule's own name as `label`.
+- **Other apps** (Basic Rule, Button Controller, Room Lighting, user and community apps): label, red-X flag and the state flags below; `broken` is null.
+- `paused`, `stopped` and `privateBoolean` come from the app's state on its App Status page. A Rule Machine rule with no `paused` or `stopped` entry reads `false`, and so does a Basic Rule with no `paused` entry; for an app whose state has no flag, or when the status page cannot be read, the name's "(Paused)" or "(Stopped)" decoration is used. `privateBoolean` has no such fallback. An entry stored as neither true nor false reads null with a `checkErrors` entry; neither the compiled state nor the name's decoration replaces it. `label` has the decoration removed. `disabled` is the red-X flag.
+- `eventSubscriptionCount` and `scheduledJobCount` count the app's live subscriptions and scheduled jobs from the same read; the lists themselves come from hub_get_app_config(includeStatus=true).
+- A value the hub does not return reads null.
 
-`unreadable:true` with `ok:false` means health could not be established, not proof of breakage. Read hub_get_rule_health for current diagnostics. Native document writes independently check editor diagnostics, expression references, block structure and activation status; runtime behavior still needs verification.
-
-### hub_list_rule_local_variables
-
-List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals). Requires the Read master.
-
-- Hub globals are covered by hub_list_variables; native locals are read/written through hub_set_rule(operation='read') / hub_set_rule(operation='update') variable changes.
-- Reads the rule's `statusJson` appState: names and types from `allLocalVars`, current values from each variable's live `lv_<name>` entry (`allLocalVars` keeps the old value after an action sets the variable until someone opens the rule's page).
-- Pure read -- no wizard, no mutation.
-- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is Rule Machine's own token (integer, bigdecimal, string, boolean, datetime), the same value a hub_set_rule variable change takes; the rule page shows it as Number, Decimal, String, Boolean, DateTime.
-
-- Use to confirm a local exists (and its type) before targeting it with a Set Variable action or a hub_set_rule variable change.
+`ok:true` means everything was read and nothing is wrong. `ok:false` with `unreadable:false` means `issues` names a problem or `checkErrors` names a read that failed, leaving part of the rule unchecked; `unreadable:true` means nothing could be read, which is not evidence of breakage. A `checkErrors` entry is not evidence about the rule either. A Rule Machine rule whose `broken` could not be read always has a `checkErrors` entry, so `broken:null` never reads `ok:true`; hub_set_rule(operation='update') refuses a rule with `broken:null`, whose compiled state went unread (`disabledActions:null`), or whose settings went unread (`brokenRows:null`, since Rule Machine's own check misses a deleted condition device), before any backup or write. A structural issue is expected while a block is built across several calls; finish it with a hub_set_rule(operation='update') terminator change, and compare with hub_get_rule(sections=['actions']) before considering a restore. hub_set_rule(operation='update') refuses a rule that is already broken before any backup or write, naming each broken row by kind and native id.
 
 ### hub_delete_native_app
 
@@ -12794,7 +12750,7 @@ The returned `source` field says which one matched (the hub-variable namespace i
 
 ### hub_set_variable: increment
 
-`increment` (a number, negative to subtract) adds to a Number or Decimal hub variable in one hub operation (the platform's addValueToGlobalVar), so two clients incrementing at once cannot lose an update the way a read-then-set can. Send it alone (not with `value` or `mesh_shared`). The result carries `previousValue` and the new `value`, read just before and just after the add, so another client's change in between shows in them; a Number variable rounds a fractional result. A variable linked from another hub over Hub Mesh cannot be incremented here. Because a retried increment adds again, check `value` before retrying a call whose response was lost.
+`increment` (a number, negative to subtract) adds to a Number or Decimal hub variable in one hub operation (the platform's addValueToGlobalVar), so two clients incrementing at once cannot lose an update the way a read-then-set can. Send it alone (not with `value` or `meshShared`). The result carries `previousValue` and the new `value`, read just before and just after the add, so another client's change in between shows in them; a Number variable rounds a fractional result. A variable linked from another hub over Hub Mesh cannot be incremented here. Because a retried increment adds again, check `value` before retrying a call whose response was lost.
 
 ### hub_list_variables: type
 
@@ -12854,10 +12810,10 @@ On current firmware the hub reports which apps use the connector device. Without
 
 Hub Mesh shares hub variables between Hubitat hubs on the same LAN (not the Z-Wave/Zigbee radio mesh). Two variable operations, folded into the existing tools:
 
-- **Share / unshare** one of THIS hub's variables into the mesh: `hub_set_variable(name, mesh_shared=true|false)`. `mesh_shared` may stand alone or accompany a `value` write. It applies only to HUB variables — a rule_engine-only name is rejected. The result reports `meshShared` and `meshShareConfirmed` (null when the `sharedHubVariables` read-back is unavailable).
-- **Link** a variable a PEER hub shares onto this hub: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedHubVariables[]` (`hubId` + `name`), and is mutually exclusive with the create forms (`name`/`type`/`value` or `variables`). The `createLinkedHubVar` GET returns 200 with an empty body even when nothing links, so the tool reads mesh state back and keys on the source: if the variable links (its name appears in `localLinkedHubVariables[]`, or its `availableLinkedHubVariables[]` row flips `linkedLocally:true`) you get `success`; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
+- **Share / unshare** one of THIS hub's variables into the mesh: `hub_set_variable(name, meshShared=true|false)`. `meshShared` may stand alone or accompany a `value` write. It applies only to HUB variables — a rule_engine-only name is rejected. The result reports `meshShared` and `meshShareConfirmed` (null when the `sharedHubVariables` read-back is unavailable).
+- **Link** a variable a PEER hub shares onto this hub: `hub_create_variable(meshSourceHubId, meshSourceName, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedHubVariables[]` (`hubId` + `name`), and is mutually exclusive with the create forms (`name`/`type`/`value` or `variables`). The `createLinkedHubVar` GET returns 200 with an empty body even when nothing links, so the tool reads mesh state back and keys on the source: if the variable links (its name appears in `localLinkedHubVariables[]`, or its `availableLinkedHubVariables[]` row flips `linkedLocally:true`) you get `success`; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peerHubId, peerToken)`, read from the peer's OWN `hub_get_hub_mesh(includeToken=true)`).
 - **Unlink** a variable a peer shares (remove this hub's local mirror): `hub_delete_variable(name, confirm=true)` on the LOCAL mirror. The mirror shows up as an ordinary local hub variable whose display name is DECORATED (`"<sourceVar> on <peerName>"`) — pass that decorated name. Unlinking removes only THIS hub's local copy; the peer's source variable is untouched. It needs `force=true` when a real local app uses the mirror (the mesh row's `inUseByApps` is `true`) OR when that use can't be confirmed (the row is missing / `inUseByApps` unreadable); only a clean unlink (`inUseByApps:false`) does NOT require force, even though the hub's generic in-use registry always marks a mirror in-use (that registration is the mesh link itself, not a consumer). A successful unlink returns `unlinked:true`.
-- **Teardown ORDER matters.** To fully undo a shared→linked variable, unlink on the linking hub(s) FIRST (`hub_delete_variable` there), THEN unshare on the owner (`hub_set_variable(name, mesh_shared=false)`). Unsharing first silently STRANDS the mirrors: the owner hub cannot see or notify who linked its variable, so each linking hub keeps a stale local copy (last value, no orphan flag) that consuming apps keep reading. The unshare result carries a caution to this effect.
+- **Teardown ORDER matters.** To fully undo a shared→linked variable, unlink on the linking hub(s) FIRST (`hub_delete_variable` there), THEN unshare on the owner (`hub_set_variable(name, meshShared=false)`). Unsharing first silently STRANDS the mirrors: the owner hub cannot see or notify who linked its variable, so each linking hub keeps a stale local copy (last value, no orphan flag) that consuming apps keep reading. The unshare result carries a caution to this effect.
 
 Read the current mesh variable state (shared/linked/available lists) with `hub_get_hub_mesh`.
 '''
@@ -12959,7 +12915,7 @@ Reference for the bundle tools (hub_install_bundle, hub_list_bundles, hub_delete
 ### hub_delete_bundle
 
 - `bundleId` is the bundle id from hub_list_bundles. The hub's record of the bundle is read before the delete is sent, because the hub reports success for any id: an unknown id returns `success:false` ("No bundle with id N") and an unreadable record returns `success:false`, both with nothing deleted.
-- Without `deleteCode` only the bundle is removed; the apps, drivers and libraries it delivered stay in Code. Delete those with hub_delete_item(type, item_id) per item.
+- Without `deleteCode` only the bundle is removed; the apps, drivers and libraries it delivered stay in Code. Delete those with hub_delete_item(type, itemId) per item.
 - `deleteCode:true` also deletes the code ids the hub stored for the bundle (the bundle's `codeIds`). Each id is first looked up in its code list: an id with no code behind it (deleted since the install) is refused up front, naming it in `missingCode`, because the hub's delete fails part-way on it; delete the bundle without `deleteCode`, then each remaining item with hub_delete_item. Every item is backed up first (`backupFiles`), and the backups are kept until the delete has run. The sources are read and checked against the backup storage budget (`backupBudgetMb`) before any backup is written, so a source that cannot be read, or backups that would exceed the budget, leave nothing written. If a backup then cannot be written, nothing is deleted, and `backupFiles` lists the backups already written.
 - The hub keeps delivered code that is still in use (an installed app, a device, or code that #includes a library) and still reports success. The result lists `codeDeleted` and `codeKept` (type, id, name), and `codeUnverified` when a code list could not be read afterwards. For `codeKept`, remove the app instances or switch the devices to another driver, then delete each item with hub_delete_item. Deleting a library may break apps and drivers that #include it.
 - **Unconfirmed delete:** when the hub refuses the delete, answers something unrecognized, or the request fails, the result is `success:false` and the bundle is read again: `bundleExists` says whether it is still there (null when unknown) and, with `deleteCode`, `codeDeleted` / `codeKept` / `codeUnverified` say where each item stands, since the hub can delete part of the code before it reports failure. Check hub_list_bundles before retrying.
@@ -13051,7 +13007,7 @@ def getToolGuideSubSections() {
             builtin_app_tools_apps: ["hub_read_apps_code", "hub_list_drivers", "hub_list_hpm_packages",
                                      "hub_list_device_dependents"],
             builtin_app_tools_rules: ["hub_manage_native_rules_and_apps", "hub_call_rule",
-                                      "hub_get_rule_health", "hub_list_rule_local_variables"],
+                                      "hub_get_rule"],
             builtin_app_tools_crud: ["Safety model for native CRUD", "CRUD workflow example",
                                      "hub_delete_native_app",
                                      "hub_clone_native_app", "hub_export_native_app",
