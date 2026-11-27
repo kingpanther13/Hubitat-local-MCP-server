@@ -486,6 +486,32 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.count == 1
     }
 
+    def "hub_list_drivers nameFilter matches the name only, not the driver's type"() {
+        given:
+        enableRead()
+        hubGet.register('/device/drivers') { params ->
+            '{"drivers":[{"id":837,"name":"Virtual Switch","namespace":"hubitat","type":"sys"}]}'
+        }
+
+        expect:
+        script.toolListHubDrivers([include: 'all', nameFilter: 'sys']).drivers == []
+    }
+
+    def "hub_list_drivers include=user keeps each row's type, and nameFilter still matches the name only"() {
+        given: "the user list returns rows whole, type included, so a type match would show here"
+        enableRead()
+        hubGet.register('/hub2/userDeviceTypes') { params ->
+            '[{"id":901,"name":"Porch Sensor","namespace":"me","type":"usr"},{"id":902,"name":"usr helper","namespace":"me","type":"usr"}]'
+        }
+
+        when:
+        def result = script.toolListHubDrivers([include: 'user', nameFilter: 'usr'])
+
+        then:
+        result.drivers*.id == [902]
+        result.drivers[0].type == 'usr'
+    }
+
     def "hub_list_drivers include=all pages without a cursor; include=user stays whole"() {
         given: 'sixty drivers in each list'
         enableRead()

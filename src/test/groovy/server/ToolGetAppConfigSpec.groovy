@@ -16,6 +16,8 @@ import support.ToolSpecBase
  *  - pageName arg: URL includes the page segment
  *  - includeSettings=false (default): settings key absent, settingsNote present
  *  - includeSettings=true: settings key populated
+ *  - includeStatus=true: appState, eventSubscriptions and scheduledJobs from the one App Status read,
+ *    credential-named appState values masked; a failed status read leaves the page read standing
  *  - summary=true: identity-only fast path via /installedapp/json (pass-through + namespace + error paths)
  *  - Empty hub response: returns success=false
  *  - Unknown appId (hub returns {app:null}): 'missing app' fingerprint, success=false
@@ -827,6 +829,833 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    // -------------------------------------------------------------------------
+    // includeStatus flag
+    // -------------------------------------------------------------------------
+
+    // statusJson as the hub serves it: appState is a LIST of {name, value} rows.
+    private void registerAppStatus(List appState, int appId = 35) {
+        hubGet.register("/installedapp/statusJson/${appId}".toString()) { params ->
+            JsonOutput.toJson([installedApp: [id: appId], appSettings: [],
+                               eventSubscriptions: [[deviceId: 12, name: 'switch', handler: 'handler']],
+                               scheduledJobs: [[handler: 'poll', nextRunTime: '2026-11-20T10:00:00+0000']],
+                               appState: appState])
+        }
+    }
+
+    def "includeStatus=true returns appState, eventSubscriptions and scheduledJobs, credential-named values hidden at any depth"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'paused', value: false],
+                           [name: 'apiKey', value: 'secret-api-key'],
+                           [name: 'allLocalVars', value: [counter: [type: 'integer', value: 3], doorCode: [type: 'string', value: '4321']]],
+                           [name: 'lv_doorCode', value: [type: 'string', value: '4321']],
+                           [name: 'history', value: [[when: 1, alarmPin: '9999'], 'plain']],
+                           [name: 'batches', value: [[[apiKey: 'nested-api-key']], 'plain']]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.success == true
+        result.eventSubscriptions == [[deviceId: 12, name: 'switch', handler: 'handler']]
+        result.scheduledJobs == [[handler: 'poll', nextRunTime: '2026-11-20T10:00:00+0000']]
+        result.appState.find { it.name == 'paused' }.value == false
+        result.appState.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        result.appState.find { it.name == 'allLocalVars' }.value.counter == [type: 'integer', value: 3]
+        result.appState.find { it.name == 'allLocalVars' }.value.doorCode == '***redacted (password)***'
+        result.appState.find { it.name == 'lv_doorCode' }.value == '***redacted (password)***'
+        result.appState.find { it.name == 'history' }.value == [[when: 1, alarmPin: '***redacted (password)***'], 'plain']
+        result.appState.find { it.name == 'batches' }.value == [[[apiKey: '***redacted (password)***']], 'plain']
+        and: 'a row masked by name, whole or nested, is marked; a plain row carries no key'
+        ['apiKey', 'allLocalVars', 'lv_doorCode', 'history', 'batches'].every { n -> result.appState.find { it.name == n }.redacted == true }
+        !result.appState.find { it.name == 'paused' }.containsKey('redacted')
+        result.statusRedactionNote.contains('***redacted (password)***')
+        !JsonOutput.toJson(result).contains('4321') && !JsonOutput.toJson(result).contains('secret-api-key')
+        !JsonOutput.toJson(result).contains('nested-api-key')
+        hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
+    }
+
+    // Live (C-7): a rule local whose value was a URL with token= came back in clear in appState while settings masked it.
+    def "includeStatus masks a secret URL query value and a URL password in appState strings, nested ones too"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'allLocalVars', value: [note: [type: 'string', value: 'http://x.invalid/?token=QTOK333']]],
+                           [name: 'endpoint', value: 'http://user:UPW444@h/x'],
+                           [name: 'plainUrl', value: 'http://192.0.2.1:8080/x?mode=on']])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+        Map state = result.appState.collectEntries { [(it.name): it.value] }
+        Map rows = result.appState.collectEntries { [(it.name): it] }
+
+        then:
+        state.allLocalVars.note.value == 'http://x.invalid/?token=***redacted (password)***'
+        state.endpoint == 'http://user:***redacted (password)***@h/x'
+        rows.allLocalVars.redacted == true
+        rows.endpoint.redacted == true
+        rows.plainUrl == [name: 'plainUrl', value: 'http://192.0.2.1:8080/x?mode=on']
+        !JsonOutput.toJson(result).contains('QTOK333') && !JsonOutput.toJson(result).contains('UPW444')
+    }
+
+    def "a URL password in a setting is masked in settings and in the page text"() {
+        given:
+        settingsMap.enableRead = true
+        String url = 'http://user:USERPW888@192.0.2.1/x?mode=on'
+        def sections = [[title: '', input: [], body: [[element: 'paragraph', description: "GET ${url} then".toString()]]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null, sections: sections],
+                               settings: ['httper.1': url]])
+        }
+        registerStatusJson(['httper.1': 'text'])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.settings['httper.1'] == 'http://user:***redacted (password)***@192.0.2.1/x?mode=on'
+        result.page.sections[0].paragraphs[0] == 'GET http://user:***redacted (password)***@192.0.2.1/x?mode=on then'
+        !JsonOutput.toJson(result).contains('USERPW888')
+        result.settingsRedactionNote.contains("the password in a URL's user:password@")
+    }
+
+    def "includeStatus masks session cookies, bearer strings and psw names, and judges nested keys and rows by their names"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'hubSecurityCookie', value: 'JSESSIONID=abc123'],
+                           [name: 'hubSecurityCookieExpiry', value: 1700000000000L],
+                           [name: 'sessionId', value: 'sess-1'],
+                           [name: 'bearerAuth', value: 'Bearer xyz'],
+                           [name: 'mqttPsw', value: 'psw-1'],
+                           [name: 'lock', value: [code: '2468', battery: 90]],
+                           [name: 'users', value: [[name: 'apiKey', value: 'row-api-key'], [name: 'mode', value: 'Home']]],
+                           [name: 'lockCodes', value: ['1': [name: 'Guest', code: '1357']]]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+        Map state = result.appState.collectEntries { [(it.name): it.value] }
+
+        then: 'a live login is masked; metadata about it is not'
+        ['hubSecurityCookie', 'sessionId', 'bearerAuth', 'mqttPsw'].every { state[it] == '***redacted (password)***' }
+        state.hubSecurityCookieExpiry == 1700000000000L
+
+        and: "a bare code is judged after its parent's name, a {name, value} row by its name, and a secret-named map whole"
+        state.lock == [code: '***redacted (password)***', battery: 90]
+        state.users == [[name: 'apiKey', value: '***redacted (password)***'], [name: 'mode', value: 'Home']]
+        state.lockCodes == '***redacted (password)***'
+        !JsonOutput.toJson(result).contains('2468') && !JsonOutput.toJson(result).contains('1357') && !JsonOutput.toJson(result).contains('row-api-key')
+    }
+
+    // Live (C-7): a rule's page prints its local variables as a table whose text runs together, so a local masked in
+    // appState still came back in clear in page.sections[].paragraphs.
+    def "a value masked in appState is masked in the page text too, even run together with other words"() {
+        given:
+        settingsMap.enableRead = true
+        def sections = [[title: '', input: [], body: [
+            [element: 'paragraph', description: 'NameTypeValuePrivate BooleanBooleantrue%value%Value0e2eSessionCookieStringe2e-cookie-value']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null, sections: sections]])
+        }
+        registerAppStatus([[name: 'allLocalVars', value: [value: [type: 'integer', value: 0], e2eSessionCookie: [type: 'string', value: 'e2e-cookie-value']]]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState.find { it.name == 'allLocalVars' }.value.e2eSessionCookie == '***redacted (password)***'
+        result.page.sections[0].paragraphs == ['NameTypeValuePrivate BooleanBooleantrue%value%Value0e2eSessionCookieString***redacted (password)***']
+        !JsonOutput.toJson(result).contains('e2e-cookie-value')
+        hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
+    }
+
+    // Live (C-7): a local holding a URL prints in the control's locals table too, where its secret query value is
+    // masked as the same URL is in settings, though no credential-named value was masked elsewhere.
+    def "a URL local's secret query value is masked in a control's title"() {
+        given:
+        settingsMap.enableRead = true
+        String table = '<table class="mdl-data-table"><tr><td>e2eNote</td><td>String</td><td>http://x.invalid/?token=QTOK9</td></tr></table>'
+        def sections = [[title: '', input: [[element: 'input', name: 'localVars', type: 'button', title: table]], body: []]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null, sections: sections]])
+        }
+        script.metaClass._nrState = { Long id -> [:] }
+        script.metaClass._nrHandle = { Long id -> [getAllLocalVars: { -> [e2eNote: [type: 'string', value: 'http://x.invalid/?token=QTOK9']] }] as Expando }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        !JsonOutput.toJson(result).contains('QTOK9')
+        result.controls.find { it.name == 'localVars' }.title.contains('?token=***redacted (password)***')
+    }
+
+    // Live (C-7): the rule page's locals table also rides in a control's title as HTML, and the page prints it whether
+    // or not includeStatus read the app's state.
+    @spock.lang.Unroll
+    def "a Rule Machine rule's credential-named local is masked in page text and control titles (includeStatus=#withStatus)"() {
+        given:
+        settingsMap.enableRead = true
+        String table = '<style>.mdl-data-table tbody tr:hover{background-color:inherit}</style><table class="mdl-data-table"><tr><td>e2eSessionCookie</td><td>String</td><td>e2e-cookie-value</td></tr></table>'
+        def sections = [[title: '', input: [[element: 'input', name: 'localVars', type: 'button', title: table]], body: [
+            [element: 'paragraph', description: 'NameTypeValuePrivate BooleanBooleantrue%value%Value0e2eSessionCookieStringe2e-cookie-value']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null, sections: sections]])
+        }
+        registerAppStatus([[name: 'paused', value: false]])
+        script.metaClass._nrState = { Long id -> [:] }
+        script.metaClass._nrHandle = { Long id -> [getAllLocalVars: { -> [e2eSessionCookie: [type: 'string', value: 'e2e-cookie-value'], count: [type: 'integer', value: 12345]] }] as Expando }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: withStatus])
+        String text = JsonOutput.toJson(result)
+
+        then:
+        !text.contains('e2e-cookie-value')
+        result.page.sections[0].paragraphs == ['NameTypeValuePrivate BooleanBooleantrue%value%Value0e2eSessionCookieString***redacted (password)***']
+        result.controls.find { it.name == 'localVars' }.title.endsWith('e2eSessionCookieString***redacted (password)***')
+
+        where:
+        withStatus << [false, true]
+    }
+
+    def "a value masked in settings is masked in the page text too"() {
+        given:
+        settingsMap.enableRead = true
+        def sections = [[title: '', input: [], body: [[element: 'paragraph', description: 'Broker login: brokerPwd=hunter22 (saved)']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'App', install: true, refreshInterval: null, sections: sections], settings: [brokerPassword: 'hunter22']])
+        }
+        registerStatusJson([brokerPassword: 'text'])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.settings.brokerPassword == '***redacted (password)***'
+        result.page.sections[0].paragraphs == ['Broker login: brokerPwd=***redacted (password)*** (saved)']
+    }
+
+    def "includeStatus runs eventSubscriptions and scheduledJobs through the same masking before any truncation"() {
+        given: 'the live subscription shape, plus one whose data an app filled with a credential-named map'
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        Map live = [filter: 'true', handler: 'switchHandler', name: 'switch', subscriptionData: '3', type: 'DEVICE', typeId: 12, typeName: 'Kitchen']
+        Map url = live + [subscriptionData: 'http://x.test/hook?token=SUBTOK&room=den', type: 'LOCATION', typeId: null, typeName: null]
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], appState: [],
+                               eventSubscriptions: [live, live + [subscriptionData: [apiKey: 'sub-api-key']], url],
+                               scheduledJobs: [[handler: 'poll', data: [token: 'job-token']]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.eventSubscriptions[0] == live
+        result.eventSubscriptions[1].subscriptionData == [apiKey: '***redacted (password)***']
+        result.eventSubscriptions[2].subscriptionData == 'http://x.test/hook?token=***redacted (password)***&room=den'
+        !JsonOutput.toJson(result).contains('SUBTOK')
+        result.scheduledJobs == [[handler: 'poll', data: [token: '***redacted (password)***']]]
+        !JsonOutput.toJson(result).contains('sub-api-key') && !JsonOutput.toJson(result).contains('job-token')
+    }
+
+    // hub_list_rules and the toggles need only the lifecycle flags, so nothing else of the app's state is copied or masked.
+    def "the flag-only status read keeps paused, stopped and private and nothing else"() {
+        given:
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                               appState: [[name: 'paused', value: true], [name: 'stopped', value: false], [name: 'private', value: 'true'],
+                                          [name: 'apiKey', value: 'k'], [name: 'allLocalVars', value: [a: 1]]]])
+        }
+        hubGet.register('/installedapp/statusJson/36') { params -> JsonOutput.toJson([installedApp: [id: 36]]) }
+
+        expect:
+        script._appStatusFlagsRead(35) == [appStateMissing: false, appState: [[name: 'paused', value: true], [name: 'stopped', value: false], [name: 'private', value: 'true']]]
+        script._appStatusFlagsRead(36) == [appStateMissing: true, appState: []]
+    }
+
+    def "a password-typed App Status setting is masked whatever its name"() {
+        given:
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appState: [], eventSubscriptions: [], scheduledJobs: [],
+                               appSettings: [[name: 'loginField', type: 'password', value: 'pw-1', deviceIdsForDeviceList: []],
+                                             [name: 'greeting', type: 'text', value: 'hello', deviceIdsForDeviceList: []]]])
+        }
+
+        when:
+        List rows = script._appStatusRead(35).appSettings
+
+        then:
+        rows.find { it.name == 'loginField' }.value == '***redacted (password)***'
+        rows.find { it.name == 'greeting' }.value == 'hello'
+    }
+
+    def "a state value masked in an oversized status is still masked in the page text after the status is trimmed"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass._responseSizeLimitBytes = { -> 12000 }
+        def sections = [[title: '', input: [], body: [[element: 'paragraph', description: 'Broker login: hunter22secret (saved)']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'App', install: true, refreshInterval: null, sections: sections]])
+        }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                               appState: [[name: 'piston', value: 'x' * 20000], [name: 'mqttPassword', value: 'hunter22secret']]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.statusTruncated == true
+        result.appState == [[name: 'piston'], [name: 'mqttPassword']]
+        result.page.sections[0].paragraphs == ['Broker login: ***redacted (password)*** (saved)']
+        !JsonOutput.toJson(result).contains('hunter22secret')
+    }
+
+    def "a state value is still masked in the page text when fitting the status drops appState entirely"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass._responseSizeLimitBytes = { -> 12000 }
+        def sections = [[title: '', input: [], body: [[element: 'paragraph', description: 'Broker login: hunter22secret (saved)']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'App', install: true, refreshInterval: null, sections: sections]])
+        }
+        List rows = (1..400).collect { [name: "pistonVariable${it}".padRight(48, 'x'), value: 'v'] } + [[name: 'mqttPassword', value: 'hunter22secret']]
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: rows])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        !result.containsKey('appState')
+        result.appStateTotal == 401
+        result.page.sections[0].paragraphs == ['Broker login: ***redacted (password)*** (saved)']
+        !JsonOutput.toJson(result).contains('hunter22secret')
+    }
+
+    @spock.lang.Unroll
+    def "an access token masked in appState is masked in the page text too (redactAccessTokens=#tokens, redactCredentials=#credentials)"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactAccessTokens = tokens
+        settingsMap.redactCredentials = credentials
+        def sections = [[title: '', input: [], body: [[element: 'paragraph', description: 'Endpoint key tok-abc-12345 (copy it)']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'App', install: true, refreshInterval: null, sections: sections]])
+        }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                               appState: [[name: 'accessToken', value: 'tok-abc-12345']]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.page.sections[0].paragraphs == [tokens ? 'Endpoint key ***redacted (access token)*** (copy it)' : 'Endpoint key tok-abc-12345 (copy it)']
+
+        where:
+        tokens | credentials
+        true   | true
+        true   | false
+        false  | true
+    }
+
+    def "a failed status read is not repeated in the same call, and its note is unchanged"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params -> throw new IOException('status timeout') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true, includeStatus: true])
+
+        then:
+        result.success == true
+        hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
+        !result.containsKey('appState')
+        result.statusNote == "The app's status page could not be read (status timeout), so appState, eventSubscriptions and scheduledJobs are omitted. Retry; the rest of this read is unaffected."
+        result.settingsNote.contains('withheld')
+    }
+
+    def "a sub-page link's page name is kept when a masked value appears in it"() {
+        given:
+        settingsMap.enableRead = true
+        def sections = [[title: '', input: [], body: [[element: 'paragraph', description: 'Broker login: hunter22 (saved)'],
+                                                     [element: 'href', page: 'hunter22Page', title: 'Open hunter22']]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'App', install: true, refreshInterval: null, sections: sections], settings: [brokerPassword: 'hunter22']])
+        }
+        registerStatusJson([brokerPassword: 'text'])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.page.sections[0].paragraphs == ['Broker login: ***redacted (password)*** (saved)']
+        result.page.hrefs[0].page == 'hunter22Page'
+        result.page.hrefs[0].title == 'Open ***redacted (password)***'
+    }
+
+    def "includeSettings and includeStatus together read the status page once"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], eventSubscriptions: [], scheduledJobs: [], appState: [[name: 'paused', value: false]],
+                               appSettings: [[name: 'triggerDevice', type: 'capability.*', value: null], [name: 'ruleEnable', type: 'bool', value: true]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true, includeStatus: true])
+
+        then:
+        result.settings == [triggerDevice: 'Kitchen Switch', ruleEnable: true]
+        result.appState == [[name: 'paused', value: false]]
+        hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
+    }
+
+    // Live (C-7): an HTTP Get action keeps its URL in httper.<n>, and a Run Custom Action's setCode keeps the PIN in
+    // cpVal2.<n>; both came back in clear from the settings and from the page's link summaries.
+    def "a secret URL parameter and a lock-code action's parameters are masked in settings and in the page's text"() {
+        given:
+        settingsMap.enableRead = true
+        String url = 'http://x.test/api?apikey=KEY123&mode=on&token=TOK456&access_token=AT789'
+        def sections = [[title: '', input: [], body: [
+            [element: 'href', page: 'doActPage', title: 'Edit Actions', description: "GET ${url}<br>Lock: setCode(1, 482913, Guest)".toString()],
+            [element: 'paragraph', description: "Run: setCode(1, 482913, Guest) then GET ${url}".toString()]]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null, sections: sections],
+                               settings: ['httper.1': url, 'cCmd.2': 'setCode', 'cpVal1.2': '1', 'cpVal2.2': '482913', 'cpVal3.2': 'Guest', 'cpVal2.3': '482913']])
+        }
+        registerStatusJson(['httper.1': 'text', 'cCmd.2': 'enum', 'cpVal1.2': 'text', 'cpVal2.2': 'text', 'cpVal3.2': 'text', 'cpVal2.3': 'text'])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+        String text = JsonOutput.toJson(result)
+
+        then: 'the secret query values and every setCode parameter read the marker; access_token follows its own setting'
+        result.settings['httper.1'] == 'http://x.test/api?apikey=***redacted (password)***&mode=on&token=***redacted (password)***&access_token=AT789'
+        ['cpVal1.2', 'cpVal2.2', 'cpVal3.2'].every { result.settings[it] == '***redacted (password)***' }
+        result.settings['cpVal2.3'] == '482913'
+        result.page.hrefs[0].description == 'GET http://x.test/api?apikey=***redacted (password)***&mode=on&token=***redacted (password)***&access_token=AT789Lock: setCode(1, ***redacted (password)***, ***redacted (password)***)'
+        !text.contains('KEY123') && !text.contains('TOK456')
+        // Guest is a setCode parameter masked in settings, so the page masks it too.
+        result.page.sections[0].paragraphs[0].contains('setCode(1, ***redacted (password)***, ***redacted (password)***)')
+        result.settingsRedactionNote.contains('lock-code custom action (setCode)')
+    }
+
+    // A secret value is masked whole, '?' included; a nested URL carried in another value has its own parameters judged.
+    def "a secret URL value is masked whole and a nested URL's secret is masked: #url"() {
+        expect:
+        script._ruleSecretsMasked(url, [names: [], codes: []]) == expected
+
+        where:
+        url                                                     | expected
+        'http://hub/cb?next=https://api.x.com/v1?apikey=SECRET' | 'http://hub/cb?next=https://api.x.com/v1?apikey=***redacted (password)***'
+        'http://h/a?url=http://h/?password=pw'                  | 'http://h/a?url=http://h/?password=***redacted (password)***'
+        'http://h/x?psw=ab?cd&room=den'                         | 'http://h/x?psw=***redacted (password)***&room=den'
+        'http://h/y?psw=?abcd&room=den'                         | 'http://h/y?psw=***redacted (password)***&room=den'
+        'http://h/z?next=http://i/?a=1&psw=pw?x#frag'           | 'http://h/z?next=http://i/?a=1&psw=***redacted (password)***#frag'
+        'http://h/w?q=a?b&room=den'                             | 'http://h/w?q=a?b&room=den'
+        'http://h/a?q=?apikey=X&room=den'                       | 'http://h/a?q=?apikey=***redacted (password)***&room=den'
+        'http://h/t?access_token=T?psw=x&room=den'              | 'http://h/t?access_token=T?psw=***redacted (password)***&room=den'
+        'GET http://h/x?psw=ab?cd<br>then'                      | 'GET http://h/x?psw=***redacted (password)***<br>then'
+        // Every nested query is judged, however deep.
+        'http://h/?a=?b=?c=?apikey=SECRET'                      | 'http://h/?a=?b=?c=?apikey=***redacted (password)***'
+        'http://h/?a=?b=?c=?d=?e=?apikey=SECRET&room=den'       | 'http://h/?a=?b=?c=?d=?e=?apikey=***redacted (password)***&room=den'
+        'http://h/a?n=http://i/?m=http://j/?o=http://k/?token=T' | 'http://h/a?n=http://i/?m=http://j/?o=http://k/?token=***redacted (password)***'
+        // A URL's own password goes, its user name stays; an email address has no '://', so it is not a URL.
+        'http://user:USERPW888@192.0.2.1/x?mode=on'             | 'http://user:***redacted (password)***@192.0.2.1/x?mode=on'
+        'GET https://:pw1@h/a<br>then'                          | 'GET https://:***redacted (password)***@h/a<br>then'
+        'http://h/cb?next=ftp://u:pw2@f/x'                      | 'http://h/cb?next=ftp://u:***redacted (password)***@f/x'
+        'http://user@h/x'                                       | 'http://user@h/x'
+        'mail bob@example.com or x:y@z'                         | 'mail bob@example.com or x:y@z'
+        // The password runs to the authority's last '@'; a raw '/' in it cannot be told from the path, so it stays.
+        'http://u:p@ss@h/x'                                     | 'http://u:***redacted (password)***@h/x'
+        'http://u:pa/ss@h/x'                                    | 'http://u:pa/ss@h/x'
+        // A URL glued to the text before it is still a URL.
+        '1.http://u:pw@h'                                       | '1.http://u:***redacted (password)***@h'
+        '_http://u:pw@h'                                        | '_http://u:***redacted (password)***@h'
+        'next%3Dhttp://u:pw@h'                                  | 'next%3Dhttp://u:***redacted (password)***@h'
+        'a+http://u:pw@h'                                       | 'a+http://u:***redacted (password)***@h'
+        'x-http://u:pw@h'                                       | 'x-http://u:***redacted (password)***@h'
+        'http://192.0.2.1:8080/x?mode=on'                       | 'http://192.0.2.1:8080/x?mode=on'
+        'http://192.0.2.1:8080/x?mode=on, mail bob@example.com' | 'http://192.0.2.1:8080/x?mode=on, mail bob@example.com'
+        // Text that already carries the marker is left as it is, so masking twice changes nothing.
+        'http://u:***redacted (password)***@h/x?psw=***redacted (password)***&room=den' | 'http://u:***redacted (password)***@h/x?psw=***redacted (password)***&room=den'
+    }
+
+    // Every appState string and string local is scanned, so a long one must not cost quadratic time or the stack.
+    def "a 100 KB #shape string is masked in linear time"() {
+        when:
+        long t0 = System.currentTimeMillis()
+        def out = script._ruleSecretsMasked(text, [names: [], codes: []])
+        long elapsed = System.currentTimeMillis() - t0
+
+        then:
+        out == (expected ?: text)
+        elapsed < 2000
+
+        where:
+        shape                 | text                         | expected
+        'word'                | 'a' * 100000                 | null
+        'query pairs'         | 'http://h/x?' + ('a=a&' * 25000) | null
+        'nested query values' | 'http://h/x' + ('?a=' * 33000)   | null
+        'scheme-like words'   | ('ab://' * 20000)            | null
+        'password of @s'      | 'x://u:' + ('p@' * 50000)    | 'x://u:***redacted (password)***@'
+        'masked values'       | ('?psw=***redactedA' * 6000) | null
+    }
+
+    // The secret word starts the parameter name or follows a separator, so a word that merely ends in one is kept.
+    def "a URL query parameter named #param is #outcome"() {
+        expect:
+        script._ruleSecretsMasked("http://x.test/a?${param}=V123&room=den".toString(), [names: [], codes: []]) ==
+            "http://x.test/a?${param}=${masked ? '***redacted (password)***' : 'V123'}&room=den".toString()
+
+        where:
+        param          | masked
+        'apikey'       | true
+        'api_key'      | true
+        'x-api-key'    | true
+        'auth_token'   | true
+        'token'        | true
+        'Password'     | true
+        // Named as credential settings are: the setting classifier covers them.
+        'psw'          | true
+        'authToken'    | true
+        'clientSecret' | true
+        'monkey'       | false
+        'hotkey'       | false
+        'oauth'        | false
+        'access_token' | false
+        'accessToken'  | false
+        outcome = masked ? 'masked' : 'kept'
+    }
+
+    def "with Hide passwords and credentials off, URL parameters and lock-code parameters read as stored"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([settings: ['httper.1': 'http://x.test/?apikey=KEY123', 'cCmd.2': 'setCode', 'cpVal2.2': '482913']])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.settings == ['httper.1': 'http://x.test/?apikey=KEY123', 'cCmd.2': 'setCode', 'cpVal2.2': '482913']
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_app_config via dispatch masks a lock-code action's PIN in settings (useGateways=#useGateways)"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.useGateways = useGateways
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([settings: ['cCmd.2': 'setCode', 'cpVal2.2': '482913']]) }
+        registerStatusJson(['cCmd.2': 'enum', 'cpVal2.2': 'text'])
+
+        when:
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeSettings: true])
+
+        then:
+        !response.result.isError
+        mcpDriver.parseInner(response).settings['cpVal2.2'] == '***redacted (password)***'
+        !JsonOutput.toJson(response).contains('482913')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "includeStatus=true reads values as stored with Hide passwords and credentials off"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'apiKey', value: 'secret-api-key']])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState == [[name: 'apiKey', value: 'secret-api-key']]
+        !result.containsKey('statusRedactionNote')
+    }
+
+    def "statusRedactionNote says whether an app's access token is shown"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        settingsMap.redactAccessTokens = redactTokens
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'accessToken', value: 'tok-123']])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.statusRedactionNote.contains(expected)
+
+        where:
+        redactTokens | expected
+        true         | 'read as redacted'
+        false        | "The app's accessToken is shown, because Hide access tokens is off"
+    }
+
+    // clientTokens is also credential-named, so Hide passwords and credentials masks it whatever Hide access tokens says.
+    @spock.lang.Unroll
+    def "statusRedactionNote names clientTokens as redacted while Hide passwords and credentials is on (redactCredentials=#redactCreds)"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = redactCreds
+        settingsMap.redactAccessTokens = false
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'accessToken', value: 'tok-123'], [name: 'clientTokens', value: [c1: [label: 'Desk', token: 'client-tok']]]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.statusRedactionNote.contains(expected)
+        JsonOutput.toJson(result).contains('client-tok') == !redactCreds
+
+        where:
+        redactCreds | expected
+        true        | "The app's accessToken is shown, because Hide access tokens is off in the MCP app's settings. Its clientTokens read as redacted under Hide passwords and credentials."
+        false       | "The app's accessToken and clientTokens are shown, because Hide access tokens is off in the MCP app's settings."
+    }
+
+    def "for a per-client token, statusRedactionNote says both are always hidden and offers no settings advice"() {
+        given: 'both settings are off, which a client token overrides'
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        settingsMap.redactAccessTokens = false
+        script.callerClient = [id: 'c1']
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'accessToken', value: 'tok-123'], [name: 'apiKey', value: 'secret-api-key']])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.statusRedactionNote == "This client's token always reads credential-named appState values, URL secrets inside appState strings and access tokens as redacted, whatever the MCP app's settings say."
+        !JsonOutput.toJson(result).contains('tok-123') && !JsonOutput.toJson(result).contains('secret-api-key')
+
+        cleanup:
+        script.callerClient = null
+    }
+
+    def "a status page with no app state is marked appStateMissing, unlike an app whose state is empty"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: []] + (empty ? [appState: []] : [:]))
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState == []
+        result.containsKey('appStateMissing') == !empty
+        if (!empty) assert result.appStateMissing == true
+
+        where:
+        empty << [true, false]
+    }
+
+    def "without includeStatus no status lists are returned and the status page is not read"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        !result.containsKey('appState') && !result.containsKey('eventSubscriptions') && !result.containsKey('scheduledJobs')
+        !hubGet.calls.any { it.path.startsWith('/installedapp/statusJson/') }
+    }
+
+    def "a failed status read leaves the page read standing and says why the lists are missing"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params -> throw new IOException('status timeout') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.success == true
+        result.page != null
+        !result.containsKey('appState')
+        result.statusNote.contains('status timeout')
+    }
+
+    def "includeStatus works with summary=true and renders no page"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/json/35') { params -> JsonOutput.toJson([id: 35, name: 'webCoRE Piston', type: 'webCoRE Piston', disabled: false, user: true]) }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'ady624', name: 'webCoRE Piston']] }
+        registerAppStatus([[name: 'piston', value: [o: [], s: [[t: 'action']]]]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, summary: true, includeStatus: true])
+
+        then:
+        result.success == true
+        result.appState == [[name: 'piston', value: [o: [], s: [[t: 'action']]]]]
+        result.scheduledJobs.size() == 1
+        !hubGet.calls.any { it.path.startsWith('/installedapp/configure/json/') }
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_app_config via dispatch returns the status lists with includeStatus (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'stopped', value: true]])
+
+        when:
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeStatus: true])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        !response.result.isError
+        inner.appState == [[name: 'stopped', value: true]]
+        inner.eventSubscriptions.size() == 1
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "includeStatus masks an accessToken state row for #who"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactAccessTokens = setting
+        if (client) script.callerClient = [id: 'c1']
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'accessToken', value: 'a1b2c3d4-live-token'], [name: 'paused', value: false]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState.find { it.name == 'accessToken' }.value == shown
+        // A row carrying the marker says so; a plain one has no redacted key.
+        result.appState.find { it.name == 'accessToken' }.redacted == (shown.startsWith('***redacted') ? true : null)
+        result.appState.find { it.name == 'paused' }.value == false
+        !result.appState.find { it.name == 'paused' }.containsKey('redacted')
+
+        cleanup:
+        script.callerClient = null
+
+        where:
+        who                               | setting | client | shown
+        'the main token, setting on'      | true    | false  | '***redacted (access token)***'
+        'a per-client token, setting off' | false   | true   | '***redacted (access token)***'
+        'the main token, setting off'     | false   | false  | 'a1b2c3d4-live-token'
+    }
+
+    def "includeStatus masks each per-client token inside a clientTokens state row"() {
+        given: "credentials shown, so only the access-token setting can hide the tokens"
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        settingsMap.redactAccessTokens = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'clientTokens', value: [c1: [label: 'Desk', token: 'client-token-one'], c2: [label: 'Phone', token: 'client-token-two']]]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState.find { it.name == 'clientTokens' }.value == [c1: [label: 'Desk', token: '***redacted (access token)***'],
+                                                                     c2: [label: 'Phone', token: '***redacted (access token)***']]
+        result.appState.find { it.name == 'clientTokens' }.redacted == true
+        !JsonOutput.toJson(result).contains('client-token-')
+    }
+
+    def "includeStatus too large for one response lists appState names only, then cuts subscriptions and jobs with their totals"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass._responseSizeLimitBytes = { -> limit }
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [],
+                               eventSubscriptions: (1..subs).collect { [deviceId: it, name: 'switch', handler: 'handler'] },
+                               scheduledJobs: [[handler: 'poll', nextRunTime: '2026-11-20T10:00:00+0000']],
+                               appState: [[name: 'piston', value: 'x' * 20000], [name: 'paused', value: false]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.success == true
+        result.statusTruncated == true
+        result.appState == [[name: 'piston'], [name: 'paused']]
+        result.statusTruncatedNote.contains('values omitted')
+        result.statusTruncatedNote.contains("hub_get_tool_guide(section='builtin_app_tools_apps')")
+        (result.eventSubscriptions.size() < subs) == cut
+        result.containsKey('eventSubscriptionsTotal') == cut
+        !cut || (result.eventSubscriptionsTotal == subs && result.statusTruncatedNote.contains("eventSubscriptions lists the first ${result.eventSubscriptions.size()} of ${subs}"))
+        result.scheduledJobs.size() == 1
+        !result.containsKey('scheduledJobsTotal')
+        script._appConfigResultBytes(result) <= limit - 1024
+
+        where:
+        limit | subs | cut
+        12000 | 3    | false
+        12000 | 400  | true
+    }
+
+    def "includeStatus whose appState names alone are too large leaves appState out with its count"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass._responseSizeLimitBytes = { -> 12000 }
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([installedApp: [id: 35], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                               appState: (1..2000).collect { [name: "key${it}x".toString(), value: it] }])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.success == true
+        result.statusTruncated == true
+        !result.containsKey('appState')
+        result.appStateTotal == 2000
+        result.statusTruncatedNote.contains('appState is omitted (2000 entries)')
+        script._appConfigResultBytes(result) <= 12000 - 1024
+    }
+
+    def "includeStatus within the size budget is returned whole"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerAppStatus([[name: 'piston', value: 'x' * 20000]])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeStatus: true])
+
+        then:
+        result.appState[0].value.size() == 20000
+        !result.containsKey('statusTruncated')
+    }
+
     def "includeSettings=true: settings map present and populated"() {
         given:
         settingsMap.enableRead = true
@@ -1425,6 +2254,17 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         where:
         name                    | expected
+        // a live login: a session cookie, a session id, a bearer string, a psw
+        'hubSecurityCookie'     | true
+        'sessionCookies'        | true
+        'sessionId'             | true
+        'session'               | true
+        'bearerToken'           | true
+        'bearer'                | true
+        'mqttPsw'               | true
+        'hubSecurityCookieExpiry' | false
+        'sessionCount'          | false
+        'cookieTimeout'         | false
         // credential-shaped names
         'hpmPassword'           | true
         'HPMPassword'           | true
@@ -2560,7 +3400,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         script.toolGetAppConfig([appId: 35, pageName: 'selectTriggers']).page.sections[0].paragraphs[0].disabled == ['Switch A turns on']
     }
 
-    def "disabled rows fall back to the page when the rule state cannot be read or the rule is not a 5.1 rule"() {
+    def "disabled rows fall back to the page when the rule state cannot be read"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -2576,12 +3416,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         para.disabled == ["Notify Pushover: 'Fixed mismatch'"]
-        stateReads == reads
+        stateReads == 1
 
         where:
-        appName    | reads
-        'Rule-5.1' | 1
-        'Rule-5.0' | 0
+        appName << ['Rule-5.1', 'Button Rule-5.1']
     }
 
     def "a Rule Machine main page's action link lists the disabled rows its summary holds"() {
@@ -2813,21 +3651,22 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "_rmIsRuleAppType('#name') == #expected"() {
+    def "_rmIsRuleAppType('#namespace', '#name') == #expected"() {
         expect:
-        script._rmIsRuleAppType(name) == expected
+        script._rmIsRuleAppType(namespace, name) == expected
 
         where:
-        name               | expected
-        'Rule-5.1'         | true
-        'Button Rule-5.1'  | true
-        'Rule-4.1'         | true
-        'Rule-4.0'         | true
-        'Rule Machine'     | false
-        'Room Lights'      | false
-        'My Rule-5.1'      | false
-        'rule-5.1'         | false
-        null               | false
+        namespace | name               | expected
+        'hubitat' | 'Rule-5.1'         | true
+        'hubitat' | 'Button Rule-5.1'  | true
+        'hubitat' | 'Rule-6.0'         | true
+        'hubitat' | 'Rule Machine'     | false
+        'hubitat' | 'Room Lights'      | false
+        'hubitat' | 'My Rule-5.1'      | false
+        'hubitat' | 'rule-5.1'         | false
+        'hubitat' | null               | false
+        'acme'    | 'Rule-5.1'         | false
+        null      | 'Rule-5.1'         | false
     }
 
     @spock.lang.Unroll

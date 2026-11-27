@@ -519,14 +519,14 @@ class ModernMrtrScenario:
                 "tool": "hub_set_rule",
                 "args": {
                     "operation": "create",
-                    "args": {"parent_id": parent_id, "name": fixture_name, "changes": []},
+                    "args": {"parentId": parent_id, "name": fixture_name, "changes": []},
                     "confirm": True,
                     "bestPracticeKey": bps_keys["hub_set_rule"],
                 },
             })
             create_payload = _tool_payload(created, "fixture create")
-            fixture_id = str(create_payload.get("rule_id") or "") or None
-            assert fixture_id, "fixture create returned no rule_id"
+            fixture_id = str(create_payload.get("ruleId") or "") or None
+            assert fixture_id, "fixture create returned no ruleId"
 
             changes, messages = lane_mrtr_changes("SDK MRTR proof", temperature_id)
             print(f"         MRTR workload: {len(changes)} native changes, {len(messages)} log actions")
@@ -536,7 +536,7 @@ class ModernMrtrScenario:
                 "tool": "hub_set_rule",
                 "args": {
                     "operation": "update",
-                    "rule_id": int(fixture_id),
+                    "ruleId": int(fixture_id),
                     "args": {"changes": changes},
                     "confirm": True,
                     "bestPracticeKey": bps_keys["hub_set_rule"],
@@ -586,12 +586,12 @@ class ModernMrtrScenario:
             async def fetch_section(section: str, cursor: str, limit: int) -> dict[str, Any]:
                 result = await client.call_tool(self.GATEWAY, {
                     "tool": "hub_set_rule", "args": {
-                        "operation": "read", "rule_id": int(fixture_id),
+                        "operation": "read", "ruleId": int(fixture_id),
                         "args": {"sections": [section], "cursor": cursor, "limit": limit},
                     },
                 })
                 page = _tool_payload(result, f"independent persisted {section} readback")
-                assert str(page.get("rule_id")) == fixture_id, "Native section read returned another rule"
+                assert str(page.get("ruleId")) == fixture_id, "Native section read returned another rule"
                 return page
 
             document = await read_native_document_sections(fetch_section)

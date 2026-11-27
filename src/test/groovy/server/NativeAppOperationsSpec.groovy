@@ -188,7 +188,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         result.success
         raws == ['/installedapp/createchild/hubitat/Rule-5.1/parent/43']
         posts*.body*._action_update == ['Done']
-        result.note.contains("hub_set_rule(operation:'update', rule_id:91")
+        result.note.contains("hub_set_rule(operation:'update', ruleId:91")
     }
 
     def 'a create drops the caller cached form context of the parent page it changed'() {
@@ -261,6 +261,30 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         posts.isEmpty()
         raws.isEmpty()
         gets.isEmpty()
+    }
+
+    @spock.lang.Unroll
+    def 'a button_controller create without buttonDev (#label) is refused before the parent is found or installed'() {
+        given:
+        atomicStateMap.parentAppIds = [:]
+
+        when:
+        create(args)
+
+        then:
+        IllegalArgumentException e = thrown()
+        e.message.contains('button_controller requires fields.buttonDev')
+        e.message.contains('Nothing was created.')
+        gets.isEmpty()
+        raws.isEmpty()
+        posts.isEmpty()
+        deleted.isEmpty()
+
+        where:
+        label            | args
+        'no fields'      | [app_type: 'button_controller']
+        'other fields'   | [app_type: 'button_controller', fields: [origLabel: 'Kitchen']]
+        'empty buttonDev'| [app_type: 'button_controller', fields: [buttonDev: []]]
     }
 
     def 'name is refused, and the new app removed, when the first page renders no label input'() {

@@ -1,11 +1,13 @@
 library(name: "McpNativeRulesLib", namespace: "mcp", author: "kingpanther13", description: "Native Rule Machine runtime, generic native app authoring, app deletion and backup compatibility for the MCP Rule Server.")
 
 def _getAllToolDefinitions_partNativeRM() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         // Native Rule Machine runtime and administrative tools.
         [
             name: "hub_list_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id) with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub's list source decorates the label (many firmwares don't) — the authoritative stopped check is hub_get_rule_health's `stopped` field. For ONE rule's state, call hub_get_rule_health(appId) instead of listing every rule — it returns that rule's paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
+            description: "List the Rule Machine 5.x rules, with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. Status reflects Rule Machine's name decoration (refreshed after an MCP stop, start, pause or resume); a decorated rule's paused/stopped come from its own state, and a row marked statusSource:'name' fell back to the decoration for one flag or both because that state could not be fully read. A stop made outside MCP may show only after the rule's page is next opened, which hub_get_app_config(appId) does. For ONE rule's state, call hub_get_rule(ruleId) instead of listing every rule — its health returns that rule's paused/disabled/stopped/broken directly. Button Rules, Basic Rules and other classic apps (Room Lighting, Notifier, Button Controllers) are not listed here: `hub_list_apps` (scope='instances') lists them with their enabled/disabled state (nameFilter:'Button Rule' finds Button Rules), and hub_get_visual_rule lists Visual Rules. Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -16,26 +18,14 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_call_rule",
-            description: "Trigger one or more Rule Machine rules. Not destructive (invokes existing user-configured automation).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for action semantics.",
+            description: "Run the actions of one or more rules, or stop, start, pause or resume them: Rule Machine rules and Button Rules, and Visual Rules (pause, resume, and actions on a Visual Rule Builder 2.0 rule).[[FLAT_TRIM]] Requires the Write master. Each rule is acted on through its own page button (a Visual Rule through its builder's endpoint), one at a time, with per-rule results on a batch. stop/start/pause/resume leave a rule already in that state alone; a repeated actions runs the actions again.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for action semantics.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"],
-                    action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. Default: rule."],
+                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules (a Button Rule's from hub_list_apps(nameFilter:'Button Rule'), a Visual Rule's from hub_get_visual_rule), or an array of rule IDs to act on in one call"],
+                    action: [type: "string", enum: ["actions", "stop", "start", "pause", "resume"], description: "Required. actions runs the rule's actions at once, without its triggers or Required Expression (conditions inside the actions, such as IF blocks, are still evaluated; a Visual Rule Builder 2.0 rule's conditions still pick the branch); stop/start stop or restart a Rule Machine rule; pause/resume pause or resume the rule."],
                 ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "hub_set_rule_paused",
-            description: "Pause or resume one or more Rule Machine rules in one call (paused rules don't fire on triggers). paused=true pauses, paused=false resumes (idempotent on the hub). Pass an array of ruleIds to pause/resume a whole set at once — one RMUtils dispatch, e.g. a staged-migration cutover.[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to pause/resume together"],
-                    paused: [type: "boolean", description: "true = pause the rule(s); false = resume."]
-                ],
-                required: ["ruleId", "paused"]
+                required: ["ruleId", "action"]
             ]
         ],
         [
@@ -44,7 +34,7 @@ def _getAllToolDefinitions_partNativeRM() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to set together"],
+                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules (a Button Rule's from hub_list_apps(nameFilter:'Button Rule')), or an array of rule IDs to set together"],
                     value: [type: "boolean", description: "Target value for the rule's Private Boolean."]
                 ],
                 required: ["ruleId", "value"]
@@ -56,26 +46,17 @@ def _getAllToolDefinitions_partNativeRM() {
             inputSchema: [type: "object", additionalProperties: false, properties: [operation: [type: "string", enum: ["create", "update", "form"]], app_id: [type: "integer", minimum: 1], args: [type: "object"], confirm: [type: "boolean"], bestPracticeKey: [type: "string"]]]
         ],
         [
-            name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule). This standalone read adds live eventSubscriptionCount/scheduledJobCount, runtime stopped, and status/markup fallbacks for paused. paused is true/false/null (unknown); explicit stopped state outranks display markup. Embedded health from write tools carries the structural verdict and compiled paused only, without these extra reads. With auto or ruleBuilderJson, Visual Rule labels preserve the raw own name; forcing configPage uses the rendered label.[[/FLAT_TRIM]] Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
+            name: "hub_get_rule",
+            description: """Read one Rule Machine rule, Button Rule or Basic Rule: its health and, for a Rule Machine 5.1 rule or Button Rule, its actions, conditions, triggers, expressions, settings and local variables; for a Basic Rule, its settings. Any other installed app returns its health alone.[[FLAT_TRIM]] The rule's page is not opened and its configuration is not changed: broken comes from the rule's own check, which can refresh the rule's stored broken flag. health carries broken, brokenRows (the rows Rule Machine's page marks broken, by kind and native id; a marked row alone does not make the rule broken), paused, stopped, privateBoolean, disabledActions, disabledTriggers, structuralIssues, the red-X disabled flag and the live eventSubscriptionCount and scheduledJobCount; the raw subscription and job lists come from hub_get_app_config(includeStatus: true).[[/FLAT_TRIM]] health.ok=false with unreadable=false means issues names a problem or checkErrors names a failed read; unreadable=true means nothing could be read, which is not evidence of breakage. Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the full health reference.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "integer", description: "Installed-app ID to check (Rule Machine or Visual Rules Builder rule)."],
-                    source: [type: "string", enum: ["auto", "ruleBuilderJson", "configPage"], description: "Which source(s) to read; default auto."]
+                    ruleId: [type: "integer", minimum: 1, description: "The rule's installed-app id, from hub_list_rules (a Button Rule's or Basic Rule's from hub_list_apps(scope:'instances'), a Visual Rule's from hub_get_visual_rule)."],
+                    sections: [type: "array", items: [type: "string", enum: ["actions", "conditions", "triggers", "expressions", "settings", "localVariables"]], description: "Document sections to return; default all. health always returns first and localVariables with every read but a page of another section, so [] returns them alone. A read too large for one response pages the first part that does not fit (pagedSection, nextCursor) and lists the other parts that do not fit in omittedSections."],
+                    cursor: [type: "string", description: "Page one section, localVariables included: pass \"\" for the first page, then each nextCursor. Requires exactly one section."],
+                    limit: [type: "integer", minimum: 1, maximum: 100, description: "Rows per page when paging (default 50)."]
                 ],
-                required: ["appId"]
-            ]
-        ],
-        [
-            name: "hub_list_rule_local_variables",
-            description: "List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "The Rule Machine rule's installed-app id (the rule whose local variables to list)."]
-                ],
-                required: ["appId"]
+                required: ["ruleId"]
             ]
         ],
         [
@@ -97,7 +78,7 @@ Requires Write master + confirm=true + recent hub backup.""",
         ],
         [
             name: "hub_set_app_disabled",
-            description: "Enable or disable any installed app (the admin UI red-X) without deleting it — reversible and preserves the app's config. For Rule Machine rules use hub_set_rule_paused instead. Write master only — no confirm/backup needed[[FLAT_TRIM]]; the disabled flag is read-back verified[[/FLAT_TRIM]].",
+            description: "Enable or disable any installed app (the admin UI red-X) without deleting it — reversible and preserves the app's config. For Rule Machine rules use hub_call_rule(action:'pause'/'resume') instead. Write master only — no confirm/backup needed[[FLAT_TRIM]]; the disabled flag is read-back verified[[/FLAT_TRIM]].",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -107,7 +88,8 @@ Requires Write master + confirm=true + recent hub backup.""",
                 required: ["appId", "disabled"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 // Enable/disable any installed app via POST /installedapp/disable {id, disable} -- the documented
@@ -160,12 +142,8 @@ def toolSetAppDisabled(args) {
     return [success: false, appId: appId, disabled: observed, error: "POST accepted but read-back shows disabled=${observed} (wanted ${disable}).", note: "The hub may not have committed the flag; retry, or check the app in the hub UI."]
 }
 
-// Enumerate Rule Machine rules via the official hubitat.helper.RMUtils API
-// (RM 4.x + RM 5.x, deduplicated by id) and ghost-filter them against the live
-// /hub2/appsList tree. Shared by hub_list_rules (which formats the rich list and
-// reports ghosts) and _rmValidRuleIds (which needs the existence-safe id set for
-// pre-write rule-target validation), so the RMUtils lookup + ghost-filter logic
-// lives in exactly one place.
+// Enumerate Rule Machine rules via the official hubitat.helper.RMUtils API and ghost-filter them
+// against the live /hub2/appsList tree, whose nodes also carry each rule's status.
 //
 // RMUtils is an optional platform class -- absent on hubs that have never
 // installed Rule Machine. Absence manifests as NoClassDefFoundError or
@@ -173,10 +151,10 @@ def toolSetAppDisabled(args) {
 // hence the catch Throwable + null-guarded .message; the caller classifies which
 // Throwables are a quiet "RM not installed" vs a real failure to surface.
 //
-// Returns [combined, ghostIds, v4Error, v5Error, treeReadable]:
+// Returns [combined, ghostIds, rmError, treeReadable, liveApps]:
 //   combined     -- id(String) -> entry map, ghost-filtered when the tree read
 //   ghostIds     -- ids RMUtils reported that are absent from /hub2/appsList
-//   v4Error/v5Error -- RM 4.x / 5.x lookup error strings (null on success)
+//   rmError      -- the RMUtils lookup error string (null on success)
 //   treeReadable -- false when /hub2/appsList could not be read; combined is
 //                   then UNfiltered (may still carry ids of deleted rules)
 //   liveApps     -- the /hub2/appsList map (id -> [name, disabled, type]) used for the
@@ -184,21 +162,12 @@ def toolSetAppDisabled(args) {
 //                   the tree was unreadable (treeReadable=false)
 private Map _rmCollectFilteredRmRules() {
     def combined = [:]
-    def v4Error = null
-    def v5Error = null
-
+    def rmError = null
     try {
-        def rules4 = hubitat.helper.RMUtils.getRuleList() ?: []
-        rules4.each { r -> registerRmRule(combined, r, "4.x") }
+        def rules = hubitat.helper.RMUtils.getRuleList("5.0") ?: []
+        rules.each { r -> registerRmRule(combined, r) }
     } catch (Throwable e) {
-        v4Error = e.toString()
-    }
-
-    try {
-        def rules5 = hubitat.helper.RMUtils.getRuleList("5.0") ?: []
-        rules5.each { r -> registerRmRule(combined, r, "5.x") }
-    } catch (Throwable e) {
-        v5Error = e.toString()
+        rmError = e.toString()
     }
 
     // Filter RMUtils ghosts. RMUtils.getRuleList() reads Rule Machine's own rule-list location
@@ -206,7 +175,7 @@ private Map _rmCollectFilteredRmRules() {
     // there until then. /hub2/appsList is authoritative: drop any rule whose id isn't in it.
     // If /hub2/appsList itself fails, fall through with unfiltered
     // output (treeReadable=false) so hub_list_rules keeps visibility on a
-    // transient hub error and _rmValidRuleIds can treat it as cannot-verify.
+    // transient hub error.
     def ghostIds = []
     def treeReadable = false
     def liveApps = null
@@ -230,54 +199,28 @@ private Map _rmCollectFilteredRmRules() {
     } catch (Throwable e) {
         mcpLog("warn", "rm-interop", "_rmCollectFilteredRmRules: could not cross-check RMUtils output against /hub2/appsList (${e.message}); returning unfiltered")
     }
-    return [combined: combined, ghostIds: ghostIds, v4Error: v4Error, v5Error: v5Error, treeReadable: treeReadable, liveApps: liveApps]
+    return [combined: combined, ghostIds: ghostIds, rmError: rmError, treeReadable: treeReadable, liveApps: liveApps]
 }
 
-// Existence-safe set of Rule Machine rule ids (Integer) for pre-write target
-// validation: the RMUtils rule list intersected with the live app tree. Returns
-// null when the set cannot be trusted -- any RMUtils lookup error (Rule Machine never
-// installed, or a transient one-sided v4/v5 failure) or the app-tree cross-check could
-// not run -- so a caller treats "cannot verify" as skip-validation rather than a
-// false-empty reject.
-private Set _rmValidRuleIds() {
-    def collected = _rmCollectFilteredRmRules()
-    // Any RMUtils lookup error -- including a one-sided v4 or v5 failure -- makes the
-    // enumeration incomplete, so the set cannot be trusted. On a 5.x-only hub the v4
-    // getRuleList() legitimately returns [] with no error; if the v5 getRuleList("5.0")
-    // then throws transiently, combined is empty but the rules are NOT verified-zero.
-    // Requiring BOTH errors (the old && gate) would return that empty set as authoritative
-    // and false-reject every existing target on the blip. RM-never-installed still errors
-    // on both versions, so this keeps skipping there too.
-    if (collected.v4Error || collected.v5Error) return null
-    // App tree unreadable: membership is unverifiable (combined is unfiltered).
-    if (!collected.treeReadable) return null
-    def ids = [] as Set
-    collected.combined.each { id, entry ->
-        def idInt
-        try { idInt = (id instanceof Number) ? id.intValue() : id.toString().toInteger() }
-        catch (Exception ignored) { idInt = null }
-        if (idInt != null) ids << idInt
-    }
-    return ids
-}
-
-// List all Rule Machine rules (RM 4.x + 5.x, deduped by id) via RMUtils, with deleted rules whose ids
-// RM's rule-list variables still carry dropped by a /hub2/appsList cross-check. The RMUtils lookup and
-// ghost filter live in _rmCollectFilteredRmRules (shared with the rule-target
-// existence guard); this tool formats, paginates, and classifies the result.
+// List the Rule Machine 5.x rules via RMUtils, with deleted rules whose ids RM's rule-list variables still
+// carry dropped by a /hub2/appsList cross-check (_rmCollectFilteredRmRules); this tool formats,
+// paginates, and classifies the result.
 def toolListRmRules(args) {
     def collected = _rmCollectFilteredRmRules()
     def combined = collected.combined
-    def v4Error = collected.v4Error
-    def v5Error = collected.v5Error
+    def rmError = collected.rmError
     def ghostIds = collected.ghostIds
     def treeReadable = collected.treeReadable
     def liveApps = collected.liveApps
 
-    // Enrich each rule with its live enabled/paused/stopped/disabled status from the
-    // /hub2/appsList tree (issue #359). When the tree was unreadable the rules are
-    // returned unfiltered and carry no node data, so status is "unknown".
-    combined.values().each { entry -> _rmAnnotateRuleStatus(entry, treeReadable, liveApps) }
+    // Status comes from each rule's /hub2/appsList node: its red-X flag and its name decoration, which
+    // the returned page's decorated rows then settle from their own state. When the tree was unreadable
+    // the rules are returned unfiltered and carry no node data, so status is "unknown".
+    def unsettled = [:]
+    combined.values().each { entry ->
+        def flags = _rmAnnotateRuleStatus(entry, treeReadable, liveApps)
+        if (flags != null) unsettled.put(entry.id?.toString(), flags)
+    }
 
     // combined.values() returns a Collection view in some Groovy versions; materialize
     // as a concrete List via toList() so subList in _paginateList is safe.
@@ -287,6 +230,12 @@ def toolListRmRules(args) {
 
     def cursor = args?.cursor
     def paged = _paginateList(rules, cursor, 50, "hub_list_rules")
+    // State reads run only for the returned page: a hub can carry hundreds of decorated rules.
+    List nameOnly = []
+    paged.page.each { entry ->
+        def flags = unsettled.get(entry.id?.toString())
+        if (flags != null && !_rmSettleRuleStatusFromState(entry, flags)) nameOnly << entry.id
+    }
     def result = [
         // Labels and names leave as the user typed them: the hub stores "Heat On <67" as "Heat On &lt;67".
         rules: paged.page.collect { r ->
@@ -307,122 +256,76 @@ def toolListRmRules(args) {
     if (!treeReadable && !rules.isEmpty()) {
         result.statusNote = "/hub2/appsList was unreadable, so each rule's status is \"unknown\" (enabled/paused/stopped/disabled could not be determined). Retry; if it persists the hub's internal API may need Hub Security credentials."
     }
-    // Classify the failures. A "missing class" error (RM not installed) is quiet whether
-    // the other version succeeded OR both versions failed the same way (both-absent path).
-    // A non-missing-class error (e.g. timeout, internal platform issue) is always surfaced
-    // so operators can investigate rather than get silent empty results.
-    // Narrow to class-resolution failures only. Earlier versions treated any
-    // MissingMethodException / "No signature of method" / unqualified "Cannot get property"
-    // as quiet-missing, but those substrings appear in unrelated Groovy runtime errors
-    // (e.g. a shape change in RMUtils' return value would surface as MME against
-    // registerRmRule and get swept under the rug). Scope each substring tightly:
+    if (nameOnly) {
+        result.statusSourceNote = "The state of rule(s) ${nameOnly.join(', ')} could not be fully read, so their paused flag, stopped flag or both come from the name decoration (statusSource:'name'), which shows one of them at a time and can lag a stop made elsewhere. hub_get_rule reads one rule's state.".toString()
+    }
+    // Classify a lookup failure. A class-resolution error (RM not installed) is quiet; anything else
+    // (a timeout, an internal platform issue) is surfaced so operators can investigate rather than get
+    // a silent empty result. Each substring is scoped tightly, since a broad one would also swallow
+    // unrelated Groovy runtime errors (a shape change in RMUtils' return value surfaces as a
+    // MissingMethodException against registerRmRule):
     //   - NoClassDefFoundError / ClassNotFoundException / "unable to resolve class":
     //     JVM-level class-resolution errors; unambiguous "RM not installed" signal.
     //   - "Cannot get property 'helper'": the Hubitat sandbox returns null for
     //     unresolved `hubitat.helper.X` namespace lookups; scoping to 'helper'
     //     limits the match to the hubitat.helper.RMUtils path specifically.
-    //   - MissingMethodException together with getRuleList: covers the old-firmware
-    //     case where RMUtils exists but lacks the getRuleList("5.0") overload —
-    //     unrelated MMEs no longer get swallowed.
-    def classMissingHint = { String msg ->
+    def classMissing = { String msg ->
         if (!msg) return false
         if (msg.contains("NoClassDefFoundError") ||
             msg.contains("ClassNotFoundException") ||
             msg.contains("unable to resolve class")) return true
-        if (msg.contains("Cannot get property") && msg.contains("'helper'")) return true
-        if ((msg.contains("MissingMethodException") || msg.contains("No signature of method"))
-            && msg.contains("getRuleList")) return true
-        return false
+        return msg.contains("Cannot get property") && msg.contains("'helper'")
     }
-    def hardErrors = []
-    if (v4Error && !classMissingHint(v4Error)) hardErrors << "v4=${v4Error}"
-    if (v5Error && !classMissingHint(v5Error)) hardErrors << "v5=${v5Error}"
-
-    def bothClassMissing = v4Error && v5Error &&
-                           classMissingHint(v4Error) && classMissingHint(v5Error)
-
-    if (rules.isEmpty() && bothClassMissing) {
-        // Both RMUtils lookups failed with class-resolution errors. That's the
-        // expected shape on a hub that has never installed Rule Machine; it's
-        // not an error the caller needs to react to. Return an empty list with
-        // an informational note and leave success unset so the result still
-        // reads as a normal empty response.
+    if (rmError && classMissing(rmError)) {
         result.note = "Rule Machine not detected on this hub."
-    } else if (rules.isEmpty() && v4Error && v5Error) {
-        // Both calls failed but at least one with a non-missing-class shape --
-        // unusual enough that operators should see the raw error.
+    } else if (rmError) {
         result.success = false
-        result.error = "RMUtils calls failed: v4=${v4Error} v5=${v5Error}"
-        result.note = "Rule Machine may not be installed on this hub."
-    } else if (hardErrors) {
-        // One version succeeded but the other had a non-missing-class error — surface it
-        // as a warning without blocking the successful results.
-        result.warning = "Partial RMUtils failure (results from the other version shown): ${hardErrors.join('; ')}"
+        result.error = "RMUtils.getRuleList failed: ${rmError}".toString()
+        result.note = "Retry; if it persists, check that Rule Machine is installed with hub_list_apps."
     }
     return result
 }
 
 // Normalize a single RMUtils rule entry into a consistent map and register under combined[id].
-//
-// RMUtils.getRuleList() returns list entries in shapes that vary by RM version:
-// - RM 5.x: single-entry Map `[<id>: "<label>"]` -- the key is the rule ID, the value is the label.
-// The key may arrive as String or Integer depending on how the hub built the Map.
-// - RM 4.x: Map with explicit fields `[id: <id>, label: "<label>", name: "...", type: "..."]`.
-// - Raw primitive (int or String ID): defensive fallback for shapes not covered above.
-private void registerRmRule(Map combined, def r, String version) {
+// RMUtils.getRuleList("5.0") returns single-entry Maps `[<id>: "<label>"]`, the key arriving as String or
+// Integer depending on how the hub built the Map; a raw id is kept as a defensive fallback.
+private void registerRmRule(Map combined, def r) {
     def id
     def label
     def name
-    def type
-    if (r instanceof Map) {
-        if (r.containsKey("id")) {
-            // RM 4.x explicit-fields shape
-            id = r.id
-            label = r.label ?: r.name
-            name = r.name ?: r.label
-            type = r.type
-        } else if (r.size() == 1) {
-            // RM 5.x single-entry shape: [<id>: "<label>"]
-            def entry = r.entrySet().iterator().next()
-            // entry.key may come back as String or Integer depending on how Hubitat built
-            // the Map; coerce to Integer (via string) so downstream consumers get the
-            // Integer id advertised in hub_list_rules' response schema.
-            def rawKey = entry.key
-            try {
-                id = (rawKey instanceof Number) ? rawKey.toInteger() : rawKey.toString().toInteger()
-            } catch (NumberFormatException coerceErr) {
-                // Returning the raw key would silently violate the tool's
-                // ruleId: integer schema (callers would see a String id in the
-                // response and fail to dispatch hub_call_rule against it). Skip
-                // the entry and surface the anomaly via logs instead.
-                def keyType = rawKey instanceof Number ? 'Number' : rawKey instanceof String ? 'String' : 'other'
-                mcpLog("warn", "rm-interop", "registerRmRule: non-integer ruleId '${rawKey}' (type=${keyType}) in RM ${version} list -- skipping entry")
-                return
-            }
-            label = entry.value?.toString()
-            name = label
+    if (r instanceof Map && r.size() == 1) {
+        def entry = r.entrySet().iterator().next()
+        // Coerce to Integer (via string) so downstream consumers get the Integer id advertised in
+        // hub_list_rules' response schema.
+        def rawKey = entry.key
+        try {
+            id = (rawKey instanceof Number) ? rawKey.toInteger() : rawKey.toString().toInteger()
+        } catch (NumberFormatException coerceErr) {
+            // Returning the raw key would silently violate the tool's
+            // ruleId: integer schema (callers would see a String id in the
+            // response and fail to dispatch hub_call_rule against it). Skip
+            // the entry and surface the anomaly via logs instead.
+            def keyType = rawKey instanceof Number ? 'Number' : rawKey instanceof String ? 'String' : 'other'
+            mcpLog("warn", "rm-interop", "registerRmRule: non-integer ruleId '${rawKey}' (type=${keyType}) in the RM rule list -- skipping entry")
+            return
         }
-    } else if (r != null) {
-        // Raw ID fallback
+        label = entry.value?.toString()
+        name = label
+    } else if (!(r instanceof Map)) {
         id = r
     }
     if (id == null) return
     def key = id.toString()
     if (!combined.containsKey(key)) {
-        combined.put(key, [
-            id: id,
-            label: label,
-            name: name,
-            type: type,
-            rmVersion: version
-        ])
+        combined.put(key, [id: id, label: label, name: name, type: null])
     }
 }
 
 // Annotate an RM rule entry (in place) with disabled/paused booleans, a status summary,
 // and requiredExpressionFalse. WHY decoration-detection (full algorithm in the
 // builtin_app_tools guide): RMUtils exposes no paused or stopped boolean, so both are found
-// only by diffing the app's /hub2/appsList name against its RMUtils label. A stopped rule
+// by diffing the app's /hub2/appsList name against its RMUtils label (a decorated row on the
+// returned page then reads its exact flags from app state). A stopped rule
 // reaches this function through EITHER of two channels and both are read here: the
 // "(Stopped)" suffix can sit on the RMUtils LABEL while the appsList name stays clean, or it
 // can sit in the appsList-name REMAINDER the "(Paused)" diff already computes. The diff is
@@ -436,20 +339,19 @@ private void registerRmRule(Map combined, def r, String version) {
 // {disabled:true, paused:true, status:"disabled"} is truthful. "unknown" (booleans then
 // omitted, never asserted false) covers both a null liveApps (whole tree unreadable) and
 // this one rule's node lacking data.disabled / name / RMUtils label.
-private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps) {
+// Returns the name-derived flags of a decorated row, which _rmSettleRuleStatusFromState
+// later settles from app state, or null for an undecorated row, which is never re-read: its
+// state is taken as not paused and not stopped.
+private Map _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps) {
     def idInt
     try { idInt = (entry.id instanceof Number) ? entry.id.intValue() : entry.id?.toString()?.toInteger() }
     catch (Exception ignored) { idInt = null }
     def node = (treeReadable && idInt != null && liveApps != null) ? liveApps[idInt] : null
     if (node == null) {
         entry.status = "unknown"
-        return
+        return null
     }
-    if (node.type instanceof String && node.type) {
-        entry.type = node.type
-        if (node.type.startsWith("Rule-5.")) entry.rmVersion = "5.x"
-        else if (node.type.startsWith("Rule-4.")) entry.rmVersion = "4.x"
-    }
+    if (node.type instanceof String && node.type) entry.type = node.type
     def disabledRaw = node.disabled
     def cleanApps = stripAppConfigHtml(node.name)
     def cleanRm = stripAppConfigHtml(entry.label)
@@ -460,7 +362,7 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
         if (cleanRm == null) missing << "RMUtils label"
         mcpLog("warn", "rm-interop", "_rmAnnotateRuleStatus: rule ${entry.id} has incomplete node data (missing ${missing.join(', ')}); status unknown")
         entry.status = "unknown"
-        return
+        return null
     }
     def disabled = disabledRaw == true
     def paused = false
@@ -482,8 +384,42 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
         entry.label = _rmStripTrailingDecoration(entry.label, "(Stopped)")
         entry.name = _rmStripTrailingDecoration(entry.name, "(Stopped)")
     }
+    _rmApplyRuleStatus(entry, disabled, paused, stopped)
+    // Undecorated rows need no state read: a hub can carry hundreds of rules.
+    return (paused || stopped) ? [appId: idInt, disabled: disabled, paused: paused, stopped: stopped] : null
+}
+
+// The name carries one decoration at a time ("(Stopped)" hides "(Paused)") and can lag a stop made
+// without rendering the rule's page, so a decorated row reads its real flags from app state. A state
+// read that fails, or a flag entry that is not true/false, leaves the name-derived flag in place and
+// marks the row statusSource:'name'; returns false then.
+private boolean _rmSettleRuleStatusFromState(Map entry, Map flags) {
+    boolean paused = flags.paused
+    boolean stopped = flags.stopped
+    boolean fromState = true
+    try {
+        Map status = _appStatusFlagsRead(flags.appId as Integer)
+        // A rule that was never paused or stopped has no entry for it.
+        Map statePaused = _appStatusFlag(status, "paused")
+        Map stateStopped = _appStatusFlag(status, "stopped")
+        if (statePaused.missing) throw new IllegalStateException("its status page carried no appState")
+        [statePaused, stateStopped].each { if (it.present && it.value == null) fromState = false }
+        if (statePaused.value != null || !statePaused.present) paused = statePaused.value == true
+        if (stateStopped.value != null || !stateStopped.present) stopped = stateStopped.value == true
+        if (!fromState) mcpLog("warn", "rm-interop", "_rmSettleRuleStatusFromState: rule ${entry.id} has a paused/stopped entry that is not true or false; that flag comes from its appsList name")
+    } catch (Exception e) {
+        fromState = false
+        mcpLog("warn", "rm-interop", "_rmSettleRuleStatusFromState: rule ${entry.id} state read failed (${e.message}); status from its appsList name")
+    }
+    _rmApplyRuleStatus(entry, flags.disabled as boolean, paused, stopped)
+    if (!fromState) entry.statusSource = "name"
+    return fromState
+}
+
+private void _rmApplyRuleStatus(Map entry, boolean disabled, boolean paused, boolean stopped) {
     entry.disabled = disabled
     entry.paused = paused
+    entry.stopped = stopped
     entry.status = disabled ? "disabled" : (stopped ? "stopped" : (paused ? "paused" : "active"))
 }
 
@@ -499,194 +435,330 @@ private String _rmStripTrailingDecoration(Object raw, String suffix) {
     return trimmed.substring(0, trimmed.length() - suffix.length()).replaceAll(/\s+$/, "")
 }
 
-// Normalize a ruleId argument that may be a single id or a list of ids into a
-// deduped List<Integer>. RMUtils.sendAction natively takes a LIST of rule ids,
-// so the RMUtils-backed tools accept either shape and dispatch once.
-//
-// Multi-id batches also existence-check every id against the live RM rule list
-// BEFORE any dispatch: the array form is sold as the staged-migration cutover,
-// where one typo'd id silently left un-actioned (RMUtils is fire-and-forget and
-// reports nothing per-rule) is the exact failure the batch exists to prevent.
-// Single-id calls keep their long-standing no-validation behavior. The check
-// skips when the rule list is unverifiable (_rmValidRuleIds returns null).
-private Map _rmRuleIdListArg(Object raw) {
+// Normalize a ruleId argument that may be a single id or a list of ids into a deduped List<Integer>.
+// Whether each id is a rule is _rmRequireRuleTargets' job.
+private List<Integer> _rmRuleIdListArg(Object raw, boolean visualRules = false) {
     if (raw == null) throw new IllegalArgumentException("ruleId is required")
     def rawList = (raw instanceof List) ? raw : [raw]
-    if (rawList.isEmpty()) throw new IllegalArgumentException("ruleId array must not be empty")
+    String find = "Find rule ids with ${_rmRuleIdSources(visualRules)}."
+    if (rawList.isEmpty()) throw new IllegalArgumentException("ruleId array must not be empty: name one rule id or more. ${find}")
     List<Integer> ids = []
     rawList.each { id ->
-        // _rmCoerceRuleId, not normalizeRuleId: a JSON-number 400.7 would silently
-        // TRUNCATE to rule 400 via toInteger() -- and then PASS the existence
-        // check below, pausing the wrong rule with full confidence.
-        def n = _rmCoerceRuleId(id)
+        def n = _exactIntId(id)
         if (n == null) {
-            throw new IllegalArgumentException("ruleId '${id}' is not an integer-valued rule id. Use hub_list_rules to find valid ids.")
+            throw new IllegalArgumentException("${_idShown(id)} is not a valid rule id for ruleId (a positive whole number within the hub's id range). ${find}")
         }
         if (!ids.contains(n)) ids << n
     }
-    Boolean verified = null
-    if (ids.size() > 1) {
-        def valid = _rmValidRuleIds()
-        if (valid != null) {
-            verified = true
-            def unknown = ids.findAll { !valid.contains(it) }
-            if (unknown) {
-                throw new IllegalArgumentException("ruleId array contains id(s) that are not existing RM rules: ${unknown.join(', ')}. Nothing was dispatched. Verify ids via hub_list_rules and re-issue the batch.")
-            }
-        } else {
-            // Cannot verify (RMUtils error / app tree unreadable): the batch still
-            // dispatches, but the caller is TOLD -- the tool description promises
-            // an up-front existence check, and a silent skip would let a typo'd id
-            // report success on a fire-and-forget dispatch.
-            verified = false
-            mcpLog("warn", "rm-interop", "_rmRuleIdListArg: multi-id existence check SKIPPED (rule list unverifiable) for ids ${ids.join(', ')}")
-        }
-    }
-    return [ids: ids, idsVerified: verified]
+    return ids
 }
 
-// Trigger a Rule Machine rule via RMUtils.sendAction() (rule) or the RM page
-// buttons for actions/stop/start. actions clicks runAction, the UI's "Run Actions"
-// button; stop/start toggle stopRule (RMUtils has no startRule verb — the RM 5.1 UI
-// uses the stopRule button as a toggle on state.stopped, and clicking it while
-// stopped clears the flag and re-initializes the rule). The button route is
-// the one the hub UI itself takes, so unlike RMUtils.sendAction it is not refused by
-// the platform's per-app load limiter.
+// Run a rule's actions, or stop, start, pause or resume it, through the rule's own page buttons, the
+// route the hub UI takes: runAction runs the action list; stopRule and pausRule are toggles, so their
+// state is read first and a rule already in the target state is left alone. stopRule on a running
+// rule sets state.stopped (unsubscribe + cancel delays/repeats/waits); on a stopped rule it clears it
+// and re-runs initialize(). The private boolean is reset only by Update Rule on a stopped rule, not
+// by this click. A Visual Rule runs and pauses through its builder's own endpoints and has no stop.
+// A button click is an HTTP request, which the platform's per-app load limiter does not check.
 //
-// Not destructive — invokes existing user-configured automation.
+// Not destructive -- invokes existing user-configured automation.
 def toolRunRmRule(args) {
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
-    def idArg = _rmRuleIdListArg(args.ruleId)
-    List<Integer> ruleIds = idArg.ids
+    List<Integer> ruleIds = _rmRuleIdListArg(args.ruleId, true)
+    // No default: a call that leaves action out must not run every action, skipping the rule's conditions.
+    def action = args?.action
+    if (!(action in ["actions", "stop", "start", "pause", "resume"])) {
+        throw new IllegalArgumentException("${action == null ? 'action is required' : "Invalid action '${action}'"}: 'actions' (runs the rule's actions without its triggers or Required Expression), 'stop', 'start', 'pause' or 'resume'. Nothing was dispatched.")
+    }
     ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
-    def action = args?.action ?: "rule"
-
-    // start/stop route through the stopRule button click (a toggle on
-    // state.stopped) rather than RMUtils.sendAction: clicking stopRule when
-    // state.stopped=false sets it true (unsubscribe + cancel delays/repeats/waits)
-    // and when state.stopped=true clears it and re-runs initialize(). The private
-    // boolean is reset only by Update Rule on a stopped rule, not by this click.
-    // To keep the verb idempotent, we read state before clicking and no-op if the
-    // rule is already in the target state.
-    if (action == "stop" || action == "start" || action == "actions") {
-        boolean runActions = (action == "actions")
-        def perRule = { Integer id -> runActions ? _rmRunActionsButton(id) : _rmToggleStopped(id, action) }
-        String verb = runActions ? "runAction button" : "stopRule toggle"
-        if (ruleIds.size() == 1) {
-            def single = perRule(ruleIds[0])
-            // Every call echoes ruleIds -- scalar and array alike -- matching the
-            // sendRmAction paths, so callers can read one key on every shape.
-            if (single instanceof Map) single.ruleIds = ruleIds
-            return single
+    Map guard = _rmRequireRuleTargets(ruleIds, "hub_call_rule", true)
+    if (guard.failure) return _rmRunGuardFailure(ruleIds, guard)
+    // The guard admits only built-in types, so every type it returns is in the hubitat namespace.
+    List<Integer> visual = ruleIds.findAll { _rmIsVisualRuleType('hubitat', guard.types.get(it)) }
+    if (visual && action in ["stop", "start"]) {
+        throw new IllegalArgumentException("Visual Rules have no stop or start; rule(s) ${visual.join(', ')} are Visual Rules. Use action:'pause' or 'resume' for them. Nothing was dispatched.")
+    }
+    // The classic builder has no run button: only the 2.0 builder calls /app/ruleBuilderRun, and a 1.0 rule fails on
+    // it. The type name carries the builder version (Visual Rule Builder 1.0 or 2.0).
+    List<Integer> classic = action != "actions" ? [] : visual.findAll { Integer id -> guard.types.get(id)?.toString() ==~ /.*\s1(\.\d+)*/ }
+    if (classic) {
+        throw new IllegalArgumentException("Visual Rule Builder 1.0 rules have no run button, so their actions cannot be run; rule(s) ${classic.join(', ')} are 1.0 rules. Pause and resume work on them. Nothing was dispatched.")
+    }
+    boolean runActions = (action == "actions")
+    def perRule = { Integer id ->
+        boolean isVisual = visual.contains(id)
+        if (runActions) return isVisual ? _vrbRunNow(id) : _rmRunActionsButton(id)
+        if (action in ["pause", "resume"]) return isVisual ? _vrbTogglePaused(id, action) : _rmTogglePaused(id, action)
+        return _rmToggleStopped(id, action)
+    }
+    if (ruleIds.size() == 1) {
+        def single = perRule(ruleIds[0])
+        // Every call echoes ruleIds, scalar and array alike, so callers can read one key on every shape.
+        single.ruleIds = ruleIds
+        return single
+    }
+    // Per-rule loop with a relay-budget checkpoint: each rule is a state read, a button click and a page
+    // render, so a long list can outlive the response budget. The toggles no-op rules already in the
+    // target state, so re-issuing with the remainder is safe.
+    def results = []
+    List remaining = []
+    boolean budgetPaused = false
+    for (int i in 0..<ruleIds.size()) {
+        if (i > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
+            budgetPaused = true
+            remaining = ruleIds.subList(i, ruleIds.size()).collect { it }
+            break
         }
-        // Per-rule toggle loop with a relay-budget checkpoint: each toggle is a
-        // statusJson read + (maybe) a button click, so a long list can outlive the
-        // response budget. _rmToggleStopped no-ops rules already in the target
-        // state, so re-issuing with the remainder is safe.
-        def results = []
-        List remaining = []
-        boolean budgetPaused = false
-        for (int i = 0; i < ruleIds.size(); i++) {
-            if (i > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
-                budgetPaused = true
-                remaining = ruleIds.subList(i, ruleIds.size()).collect { it }
-                break
-            }
-            results << perRule(ruleIds[i])
-        }
-        List failed = []
-        results.eachWithIndex { r, i -> if (r?.success != true) failed << ruleIds[i] }
-        def out = [
-            success: failed.isEmpty() && !budgetPaused,
-            partial: budgetPaused || (!failed.isEmpty() && failed.size() < results.size()),
-            ruleIds: ruleIds,
-            rmAction: "${verb} x${results.size()}".toString(),
-            results: results
-        ]
-        if (idArg.idsVerified != null) out.idsVerified = idArg.idsVerified
-        if (failed) {
-            out.failedRuleIds = failed
-            def actionedCount = results.size() - failed.size()
-            out.error = (actionedCount == 0)
-                ? "${verb} failed for EVERY rule in the batch (${failed.join(', ')}); per-rule detail in results[].".toString()
-                : "${verb} failed for rule(s) ${failed.join(', ')} -- the other ${actionedCount} rule(s) in the batch WERE actioned; per-rule detail in results[].".toString()
-            out.note = runActions
-                ? "Re-issue for the failed ids only: a repeat of a succeeded id runs that rule's actions again."
-                : "Re-issue for the failed ids only. A repeat of a succeeded id is safe: the toggle no-ops rules already in the target state."
-        }
-        if (budgetPaused) {
-            out.remainingRuleIds = remaining
-            if (!out.error) out.error = "Response-budget checkpoint: rule(s) ${remaining.join(', ')} were not yet actioned."
+        results << perRule(ruleIds[i])
+    }
+    List failed = []
+    // A paused rule's refusal sent nothing, so it is not warned about as a lost run.
+    List paused = []
+    List unread = []
+    results.eachWithIndex { r, i ->
+        if (r?.success != true) failed << ruleIds[i]
+        if (r?.paused == true) paused << ruleIds[i]
+        if (r?.pausedUnread == true) unread << ruleIds[i]
+    }
+    def out = [
+        success: failed.isEmpty() && !budgetPaused,
+        // Partial means some rules were actioned and some were not; a pause after only failures actioned none.
+        partial: failed.size() < results.size() && (budgetPaused || !failed.isEmpty()),
+        ruleIds: ruleIds,
+        rmAction: "${action} x${results.size()}".toString(),
+        results: results
+    ]
+    if (failed) {
+        out.failedRuleIds = failed
+        def actionedCount = results.size() - failed.size()
+        out.error = (actionedCount == 0)
+            ? "${action} failed for EVERY rule ${budgetPaused ? 'reached' : 'in the batch'} (${failed.join(', ')}); per-rule detail in results[].".toString()
+            : "${action} failed for rule(s) ${failed.join(', ')} -- the other ${actionedCount} rule(s) in the batch WERE actioned; per-rule detail in results[].".toString()
+        out.note = runActions
+            ? _rmRunFailedNote(failed, paused)
+            : "Re-issue for the failed ids only. A repeat of a succeeded id is safe: the toggle no-ops rules already in the target state."
+    }
+    if (budgetPaused) {
+        out.remainingRuleIds = remaining
+        if (!out.error) out.error = "Response-budget checkpoint: rule(s) ${remaining.join(', ')} were not yet actioned."
+        if (runActions) {
+            // A failed run may have reached the hub, so only the un-reached rules are safe to send again.
+            out.note = ("Budget checkpoint -- re-issue with ruleId=[${remaining.join(', ')}] to run the rules not yet reached; leave out the rules already run, or their actions run again." +
+                (failed ? " ${_rmRunFailedNote(failed, paused)}" : "")).toString()
+        } else {
             // Failed ids and un-reached ids are DIFFERENT sets -- the re-issue
             // guidance must carry both or a caller following it strands the failures.
-            def reissueIds = (failed + remaining).unique()
-            out.note = "Budget checkpoint -- re-issue with ruleId=[${reissueIds.join(', ')}] to finish${failed ? " (includes the ${failed.size()} failed id(s), not just the un-reached ones)" : ""}; already-actioned rules no-op safely."
+            def reissueIds = (remaining + failed).unique()
+            out.note = "Budget checkpoint -- re-issue with ruleId=[${reissueIds.join(', ')}] to finish${failed ? " (includes the ${failed.size()} failed id(s), not just the un-reached ones)" : ""}; already-actioned rules no-op safely.".toString()
         }
-        return out
     }
-
-    if (action != "rule") throw new IllegalArgumentException("Invalid action '${action}'. Must be 'rule', 'actions', 'stop', or 'start'.")
-    def result = sendRmAction(ruleIds, "runRule", "hub_call_rule action=${action}")
-    if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
-    return result
+    // A click sent without the paused check succeeded, so no other note would mention it.
+    if (unread) out.note = ((out.note ? "${out.note} " : "") + "Rule(s) ${unread.join(', ')}: paused state could not be read; the click was sent; if paused, nothing ran -- check with hub_get_rule.").toString()
+    return out
 }
 
-// Click the rule's Run Actions button (runAction on the main page): runs the action list
-// directly, skipping condition evaluation, exactly as the hub UI does.
+// A run whose answer was lost may still have run the rule, so a failed id is not simply re-sent; a paused rule's
+// refusal sent nothing.
+private String _rmRunFailedNote(List failed, List paused) {
+    List lost = failed - paused
+    String note = paused ? "Rule(s) ${paused.join(', ')} were not run because they are paused; resume them with action:'resume' first. " : ""
+    if (lost) note += "Rule(s) ${lost.join(', ')} failed: read each one's results[] note before running it again, because a run whose answer was lost may already have run the actions. "
+    (note + "A repeat of a succeeded id runs that rule's actions again.").toString()
+}
+
+// A batch the target guard refused carries one row per rule, so a refusal in a later continuation slice
+// still names each rule in the combined result instead of leaving only the earlier slices' rows.
+private Map _rmRunGuardFailure(List<Integer> ruleIds, Map guard) {
+    Map failure = guard.failure as Map
+    // dispatched:false lets a continuation keep an earlier slice's row for a rule, whose click may have landed.
+    if (ruleIds.size() == 1) return [ruleId: ruleIds[0], dispatched: false] + failure + [ruleIds: ruleIds]
+    Map unreadable = guard.unreadable as Map
+    def rows = ruleIds.collect { id ->
+        unreadable.containsKey(id)
+            ? [success: false, ruleId: id, dispatched: false, error: "The rule could not be looked up (${unreadable.get(id)}), so it was not run.".toString()]
+            : [success: false, ruleId: id, dispatched: false, error: "Not run: another rule in the same call could not be looked up, so none of them was dispatched."]
+    }
+    [success: false, partial: false, ruleIds: ruleIds, results: rows, failedRuleIds: ruleIds, error: failure.error,
+     note: "No rule in this lookup was run; each one's results[] row says why. Retry them once; if the lookup fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+}
+
+// The runtime tools act only on rules: RMUtils and the page buttons both report success on an id that is
+// no rule, or has no app at all. Every id is looked up before anything is dispatched. A missing or
+// non-rule id throws; a lookup that fails (or an app whose type cannot be read) is logged and refused
+// as a runtime failure, since its target was never confirmed. Visual Rules pass only with visualRules.
+// Returns [types: id -> app type name] or [failure: result map].
+private Map _rmRequireRuleTargets(List<Integer> ruleIds, String toolName, boolean visualRules = false) {
+    Map<Integer, String> types = [:]
+    List<Integer> missing = []
+    Map<Integer, String> unreadable = [:]
+    Map<Integer, String> notRules = [:]
+    ruleIds.each { id ->
+        try {
+            def app = getAppByAppId(id as Long)
+            if (app == null) missing << id
+            else {
+                def typeName = app.appType?.name?.toString()
+                def namespace = app.appType?.namespace
+                if (!typeName) unreadable.put(id, "its app type could not be read")
+                else if (_rmIsRuleAppType(namespace, typeName) || (visualRules && _rmIsVisualRuleType(namespace, typeName))) types.put(id, typeName)
+                else notRules.put(id, typeName)
+            }
+        } catch (Exception e) {
+            unreadable.put(id, (e.message ?: e.toString()).toString())
+        }
+    }
+    String accepts = visualRules ? "Rule Machine rules, Button Rules and Visual Rules" : "Rule Machine rules and Button Rules"
+    String find = "; ${toolName} acts only on ${accepts}. Find rule ids with ${_rmRuleIdSources(visualRules)}. Nothing was dispatched."
+    if (missing) throw new IllegalArgumentException("${_rmNoAppText(missing)}${find}")
+    if (notRules) throw new IllegalArgumentException("${_rmNotRuleText(notRules)}${find}")
+    if (unreadable) {
+        unreadable.each { id, why -> mcpLog("warn", "rm-interop", "${toolName}: app ${id} could not be identified (${why}); nothing dispatched") }
+        return [failure: _rmLookupFailure(unreadable), unreadable: unreadable]
+    }
+    return [types: types]
+}
+
+// Where the runtime tools' rule ids come from; Basic Rules are left out, since these tools refuse them.
+private String _rmRuleIdSources(boolean visualRules) {
+    "hub_list_rules (Rule Machine)${visualRules ? ',' : ' or'} hub_list_apps(nameFilter:'Button Rule') (Button Rules)${visualRules ? ' or hub_get_visual_rule (Visual Rules)' : ''}"
+}
+
+// A rule-tool target whose lookup failed: nothing was run, since the target was never confirmed.
+private Map _rmLookupFailure(Map reasonsById) {
+    def detail = reasonsById.collect { id, why -> "app ${id}: ${why}" }.join('; ')
+    return [success: false, error: "The target app could not be looked up (${detail}), so nothing was run.".toString(),
+            note: "Nothing was changed. Retry once; if it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+}
+
+// Click the rule's Run Actions button (runAction on the main page), as the hub UI does: it runs the action list
+// without the triggers or Required Expression, while IF blocks and conditional actions are still evaluated. The hub
+// accepts the click on a paused rule but Rule Machine runs nothing, so a paused rule is reported, not clicked.
 private Map _rmRunActionsButton(Integer ruleId) {
+    // A paused flag that cannot be read does not block the run: a missed run is worse than a click a paused rule ignores.
+    boolean paused = false
+    String unread = null
+    try { paused = _rmRuntimeFlag(ruleId, "paused") }
+    catch (Exception e) {
+        unread = e.message ?: e.toString()
+        mcpLog("warn", "rm-interop", "hub_call_rule action=actions: rule ${ruleId}'s paused state could not be read (${unread}); clicking runAction anyway", ruleId.toString())
+    }
+    if (paused) {
+        return [success: false, ruleId: ruleId, dispatched: false, paused: true, error: "hub_call_rule action=actions: rule ${ruleId} is paused, and Rule Machine does not run a paused rule's actions, so nothing was run.".toString(),
+                note: "Resume it first with action:'resume', then run its actions. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+    }
     try {
         _rmClickAppButton(ruleId, "runAction")
     } catch (Exception e) {
-        return [success: false, ruleId: ruleId, error: "hub_call_rule action=actions: runAction button click failed (${e.message})"]
+        return [success: false, ruleId: ruleId, error: "hub_call_rule action=actions: runAction button click failed (${e.message})".toString(),
+                note: "The click may have reached the hub and run the rule's actions before failing. Check the rule's effects and hub_get_logs before retrying, because a retry runs the actions again. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
     }
-    return [success: true, ruleId: ruleId, rmAction: "runAction button"]
+    Map done = [success: true, ruleId: ruleId, rmAction: "runAction button"]
+    if (unread) { done.pausedUnread = true; done.note = "The rule's paused state could not be read (${unread}), so the click was sent; if the rule is paused, Rule Machine ran nothing. Check with hub_get_rule.".toString() }
+    return done
 }
 
-// Drive the RM 5.1 stopRule button — the same toggle the hub UI exposes
-// for Stop/Start. `action` is one of "stop" or "start". Idempotent:
-// clicking stopRule when state.stopped is already the target value would
-// toggle it the wrong way (running -> stopped, stopped -> running), so
-// we read state.stopped first and no-op if we're already there.
+// A rule's paused or stopped flag from its App Status page. A rule that was never paused or stopped has
+// no entry and reads false; an entry that is not a flag throws, so no toggle is clicked on a state that
+// cannot be read.
+private boolean _rmRuntimeFlag(Integer ruleId, String name) {
+    Map flag = _appStatusFlag(_appStatusFlagsRead(ruleId), name)
+    if (flag.missing) throw new IllegalStateException("its status page carried no appState")
+    if (flag.present && flag.value == null) throw new IllegalStateException("its ${name} state is neither true nor false")
+    return flag.value == true
+}
+
+// Drive the stopRule button, the hub UI's Stop/Start toggle. It is read first and left alone when
+// the rule is already in the target state, since a click would toggle it the wrong way.
 private Map _rmToggleStopped(Integer ruleId, String action) {
-    def status
-    try {
-        status = _rmFetchStatusJson(ruleId)
-    } catch (Exception e) {
-        return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: cannot read rule state before toggle (${e.message})"]
-    }
-    def stoppedNow = _readAppStateBoolean(status, "stopped", false)
-    def targetStopped = (action == "stop")
-    if (stoppedNow == targetStopped) {
-        return [
-            success: true,
-            ruleId: ruleId,
-            rmAction: "noop",
-            note: "Rule was already ${action == 'stop' ? 'stopped' : 'running (not stopped)'} -- stopRule button not clicked."
-        ]
-    }
-    try {
-        _rmClickAppButton(ruleId, "stopRule")
-    } catch (Exception e) {
-        return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: stopRule button click failed (${e.message})"]
-    }
-    return [
-        success: true,
-        ruleId: ruleId,
-        rmAction: (action == "stop") ? "stopRule button -> state.stopped=true" : "stopRule button -> state.stopped=false (initialize)"
-    ]
+    return _rmToggleButton(ruleId, action, "stopped", "stopRule", action == "stop",
+        action == "stop" ? "stopRule button -> state.stopped=true" : "stopRule button -> state.stopped=false (initialize)")
 }
 
-// Pull a named Boolean out of statusJson.appState[]. Hubitat serializes
-// Booleans in appState entries as the real `true`/`false` value, but
-// occasionally as the string "true"/"false" -- treat both equivalently.
-private Boolean _readAppStateBoolean(Map status, String name, Boolean fallback) {
-    def entry = (status?.appState ?: []).find { it?.name == name }
-    if (entry == null) return fallback
-    def v = entry.value
-    if (v instanceof Boolean) return v
-    if (v == "true") return true
-    if (v == "false") return false
-    return fallback
+// Pause and resume share one toggle, the rule's pausRule button.
+private Map _rmTogglePaused(Integer ruleId, String action) {
+    return _rmToggleButton(ruleId, action, "paused", "pausRule", action == "pause",
+        action == "pause" ? "pausRule button -> state.paused=true" : "pausRule button -> state.paused=false")
+}
+
+private Map _rmToggleButton(Integer ruleId, String action, String flag, String button, boolean target, String clicked) {
+    // The body runs in a closure, whose class carries its call sites: the server class sits at the JVM's constant-pool limit.
+    return { wrapped ->
+        boolean current
+        try {
+            current = _rmRuntimeFlag(ruleId, flag)
+        } catch (Exception e) {
+            return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: cannot read the rule's ${flag} state before the toggle (${e.message})".toString(),
+                    note: "Nothing was clicked. Retry; hub_get_rule reads the rule's state."]
+        }
+        if (current == target) {
+            return [success: true, ruleId: ruleId, rmAction: "noop",
+                    note: "Rule was already ${target ? flag : 'not ' + flag} -- ${button} button not clicked.".toString()]
+        }
+        try {
+            _rmClickAppButton(ruleId, button)
+        } catch (Exception e) {
+            return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${button} button click failed (${e.message})".toString(),
+                    note: "Re-issuing is safe: the rule's state is read first and a rule already ${target ? flag : 'not ' + flag} is left alone. Confirm with hub_get_rule or hub_list_rules. See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
+        }
+        def out = [success: true, ruleId: ruleId, rmAction: clicked]
+        // The click alone leaves the rule's "(Stopped)"/"(Paused)" name decoration stale until its page is next
+        // rendered; render it once, as the hub UI does after the click, so hub_list_rules is current.
+        String renderError = null
+        // A hub_set_rule form session left open on the rule keeps its in-progress state in the rule, which a render
+        // rewrites, so the page is left for that session to render.
+        boolean formOpen = NATIVE_FORM_CONTEXTS.values().any { it?.app_id?.toString() == ruleId.toString() && it.expires >= now() }
+        if (!formOpen) try {
+            // A page that renders with an error may not have refreshed the decoration either.
+            def pageError = _rmFetchConfigJson(ruleId)?.configPage?.error
+            if (pageError) renderError = "the page reported: ${pageError}".toString()
+        } catch (Exception e) {
+            renderError = e.message ?: e.toString()
+        }
+        // The hub accepts a click that changes nothing, and two toggles sent at once cancel out, so the flag is read again.
+        def seen
+        try { seen = _rmRuntimeFlag(ruleId, flag) }
+        catch (Exception e) { seen = e.message ?: e.toString() }
+        if (seen != target) {
+            return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: the ${button} click was accepted, but the rule's ${flag} state then read ${seen}, not ${target}".toString(),
+                    note: "Another change to the rule may have run at the same time. Read it with hub_get_rule, then send the action again if it is still needed: a rule already in the target state is left alone. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+        }
+        if (formOpen) out.note = "The rule's ${flag} state changed. Its page was not rendered because a hub_set_rule form session is open on it, so hub_list_rules may show the old status until that session finishes or the page next renders.".toString()
+        if (renderError != null) out.note = "The rule's ${flag} state changed, but re-rendering its page failed (${renderError}), so hub_list_rules may show the old status until the rule's page next renders without an error; hub_get_app_config(appId: ${ruleId}) opens it. hub_get_rule reads the rule's own state.".toString()
+        return out
+    }.call(null)
+}
+
+// A Visual Rule's pause runs through its builder's endpoint, which sets the state it is given; the state is
+// still read first so a rule already there is reported as such, like the Rule Machine toggles.
+private Map _vrbTogglePaused(Integer ruleId, String action) {
+    boolean target = (action == "pause")
+    def compiled = _ruleCompiledState(ruleId)
+    if (!(compiled?.ruleFormat in ["vrb-graph", "vrb-classic"]) || compiled.paused == null) {
+        def why = compiled?.readError ?: "its builder state did not name a paused flag"
+        return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: cannot read the Visual Rule's paused state (${why})".toString(),
+                note: "Nothing was changed. Retry; hub_get_visual_rule reads the rule."]
+    }
+    if (compiled.paused == target) {
+        return [success: true, ruleId: ruleId, rmAction: "noop", note: "Visual Rule was already ${target ? 'paused' : 'not paused'} -- not changed."]
+    }
+    Map sent
+    try {
+        sent = _vrbSetPaused(ruleId, target)
+    } catch (Exception e) {
+        sent = [success: false, error: "pause endpoint failed: ${e.message}"]
+    }
+    if (sent.success == true) {
+        // The rule's own state decides whether the pause landed, as for the Rule Machine toggles: the endpoint's
+        // verdict alone does not show the state changed.
+        def after = _ruleCompiledState(ruleId)
+        String answered = sent.confirmed == true ? "reported success" : "gave no success verdict"
+        if (after?.paused != target) {
+            sent = [success: false, error: (after?.paused == null ? "the pause endpoint ${answered} and the rule's paused state could not be read, so the change could not be confirmed" : "the pause endpoint ${answered} and the rule then read paused=${after.paused}").toString()]
+        }
+    }
+    if (sent.success != true) return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: ${sent.error}".toString(),
+        note: "Re-issuing is safe: the Visual Rule's state is read first and a rule already ${target ? 'paused' : 'not paused'} is left alone. Confirm with hub_get_rule (Visual Rules are not in hub_list_rules). See hub_get_tool_guide(section='builtin_app_tools_rules').".toString()]
+    return [success: true, ruleId: ruleId, rmAction: "ruleBuilderPause -> ${target}".toString()]
 }
 
 // Fetch statusJson for {@code appId} and return the raw value of
@@ -711,33 +783,6 @@ private Object _rmGetStateEditAct(Integer appId) {
     return entry?.value
 }
 
-// Pause or resume a Rule Machine rule via RMUtils.sendAction(pauseRule|resumeRule).
-// paused=true pauses, paused=false resumes. Idempotent on the hub side. Backs the
-// hub_set_rule_paused tool (verb-pair merge of the former pause/resume tools).
-def toolSetRulePaused(args) {
-    if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
-    if (args?.paused == null) throw new IllegalArgumentException("paused (boolean) is required: true=pause, false=resume")
-    Boolean paused
-    if (args.paused instanceof Boolean) paused = args.paused
-    else if (args.paused == "true") paused = true
-    else if (args.paused == "false") paused = false
-    else throw new IllegalArgumentException("paused must be boolean true/false (got: ${args.paused})")
-    def idArg = _rmRuleIdListArg(args.ruleId)
-    List<Integer> ruleIds = idArg.ids
-    ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
-    def result = paused ? sendRmAction(ruleIds, "pauseRule", "hub_set_rule_paused")
-                        : sendRmAction(ruleIds, "resumeRule", "hub_set_rule_paused")
-    // idsVerified: true = every id existence-checked before dispatch; false = the
-    // check was SKIPPED (rule list unverifiable) and this fire-and-forget batch
-    // may include ids that do not exist. Absent on single-id calls.
-    if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
-    // Echo the applied pause state so callers can confirm the outcome without a
-    // follow-up read. RMUtils pause/resume is fire-and-forget, so this is the
-    // requested/applied value, not a hub read-back.
-    if (result instanceof Map) result.paused = paused
-    return result
-}
-
 // Set a Rule Machine rule's private boolean (used by its conditions) via
 // RMUtils.sendAction(setRuleBooleanTrue|setRuleBooleanFalse).
 //
@@ -751,8 +796,6 @@ def toolSetRulePaused(args) {
 def toolSetRmRuleBoolean(args) {
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
     if (args?.value == null) throw new IllegalArgumentException("value (boolean) is required")
-    // Accept Boolean or the canonical lowercase strings 'true'/'false' only. Reject other
-    // truthy-looking values (1, 'yes', 'True') to avoid silently setting the wrong boolean.
     Boolean resolved = null
     if (args.value instanceof Boolean) {
         resolved = args.value
@@ -764,17 +807,35 @@ def toolSetRmRuleBoolean(args) {
         throw new IllegalArgumentException("value must be boolean true/false (or the string 'true'/'false'), got: ${args.value}")
     }
     def rmAction = resolved ? "setRuleBooleanTrue" : "setRuleBooleanFalse"
-    def idArg = _rmRuleIdListArg(args.ruleId)
-    idArg.ids.each { _requireUnprotectedAppMutation(it, "set rule private boolean") }
-    def result = sendRmAction(idArg.ids as List, rmAction, "hub_set_rule_private_boolean value=${resolved}")
-    if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
-    return result
+    List<Integer> ruleIds = _rmRuleIdListArg(args.ruleId)
+    ruleIds.each { _requireUnprotectedAppMutation(it, "set rule private boolean") }
+    Map guard = _rmRequireRuleTargets(ruleIds, "hub_set_rule_private_boolean")
+    if (guard.failure) return guard.failure + [ruleIds: ruleIds]
+    Map sent = sendRmAction(ruleIds, rmAction, "hub_set_rule_private_boolean value=${resolved}")
+    if (sent.success != true) return sent
+    // RMUtils hands the action to Rule Machine, which can set the flag after the dispatch returns, so each rule's flag
+    // is read until it shows the value, for up to two seconds. Checked in a closure, whose class carries its call sites:
+    // the server class sits at the JVM's constant-pool limit.
+    return { wrapped ->
+        Map seen = [:]
+        for (attempt in 0..<5) {
+            if (attempt > 0) pauseExecution(500)
+            ruleIds.findAll { seen.get(it) != resolved }.each { id ->
+                try { seen.put(id, _appStatusFlag(_appStatusFlagsRead(id), 'private').value) }
+                catch (Exception unread) { seen.put(id, "unreadable (${unread.message ?: unread.toString()})".toString()) }
+            }
+            if (ruleIds.every { seen.get(it) == resolved }) return sent
+        }
+        List off = ruleIds.findAll { seen.get(it) != resolved }
+        sent + [success: false, unconfirmedRuleIds: off,
+            error: "The ${rmAction} dispatch was accepted, but the private boolean of rule(s) ${off.join(', ')} then read ${off.collect { seen.get(it) }.join(', ')}, not ${resolved}.".toString(),
+            note: "Read each rule with hub_get_rule (health.privateBoolean) before sending the value again; setting a value a rule already has changes nothing. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+    }.call(null)
 }
 
 // Shared sendAction wrapper. Returns a consistent success/error result map.
-// The 4-arg form `sendAction([ids], action, appLabel, "5.0")` dispatches to the RM 5.x
-// handler and is the canonical call for both RM 4.x and RM 5.x rules. Background on the
-// RM API shape: https://community.hubitat.com/t/rule-machine-api/7104
+// The 4-arg form `sendAction([ids], action, appLabel, "5.0")` dispatches to Rule Machine's current
+// handler. Background on the RM API shape: https://community.hubitat.com/t/rule-machine-api/7104
 private Map sendRmAction(List<Integer> ruleIds, String rmAction, String logContext) {
     def appLabel = app?.label ?: "MCP Rule Server"
     try {
@@ -784,39 +845,27 @@ private Map sendRmAction(List<Integer> ruleIds, String rmAction, String logConte
         if (ruleIds.size() == 1) result.ruleId = ruleIds[0]
         return result
     } catch (Throwable e) {
-        // Throwable: an absent Rule Machine surfaces as NoClassDefFoundError. Never retried --
+        // Throwable: an absent Rule Machine surfaces as NoClassDefFoundError. Never retried here --
         // a retry would double-fire an action the first call may already have dispatched.
         def m = e.message ?: e.toString()
         mcpLog("error", "rm-interop", "${logContext} failed for rule(s) ${ruleIds.join(', ')}: ${m}")
-        return [success: false, error: "RMUtils.sendAction failed: ${m}", note: _rmSendActionErrorNote(rmAction, ruleIds, m)]
+        return [success: false, ruleIds: ruleIds, error: "RMUtils.sendAction failed: ${m}", note: _rmSendActionErrorNote(ruleIds, m)]
     }
 }
 
-// The text RMUtils surfaces when the hub's per-app load limiter refuses a dispatch.
-private String _rmExcessiveLoadMarker() { "excessive hub load" }
-
-// Recovery note for a failed RMUtils.sendAction. Under the load limiter a pause/resume can still
-// go through the rule's own page button, which does not pass through RMUtils. Pause and resume
-// share one toggle button, pausRule.
-private String _rmSendActionErrorNote(String rmAction, List<Integer> ruleIds, String message) {
+// Recovery note for a failed RMUtils.sendAction. The load limiter refuses an RMUtils dispatch before it
+// runs, so a refusal changed nothing and is cleared by a reset of the app runtime statistics.
+private String _rmSendActionErrorNote(List<Integer> ruleIds, String message) {
+    if (_loadLimiterRefusedMessage(message)) {
+        return "The hub's per-app load limiter refused the dispatch, so nothing was changed. Reset the hub's app runtime statistics (hub_delete_logs(mode='appRuntimeStats', confirm=true), or the server's automatic reset) and retry."
+    }
     def base = "Verify the ruleId is valid (use hub_list_rules) and Rule Machine is installed."
     if (ruleIds.size() > 1) {
-        // A LIST dispatch that threw may have actioned part of the set before
-        // failing -- a reflex retry double-fires runRule/runRuleAct actions.
-        base = "${base} NOTE: this was a LIST dispatch (${ruleIds.join(', ')}) -- part of the set may already have been actioned; verify per-rule state via hub_list_rules before retrying (a blind retry re-fires already-actioned rules)."
-    }
-    if (message && message.toLowerCase().contains(_rmExcessiveLoadMarker())) {
-        if (rmAction == "pauseRule" || rmAction == "resumeRule") {
-            def verb = (rmAction == "resumeRule") ? "resume" : "pause"
-            def perRule = (ruleIds.size() == 1) ? "hub_set_rule(operation:'form', rule_id:${ruleIds[0]}, args:{steps:[{kind:'open'}]}, confirm:true), then activate the returned pausRule control"
-                                                : "hub_set_rule(operation:'form', rule_id:<id>, args:{steps:[{kind:'open'}]}, confirm:true), then activate the returned pausRule control per rule (${ruleIds.join(', ')}) -- CHECK EACH RULE'S CURRENT STATE FIRST via hub_list_rules: the batch went out in one RMUtils dispatch and part of it may already have been actioned, and clicking pausRule on a rule the batch already ${verb}d UNDOES that rule"
-            return "RMUtils hit the hub's per-app load limiter. To ${verb} the rule now, use its page button instead: ${perRule}. pausRule is a single toggle; clicking it on a paused rule resumes it. ${base}"
-        }
-        return "RMUtils hit the hub's per-app load limiter, so the action was not dispatched. ${base}"
+        // A LIST dispatch that threw may have actioned part of the set before failing.
+        base = "${base} NOTE: this was a LIST dispatch (${ruleIds.join(', ')}) -- part of the set may already have been set; check each rule's privateBoolean with hub_get_rule before retrying."
     }
     return base
 }
-
 
 private Map _collectLiveApps() {
     def responseText
@@ -869,17 +918,6 @@ private Map _collectLiveApps() {
     return complete ? apps : null
 }
 
-private Integer _rmCoerceRuleId(Object id) {
-    try {
-        if (id instanceof Number) {
-            return (id.doubleValue() == id.longValue()) ? id.intValue() : null
-        }
-        def s = id?.toString()?.trim()
-        if (!s) return null
-        def bd = new BigDecimal(s)   // throws on non-numeric -> caught -> null
-        return (bd.stripTrailingZeros().scale() <= 0) ? bd.intValue() : null
-    } catch (Exception ignored) { return null }
-}
 
 private List _rmCollectTriggerIndices(Integer appId) {
     def status = _rmFetchStatusJson(appId)
@@ -1004,10 +1042,10 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
     // set diff still allows deletions that strictly improve a broken
     // rule, because every projected issue is also in current.
     // Keyed off actSubType ALONE: RM 5.1's UI persists no actType.<N> on
-    // ELSE / ELSE-IF / END-IF rows, so also requiring actType would let a
+    // ELSE / ELSE-IF / END-IF / END-REP rows, so also requiring actType would let a
     // UI-built closer skip the refusal and silently unbalance the rule.
     def sType = settingsByName["actSubType.${actionIdx}".toString()]?.value?.toString()
-    def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getStopRepeat"]
+    def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getUntil", "getRepeatWhile", "getEndRepeat"]
     if (sType in structuralSubTypes && !skipStructuralCheck) {
         // Both sides walk the rule's OWN actions. A leftover settings row is not
         // part of the rule's structure, and the set-diff does not reliably cancel
@@ -1021,7 +1059,9 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
             "getEndIf": "END-IF",
             "getRepeat": "Repeat",
             "getWhile": "Repeat-While",
-            "getStopRepeat": "End-Repeat"
+            "getUntil": "Repeat-Until",
+            "getRepeatWhile": "Repeat-While",
+            "getEndRepeat": "END-REP"
         ][sType] ?: sType
         def orderedIndices = _rmOrderedActionIndices(appId)
         if (orderedIndices == null) {
@@ -1029,7 +1069,7 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
             // leftover closer can mask the imbalance this deletion creates -- a structural row
             // could be deleted past a check that never saw the real block structure. Refuse, as
             // moveAction and modifyAction do; a non-structural row (above) is unaffected.
-            throw new IllegalStateException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind} row and the rule's compiled action order (ruleBuilderJson actionList) is unavailable, so the deletion's effect on block balance cannot be verified -- the settings scan can be masked by leftover rows. Retry once ruleBuilderJson answers (hub_get_rule_health lists the read failure under checkErrors), or use replaceActions to rebuild the action list atomically. RM is not touched.")
+            throw new IllegalStateException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind} row and the rule's compiled action order (ruleBuilderJson actionList) is unavailable, so the deletion's effect on block balance cannot be verified -- the settings scan can be masked by leftover rows. Retry once ruleBuilderJson answers (hub_get_rule lists the read failure under health.checkErrors). RM is not touched.")
         }
         def currentIssues = _rmStructuralIssuesFromSequence(
             _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), orderedIndices))
@@ -1037,7 +1077,7 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
             _rmStructuralSequenceFromSettings(settingsByName, ([actionIdx] as Set), orderedIndices))
         def newIssues = projectedIssues - currentIssues
         if (newIssues) {
-            throw new IllegalArgumentException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind}; removing it would introduce a new structural-balance issue (${newIssues.first()}). Remove the matching opener/closer first, or use replaceActions to rebuild the action list atomically. RM is not touched.")
+            throw new IllegalArgumentException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind}; removing it would introduce a new structural-balance issue (${newIssues.first()}). Removing either half of a balanced pair alone is refused, so remove both together: one hub_set_rule(operation:'update') batch that deletes both rows (its balance is checked once, after the batch), or the Hubitat UI. RM is not touched.")
         }
     }
     _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
@@ -1701,7 +1741,7 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
     def payload = new groovy.json.JsonSlurper().parseText(raw)
     def identity = payload instanceof Map && payload.appReplacements instanceof Map ? payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }?.value : null
     def data = payload instanceof Map && payload.appData instanceof Map ? payload.appData.find { key, value -> key.toString() == ruleId.toString() }?.value : null
-    if (!(identity instanceof Map) || identity.appTypeNamespace != 'hubitat' || !(identity.appTypeName in ['Rule-5.1', 'Button Rule-5.1']) ||
+    if (!(identity instanceof Map) || !_rmIsEditableRuleType(identity.appTypeNamespace, identity.appTypeName) ||
         !identity.parentAppInstalledAppId?.toString()?.isLong() || identity.parentAppInstalledAppId.toString().toLong() <= 0L ||
         !(payload.deviceReplacements instanceof Map) || !(data instanceof Map) || !(data.state instanceof Map) ||
         ['actions', 'capabstrue', 'capabsfalse', 'eval'].any { data.state.get(it) != null && !(data.state.get(it) instanceof Map) } ||
@@ -1921,7 +1961,8 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
 
     // A snapshot whose config carries no type name also lands on rule_machine above, so the export is
     // gated on the hub's own Rule Machine type name.
-    if (detectedAppType == "rule_machine" && config != null && (configAppName?.toString() ==~ /Rule-[0-9.]+/)) {
+    boolean ruleMachineExport = detectedAppType == "rule_machine" && config != null && (configAppName?.toString() ==~ /Rule-[0-9.]+/)
+    if (ruleMachineExport) {
         // Rule Machine only (restore imports it as a rule). The cloner renders no export for a rule with a
         // committed Required Expression (live, fw 2.5.2.129).
         def evalState = (status?.appState instanceof List) ? (status.appState as List).find { it instanceof Map && it.name == "eval" }?.value : null
@@ -2015,40 +2056,6 @@ private Map _rmSoftDeleteApp(Integer appId) {
 }
 
 // -------------------- Native RM tools (MCP-exposed) --------------------
-
-// Local-variable reads are retained for the runtime diagnostics surface.
-private Map _rmReadLocalVarsMap(Integer appId) {
-    def status
-    try {
-        status = _rmFetchStatusJson(appId)
-    } catch (Exception e) {
-        return [ok: false, vars: [:], error: "${e.class.simpleName}: ${e.message ?: e.toString()}"]
-    }
-    def appState = status?.appState
-    if (appState != null && !(appState instanceof List)) {
-        // appState has always been a List-of-entries; a non-List shape would make the
-        // .find below read zero locals silently. An EMPTY non-List (e.g. [:]) carries no
-        // data to lose, so treat it as a plain no-locals read. A NON-EMPTY non-List shape
-        // carries data we cannot interpret -- returning ok:true would mask a read failure
-        // as a genuinely-empty rule, so surface it as ok:false (a read failure) instead, so
-        // callers (hub_list_rule_local_variables) report a read error rather than total:0.
-        if (appState instanceof Map ? !appState.isEmpty() : true) {
-            def shapeLabel = (appState instanceof Map) ? "a Map" : "a non-List value"
-            mcpLog("warn", "rm-native", "_rmReadLocalVarsMap: app ${appId} statusJson appState is ${shapeLabel} (expected a List of {name,value} entries) -- treating as a read failure; the allLocalVars contract may have changed.")
-            return [ok: false, vars: [:], error: "statusJson appState was ${shapeLabel}, not the expected List of entries -- cannot read local variables (the allLocalVars contract may have changed)"]
-        }
-        return [ok: true, vars: [:]]
-    }
-    def raw = (appState ?: []).find { it?.name?.toString() == "allLocalVars" }?.value
-    // A running rule updates lv_<name>; allLocalVars only catches up when the rule's page renders.
-    def live = [:]
-    (appState ?: []).each { e ->
-        def n = e?.name?.toString()
-        // Local names can be sandbox property names such as fields; use Map.put for arbitrary keys.
-        if (n?.startsWith("lv_") && e.value instanceof Map) live.put(n.substring(3), e.value)
-    }
-    return [ok: true, vars: (raw instanceof Map) ? raw : [:], live: live]
-}
 
 Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache = null) {
     def cfg = _rmFetchConfigJson(appId, pageName, cache)
@@ -2386,7 +2393,7 @@ private List _rmRequiredTokens(Integer appId) {
 private Integer _rmReplayConditionSlot(Integer appId, Map srcSettings, int srcIdx, Closure writeST, Map cache) {
     Integer newIdx = null
     def written = [] as Set
-    for (int iter = 0; iter < 30; iter++) {
+    for (int iter in 0..<30) {
         def inputs = (_rmFetchConfigJson(appId, "STPage", cache)?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
         if (newIdx == null) {
             def rc = inputs.find { it?.name?.toString()?.startsWith("rCapab_") }
@@ -2543,7 +2550,8 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
             builtCount = 1
             if (snapTokens.size() > 1) _rmTokEnterEditor(appId, cache)
         }
-        if (liveCommitted || snapTokens.size() > 1) {
+        boolean appendTokens = liveCommitted || snapTokens.size() > 1
+        if (appendTokens) {
             // Tokens before the first condition (a leading paren or NOT) go in front of it; the rest
             // append. With an old expression present, everything appends after it.
             def prefix = liveCommitted ? [] : (firstCond > 0 ? snapTokens[0..<firstCond] : [])
@@ -2713,89 +2721,70 @@ def toolDeleteNativeApp(args) {
     }
 }
 
-// hub_get_rule_health — public tool wrapper around _rmCheckRuleHealth.
-// Read-only; doesn't take a backup. Returns the same {ok, issues, ...}
-// native diagnostic report; native document writes perform their own checks.
-def toolCheckRuleHealth(args) {
-    if (args?.appId == null) throw new IllegalArgumentException("appId is required")
-    def appId = normalizeRuleId(args.appId)
-    def source = (args?.source != null ? args.source.toString() : "auto")
-    if (!(source in ["auto", "ruleBuilderJson", "configPage"])) {
-        throw new IllegalArgumentException("source must be one of: auto (default), ruleBuilderJson, configPage")
+// hub_get_rule. A Rule Machine 5.1 rule or Button Rule returns the document hub_set_rule reads, with its
+// local variables, and a Basic Rule its settings; any other app returns its health alone.
+def toolGetNativeRule(args) {
+    def raw = args?.ruleId
+    if (raw == null) throw new IllegalArgumentException("ruleId is required")
+    Long id = normalizeRuleId(raw) as Long
+    Map docArgs = [ruleId: id, localVariables: true]
+    ['sections', 'cursor', 'limit'].each { key -> if (args.containsKey(key)) docArgs.put(key, args.get(key)) }
+    Map read = _ndDocumentArgs(docArgs, ['actions', 'conditions', 'triggers', 'expressions', 'settings', 'localVariables'], 'hub_get_rule')
+    def target
+    try { target = getAppByAppId(id) }
+    catch (Exception lookup) {
+        mcpLogError("rm-native", "hub_get_rule lookup failed for app ${id}", lookup)
+        String why = lookup.message ?: lookup.toString()
+        String retry = "The read does not open the rule's page or change its configuration, so retrying once is safe. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules')."
+        // The health check takes the app's type from its App Status page when the lookup fails, so it can still answer.
+        Map health = _rmCheckRuleHealth(id as Integer)
+        if (health.unreadable == true) return [success: false, ruleId: id, error: "Rule ${id} could not be read: ${why}".toString(), note: retry]
+        String unread = "Rule ${id} could not be identified (${why}), so its document and local variables were not read; its health was read without it.".toString()
+        // A requested section that did not come back is a failed read; a health-only read (sections:[]) still succeeded.
+        if (read.sections) return [success: false, health: health, ruleId: id, error: unread, localVariables: null, note: retry]
+        return [health: health, ruleId: id, localVariables: null, documentError: unread, note: retry]
     }
-    def result = _rmCheckRuleHealth(appId, source)
-    def status = null
-    try {
-        status = _rmFetchStatusJson(appId)
-        // A readable statusJson with an ABSENT section means zero live entries -- a
-        // schedule-only rule carries no eventSubscriptions list at all (and a stopped
-        // rule drops both). null is reserved for the fetch itself failing.
-        result.eventSubscriptionCount = (status?.eventSubscriptions instanceof List) ? status.eventSubscriptions.size() : 0
-        result.scheduledJobCount = (status?.scheduledJobs instanceof List) ? status.scheduledJobs.size() : 0
-    } catch (Exception statusErr) {
-        result.eventSubscriptionCount = null
-        result.scheduledJobCount = null
-        // Half-checked marker, same contract as the two source reads: null counts with no
-        // recorded reason read as "this rule has none", which is a different fact.
-        def checkErrors = (result.checkErrors instanceof List) ? result.checkErrors : []
-        checkErrors << "statusJson: ${statusErr.message ?: statusErr.toString()}".toString()
-        result.checkErrors = checkErrors
+    if (target == null) throw new IllegalArgumentException(_rmMissingAppText(id))
+    String typeName = target.appType?.name?.toString()
+    def namespace = target.appType?.namespace
+    if (_rmIsEditableRuleType(namespace, typeName)) return toolGetRuleDocument(docArgs)
+    boolean basicRule = namespace == 'hubitat' && _classicAppFormat(typeName) == 'basic-rule'
+    // A Basic Rule's settings are short and come back whole, so there is nothing to page.
+    if (basicRule && read.paged) throw new IllegalArgumentException("A Basic Rule's settings are returned whole; omit cursor and limit.")
+    Map result = [health: _rmCheckRuleHealth(id as Integer), ruleId: id, localVariables: null]
+    if (basicRule) {
+        if ('settings' in read.sections) {
+            try { result.settings = _ndSettings(id) }
+            catch (Exception settingsFailure) {
+                // A requested section that did not come back is a failed read, as on the Rule Machine path; the health stays.
+                String why = (settingsFailure.message ?: settingsFailure.toString()).toString()
+                return [success: false, health: result.health, ruleId: id, settings: null, settingsError: why, localVariables: null,
+                        error: "Rule ${id} could not be read: ${why}".toString(),
+                        note: "The read does not open the rule's page or change its configuration, so retrying once is safe. If it fails again, check that the hub answers with hub_get_info. See hub_get_tool_guide(section='builtin_app_tools_rules')."]
+            }
+        }
+        return result
     }
-    // A plain suffix can be the user's name, even when the rule really is paused.
-    // Only real markup proves which text is a runtime decoration; typed '<' is escaped.
-    def rawLabel = result.label?.toString()
-    Boolean pausedVerdict = result.paused instanceof Boolean ? result.paused :
-        (status != null ? _readAppStateBoolean(status, "paused", null) : null)
-    Boolean stoppedVerdict = status != null ? _readAppStateBoolean(status, "stopped", null) : null
-    boolean visual = result.ruleFormat in ["vrb-classic", "vrb-graph"]
-    while (!visual && rawLabel != null) {
-        def decoration = rawLabel =~ /<[^>]+>\s*\((Paused|Stopped)\)\s*(?:<\/[^>]+>\s*)*$/
-        if (!decoration.find()) break
-        if (decoration.group(1) == "Stopped") {
-            if (stoppedVerdict == null) stoppedVerdict = true
-        } else if (pausedVerdict == null) pausedVerdict = true
-        rawLabel = rawLabel.substring(0, decoration.start()).trim()
-    }
-    // Explicit state outranks older display markup; unreadable state still uses it.
-    // A readable status with no stopped flag means never stopped. Pause absence
-    // is resolved only by the recognizable native RM compiled-state reader;
-    // other missing or malformed pause evidence remains unknown here.
-    if (stoppedVerdict == null && status != null) stoppedVerdict = false
-    result.stopped = stoppedVerdict
-    result.paused = pausedVerdict
-    if (!visual && rawLabel != null) result.label = rawLabel.replaceAll(/<[^>]+>/, "").trim()
-    return result
-}
-
-// hub_list_rule_local_variables -- read a rule's local variables from its statusJson appState.
-// Pure read; no wizard. Returns {appId, localVariables:[{name, type, value}], total}; an absent
-// allLocalVars map means the rule has no locals (an empty list, not an error).
-def toolListRuleLocalVariables(args) {
-    if (args?.appId == null) throw new IllegalArgumentException("appId is required")
-    def appId = normalizeRuleId(args.appId)
-    // _rmReadLocalVarsMap throws nothing (it wraps the status read); a read failure
-    // surfaces as ok:false. Re-raise it here so the pure-read tool reports the read
-    // error rather than silently returning an empty list that looks like "no locals".
-    def lvRead = _rmReadLocalVarsMap(appId)
-    if (!lvRead.ok) {
-        throw new IllegalStateException("hub_list_rule_local_variables: could not read rule ${appId} status (${lvRead.error}).")
-    }
-    def localVariables = []
-    lvRead.vars.each { lvName, lvMeta ->
-        def live = lvRead.live?.get(lvName?.toString())
-        localVariables << _rmPublicLocalVariable(lvName?.toString(), [
-            type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null),
-            value: (live instanceof Map && live.containsKey("value")) ? live.value : (lvMeta instanceof Map ? lvMeta?.value : null)
-        ])
-    }
-    localVariables = localVariables.sort { it.name }
-    return [appId: appId, localVariables: localVariables, total: localVariables.size()]
+    result.note = _rmIsVisualRuleType(namespace, typeName) ? "A Visual Rule's definition is read with hub_get_visual_rule." :
+        (_rmIsRuleAppType(namespace, typeName) ? "Only a Rule Machine 5.1 rule or Button Rule has a document; this rule returns its health alone. Read its configuration with hub_get_app_config(includeStatus: true)." :
+            "hub_get_rule reads Rule Machine rules, Button Rules and Basic Rules; for this app it returns its health alone. Read its configuration and App Status with hub_get_app_config(includeStatus: true).")
+    result
 }
 
 // A local variable named like a credential (doorCode, alarmPin) reads with its value hidden, as settings do.
 Map _rmPublicLocalVariable(String name, Map row) {
     Map result = [name: name, type: row?.type, value: row?.value]
     if (_appConfigMasksSetting(name, row?.type == 'boolean' ? 'bool' : 'text', row?.value)) { result.value = null; result.redacted = true }
+    // A {name, value} row: the token pass keys on map keys, so it never sees a local named accessToken.
+    else if (_redactsAccessTokens() && name ==~ /(?i)access_?token/ && row?.value instanceof CharSequence) { result.value = _accessTokenRedactedMarker(); result.redacted = true }
+    // A string local can hold a URL, whose secret query value or password is masked as in the rule's settings; the
+    // rest of the value stays, so redacted marks it as unfit to write back.
+    else if (row?.value instanceof CharSequence) {
+        result.value = _ruleSecretsMasked(row.value, [names: [], codes: []])
+        // The result-wide token pass would mask an access_token= in the URL only after this comparison, so it is masked here first.
+        if (_redactsAccessTokens()) result.value = _redactAccessTokens(result.value)
+        if (result.value?.toString() != row.value.toString()) result.redacted = true
+    }
     result
 }
 
@@ -2862,7 +2851,8 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
         throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub. Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='builtin_app_tools_crud').")
     }
 
-    if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
+    boolean staleRecent = recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)
+    if (staleRecent) {
         def staleFile = recent.value?.fileName?.toString()
         mcpLog("warn", "rm-native", "Recent backup ${recent.key} for rule ${ruleId} is missing or does not match its manifest; discarding the stale handle and taking a fresh baseline")
         try { unlinkItemBackupManifestFile(staleFile, recent.key?.toString()) }
@@ -2893,7 +2883,7 @@ private Map _naOperationSchema(String operation) {
         controller_id: [type: 'integer', minimum: 1], button_number: [type: 'integer', minimum: 1],
         event: [type: 'string', enum: ['pushed', 'held', 'doubleTapped', 'released']]], required: ['app_type']]
     if (operation == 'update') return [type: 'object', additionalProperties: false, properties: [fields: [type: 'object'], page: [type: 'string']], required: ['fields']]
-    if (operation == 'form') return _ndOperationSchema('form')
+    if (operation == 'form') return _ndOperationSchema('form', 'hub_set_native_app')
     throw new IllegalArgumentException('Unknown native app operation; use create, update or form')
 }
 
@@ -2943,6 +2933,8 @@ private void _naValidateCreate(Map args) {
         List stray = buttonKeys.findAll { args.containsKey(it) }
         if (stray) throw new IllegalArgumentException("${stray.join(', ')} apply only to app_type button_rule".toString())
         if (args.containsKey('fields') && !args.get('fields')) throw new IllegalArgumentException('fields must name at least one input; omit it to create the app with its page defaults')
+        // A Button Controller's Done fails without its button device, after the create may have installed the parent app.
+        if (args.app_type == 'button_controller' && !(args.get('fields') instanceof Map && args.get('fields').buttonDev)) throw new IllegalArgumentException("button_controller requires fields.buttonDev, the button device id list its first page saves with. Nothing was created.")
     }
 }
 
@@ -3160,7 +3152,8 @@ private Map _naCreate(Map args) {
             return [success: false, partial: true, app_type: type, app_id: childId, error: failure.message?.toString(),
                     note: "App ${childId} exists and its page may already be saved. Open it with hub_set_native_app(operation:'form', app_id:${childId}, args:{steps:[{kind:'open'}]}, confirm:true) to see its state, then finish or delete it; do not create it again.${guide}".toString()]
         }
-        if (saved.done && !saved.committed && saved.done != '_action_done|Done|') {
+        boolean refusedDone = saved.done && !saved.committed && saved.done != '_action_done|Done|'
+        if (refusedDone) {
             // The hub answered the Done with a page instead of a location, so the app did not install.
             List asks = []
             try {
@@ -3188,7 +3181,7 @@ private Map _naCreate(Map args) {
                       fields_applied: written.keySet().collect { it.toString() } - back.not_landed - back.consumed] + report
         if (back.consumed) result.fields_consumed = back.consumed
         List notes = [type == 'rule_machine' ?
-            "Created Rule Machine rule ${childId}. Author its triggers and actions with hub_set_rule(operation:'update', rule_id:${childId}, args:{changes:[...]}, confirm:true)." :
+            "Created Rule Machine rule ${childId}. Author its triggers and actions with hub_set_rule(operation:'update', ruleId:${childId}, args:{changes:[...]}, confirm:true)." :
             "Created ${type} app ${childId}. Set more inputs with hub_set_native_app(operation:'update', app_id:${childId}, args:{fields:{...}}, confirm:true) or drive its pages with operation:'form'."]
         if (back.not_landed) {
             result.fields_not_landed = back.not_landed
@@ -3277,7 +3270,7 @@ private Map _naCreateButtonRule(Map args) {
             throw new IllegalStateException('The controller did not open a new Button Rule')
         }
         return [success: true, app_id: ruleId, app_type: 'button_rule', label: rule.label?.toString(), controller_id: controllerId, button_number: number, event: event, backup: backup,
-         note: "Created button rule ${ruleId}; the controller seeded its trigger (button ${number} ${event}). Author its actions with hub_set_rule(operation:'update', rule_id:${ruleId}, args:{changes:[...]}, confirm:true); it shows as not installed until it has one.${guide}".toString()]
+         note: "Created button rule ${ruleId}; the controller seeded its trigger (button ${number} ${event}). Author its actions with hub_set_rule(operation:'update', ruleId:${ruleId}, args:{changes:[...]}, confirm:true); it shows as not installed until it has one.${guide}".toString()]
     } catch (Exception failure) {
         if (failure instanceof IllegalArgumentException && !attempted) throw failure
         mcpLogError('rm-native', "hub_set_native_app create: button rule under controller ${controllerId} failed", failure)
@@ -3402,10 +3395,9 @@ def _readOnlyToolNames_partNativeRM() {
     // Read-only classification for this library's tools (issue #209: per-tool metadata lives
     // with the tool), contributed to the app's getReadOnlyToolNames() aggregator.
     return [
-        // Native rules (read) -- hub_get_rule_health inspects only;
-        // hub_list_rule_local_variables reads the rule's statusJson only.
+        // Native rules (read) -- hub_get_rule reads the rule's state without rendering its page.
         // (hub_export_native_app -- in McpAppClonerLib -- instantiates a cloner app + persists, so it stays write.)
-        "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables"
+        "hub_list_rules", "hub_get_rule"
     ]
 }
 
@@ -3414,7 +3406,7 @@ def _idempotentWriteToolNames_partNativeRM() {
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
     return [
         // Native rules / classic apps
-        "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_app_disabled"
+        "hub_set_rule_private_boolean", "hub_set_app_disabled"
     ]
 }
 
@@ -3422,12 +3414,10 @@ def _toolDisplayMeta_partNativeRM() {
     // Human-facing title/summary per tool -- merged into the app's getToolDisplayMeta() aggregator.
     return [
         // Native Rule Machine + classic apps
-        hub_list_rules: [title: "List Rule Machine Rules", summary: "List all Rule Machine rules."],
-        hub_call_rule: [title: "Trigger Rule Machine Rule", summary: "Trigger one or more Rule Machine rules, run their actions, or stop them."],
-        hub_set_rule_paused: [title: "Pause or Resume Rule", summary: "Pause or resume one or more Rule Machine rules in one call."],
+        hub_list_rules: [title: "List Rule Machine Rules", summary: "List the Rule Machine 5.x rules with their status."],
+        hub_call_rule: [title: "Run or Control Rule", summary: "Run the actions of one or more rules, or stop, start, pause or resume them."],
         hub_set_rule_private_boolean: [title: "Set Rule Private Boolean", summary: "Set the private boolean of one or more Rule Machine rules."],
-        hub_get_rule_health: [title: "Get Rule Health", summary: "Read-only health check on any installed app."],
-        hub_list_rule_local_variables: [title: "List Rule Local Variables", summary: "Read-only list of a Rule Machine rule's local variables."],
+        hub_get_rule: [title: "Get Rule", summary: "Read a rule's health, actions, conditions, triggers, settings and local variables."],
         hub_set_native_app: [title: "Set Native App", summary: "Create, update or drive the native forms of classic apps (Room Lighting, Thermostat Scheduler and Controller, user apps)."],
         hub_delete_native_app: [title: "Delete Native App", summary: "Delete a classic native app (auto-snapshot first)."],
         hub_set_app_disabled: [title: "Enable or Disable App", summary: "Enable or disable any installed app without deleting it (reversible)."]
@@ -3441,9 +3431,9 @@ hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and co
 
 ### create
 
-operation:"create" with args:{app_type,name?,fields?} does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), presses that page's Create control, fills the new app's first page with fields and presses its Done, which installs the app. name goes to the label input the first page renders (origLabel, name, or the hub's own label field); a type whose first page renders none of them (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. fields are checked against that page before anything is saved: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input left empty for the Done is refused with success:false, and the new app is removed. Inputs that a choice reveals belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. installed:false means the first page has no Done (Basic Rule: finish it with form). A Done the hub answers by rendering the first page again returns success:false with what that page asks for, and the new app is removed. app_type rule_machine makes only an empty rule.
+operation:"create" with args:{app_type,name?,fields?} does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), presses that page's Create control, fills the new app's first page with fields and presses its Done, which installs the app. name goes to the label input the first page renders (origLabel, name, or the hub's own label field); a type whose first page renders none of them (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. app_type button_controller requires fields.buttonDev and is refused without it before anything is installed. fields are checked against that page before anything is saved: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input left empty for the Done is refused with success:false, and the new app is removed. Inputs that a choice reveals belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. installed:false means the first page has no Done (Basic Rule: finish it with form). A Done the hub answers by rendering the first page again returns success:false with what that page asks for, and the new app is removed. app_type rule_machine makes only an empty rule.
 
-A button_rule takes args:{app_type:"button_rule",controller_id,button_number,event} and no name or fields. It runs the Button Controller's own Add Button, the button number, then that event's Create Button Rule control. The controller needs its button device assigned first. A button number the controller does not offer returns success:false after its page's Cancel, with the controller as before and the recovery point taken before the call rendered anything. The controller seeds the trigger; add the actions with hub_set_rule(operation:"update",rule_id:<returned app_id>).
+A button_rule takes args:{app_type:"button_rule",controller_id,button_number,event} and no name or fields. It runs the Button Controller's own Add Button, the button number, then that event's Create Button Rule control. The controller needs its button device assigned first. A button number the controller does not offer returns success:false after its page's Cancel, with the controller as before and the recovery point taken before the call rendered anything. The controller seeds the trigger; add the actions with hub_set_rule(operation:"update",ruleId:<returned app_id>).
 
 ### update
 
@@ -3453,5 +3443,5 @@ Each update first takes a recovery point, before it renders any page: an exact e
 
 ### form
 
-operation:"form" with args:{steps:[...],options_for?} runs the native form engine on any enabled classic app. Steps, control IDs, validation and limits are those of Native Rule Forms in set_rule_reference. While pre-edit backups are on (the default), a workflow takes the same recovery point as update before its first render. Protected and disabled apps are refused. A create_child control works only for built-in child app types.'''
+operation:"form" with args:{steps:[...],options_for?} runs the native form engine on any enabled classic app. Steps, control IDs, validation and limits are those of Native Rule Forms in set_rule_reference, which spells this tool's expect_page and options_for as expectPage and optionsFor. While pre-edit backups are on (the default), a workflow takes the same recovery point as update before its first render. Protected and disabled apps are refused. A create_child control works only for built-in child app types.'''
 }

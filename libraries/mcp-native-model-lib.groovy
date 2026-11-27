@@ -260,8 +260,9 @@ private void _nmRefreshHealth(Long ruleId, Map baseline) {
 
 // Rule Machine sets state.broken when an action's label method, or a condition in its IF or wait expression, renders
 // nothing. A simple conditional action whose condition renders nothing only draws a **Broken Condition** status span,
-// so that span is checked too. The flag is cleared first so only this row can raise it, then restored.
-private boolean _nmActionLabel(Long ruleId, String id) {
+// so that span is checked too. The flag is cleared first so only this row can raise it, then restored. Returns null
+// for a healthy label, 'marked' when Rule Machine flagged or marked the row, and 'empty' when the label drew nothing.
+private String _nmActionLabel(Long ruleId, String id) {
     Map before = _nrState(ruleId)
     List keys = ['actLabelIndent', 'nestedLabel', 'inIf', 'inRepeat', 'broken']
     Map format = before.findAll { key, value -> key in keys }
@@ -273,7 +274,8 @@ private boolean _nmActionLabel(Long ruleId, String id) {
         label = _nrHandle(ruleId).thisActionLabel(id)
         broken = _nrState(ruleId).broken == true
     } finally { _nrStatePatch(ruleId, format, keys.findAll { !format.containsKey(it) }) }
-    label instanceof String && label.trim() && !broken && !(label =~ /<span\b[^>]*>\s*\*\*Broken [^*]+\*\*\s*<\/span>/).find()
+    if (!(label instanceof String) || !label.trim()) return 'empty'
+    broken || (label =~ /<span\b[^>]*>\s*\*\*Broken [^*]+\*\*\s*<\/span>/).find() ? 'marked' : null
 }
 
 private Map _nmRejectEdit(Long ruleId, String id, Map baseline, Map savedSettings, List keys, Map entries, Closure cancel, Map failure) {
@@ -388,7 +390,7 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
         // With "Display current values" on, RM shows each device's value in a span after it (inline black on 2.5.2,
         // classed on 2.5.3); a device with no value yet shows null there. Only that value span is removed.
         String bare = label instanceof String ? label.replaceAll(/\(?<span (?:style='color:black'|class='text-color')>\(?[^<]*\)?<\/span>\)?/, '') : null
-        boolean compiled = bare?.trim() && !bare.contains('null') && !bare.contains('BROKEN')
+        boolean compiled = bare?.trim() && !bare.contains('null') && !bare.contains('BROKEN') && !(bare =~ /\*\*Broken [^*]+\*\*/)
         if (!(compiled && persisted && membership)) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render,
             [error: compiled ? 'Native input persistence failed' : 'Native row did not compile a valid label', compiledLabel: label?.toString()])
         [success: true, id: id, label: label, partial: false, settingsVerified: true]
@@ -399,116 +401,127 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
 }
 
 Map _nmUpsertAction(Long ruleId, Map row) {
-    if (row == null || row.keySet().any { !(it in ['id', 'type', 'subtype', 'fields', 'expression', 'events', 'condition']) } || !(row.type instanceof String) || !row.type.trim() || !(row.subtype instanceof String) || !row.subtype.trim()) throw new IllegalArgumentException('Action type, subtype and typed fields are required')
-    boolean waitEvents = row.subtype == 'getWaitEvents'
-    boolean waitRule = row.subtype == 'getWaitRule'
-    if (row.subtype.toString().toLowerCase().contains('wait') && !waitEvents && !waitRule) throw new IllegalArgumentException('Unsupported native wait action')
-    if (waitEvents) {
-        if (!(row.events instanceof List) || row.events.empty || row.events.size() > 16) throw new IllegalArgumentException('Wait actions require between one and sixteen events')
-        row.events.each { event ->
-            if (!(event instanceof Map) || event.keySet().any { !(it in ['capability', 'fields']) } || !(event.capability instanceof String) || !event.capability.trim()) throw new IllegalArgumentException('Wait events require a capability and typed fields')
-            List preview = _nmFields(event.get('fields') as List, '-1')
-            if (preview.any { it.name == 'tCapab-1' } || preview.collect { it.name }.unique().size() != preview.size()) throw new IllegalArgumentException('Wait fields must not repeat selectors or native inputs')
-        }
-    } else if (row.containsKey('events')) throw new IllegalArgumentException('Only Wait for Events accepts event rows')
-    Map before = _nrState(ruleId)
-    List priorOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
-    boolean editing = row.containsKey('id')
-    String id = _nmId(editing ? row.id : before.actNdx)
-    def prior = _nmEntry(before.actions instanceof Map ? before.actions : [:], id)
-    if (editing && !(prior instanceof Map)) throw new IllegalArgumentException('Native action does not exist')
-    if (!editing && prior != null) throw new IllegalArgumentException('Native action allocation slot is already occupied')
-    if (waitEvents && editing && (!(prior.wait instanceof List) || prior.wait.size() != row.events.size())) throw new IllegalArgumentException('Editing waits currently requires the existing event count')
-    if (!editing && row.subtype in ND_EXPRESSION_SUBTYPES && !row.containsKey('expression')) throw new IllegalArgumentException('New expression actions require expression tokens')
-    String expectedExpressionId = null
-    if (row.containsKey('expression')) {
-        if (!(row.subtype in ND_EXPRESSION_SUBTYPES)) throw new IllegalArgumentException('Unsupported native expression action')
-        _nmTokens(row.expression as List, before.capabsfalse instanceof Map ? before.capabsfalse : [:])
-    }
-    String conditionId = row.containsKey('condition') ? _nmId(row.condition) : (editing && prior.cond ? prior.cond.toString() : null)
-    if (row.containsKey('condition')) {
-        _nmTokens([conditionId], before.capabsfalse instanceof Map ? before.capabsfalse : [:])
-        if (row.containsKey('expression') || row.type in ['condActs', 'repeatActs', 'delayActs']) throw new IllegalArgumentException('A simple condition requires an ordinary native action')
-    }
-    List fields = _nmFields(row.get('fields') as List, id)
-    if (fields.any { it.name in ["actType.${id}".toString(), "actSubType.${id}".toString()] }) throw new IllegalArgumentException('Action selectors must not be repeated')
-    List settings = [[name: "actType.${id}".toString(), type: 'enum', value: row.type], [name: "actSubType.${id}".toString(), type: 'enum', value: row.subtype]] + fields
-    String editToken = 'N'
-    if (editing) {
-        boolean expressionAction = prior.method in ['getIfThen', 'getWhile', 'getUntil', 'getWaitRule']
-        editToken = "${id}.${conditionId ?: 0}.${expressionAction}".toString()
-    }
-    Map savedSettings = _nmSettingsInventory(ruleId)
-    Map baseline = [:] + before
-    ['actions', 'actionList', 'capabsfalse', 'capabstrue', 'eval', 'predCapabs', 'firstR', 'waitNdx', 'waitDone'].each { key ->
-        if (before.get(key) instanceof Map || before.get(key) instanceof List) baseline.put(key, new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(before.get(key))))
-    }
-    Closure render = { unused -> _nrHandle(ruleId).doActPage() }
-    Closure reject = { Map failure -> _nmRejectAction(ruleId, id, baseline, savedSettings, settings, render, failure) }
-    try {
-        _nrStatePatch(ruleId, [doActN: editToken])
-        if (row.containsKey('condition') && !editing) {
-            List conditional = [
-                [name: "actType.${id}".toString(), type: 'enum', value: 'condActs'],
-                [name: "actSubType.${id}".toString(), type: 'enum', value: 'getCondAct'],
-                [name: "useCond.${id}".toString(), type: 'bool', value: true],
-                [name: "useCondNdx.${id}".toString(), type: 'enum', value: conditionId]
-            ]
-            Map selected = _nmWriteExposed(ruleId, conditional, conditional.take(2).collect { it.name }, render.call(), render)
-            if (selected.success != true) return reject.call(selected)
-            _nrHandle(ruleId).appButtonHandler('hasAll')
-            render.call()
-        }
-        Map inputValidation = _nmWriteExposed(ruleId, waitRule ? settings.take(2) : settings, settings.take(2).collect { it.name }, render.call(), render)
-        if (inputValidation.success != true) return reject.call(inputValidation)
-        List waitIds = null
+    // The body runs in a closure, whose class carries its call sites: the server class sits at the JVM's constant-pool limit.
+    return { wrapped ->
+        if (row == null || row.keySet().any { !(it in ['id', 'type', 'subtype', 'fields', 'expression', 'events', 'condition']) } || !(row.type instanceof String) || !row.type.trim() || !(row.subtype instanceof String) || !row.subtype.trim()) throw new IllegalArgumentException('Action type, subtype and typed fields are required')
+        boolean waitEvents = row.subtype == 'getWaitEvents'
+        boolean waitRule = row.subtype == 'getWaitRule'
+        if (row.subtype.toString().toLowerCase().contains('wait') && !waitEvents && !waitRule) throw new IllegalArgumentException('Unsupported native wait action')
         if (waitEvents) {
-            Map waits = _nmCompileWait(ruleId, id, row.events as List, editing)
-            if (waits.success != true) return reject.call(waits + [waitEvents: waits])
-            waitIds = waits.eventIds
-            settings.addAll(waits.settings)
-        }
+            if (!(row.events instanceof List) || row.events.empty || row.events.size() > 16) throw new IllegalArgumentException('Wait actions require between one and sixteen events')
+            row.events.each { event ->
+                if (!(event instanceof Map) || event.keySet().any { !(it in ['capability', 'fields']) } || !(event.capability instanceof String) || !event.capability.trim()) throw new IllegalArgumentException('Wait events require a capability and typed fields')
+                List preview = _nmFields(event.get('fields') as List, '-1')
+                if (preview.any { it.name == 'tCapab-1' } || preview.collect { it.name }.unique().size() != preview.size()) throw new IllegalArgumentException('Wait fields must not repeat selectors or native inputs')
+            }
+        } else if (row.containsKey('events')) throw new IllegalArgumentException('Only Wait for Events accepts event rows')
+        Map before = _nrState(ruleId)
+        List priorOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
+        boolean editing = row.containsKey('id')
+        String id = _nmId(editing ? row.id : before.actNdx)
+        def prior = _nmEntry(before.actions instanceof Map ? before.actions : [:], id)
+        if (editing && !(prior instanceof Map)) throw new IllegalArgumentException('Native action does not exist')
+        if (!editing && prior != null) throw new IllegalArgumentException('Native action allocation slot is already occupied')
+        if (waitEvents && editing && (!(prior.wait instanceof List) || prior.wait.size() != row.events.size())) throw new IllegalArgumentException('Editing waits currently requires the existing event count')
+        if (!editing && row.subtype in ND_EXPRESSION_SUBTYPES && !row.containsKey('expression')) throw new IllegalArgumentException('New expression actions require expression tokens')
+        String expectedExpressionId = null
         if (row.containsKey('expression')) {
-            String expressionId = _nmId(editing && prior.rule != null ? prior.rule : _nrState(ruleId).ruleNdx, true)
-            expectedExpressionId = expressionId
-            Map expression = _nmSetExpression(ruleId, expressionId, row.expression as List)
-            if (expression.success != true) return reject.call([error: expression.error ?: 'Native action expression failed', expression: expression])
-            if (waitRule && fields) {
+            if (!(row.subtype in ND_EXPRESSION_SUBTYPES)) throw new IllegalArgumentException('Unsupported native expression action')
+            _nmTokens(row.expression as List, before.capabsfalse instanceof Map ? before.capabsfalse : [:])
+        }
+        String conditionId = row.containsKey('condition') ? _nmId(row.condition) : (editing && prior.cond ? prior.cond.toString() : null)
+        if (row.containsKey('condition')) {
+            _nmTokens([conditionId], before.capabsfalse instanceof Map ? before.capabsfalse : [:])
+            if (row.containsKey('expression') || row.type in ['condActs', 'repeatActs', 'delayActs']) throw new IllegalArgumentException('A simple condition requires an ordinary native action')
+        }
+        List fields = _nmFields(row.get('fields') as List, id)
+        if (fields.any { it.name in ["actType.${id}".toString(), "actSubType.${id}".toString()] }) throw new IllegalArgumentException('Action selectors must not be repeated')
+        List settings = [[name: "actType.${id}".toString(), type: 'enum', value: row.type], [name: "actSubType.${id}".toString(), type: 'enum', value: row.subtype]] + fields
+        String editToken = 'N'
+        if (editing) {
+            boolean expressionAction = prior.method in ['getIfThen', 'getWhile', 'getUntil', 'getWaitRule']
+            editToken = "${id}.${conditionId ?: 0}.${expressionAction}".toString()
+        }
+        Map savedSettings = _nmSettingsInventory(ruleId)
+        Map baseline = [:] + before
+        ['actions', 'actionList', 'capabsfalse', 'capabstrue', 'eval', 'predCapabs', 'firstR', 'waitNdx', 'waitDone'].each { key ->
+            if (before.get(key) instanceof Map || before.get(key) instanceof List) baseline.put(key, new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(before.get(key))))
+        }
+        Closure render = { unused -> _nrHandle(ruleId).doActPage() }
+        Closure reject = { Map failure -> _nmRejectAction(ruleId, id, baseline, savedSettings, settings, render, failure) }
+        try {
+            _nrStatePatch(ruleId, [doActN: editToken])
+            if (row.containsKey('condition') && !editing) {
+                List conditional = [
+                    [name: "actType.${id}".toString(), type: 'enum', value: 'condActs'],
+                    [name: "actSubType.${id}".toString(), type: 'enum', value: 'getCondAct'],
+                    [name: "useCond.${id}".toString(), type: 'bool', value: true],
+                    [name: "useCondNdx.${id}".toString(), type: 'enum', value: conditionId]
+                ]
+                Map selected = _nmWriteExposed(ruleId, conditional, conditional.take(2).collect { it.name }, render.call(), render)
+                if (selected.success != true) return reject.call(selected)
+                _nrHandle(ruleId).appButtonHandler('hasAll')
+                render.call()
+            }
+            Map inputValidation = _nmWriteExposed(ruleId, waitRule ? settings.take(2) : settings, settings.take(2).collect { it.name }, render.call(), render)
+            if (inputValidation.success != true) return reject.call(inputValidation)
+            List waitIds = null
+            if (waitEvents) {
+                Map waits = _nmCompileWait(ruleId, id, row.events as List, editing)
+                if (waits.success != true) return reject.call(waits + [waitEvents: waits])
+                waitIds = waits.eventIds
+                settings.addAll(waits.settings)
+            }
+            if (row.containsKey('expression')) {
+                String expressionId = _nmId(editing && prior.rule != null ? prior.rule : _nrState(ruleId).ruleNdx, true)
+                expectedExpressionId = expressionId
+                Map expression = _nmSetExpression(ruleId, expressionId, row.expression as List)
+                if (expression.success != true) return reject.call([error: expression.error ?: 'Native action expression failed', expression: expression])
+                if (waitRule && fields) {
+                    Map durationInputs = _nmWriteExposed(ruleId, fields, [], render.call(), render)
+                    if (durationInputs.success != true) return reject.call(durationInputs)
+                }
+                _nrHandle(ruleId).appButtonHandler('hasRule')
+                _nrHandle(ruleId).doActPage()
+                if (waitRule) _nrHandle(ruleId).doActPage()
+            }
+            if (waitRule && fields && !row.containsKey('expression')) {
                 Map durationInputs = _nmWriteExposed(ruleId, fields, [], render.call(), render)
                 if (durationInputs.success != true) return reject.call(durationInputs)
             }
-            _nrHandle(ruleId).appButtonHandler('hasRule')
-            _nrHandle(ruleId).doActPage()
-            if (waitRule) _nrHandle(ruleId).doActPage()
+            // Wait for Expression commits when its expression Done is consumed.
+            if (!(waitRule && row.containsKey('expression'))) {
+                _nrHandle(ruleId).appButtonHandler('actionDone')
+                _nrHandle(ruleId).doActPage()
+            }
+            if (waitEvents) _nrHandle(ruleId).selectTriggers()
+            Map after = _nrState(ruleId)
+            def action = _nmEntry(after.actions instanceof Map ? after.actions : [:], id)
+            boolean listed = after.actionList instanceof List && after.actionList.any { it.toString() == id }
+            List expectedOrder = editing ? priorOrder : priorOrder + [id]
+            boolean ordered = after.actionList instanceof List && after.actionList.collect { it.toString() } == expectedOrder
+            boolean compiled = action instanceof Map && action.method == row.subtype
+            boolean expressionVerified = expectedExpressionId == null || (action instanceof Map && action.rule?.toString() == expectedExpressionId && _nmEntry(after.eval instanceof Map ? after.eval : [:], expectedExpressionId) == row.expression)
+            boolean waitsVerified = waitIds == null || (action instanceof Map && action.wait instanceof List && action.wait.collect { it.toString() } == waitIds)
+            boolean conditionVerified = conditionId == null || (action instanceof Map && action.cond?.toString() == conditionId)
+            Map echoed = _nrSettings(ruleId, settings.collect { it.name })
+            boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
+            if (!(listed && ordered && compiled && persisted && expressionVerified && waitsVerified && conditionVerified)) return reject.call([error: 'Native action compilation or input verification failed', settingsVerified: persisted, expressionVerified: expressionVerified, waitsVerified: waitsVerified, conditionVerified: conditionVerified])
+            // An action left gated on a condition Rule Machine marks turns the rule's own broken() true (C-7), so the write
+            // could only end unfinished, with every later update refused: a marked or empty label is always rolled back.
+            if (_nmActionLabel(ruleId, id) != null) {
+                Map rejected = reject.call([:])
+                rejected.error = rejected.rolledBack == true ?
+                    'Rule Machine marks this action broken or draws no label for it, so the change was rolled back. If it is gated on a condition Rule Machine marks, move it to another condition, or repair or delete that condition first' :
+                    'Rule Machine marks this action broken or draws no label for it, and the rollback did not verify: read the rule and repair it, or restore the pre-edit backup if one was returned'
+                return rejected
+            }
+            [success: true, id: id, action: action, partial: false, settingsVerified: true, expressionVerified: true, waitsVerified: true, conditionVerified: true]
+        } catch (Exception failure) {
+            mcpLogError('rm-native', "Native action change failed for rule ${ruleId}: ${failure.message}".toString(), failure)
+            reject.call([error: failure.message ?: 'Native action authoring failed'])
         }
-        if (waitRule && fields && !row.containsKey('expression')) {
-            Map durationInputs = _nmWriteExposed(ruleId, fields, [], render.call(), render)
-            if (durationInputs.success != true) return reject.call(durationInputs)
-        }
-        // Wait for Expression commits when its expression Done is consumed.
-        if (!(waitRule && row.containsKey('expression'))) {
-            _nrHandle(ruleId).appButtonHandler('actionDone')
-            _nrHandle(ruleId).doActPage()
-        }
-        if (waitEvents) _nrHandle(ruleId).selectTriggers()
-        Map after = _nrState(ruleId)
-        def action = _nmEntry(after.actions instanceof Map ? after.actions : [:], id)
-        boolean listed = after.actionList instanceof List && after.actionList.any { it.toString() == id }
-        List expectedOrder = editing ? priorOrder : priorOrder + [id]
-        boolean ordered = after.actionList instanceof List && after.actionList.collect { it.toString() } == expectedOrder
-        boolean compiled = action instanceof Map && action.method == row.subtype
-        boolean expressionVerified = expectedExpressionId == null || (action instanceof Map && action.rule?.toString() == expectedExpressionId && _nmEntry(after.eval instanceof Map ? after.eval : [:], expectedExpressionId) == row.expression)
-        boolean waitsVerified = waitIds == null || (action instanceof Map && action.wait instanceof List && action.wait.collect { it.toString() } == waitIds)
-        boolean conditionVerified = conditionId == null || (action instanceof Map && action.cond?.toString() == conditionId)
-        Map echoed = _nrSettings(ruleId, settings.collect { it.name })
-        boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
-        if (!(listed && ordered && compiled && persisted && expressionVerified && waitsVerified && conditionVerified)) return reject.call([error: 'Native action compilation or input verification failed', settingsVerified: persisted, expressionVerified: expressionVerified, waitsVerified: waitsVerified, conditionVerified: conditionVerified])
-        if (!_nmActionLabel(ruleId, id)) return reject.call([error: 'Native action label is missing or broken'])
-        [success: true, id: id, action: action, partial: false, settingsVerified: true, expressionVerified: true, waitsVerified: true, conditionVerified: true]
-    } catch (Exception failure) {
-        mcpLogError('rm-native', "Native action change failed for rule ${ruleId}: ${failure.message}".toString(), failure)
-        reject.call([error: failure.message ?: 'Native action authoring failed'])
-    }
+    }.call(null)
 }
 
 private Map _nmCompileWait(Long ruleId, String actionId, List events, boolean editing) {
@@ -602,6 +615,32 @@ private Map _nmSettingsInventory(Long ruleId) {
     inventory
 }
 
+boolean _nmCondTrigUses(Map settings, Object triggers, String conditionId) {
+    if (!(triggers instanceof Map)) return false
+    settings.any { name, setting ->
+        boolean binds = name.startsWith('condTrig.') && setting?.value?.toString() == conditionId
+        String triggerId = binds ? name.substring(9) : null
+        if (binds) binds = triggers.containsKey(triggerId) && settings.get('isCondTrig.' + triggerId)?.value?.toString() == 'true'
+        binds
+    }
+}
+
+// The conditions the rule's own expressions still name: the Required Expression while it is on, each IF or wait
+// expression of an action in the action list, and each simple conditional action. Kept beside inUseConds, which a
+// delete was seen to pass for a condition only the Required Expression used.
+List _nmNamedConditions(Map state, boolean required) {
+    Map eval = state.eval instanceof Map ? state.eval : [:]
+    Map actions = state.actions instanceof Map ? state.actions : [:]
+    List named = required && _nmEntry(eval, '0') instanceof List ? _nmEntry(eval, '0')*.toString() : []
+    (state.actionList instanceof List ? state.actionList : []).each { actionId ->
+        def action = _nmEntry(actions, actionId.toString())
+        if (action instanceof Map && action.cond != null) named << action.cond.toString()
+        def tokens = action instanceof Map && action.rule != null ? _nmEntry(eval, action.rule.toString()) : null
+        if (tokens instanceof List) named.addAll(tokens*.toString())
+    }
+    named
+}
+
 Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     if (!(part in ['action', 'condition', 'trigger'])) throw new IllegalArgumentException('Unsupported native row collection')
     String id = _nmId(rowId)
@@ -609,17 +648,16 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     String collection = part == 'action' ? 'actions' : (part == 'trigger' ? 'capabstrue' : 'capabsfalse')
     Map rows = before.get(collection) instanceof Map ? [:] + before.get(collection) : [:]
     if (!rows.keySet().any { it.toString() == id }) throw new IllegalArgumentException('Native row does not exist')
-    if (part == 'condition') {
-        // Rule Machine keeps the eval entry of a deleted IF; only the Required Expression and live actions' expressions count.
-        Set liveExpressionIds = (['0'] + (before.actions instanceof Map ? before.actions.values().findAll { it instanceof Map && it.rule != null }.collect { it.rule.toString() } : [])) as Set
-        boolean referenced = before.eval instanceof Map && before.eval.any { key, tokens -> key.toString() in liveExpressionIds && tokens instanceof List && tokens.any { token -> token?.toString() == id } }
-        referenced = referenced || (before.predCapabs instanceof List && before.predCapabs.any { it.toString() == id })
-        referenced = referenced || (before.actions instanceof Map && before.actions.values().any { it instanceof Map && it.cond?.toString() == id })
-        if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
-    }
     List oldOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
     Map settingsBefore = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(_nmSettingsInventory(ruleId))) as Map
-    if (part == 'condition' && settingsBefore.any { name, setting -> name.startsWith('condTrig.') && setting.value?.toString() == id }) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
+    // A condition is in use while Rule Machine lists it in state.inUseConds, the list health reads, or one of the
+    // rule's expressions or conditional actions names it.
+    boolean inUse = part == 'condition' && id in _rmMarkedRows(_nrHandle(ruleId), before, []).inUse
+    inUse = inUse || (part == 'condition' && id in _nmNamedConditions(before, settingsBefore.useST?.value?.toString() == 'true'))
+    if (inUse) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
+    // inUseConds leaves out a condition only a Conditional Trigger uses, and deleting it leaves that trigger naming a
+    // condition that no longer exists, unmarked. So a ticked Conditional Trigger on a held trigger keeps it in use.
+    if (part == 'condition' && _nmCondTrigUses(settingsBefore, before.capabstrue, id)) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
     List requiredRemoved = part == 'action' ? settingsBefore.keySet().findAll { it.endsWith(".${id}".toString()) }.toList() :
         [part == 'trigger' ? "tCapab${id}".toString() : "rCapab_${id}".toString()]
     if (part == 'action') {
@@ -655,7 +693,10 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
             _nmEntry(after.eval instanceof Map ? after.eval : [:], expression) == _nmEntry(before.eval instanceof Map ? before.eval : [:], expression)
         } && after.predCapabs == before.predCapabs
     } else {
-        referencesPreserved = ['eval', 'predCapabs', 'actions', part == 'trigger' ? 'capabsfalse' : 'capabstrue'].every { after.get(it) == before.get(it) }
+        // Rule Machine's own condition delete drops the condition from predCapabs (C-7); nothing else may change.
+        boolean bound = after.predCapabs == before.predCapabs || (part == 'condition' && before.predCapabs instanceof List && after.predCapabs instanceof List &&
+            after.predCapabs*.toString() == before.predCapabs*.toString().findAll { it != id })
+        referencesPreserved = bound && ['eval', 'actions', part == 'trigger' ? 'capabsfalse' : 'capabstrue'].every { after.get(it) == before.get(it) }
     }
     boolean verified = deleted && preserved && ordered && cleaned && settingsPreserved && callbackConsumed && referencesPreserved
     [success: verified, partial: !verified, deleted: deleted, part: part, id: id,

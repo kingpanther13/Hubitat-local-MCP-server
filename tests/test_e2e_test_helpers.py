@@ -1714,8 +1714,8 @@ def test_send_does_not_retry_a_lost_non_mrtr_write(send_client):
 
 
 @pytest.mark.parametrize("leaf_args", [
-    {"ruleId": 1, "action": "rule"},
-    json.dumps({"ruleId": 1, "action": "rule"}),
+    {"ruleId": 1, "action": "actions"},
+    json.dumps({"ruleId": 1, "action": "actions"}),
 ])
 def test_send_does_not_retry_a_lost_single_rule_call_without_confirm(
     send_client, leaf_args,
@@ -2234,7 +2234,7 @@ def test_call_tool_retains_physical_leg_telemetry_when_a_continuation_504s():
 
     with pytest.raises(et.RelayLostResponseError):
         client.call_tool(
-            "hub_set_rule", {"operation": "update", "rule_id": 42, "args": {"changes": []}, "confirm": True}, flat=True,
+            "hub_set_rule", {"operation": "update", "ruleId": 42, "args": {"changes": []}, "confirm": True}, flat=True,
         )
 
     assert client._last_continuation_rounds == 1
@@ -2365,17 +2365,17 @@ def _native_rule_runner(client):
 def test_create_native_rule_defaults_to_scalar_app_id(monkeypatch):
     calls = []
     runner = _native_rule_runner(SimpleNamespace(call_tool=lambda name, args:
-        calls.append((name, args)) or {"success": True, "rule_id": 41}))
+        calls.append((name, args)) or {"success": True, "ruleId": 41}))
     monkeypatch.setattr(et, "_run_artifact_suffix", lambda: "run_1")
     assert runner._create_native_rule("ScalarCreate") == 41
     assert runner.created_native_app_ids == ["41"]
     assert calls == [("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-        "operation": "create", "args": {"parent_id": 28, "name": "BAT_E2E_ScalarCreate_run_1_1", "changes": []},
+        "operation": "create", "args": {"parentId": 28, "name": "BAT_E2E_ScalarCreate_run_1_1", "changes": []},
         "confirm": True}})]
 
 
 def test_create_native_rule_return_result_preserves_create_envelope():
-    envelope = {"success": True, "rule_id": 42, "results": [{"part": "action", "result": {"success": True}}]}
+    envelope = {"success": True, "ruleId": 42, "results": [{"part": "action", "result": {"success": True}}]}
     changes = [et.native_log("fixture")]
     def call_tool(name, args):
         assert name == "hub_manage_rule_machine"
@@ -2403,7 +2403,7 @@ def test_native_document_update_uses_direct_public_operation():
         calls.append(args) or {"success": True, "results": []}))
     changes = [et.native_log("once")]
     runner._set_rule(42, changes)
-    assert calls == [("hub_set_rule", {"operation": "update", "rule_id": 42,
+    assert calls == [("hub_set_rule", {"operation": "update", "ruleId": 42,
                                      "args": {"changes": changes}, "confirm": True})]
 
 
@@ -2549,7 +2549,7 @@ def test_create_native_rule_never_reissues_after_bounded_absence(monkeypatch):
                 create_calls += 1
                 if create_calls == 1:
                     raise et.RelayLostResponseError("504 Gateway Timeout")
-                return {"success": True, "rule_id": 44}
+                return {"success": True, "ruleId": 44}
             assert name == "hub_read_rules"
             return {"rules": []}
 
@@ -2562,7 +2562,7 @@ def test_create_native_rule_never_reissues_after_bounded_absence(monkeypatch):
 
     result = runner._create_native_rule("LateCommit", return_result=True)
 
-    assert result == (44, {"success": True, "rule_id": 44})
+    assert result == (44, {"success": True, "ruleId": 44})
     attempted_creates = [arguments["args"]["args"]["name"] for name, arguments in calls
                          if name == "hub_manage_rule_machine"]
     assert attempted_creates == [
@@ -2895,7 +2895,7 @@ def test_op_key_set_rule_unknown_operation_never_echoes_the_argument():
 
 def test_op_key_gateway_set_rule_edit():
     """Native update timing stays separate from native create timing."""
-    assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {"operation": "update", "rule_id": 5}}) == "hub_set_rule:update"
+    assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {"operation": "update", "ruleId": 5}}) == "hub_set_rule:update"
 
 
 def test_op_key_gateway_other_subtool_uses_sub_tool():
@@ -2907,7 +2907,7 @@ def test_op_key_decodes_stringified_inner_args_before_classifying_edit():
     """Stringified gateway arguments retain the explicit update operation."""
     assert et._op_key(
         "hub_manage_rule_machine",
-        {"tool": "hub_set_rule", "args": json.dumps({"operation": "update", "rule_id": 5})},
+        {"tool": "hub_set_rule", "args": json.dumps({"operation": "update", "ruleId": 5})},
     ) == "hub_set_rule:update"
 
 

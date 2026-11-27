@@ -1,12 +1,14 @@
 package server
 
+import groovy.json.JsonOutput
+
 import support.RMUtilsMock
 import support.ToolSpecBase
 
 /**
- * sendRmAction (libraries/mcp-native-rules-lib.groovy) makes exactly one 4-arg
- * RMUtils.sendAction call and turns any Throwable into a {success:false} result:
- * a retry could double-fire an action the first call already dispatched.
+ * sendRmAction (libraries/mcp-native-rules-lib.groovy), behind hub_set_rule_private_boolean,
+ * makes exactly one 4-arg RMUtils.sendAction call and turns any Throwable into a
+ * {success:false} result: a retry could double-fire an action the first call already dispatched.
  */
 class SendRmActionSpec extends ToolSpecBase {
 
@@ -15,20 +17,35 @@ class SendRmActionSpec extends ToolSpecBase {
     def setup() {
         rmUtils = new RMUtilsMock()
         rmUtils.install()
+        // Each rule's App Status page, whose private entry shows the last value dispatched to it, as Rule Machine sets
+        // it; a rule never dispatched to holds the text 'true' a new rule stores.
+        (1..10).each { int id -> hubGet.register("/installedapp/statusJson/${id}") { params -> privateStatus(id, lastPrivate(id)) } }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
     }
 
     def cleanup() {
         rmUtils?.uninstall()
     }
 
+    private Object lastPrivate(int id) {
+        def call = rmUtils.calls.findAll { it.method == 'sendAction' && id in (it.ruleIds ?: [])*.toInteger() }.with { it ? it.last() : null }
+        call == null ? 'true' : call.action == 'setRuleBooleanTrue'
+    }
+
+    // A rule's App Status page as the hub serves it.
+    private static String privateStatus(int id, Object value) {
+        JsonOutput.toJson([installedApp: [id: id], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                           appState: [[name: 'running', value: false, type: 'Boolean'], [name: 'private', value: value, type: 'Boolean']]])
+    }
+
     def "a successful dispatch is the single 4-arg call"() {
         when:
-        def result = script.toolRunRmRule([ruleId: 1, action: 'rule'])
+        def result = script.toolSetRmRuleBoolean([ruleId: 1, value: true])
 
         then:
         result.success == true
         result.ruleId == 1
-        result.rmAction == 'runRule'
+        result.rmAction == 'setRuleBooleanTrue'
         !result.containsKey('fallback')
         def sendCalls = rmUtils.calls.findAll { it.method == 'sendAction' }
         sendCalls.size() == 1
@@ -37,7 +54,7 @@ class SendRmActionSpec extends ToolSpecBase {
 
     def "a multi-id dispatch carries the whole list and no single-id echo"() {
         when:
-        def result = script.toolRunRmRule([ruleId: [2, 3], action: 'rule'])
+        def result = script.toolSetRmRuleBoolean([ruleId: [2, 3], value: false])
 
         then:
         result.success == true
@@ -53,7 +70,7 @@ class SendRmActionSpec extends ToolSpecBase {
         hubitat.helper.RMUtils.metaClass.static.sendAction = { List ids, String action, String appLabel -> threeArgCalls++ }
 
         when:
-        def result = script.toolRunRmRule([ruleId: 4, action: 'rule'])
+        def result = script.toolSetRmRuleBoolean([ruleId: 4, value: true])
 
         then:
         result.success == false
@@ -67,5 +84,45 @@ class SendRmActionSpec extends ToolSpecBase {
         'NoSuchMethodError'       | new NoSuchMethodError('sendAction')
         'RuntimeException'        | new RuntimeException('timeout')
         'NoClassDefFoundError'    | new NoClassDefFoundError('hubitat/helper/RMUtils')
+    }
+
+    @spock.lang.Unroll
+    def "a load-limiter refusal says nothing changed and that a reset then a retry clears it (#label)"() {
+        given:
+        hubitat.helper.RMUtils.metaClass.static.sendAction = { List targets, String action, String appLabel, String version ->
+            throw new RuntimeException('App generates excessive hub load')
+        }
+
+        when:
+        def result = script.toolSetRmRuleBoolean([ruleId: ids, value: true])
+
+        then:
+        result.success == false
+        result.note.contains('load limiter refused the dispatch, so nothing was changed')
+        result.note.contains("hub_delete_logs(mode='appRuntimeStats', confirm=true)")
+        result.note.contains('retry')
+        !result.note.contains('Verify the ruleId')
+        !result.note.contains('LIST dispatch')
+
+        where:
+        label         | ids
+        'a single id' | 5
+        'a batch'     | [5, 6]
+    }
+
+    def "any other failure of a batch dispatch warns that part of the set may already be set"() {
+        given:
+        hubitat.helper.RMUtils.metaClass.static.sendAction = { List targets, String action, String appLabel, String version ->
+            throw new RuntimeException('timeout')
+        }
+
+        when:
+        def result = script.toolSetRmRuleBoolean([ruleId: [7, 8], value: true])
+
+        then:
+        result.success == false
+        result.note.contains('Verify the ruleId')
+        result.note.contains('LIST dispatch (7, 8)')
+        result.note.contains('hub_get_rule')
     }
 }

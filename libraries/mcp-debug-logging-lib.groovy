@@ -559,37 +559,23 @@ private List _bugReportPreflight(String issueType, boolean includeRawLogs, Strin
 
 private Map _bugReportNativeRmStatus() {
     def ids = [] as Set
-    def v4Error = null
-    def v5Error = null
+    def rmError = null
     try {
-        def v4 = hubitat.helper.RMUtils.getRuleList() ?: []
-        v4.each { r -> if (r?.id != null) ids << r.id.toString() }
+        // Each entry is a single-entry Map [<id>: "<label>"].
+        def rules = hubitat.helper.RMUtils.getRuleList("5.0") ?: []
+        rules.each { r -> if (r instanceof Map) r.keySet().each { ids << it?.toString() } }
     } catch (Throwable e) {
-        v4Error = e.toString()
+        rmError = e.toString()
     }
-    try {
-        def v5 = hubitat.helper.RMUtils.getRuleList("5.0") ?: []
-        v5.each { r -> if (r?.id != null) ids << r.id.toString() }
-    } catch (Throwable e) {
-        v5Error = e.toString()
-    }
-    def classMissingHint = { String msg ->
+    def classMissing = { String msg ->
         if (!msg) return false
         if (msg.contains("NoClassDefFoundError") || msg.contains("ClassNotFoundException") || msg.contains("unable to resolve class")) return true
-        if (msg.contains("Cannot get property") && msg.contains("'helper'")) return true
-        if ((msg.contains("MissingMethodException") || msg.contains("No signature of method")) && msg.contains("getRuleList")) return true
-        return false
+        return msg.contains("Cannot get property") && msg.contains("'helper'")
     }
-    def bothMissing = v4Error && v5Error && classMissingHint(v4Error) && classMissingHint(v5Error)
-    if (bothMissing) {
-        return [installed: false, count: 0]
-    }
-    def hardErrors = []
-    if (v4Error && !classMissingHint(v4Error)) hardErrors << "v4=${v4Error}"
-    if (v5Error && !classMissingHint(v5Error)) hardErrors << "v5=${v5Error}"
-    if (hardErrors) {
-        mcpLog("warn", "bug-report", "_bugReportNativeRmStatus: RMUtils errors — ${hardErrors.join('; ')}; count may be inaccurate")
-        return [installed: true, count: ids.size(), error: hardErrors.join("; ")]
+    if (rmError && classMissing(rmError)) return [installed: false, count: 0]
+    if (rmError) {
+        mcpLog("warn", "bug-report", "_bugReportNativeRmStatus: RMUtils error — ${rmError}; count may be inaccurate")
+        return [installed: true, count: ids.size(), error: rmError]
     }
     return [installed: true, count: ids.size()]
 }
@@ -768,7 +754,7 @@ private String _bugReportBuildMarkdown(Map params) {
 - **MCP log level:** ${env.logLevel}
 - **Tool mode:** ${env.toolMode}
 - **Rules in legacy custom rule engine:** ${env.customMcpRuleCount}
-- ${env.nativeRm.installed == false ? "**Native Rule Machine:** not installed (Rule Machine not detected on this hub)" : "**Native Rule Machine rules:** ${env.nativeRm.count}${env.nativeRm.error ? ' (RMUtils partial failure — count may be inaccurate)' : ''}"}
+- ${env.nativeRm.installed == false ? "**Native Rule Machine:** not installed (Rule Machine not detected on this hub)" : "**Native Rule Machine rules:** ${env.nativeRm.count}${env.nativeRm.error ? ' (RMUtils failure — count may be inaccurate)' : ''}"}
 - **Devices exposed to MCP:** ${env.deviceCount}
 - **LLM / client:** ${env.llmClient}
 - **Model:** ${env.llmModel}

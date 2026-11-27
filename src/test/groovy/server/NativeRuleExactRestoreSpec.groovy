@@ -638,6 +638,8 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
 }
 
 class RestoreNativeChild {
+    // The rule's own broken() check, which the rebuild's health reads; the fixture rule is never broken.
+    Object broken() { false }
     Map backing
     Map typed
     Map pending

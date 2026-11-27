@@ -36,13 +36,13 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
             [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg',
                 fields: [[name: 'logmsg.#', type: 'textarea', value: 'batch complete']]]]
         ]
-        def args = [operation: 'update', rule_id: 77, confirm: true, args: [changes: changes]]
+        def args = [operation: 'update', ruleId: 77, confirm: true, args: [changes: changes]]
         List dispatched = []
         script.metaClass.toolUpdateRuleDocument = { Map actual ->
             dispatched << new LinkedHashMap(actual)
             // A document batch completes in one worker; no legacy remainder protocol.
             clock.addAndGet(120001L)
-            [success: true, rule_id: actual.rule_id,
+            [success: true, ruleId: actual.ruleId,
                 results: actual.changes.collect { [part: it.part, result: [success: true]] }]
         }
 
@@ -55,9 +55,9 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         then:
         completed.result.resultType == 'complete'
         stateId instanceof String
-        dispatched == [args.args + [rule_id: args.rule_id, confirm: true]]
+        dispatched == [args.args + [ruleId: args.ruleId, confirm: true]]
         terminal.success == true
-        terminal.rule_id == 77
+        terminal.ruleId == 77
         terminal.results*.part == ['variable', 'action']
         mcpDriver.parseInner(replay) == terminal
         runInMillisCalls.size() == 1
@@ -85,10 +85,10 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         script.metaClass.toolUpdateRuleDocument = { Map actual ->
             seen << script._effectiveBackupSetting('backupBeforeRuleEdits')
             if (actual.changes[0].value.fields[0].value == 'boom') throw new RuntimeException('slice failed')
-            [success: true, rule_id: actual.rule_id, results: []]
+            [success: true, ruleId: actual.ruleId, results: []]
         }
         def update = { String text ->
-            [operation: 'update', rule_id: 77, confirm: true, args: [changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg',
+            [operation: 'update', ruleId: 77, confirm: true, args: [changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg',
                 fields: [[name: 'logmsg.#', type: 'textarea', value: text]]]]]]]
         }
 

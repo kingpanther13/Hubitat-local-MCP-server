@@ -7,14 +7,25 @@ private Long _nrCreatedAppId(Object response) {
     match.find() && match.group(1).isLong() && match.group(1).toLong() > 0L ? match.group(1).toLong() : null
 }
 
+// The rule tools share one refusal for an id with no app and for an app that is not an editable rule.
+private void _nrRequireEditableRule(target, Long ruleId) {
+    if (target == null || target.id?.toString() != ruleId.toString()) throw new IllegalArgumentException(_rmMissingAppText(ruleId))
+    String typeName = target.appType?.name?.toString()
+    def namespace = target.appType?.namespace
+    if (!_rmIsEditableRuleType(namespace, typeName)) throw new IllegalArgumentException(_rmNotEditableText(ruleId, namespace, typeName))
+}
+
+// An installed app hub_set_rule cannot edit, in hub_get_rule's wording; a rule of another type is named as one.
+private String _rmNotEditableText(id, namespace, String typeName) {
+    if (_rmIsVisualRuleType(namespace, typeName)) return "App ${id} is a ${typeName} rule: Visual Rules are read with hub_get_visual_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here.".toString()
+    if (_rmIsRuleAppType(namespace, typeName)) return "App ${id} is a ${typeName} rule: rules of that type are read with hub_get_rule, but only Rule Machine 5.1 rules and Button Rules can be edited here.".toString()
+    return "${_rmNotRuleText([(id): typeName ?: 'unknown type'])}; only Rule Machine 5.1 rules and Button Rules can be edited here.".toString()
+}
+
 def _nrHandle(Long ruleId) {
     if (ruleId == null || ruleId <= 0L) throw new IllegalArgumentException('A positive rule ID is required')
     def target = getAppByAppId(ruleId)
-    if (target == null || target.id?.toString() != ruleId.toString()) throw new IllegalArgumentException('Rule not found')
-    def type = target.appType
-    if (type?.namespace != 'hubitat' || !(type?.name in ['Rule-5.1', 'Button Rule-5.1'])) {
-        throw new IllegalArgumentException('Target must be a native Rule-5.1 or Button Rule-5.1')
-    }
+    _nrRequireEditableRule(target, ruleId)
     def parentId = target.parentAppId
     if (parentId == null || !parentId.toString().isLong() || parentId.toString().toLong() <= 0L) {
         throw new IllegalArgumentException('Native rule has no valid parent')
@@ -142,10 +153,8 @@ Map _nrWriteSettings(Long ruleId, List rows) {
 
 private Map _nrRulePages(Long ruleId) {
     def target = getAppByAppId(ruleId)
-    def type = target?.appType
-    if (target?.id?.toString() != ruleId.toString() || type?.namespace != 'hubitat' || !(type?.name in ['Rule-5.1', 'Button Rule-5.1'])) {
-        throw new IllegalArgumentException('Target must be a native Rule-5.1 or Button Rule-5.1')
-    }
+    _nrRequireEditableRule(target, ruleId)
+    def type = target.appType
     type.name == 'Button Rule-5.1' ? [primary: 'selectActions', actions: 'selectActionsX'] : [primary: 'mainPage', actions: 'selectActions']
 }
 
@@ -172,13 +181,6 @@ Map _nrPage(Long ruleId, String page, Map params = [:]) {
         case 'selectConditions': result = handle.selectConditions(params); break
         case 'localVar': result = handle.localVar(); break
     }
-    [verificationNeeded: true, result: result]
-}
-
-Map _nrButton(Long ruleId, String name) {
-    if (!name) throw new IllegalArgumentException('A native button name is required')
-    def result = _nrHandle(ruleId).appButtonHandler(name)
-    // Native handlers may consume errors internally; recipes must verify resulting structure.
     [verificationNeeded: true, result: result]
 }
 
@@ -232,7 +234,8 @@ private void _nrValidateInput(Map field, Object value, boolean allowClear = fals
     if ((device || field.type in ['enum', 'mode', 'menu']) && options == null) throw new IllegalArgumentException("Native choices are unavailable for ${field.name}")
     if (options != null && values.any { !(allowClear && it.toString() == '') && !(it.toString() in options) }) throw new IllegalArgumentException("Invalid native choice for ${field.name}")
     _nrValidateScalar(field, value, allowClear)
-    if (field.type in ['number', 'decimal'] && !(allowClear && value.toString() == '')) {
+    boolean clearing = allowClear && value.toString() == ''
+    if (field.type in ['number', 'decimal'] && !clearing) {
         BigDecimal number = value.toString().toBigDecimal()
         List range = field.range?.toString()?.split(/\.\./)?.toList() ?: []
         def minimum = field.min != null ? field.min : (range.size() == 2 ? range.get(0) : null)

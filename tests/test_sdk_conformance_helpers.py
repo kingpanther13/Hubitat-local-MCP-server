@@ -513,7 +513,7 @@ def _native_condition_readback():
             device = field["type"].startswith("capability.")
             settings[name] = dict.fromkeys(field["value"], "Temperature fixture") if device else field["value"]
             typed.append({"name": name, "type": field["type"], "value": field["value"],
-                          "device_ids": field["value"] if device else None})
+                          "deviceIds": field["value"] if device else None})
     return {"settings": settings}, {"conditions": {str(i): "native condition" for i in range(1, 55)},
                                      "settings": typed}, changes
 
@@ -569,7 +569,7 @@ def _native_action_readback():
                     settings[name] = (dict.fromkeys(field["value"], "Temperature fixture")
                                       if field["type"].startswith("capability.") else field["value"])
                     typed.append({"name": name, "type": field["type"], "value": field["value"],
-                                  "device_ids": field["value"] if field["type"].startswith("capability.") else None})
+                                  "deviceIds": field["value"] if field["type"].startswith("capability.") else None})
         else:
             settings[f"logmsg.{index}"] = requested["fields"][0]["value"]
         actions.append({"id": str(index), "value": value})
@@ -612,7 +612,7 @@ def test_native_condition_readback_requires_native_map_and_typed_identity(corrup
     config, document, changes = _native_condition_readback()
     device = next(row for row in document["settings"] if row["name"] == "rDev_54")
     if corruption == "typed_device":
-        device["device_ids"] = ["589"]
+        device["deviceIds"] = ["589"]
     elif corruption == "typed_type":
         device["type"] = "enum"
     else:

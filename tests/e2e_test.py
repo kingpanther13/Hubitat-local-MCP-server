@@ -1382,7 +1382,7 @@ class TestRunner:
         self.verbose = verbose
         self.results: list[dict] = []  # {name, group, status, message, duration}
         # (app_id, health) the last RM write returned, so _assert_rule_healthy can assert on it without
-        # a second hub_get_rule_health round-trip. Keyed by app; cleared on a relay-dropped/soft write.
+        # a second hub_get_rule round-trip. Keyed by app; cleared on a relay-dropped/soft write.
         self._last_write_health: tuple[str, dict] | None = None
         # The pre-edit backup toggle as this runner last set it; None until it sets it.
         self._backups_on: bool | None = None
@@ -1633,8 +1633,8 @@ class TestRunner:
     def _call_with_limiter_reset(self, gateway: str, tool: str, args: dict, label: str,
                                  resets: int = 1) -> tuple[Any, str | None]:
         """One gateway call under the platform load-limiter contract: (envelope, limiter_message).
-        The limiter reaches us in TWO shapes -- some tools RAISE it, the RMUtils-backed ones
-        (hub_set_rule_paused, hub_call_rule, hub_set_rule_private_boolean) return it inside a
+        The limiter reaches us in TWO shapes -- some tools RAISE it, the RMUtils-backed one
+        (hub_set_rule_private_boolean) returns it inside a
         {'success': False, 'error': '...excessive hub load'} envelope -- so both are normalized
         into the second element. Each trip resets the runtime statistics and retries, up to
         `resets` rounds. A non-None second element can survive the retry; the caller decides
@@ -1788,6 +1788,7 @@ class TestRunner:
     # on; every other scenario runs without the snapshot a protected edit pays for.
     BACKUP_PROVING_TESTS: ClassVar[frozenset[str]] = frozenset({
         "test_set_rule_self_gateway_envelope_edit",
+        "test_set_rule_required_expression_multi_condition",
         "test_set_native_app_basic_rule_lifecycle",
         "test_set_native_app_form_keeps_the_pending_page",
         "test_set_native_app_snapshot_redacts_password_settings",
@@ -1799,6 +1800,8 @@ class TestRunner:
         "test_rm_rule_restore_expression_by_device_name",
         "test_complex_edit_recovers_deleted_rows_and_existing_payloads",
         "test_rule_edit_backups_capture_once_per_edit",
+        # Its refused updates must take no backup, which only shows while backups are on.
+        "test_rule_health_broken_true_on_dangling_trigger",
     })
 
     def _rule_edit_backups(self, on: bool) -> None:
@@ -5661,7 +5664,7 @@ class TestRunner:
         self._expect_tool_refusal("hub_manage_dashboards", {
             "tool": "hub_update_dashboard",
             "args": {"id": dash_id, "name": f"{dash_name} Bare", "deviceIds": upd_devices}},
-            "Missing required parameter for hub_update_dashboard: dashboardId")
+            "Unknown hub_update_dashboard argument: id")
         assert (self._read_dashboard(dash_id) or {}).get("name") == dash_name, \
             "hub_update_dashboard(id=...) was refused but the dashboard was renamed anyway"
 
@@ -6315,12 +6318,12 @@ class TestRunner:
     @test("native_apps")
     def test_set_native_app_lifecycle(self) -> None:
         app_id = self._create_native_rule("NativeApp")
-        opened = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
+        opened = self.client.call_tool("hub_set_rule", {"operation": "form", "ruleId": int(app_id),
             "args": {"steps": [{"kind": "open"}]}, "confirm": True})
         assert opened.get("success") is True, opened
         renamed = f"{PREFIX}NativeApp_Renamed"
-        edited = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
-            "args": {"steps": [{"kind": "submit", "expect_page": opened["page"]["name"],
+        edited = self.client.call_tool("hub_set_rule", {"operation": "form", "ruleId": int(app_id),
+            "args": {"steps": [{"kind": "submit", "expectPage": opened["page"]["name"],
                                   "fields": {"origLabel": renamed}}]}, "confirm": True})
         assert edited.get("success") is True, edited
         # VERIFY the RENAME actually applied via the read-only hub_get_app_config.
@@ -6409,14 +6412,23 @@ class TestRunner:
             cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
             assert (cfg.get("app") or {}).get("name") == "Basic Rule-1.0", f"unexpected Basic Rule config: {cfg}"
 
-            # HEALTH on a classic app (issue #254): hub_get_rule_health covers Basic Rule via the
-            # generic configPage checks and names it in ruleFormat (broken is null -- no compiled
-            # boolean for non-RM classic apps).
-            bh = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            # hub_get_rule reads a Basic Rule: its health (broken is null -- a Basic Rule has no broken flag;
+            # a new one was never paused) and its settings, with no note sending the caller elsewhere.
+            br = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})
+            bh = br["health"]
             assert bh.get("ruleFormat") == "basic-rule", \
-                f"hub_get_rule_health should classify a Basic Rule as basic-rule: {bh}"
-            assert bh.get("broken") is None, f"a classic app has no compiled broken boolean: {bh}"
+                f"hub_get_rule should classify a Basic Rule as basic-rule: {bh}"
+            assert bh.get("broken") is None and bh.get("paused") is False, f"a new Basic Rule: no broken flag, not paused: {bh}"
+            assert isinstance(br.get("settings"), list) and "note" not in br, br
+            # A Basic Rule's settings come back whole, so a paged read is refused by name.
+            try:
+                paged = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule",
+                                                                 "args": {"ruleId": int(app_id), "sections": ["settings"],
+                                                                          "cursor": ""}})
+            except (McpError, McpToolError) as exc:
+                assert "returned whole; omit cursor and limit" in str(exc), str(exc)
+            else:
+                raise AssertionError(f"a paged Basic Rule read was accepted: {paged}")
 
             # EDIT: write the Notes field, then read the app back: the note must have landed and the
             # read must carry no configPageError (the old wizard poisoned the page with "For input
@@ -6478,6 +6490,18 @@ class TestRunner:
                 f"the Basic Rule page does not load after the restore: {rb}"
             assert not (rb.get("settings") or {}).get("trigger"), \
                 f"the Basic Rule still carries the trigger set after its backup: {rb.get('settings')}"
+
+            # Rule Machine's Pause/Resume Rules action pauses a Basic Rule by setting its paused state ("Pause or
+            # Resume?" off pauses). Run through hub_call_rule, it leaves hub_get_rule reading the Basic Rule paused.
+            pauser, _ = self._rm_rule("BasicPauser", [self._rm_action("rulesActs", "getPauseResumeRules", [
+                ("pR", "bool", False), ("pauseRuleType", "enum", "Basic Rule"), ("pauseRule", "enum", [str(app_id)])])])
+            try:
+                ran = self.client.call_tool("hub_call_rule", {"ruleId": pauser, "action": "actions"})
+                assert ran.get("success") is True and ran.get("rmAction") == "runAction button", ran
+                self._rm_wait(lambda: self._rm_health(app_id).get("paused") is True, what="Basic Rule paused")
+                assert self._rm_health(app_id).get("ruleFormat") == "basic-rule"
+            finally:
+                self._delete_native(pauser)
 
             # A deleted Basic Rule restores as a new app finished with Done, never updateRule.
             dele = self.client.call_tool("hub_manage_native_rules_and_apps", {
@@ -6559,20 +6583,20 @@ class TestRunner:
             assert set((settings().get("roomDevsL") or {}).keys()) == {switch_a, switch_b}, \
                 f"roomDevsL should hold both switches: {settings().get('roomDevsL')}"
             # ...and takes effect: the page's Done re-subscribes the instance to the new devices.
-            health = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            health = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})["health"]
             assert (health.get("eventSubscriptionCount") or 0) >= 2, \
                 f"the write must reach the running instance (subscriptions), not just storage: {health}"
 
             # #461: the motion trigger lives on onMeansPage, revealed by choosing the means first.
             form = self._native_app_form(app_id, {"kind": "open"})
-            form = self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(form, kind="href", page="onMeansPage")))
+            form = self._native_app_form(app_id, self._native_app_step(form, control=self._rm_control(form, kind="href", page="onMeansPage")))
             assert form["page"]["name"] == "onMeansPage", f"the href did not open onMeansPage: {form['page']}"
-            form = self._native_app_form(app_id, self._rm_step(form, fields={"onMeans": ["motion becomes active"]}))
+            form = self._native_app_form(app_id, self._native_app_step(form, fields={"onMeans": ["motion becomes active"]}))
             assert self._native_app_field(form, "onMeans").get("value") == ["motion becomes active"], \
                 f"a multi-select enum write should read back as sent: {self._native_app_field(form, 'onMeans')}"
             motions = self._native_app_field(form, "motions")
-            form = self._native_app_form(app_id, self._rm_step(form, fields={"motions": [motion] if motions["multiple"] else motion}))
-            form = self._native_app_form(app_id, self._rm_step(form, control=self._native_app_done(form)))
+            form = self._native_app_form(app_id, self._native_app_step(form, fields={"motions": [motion] if motions["multiple"] else motion}))
+            form = self._native_app_form(app_id, self._native_app_step(form, control=self._native_app_done(form)))
             assert form["page"]["name"] == "mainPage", f"onMeansPage Done did not return to mainPage: {form['page']}"
             assert motion in (settings().get("motions") or {}), f"motions not set: {settings().get('motions')}"
 
@@ -6588,13 +6612,13 @@ class TestRunner:
             form = self._native_app_form(app_id, {"kind": "open", "page": "offMeansPage", "from": "mainPage"},
                                          {"kind": "submit", "expect_page": "offMeansPage", "fields": {"offMeans": ["illuminance rises"]}})
             done = self._native_app_done(form)
-            refused = self._native_app("form", {"steps": [self._rm_step(form, control=done)]}, app_id, refused=True)
+            refused = self._native_app("form", {"steps": [self._native_app_step(form, control=done)]}, app_id, refused=True)
             assert "illumsOff" in str(refused.get("error")), \
                 f"Done with an empty required input must be refused: {refused}"
             assert refused.get("partial") is False and not refused.get("reopen_required"), \
                 f"a refused Done must report that nothing was submitted: {refused}"
             illums = self._native_app_field(form, "illumsOff")
-            fixed = self._native_app_form(app_id, self._rm_step(form, fields={"illumsOff": [omni] if illums["multiple"] else omni}),
+            fixed = self._native_app_form(app_id, self._native_app_step(form, fields={"illumsOff": [omni] if illums["multiple"] else omni}),
                                           {"kind": "submit", "expect_page": form["page"]["name"], "activate": done["control_id"]})
             assert fixed["page"]["name"] == "mainPage", f"Done should pass once the required input is set: {fixed}"
             off_settings = settings()
@@ -6865,11 +6889,11 @@ def updated() {}
 
             form = self._native_app_form(wizard, {"kind": "open"})
             assert form["page"]["name"] == "pageOne", f"the wizard opened on {form['page']}"
-            form = self._native_app_form(wizard, self._rm_step(form, {"first": "one"}, self._rm_control(form, name="_action_next")))
+            form = self._native_app_form(wizard, self._native_app_step(form, {"first": "one"}, self._rm_control(form, name="_action_next")))
             assert form["page"]["name"] == "pageTwo", f"Next did not reach pageTwo: {form['page']}"
             done = self._rm_control(form, name="_action_done")
             assert done["kind"] == "navigation" and not form.get("unsupported"), f"pageTwo should offer _action_done and nothing unsupported: {form}"
-            form = self._native_app_form(wizard, self._rm_step(form, {"second": "two"}, done))
+            form = self._native_app_form(wizard, self._native_app_step(form, {"second": "two"}, done))
             assert form["page"]["name"] == "pageTwo", f"the hub should answer _action_done by rendering pageTwo again: {form['page']}"
             # The install's Done stored only pageOne. pageTwo's unset inputs post their page defaults as the
             # browser does, except a default outside the enum's own options.
@@ -6995,10 +7019,10 @@ def updated() {}
             # A field submit saves an invalid email as the browser does; navigating is refused until it is fixed.
             # The textarea's pattern is not checked: the page renders none on a textarea.
             form = self._native_app_form(instance, {"kind": "open"})
-            form = self._native_app_form(instance, self._rm_step(form, {"mail": "not-an-email"}))
+            form = self._native_app_form(instance, self._native_app_step(form, {"mail": "not-an-email"}))
             done = self._rm_control(form, name="_action_update")
             try:
-                blocked = self._native_app("form", {"steps": [self._rm_step(form, None, done)]}, instance)
+                blocked = self._native_app("form", {"steps": [self._native_app_step(form, None, done)]}, instance)
             except McpToolError as exc:
                 blocked = _tool_error_payload(exc)
             assert blocked.get("success") is False and "mail: 'not-an-email' is not a valid email address" in str(blocked.get("error")) \
@@ -7077,11 +7101,11 @@ def updated() {}
                 f"(settings.buttonDev={persisted!r})"
             )
 
-            # HEALTH on a live Button Controller (issue #254): hub_get_rule_health classifies it
+            # HEALTH on a live Button Controller (issue #254): hub_get_rule classifies it
             # as button-controller (a classic app, broken=null) -- the only live proof of the
-            # button-controller classification branch against a real ruleBuilderJson body.
+            # button-controller classification branch.
             ch = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_get_rule_health", "args": {"appId": controller_id}})
+                "tool": "hub_get_rule", "args": {"ruleId": int(controller_id)}})["health"]
             assert ch.get("ruleFormat") == "button-controller", \
                 f"controller {controller_id} should classify as button-controller: {ch}"
             assert ch.get("broken") is None, f"a classic app has no compiled broken boolean: {ch}"
@@ -7109,17 +7133,23 @@ def updated() {}
             # The rule is RM-wire-format: author an action via hub_set_rule; its document's
             # native health below shows it renders (not the broken orphan a bare createchild produces).
             acted = self._write_once("hub_manage_rule_machine", "hub_set_rule",
-                {"operation": "update", "rule_id": int(rule_id),
+                {"operation": "update", "ruleId": int(rule_id),
                  "args": {"changes": [native_log("E2E button rule")]}, "confirm": True},
                 "button rule action")
             assert acted.get("success") is True and not acted.get("partial"), acted
             document = self._native_rule_document(rule_id)
             assert len(document["actions"]) == 1 and document["actions"][0]["value"]["method"] == "getLogMsg", document
-            assert document["nativeHealth"]["available"] and not document["nativeHealth"]["broken"], document
+            assert document["health"]["broken"] is False, document
             # Reading the actual Button Rule page also detects a wrong mainPage commit.
             page = self.client.call_tool("hub_get_app_config", {
                 "appId": rule_id, "pageName": "selectActions"})
             assert page.get("success") is True and "E2E button rule" in json.dumps(page), page
+            # A Button Rule is named after its button, so hub_list_apps finds it by its type; hub_list_rules
+            # lists Rule Machine's own rules only.
+            by_type = self.client.call_tool("hub_list_apps", {"scope": "instances", "nameFilter": "Button Rule"})
+            assert str(rule_id) in {str(r.get("id")) for r in by_type.get("apps") or []}, by_type
+            listed_rules = self.client.call_tool("hub_list_rules", {})
+            assert str(rule_id) not in {str(r.get("id")) for r in listed_rules.get("rules") or []}, listed_rules
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
                 raise
@@ -7171,8 +7201,8 @@ def updated() {}
         self._delete_native(created["app_id"])
 
     def _native_rule_document(self, app_id: Any) -> dict:
-        doc = self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id)})
-        assert str(doc.get("rule_id")) == str(app_id), doc
+        doc = self.client.call_tool("hub_set_rule", {"operation": "read", "ruleId": int(app_id)})
+        assert str(doc.get("ruleId")) == str(app_id), doc
         return doc
 
     def _rm_rule(self, suffix: str, changes: list[dict] | None = None, **options: Any) -> tuple[int, dict]:
@@ -7183,7 +7213,7 @@ def updated() {}
 
     def _rm_update(self, app_id: Any, changes: list[dict]) -> dict:
         result = self._set_rule(app_id, changes)
-        assert str(result.get("rule_id")) == str(app_id), result
+        assert str(result.get("ruleId")) == str(app_id), result
         return result
 
     def _rm_ids(self, result: dict) -> list[str]:
@@ -7191,9 +7221,9 @@ def updated() {}
         return [str((row.get("result") or {}).get("id")) for row in result.get("results", [])]
 
     def _rm_settings(self, app_id: Any) -> dict[str, dict]:
-        doc = self._rm_call({"operation": "read", "rule_id": int(app_id),
+        doc = self._rm_call({"operation": "read", "ruleId": int(app_id),
                              "args": {"sections": ["settings"]}})
-        assert str(doc.get("rule_id")) == str(app_id) and isinstance(doc.get("settings"), list), doc
+        assert str(doc.get("ruleId")) == str(app_id) and isinstance(doc.get("settings"), list), doc
         return {row["name"]: row for row in doc["settings"]}
 
     def _rm_values(self, app_id: Any) -> dict[str, Any]:
@@ -7202,7 +7232,7 @@ def updated() {}
         for name, row in self._rm_settings(app_id).items():
             value = row.get("value")
             if str(row.get("type", "")).startswith("capability"):
-                value = row.get("device_ids") or []
+                value = row.get("deviceIds") or []
             elif row.get("multiple") and isinstance(value, str):
                 try:
                     value = json.loads(value)
@@ -7240,7 +7270,7 @@ def updated() {}
 
     def _rm_refuse(self, app_id: Any, changes: list[dict]) -> str:
         return self._rm_refused(self._rm_call({
-            "operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}))
+            "operation": "update", "ruleId": int(app_id), "args": {"changes": changes}, "confirm": True}))
 
     def _rm_refuse_all(self, app_id: Any, cases: list[list[dict]]) -> None:
         """Each case is refused, and together they leave the rule exactly as it was."""
@@ -7250,7 +7280,7 @@ def updated() {}
         assert self._rm_snapshot(app_id) == before, "a refused edit changed the rule"
 
     def _rm_form(self, app_id: Any, *steps: dict) -> dict:
-        result = self._rm_call({"operation": "form", "rule_id": int(app_id),
+        result = self._rm_call({"operation": "form", "ruleId": int(app_id),
                                 "args": {"steps": list(steps)}, "confirm": True})
         assert result.get("success") is True, result
         return result
@@ -7259,13 +7289,19 @@ def updated() {}
         return self._rm_form(app_id, {"kind": "open", **({"page": page} if page else {})})
 
     @staticmethod
-    def _rm_step(form: dict, fields: dict | None = None, control: dict | None = None) -> dict:
-        step = {"kind": "submit", "expect_page": form["page"]["name"]}
+    def _rm_step(form: dict, fields: dict | None = None, control: dict | None = None,
+                 expect_key: str = "expectPage") -> dict:
+        step = {"kind": "submit", expect_key: form["page"]["name"]}
         if fields is not None:
             step["fields"] = fields
         if control is not None:
-            step["activate"] = control["control_id"]
+            # hub_set_rule returns camelCase keys, hub_set_native_app snake_case.
+            step["activate"] = control["controlId" if expect_key == "expectPage" else "control_id"]
         return step
+
+    def _native_app_step(self, form: dict, fields: dict | None = None, control: dict | None = None) -> dict:
+        """A submit step for hub_set_native_app, which spells the page guard expect_page."""
+        return self._rm_step(form, fields, control, expect_key="expect_page")
 
     def _rm_submit(self, app_id: Any, form: dict, fields: dict | None = None, control: dict | None = None) -> dict:
         return self._rm_form(app_id, self._rm_step(form, fields, control))
@@ -7281,7 +7317,7 @@ def updated() {}
     def _rm_new_action_editor(self, app_id: Any) -> tuple[dict, str]:
         """Open a new action row in the native editor; returns the form and the row's allocated id."""
         form = self._rm_open(app_id, "selectActions")
-        form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="button", control_id="N||doAct"))
+        form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="button", controlId="N||doAct"))
         form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="href", page="doActPage"))
         names = [row["name"] for row in form["fields"] if row["name"].startswith("actType.")]
         assert len(names) == 1, form
@@ -7290,15 +7326,16 @@ def updated() {}
     def _rm_new_trigger_editor(self, app_id: Any) -> tuple[dict, str]:
         form = self._rm_open(app_id, "selectTriggers")
         if not any(row["name"].startswith("tCapab") for row in form["fields"]):
-            form = self._rm_submit(app_id, form, control=self._rm_control(form, control_id="true||moreCond"))
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, controlId="true||moreCond"))
         names = [row["name"] for row in form["fields"] if row["name"].startswith("tCapab")]
         assert len(names) == 1, form
         return form, names[0].removeprefix("tCapab")
 
-    def _rm_health(self, app_id: Any, **extra: Any) -> dict:
-        health = self.client.call_tool("hub_get_rule_health", {"appId": int(app_id), **extra})
-        assert health.get("success") is not False, health
-        return health
+    def _rm_health(self, app_id: Any) -> dict:
+        """The rule's health report from hub_get_rule."""
+        result = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id)})
+        assert result.get("success") is not False and isinstance(result.get("health"), dict), result
+        return result["health"]
 
     def _rm_page(self, app_id: Any, page: str | None = None) -> str:
         """The rule's rendered page as text, read without opening the editor."""
@@ -7444,6 +7481,15 @@ def updated() {}
         guide = json.dumps(self.client.call_tool("hub_get_tool_guide", {"section": "set_rule_reference"}))
         for word in ("hub_set_rule", "condition", "trigger", "action", "fields"):
             assert word in guide, f"set_rule_reference does not mention {word!r}"
+        # The retired snake_case keys are refused by name, before anything is read or written.
+        for args, named in (({"operation": "read", "rule_id": 1}, "set_rule argument: rule_id"),
+                            ({"operation": "create", "args": {"parent_id": 1, "name": "x", "changes": []}},
+                             "Unknown args property: parent_id")):
+            try:
+                refused = self.client.call_tool("hub_set_rule", args)
+            except McpToolError as exc:
+                refused = exc.content_text
+            assert named in str(refused), f"hub_set_rule must refuse {args} by naming the old key: {refused}"
 
     @test("infrastructure")
     def test_set_rule_self_gateway_meta(self) -> None:
@@ -7463,10 +7509,10 @@ def updated() {}
         app_id, _ = self._rm_rule("EnvEdit", [native_log("first")])
         try:
             probe = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-                "operation": "update", "rule_id": app_id, "args": {"changes": [native_log("unconfirmed")]}}})
-            assert probe.get("confirm_required") is True, probe
+                "operation": "update", "ruleId": app_id, "args": {"changes": [native_log("unconfirmed")]}}})
+            assert probe.get("confirmRequired") is True, probe
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-                "operation": "update", "rule_id": app_id, "confirm": True,
+                "operation": "update", "ruleId": app_id, "confirm": True,
                 "args": {"changes": [native_log("via-envelope"), native_log("wrapped-list")]}}})
             assert result.get("success") is True and not result.get("partial"), result
             assert (result.get("backup") or {}).get("backupKey"), f"the update took no pre-edit snapshot: {result}"
@@ -7480,9 +7526,11 @@ def updated() {}
     def test_set_rule_self_gateway_envelope_create(self) -> None:
         app_id, doc = self._rm_rule("EnvCreate", [native_log("envelope-create")])
         try:
-            assert str(doc.get("rule_id")) == str(app_id), doc
+            assert str(doc.get("ruleId")) == str(app_id), doc
             assert [row["value"]["method"] for row in doc["actions"]] == ["getLogMsg"], doc
-            assert doc["validation"]["structuralIssues"] == [] and doc["nativeHealth"]["broken"] is False, doc
+            # A write's read-back leaves health out (the write's own checks stand for it), so health comes from hub_get_rule.
+            health = self._rm_health(app_id)
+            assert health["structuralIssues"] == [] and health["broken"] is False, health
         finally:
             self._delete_native(app_id)
 
@@ -7501,21 +7549,116 @@ def updated() {}
             assert listed.get("status") == "active" and listed.get("paused") is False, listed
             label = listed.get("name") or listed.get("label")
             assert str(label).endswith(" (Paused)"), listed
+
+            def set_paused(paused: bool) -> None:
+                # Pause and resume click the rule's own Pause button (a toggle), the UI's route, which the
+                # hub's load limiter never refuses; the paused state is read first.
+                result = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "pause" if paused else "resume"})
+                assert result.get("success") is True and result.get("rmAction", "").startswith("pausRule button"), result
+                self._rm_wait(lambda: self._rm_health(app_id).get("paused") is paused, what=f"paused={paused}")
+                # A rule already in the target state is left alone rather than toggled back.
+                again = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "pause" if paused else "resume"})
+                assert again.get("success") is True and again.get("rmAction") == "noop", again
+                assert self._rm_health(app_id).get("paused") is paused
+
             for paused in (True, False):
-                result = self.client.call_tool_result("hub_set_rule_paused", {"ruleId": app_id, "paused": paused})
-                if result.get("success") is False and "excessive hub load" in str(result.get("error", "")):
-                    # RMUtils is refused once the hub's load limiter trips; the rule's own Pause button
-                    # (a toggle) is the UI's route and is never limited.
-                    print("    [LIMITER] hub_set_rule_paused refused; toggling the pausRule button instead")
-                    form = self._rm_open(app_id)
-                    self._rm_submit(app_id, form, control=self._rm_control(form, name="pausRule"))
-                else:
-                    assert result.get("success") is not False, result
-                self._rm_wait(lambda paused=paused: self._rm_health(app_id).get("paused") is paused, what=f"paused={paused}")
+                set_paused(paused)
+                # The pause re-renders the rule's page, so the list shows it at once.
+                assert self._rm_listed(app_id).get("paused") is paused
                 assert self._rm_health(app_id).get("label") == label
+            # Two pauses sent at once on the unpaused rule: each reads the flag, clicks the toggle and reads the flag
+            # again, so when both click, the second click unpauses the rule. The read-back then reports the mismatch
+            # instead of a success; a call that reports success saw the rule paused.
+            race: list[Any] = [None, None]
+            gate = threading.Barrier(2)
+
+            def fire_pause(slot: int) -> None:
+                client = self._thread_client()
+                try:
+                    gate.wait(timeout=30)
+                    race[slot] = client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "pause"})
+                except McpToolError as exc:
+                    race[slot] = _plain_failure_payload(exc) or exc
+                except Exception as exc:      # reported by the assertion below
+                    race[slot] = exc
+
+            racers = [threading.Thread(target=fire_pause, args=(slot,), daemon=True) for slot in (0, 1)]
+            for racer in racers:
+                racer.start()
+            for racer in racers:
+                racer.join(timeout=300)
+            assert all(isinstance(r, dict) for r in race), f"a concurrent pause call raised: {race}"
+            mismatched = [r for r in race if r.get("success") is False
+                          and "click was accepted, but the rule's paused state then read" in str(r.get("error"))]
+            assert all(r.get("success") is True or r in mismatched for r in race), race
+            final_paused = self._rm_health(app_id).get("paused")
+            print(f"    concurrent pause: results={[r.get('rmAction') or r.get('error') for r in race]} final paused={final_paused}")
+            # With no mismatch reported, every call said paused, and the rule is paused.
+            assert mismatched or final_paused is True, (race, final_paused)
+            if final_paused:
+                undo = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "resume"})
+                assert undo.get("success") is True, undo
+            self._rm_wait(lambda: self._rm_health(app_id).get("paused") is False, what="paused=False after the race")
+            # The hub accepts Run Actions on a paused rule but Rule Machine runs nothing, so a paused rule's actions
+            # are refused, not reported as run; the switch the action turns on stays off until the rule is resumed.
+            switch = self._ensure_perm_fixture("switch_b")
+            self._rm_command(switch, "off")
+            assert self._wait_attribute(switch, "switch", "off").get("converged") is True
+            runner, _ = self._rm_rule("PausedRun", [self._rm_switch_action(switch, True)])
+            try:
+                paused_run = self.client.call_tool("hub_call_rule", {"ruleId": runner, "action": "pause"})
+                assert paused_run.get("success") is True, paused_run
+                self._rm_wait(lambda: self._rm_health(runner).get("paused") is True, what="runner paused")
+                try:
+                    skipped = self.client.call_tool("hub_call_rule", {"ruleId": runner, "action": "actions"})
+                except McpToolError as exc:
+                    skipped = _tool_error_payload(exc)
+                assert skipped.get("success") is False and skipped.get("dispatched") is False \
+                    and f"rule {runner} is paused, and Rule Machine does not run a paused rule's actions" in str(skipped.get("error")) \
+                    and "action:'resume'" in str(skipped.get("note")), skipped
+                # A batch of paused rules runs none of them, and its note says so instead of warning of a lost run.
+                second, _ = self._rm_rule("PausedRun2", [self._rm_switch_action(switch, True)])
+                try:
+                    paused_second = self.client.call_tool("hub_call_rule", {"ruleId": second, "action": "pause"})
+                    assert paused_second.get("success") is True, paused_second
+                    self._rm_wait(lambda: self._rm_health(second).get("paused") is True, what="second runner paused")
+                    try:
+                        batch = self.client.call_tool("hub_call_rule", {"ruleId": [runner, second], "action": "actions"})
+                    except McpToolError as exc:
+                        batch = _tool_error_payload(exc)
+                    assert batch.get("success") is False \
+                        and [r.get("paused") for r in batch.get("results") or []] == [True, True] \
+                        and f"Rule(s) {runner}, {second} were not run because they are paused" in str(batch.get("note")) \
+                        and "may already have run" not in str(batch.get("note")), batch
+                finally:
+                    self._delete_native(second)
+                assert self._wait_attribute(switch, "switch", "on", timeoutMs=5000).get("converged") is False, "a paused rule's actions ran"
+                resumed = self.client.call_tool("hub_call_rule", {"ruleId": runner, "action": "resume"})
+                assert resumed.get("success") is True, resumed
+                ran = self.client.call_tool("hub_call_rule", {"ruleId": runner, "action": "actions"})
+                assert ran.get("success") is True and ran.get("rmAction") == "runAction button", ran
+                assert self._wait_attribute(switch, "switch", "on").get("converged") is True, "the resumed rule's actions did not run"
+            finally:
+                self._delete_native(runner)
+                self._rm_command(switch, "off")
+            # A new rule's private boolean starts true, and health reads back each value set.
+            assert self._rm_health(app_id).get("privateBoolean") is True
+            for value in (False, True):
+                result = self.client.call_tool("hub_set_rule_private_boolean", {"ruleId": app_id, "value": value})
+                assert result.get("success") is not False, result
+                self._rm_wait(lambda v=value: self._rm_health(app_id).get("privateBoolean") is v, what=f"privateBoolean={value}")
             result = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "stop"})
             assert result.get("success") is not False, result
+            # The stop re-renders the rule's page, so the list shows it at once, without waiting.
+            listed = self._rm_listed(app_id)
+            assert listed.get("status") == "stopped", listed
             self._rm_wait(lambda: self._rm_health(app_id).get("stopped") is True, what="stopped")
+            # The name shows one decoration at a time; a paused and stopped rule still lists both.
+            set_paused(True)
+            listed = self._rm_listed(app_id)
+            assert listed.get("paused") is True and listed.get("status") == "stopped", listed
+            set_paused(False)
+            assert self._rm_listed(app_id).get("paused") is False
             assert self._rm_health(app_id)["eventSubscriptionCount"] == 0
             # An edit keeps the rule stopped, and restoring its recovery point brings back the original
             # time with the rule still stopped.
@@ -7544,7 +7687,7 @@ def updated() {}
                 self._rm_wait(lambda: self._rm_listed(app_id).get("disabled") is True, what="disabled")
                 self._rm_refuse(app_id, [native_log("disabled must not land")])
                 self._rm_refused(self._rm_call({
-                    "operation": "form", "rule_id": app_id, "confirm": True, "args": {"steps": [{"kind": "open"}]}}))
+                    "operation": "form", "ruleId": app_id, "confirm": True, "args": {"steps": [{"kind": "open"}]}}))
             finally:
                 self.client.call_tool("hub_set_app_disabled", {"appId": app_id, "disabled": False})
             self._rm_wait(lambda: self._rm_listed(app_id).get("status") == "active", what="enabled")
@@ -7692,7 +7835,7 @@ def updated() {}
             ]
             self._rm_refuse_all(app_id, cases)
             health = self._rm_health(app_id)
-            assert health.get("ok") is not False and not health.get("orphanedActionRows"), health
+            assert health.get("ok") is not False, health
             assert missing_file not in self._rm_page(app_id), "a refused file action left a row naming the file"
         finally:
             if app_id:
@@ -7756,7 +7899,7 @@ def updated() {}
             opened = self._rm_form(app_id, {"kind": "open", "page": "selectTriggers"}, {"kind": "open", "page": "mainPage"})
             assert [row["page"] for row in opened["completed"]] == ["selectTriggers", "mainPage"], opened
             before = self._rm_settings(app_id)
-            bad = self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+            bad = self._rm_call({"operation": "form", "ruleId": app_id, "confirm": True, "args": {
                 "steps": [{"kind": "open", "page": "mainPage"}, {"kind": "bogus_op"},
                           {"kind": "submit", "fields": {"comments": "must-not-land"}}]}})
             self._rm_refused(bad)
@@ -7794,7 +7937,7 @@ def updated() {}
             values = self._rm_values(app_id)
             assert values.get("comments") == "BAT_E2E raw settings", values.get("comments")
             assert sorted(values.get("logging") or []) == ["Actions", "Triggers"], values.get("logging")
-            refused = self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+            refused = self._rm_call({"operation": "form", "ruleId": app_id, "confirm": True, "args": {
                 "steps": [self._rm_step(form, fields={"origLabel": {"a": "b"}})]}})
             self._rm_refused(refused)
             assert self._rm_values(app_id) == values, "a refused form submit changed the rule"
@@ -7809,34 +7952,221 @@ def updated() {}
         try:
             health = self._rm_health(app_id)
             assert health.get("ok") is True and health.get("broken") is False and health.get("paused") is False, health
-            assert "ruleBuilderJson" in str(health.get("source")), health
+            # The compiled state carries the runtime flags: a new rule is not stopped, its private
+            # boolean starts true, and no action is switched off.
+            assert health.get("ruleFormat") == "rm" and health.get("stopped") is False, health
+            assert health.get("privateBoolean") is True and health.get("disabledActions") == [], health
+            assert health.get("structuralIssues") == [] and not health.get("checkErrors"), health
             listed = self.client.call_tool("hub_list_rules", {"labelFilter": f"{PREFIX}RuleHealthSrc".lower()}).get("rules", [])
             row = next(r for r in listed if str(r.get("id")) == str(app_id))
-            assert row.get("type") == "Rule-5.1" and row.get("rmVersion") == "5.x", row
-            page = self._rm_health(app_id, source="configPage")
-            assert page.get("source") == "configPage" and page.get("broken") is None, page
+            assert row.get("type") == "Rule-5.1" and "rmVersion" not in row, row
+            # The read carries the rule's document and its local variables beside its health.
+            read = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})
+            assert str(read.get("ruleId")) == str(app_id) and read.get("localVariables") == [], read
+            assert [row["value"]["method"] for row in read.get("actions", [])] == ["getLogMsg"], read
+            assert "variables" not in read and health.get("brokenRows") == [], read
+            # hub_get_app_config(includeStatus) returns the App Status lists the health counts come from. Its
+            # statusNote (a failed status read) cannot be forced on a live hub; the Spock suite covers it.
+            status = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeStatus": True})
+            assert status.get("success") is not False and "statusNote" not in status, status
+            assert all(isinstance(status.get(key), list) for key in ("appState", "eventSubscriptions", "scheduledJobs")), status
+            assert len(status["eventSubscriptions"]) == health.get("eventSubscriptionCount") \
+                and len(status["scheduledJobs"]) == health.get("scheduledJobCount"), (status, health)
+            # A cookie-named value is a live login: a local named like one reads masked in the App Status appState
+            # (nested under allLocalVars) and in hub_get_rule's localVariables.
+            self._rm_update(app_id, [native_change("variable", operation="create", name="e2eSessionCookie", type="string", value="e2e-cookie-value")])
+            masked = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeStatus": True})
+            locals_row = next((row for row in masked.get("appState") or [] if row.get("name") == "allLocalVars"), None)
+            assert locals_row is not None and "e2e-cookie-value" not in json.dumps(masked), masked.get("appState")
+            assert (locals_row.get("value") or {}).get("e2eSessionCookie") == "***redacted (password)***", locals_row
+            # The rule's page prints its locals table whether or not includeStatus read the state.
+            plain = self.client.call_tool("hub_get_app_config", {"appId": str(app_id)})
+            assert "e2e-cookie-value" not in json.dumps(plain), "the cookie local leaked through the rule's page"
+            local_rows = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
+            assert [(row.get("name"), row.get("redacted")) for row in local_rows] == [("e2eSessionCookie", True)], local_rows
+            # A URL in a local's value has its secret query value masked as the same URL in settings is, in hub_get_rule's
+            # localVariables and in the App Status appState.
+            self._rm_update(app_id, [native_change("variable", operation="create", name="e2eNote", type="string", value="http://x.invalid/?token=E2E_QTOK")])
+            note = next((row for row in self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
+                         if row.get("name") == "e2eNote"), None)
+            assert note is not None and note.get("value") == "http://x.invalid/?token=***redacted (password)***" \
+                and note.get("redacted") is True, note
+            noted = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeStatus": True})
+            assert "E2E_QTOK" not in json.dumps(noted), noted.get("appState")
+            # A row carrying a marker is marked as not fit to write back.
+            noted_locals = next((row for row in noted.get("appState") or [] if row.get("name") == "allLocalVars"), None)
+            assert noted_locals is not None and noted_locals.get("redacted") is True, noted_locals
+            # An HTTP Get action keeps its URL, query string included, as a setting: a secret-named query value reads
+            # masked, by the short URL names (apikey) and by the credential names settings use (psw, clientSecret),
+            # whole even when the value holds a '?', so no tail after it (PSW&) survives.
+            # The URL's password holds an '@', so it runs to the authority's last '@' and is masked whole.
+            self._rm_update(app_id, [self._rm_action("messageActs", "getHTTPGet", [(
+                "httper", "text", "http://user:E2EPW1@UPW2@192.0.2.1/x?apikey=E2E_SECRET&psw=E2E?PSW&clientSecret=E2E_CLIENT&room=den")])])
+            read_settings = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": ["settings"]})
+            http_rows = [row for row in read_settings.get("settings") or [] if str(row.get("name", "")).startswith("httper.")]
+            urls = [row.get("value") for row in http_rows]
+            masked = "***redacted (password)***"
+            # The URL's own password reads masked too, its user name kept.
+            assert urls == [f"http://user:{masked}@192.0.2.1/x?apikey={masked}&psw={masked}&clientSecret={masked}&room=den"], urls
+            assert all(row.get("redacted") is True for row in http_rows), http_rows
+            for secret in ("E2EPW1", "UPW2", "E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT"):
+                assert secret not in json.dumps(read_settings), f"the HTTP action's {secret} came back in clear"
+            config = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeSettings": True})
+            # includeSettings returns the settings unless the read withholds them, which it says in settingsNote.
+            if "settings" in config:
+                config_urls = [v for k, v in config["settings"].items() if str(k).startswith("httper.")]
+                assert config_urls == urls, config_urls
+            else:
+                assert "withheld" in str(config.get("settingsNote", "")), config
+            # Where the page prints the URL in the action's summary, its apikey reads masked there too.
+            page_text = json.dumps(config.get("page"))
+            if "192.0.2.1/x?apikey=" in page_text:
+                assert f"192.0.2.1/x?apikey={masked}" in page_text, page_text
+            assert not any(secret in json.dumps(config) for secret in ("E2EPW1", "UPW2", "E2E_SECRET", "E2E?PSW", "PSW&", "E2E_CLIENT")), "hub_get_app_config showed a URL secret"
+            # An access_token= in a local's URL follows Hide access tokens (default off), and the row it changes is
+            # marked as not fit to write back.
+            self._rm_update(app_id, [native_change("variable", operation="create", name="e2eCallback", type="string",
+                                                   value="http://192.0.2.1/cb?access_token=E2E_AT9")])
+            def set_redact_tokens(on: bool) -> None:
+                self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings",
+                                                         "args": {"settings": {"redactAccessTokens": on}, "confirm": True}})
+            try:
+                # Inside the try: a write that lands with its response lost still gets the setting turned back off.
+                set_redact_tokens(True)
+                callback = next((row for row in self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": []}).get("localVariables") or []
+                                 if row.get("name") == "e2eCallback"), None)
+                assert callback is not None and callback.get("value") == "http://192.0.2.1/cb?access_token=***redacted (access token)***" \
+                    and callback.get("redacted") is True, callback
+            finally:
+                set_redact_tokens(False)
+            # The tool takes ruleId; a client still sending appId is told so.
+            try:
+                stale = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "appId": int(app_id)})
+            except McpToolError as exc:
+                stale = _tool_error_payload(exc)
+            assert "Unknown hub_get_rule argument: appId" in str(stale.get("error")), stale
         finally:
             self._delete_native(app_id)
         # An id no app holds is reported as not found, not read as a built-in app.
         try:
-            missing = self.client.call_tool("hub_get_rule_health", {"appId": 999999999})
+            missing = self.client.call_tool("hub_get_rule", {"ruleId": 999999999})
         except McpToolError as exc:
             missing = _tool_error_payload(exc)
-        assert isinstance(missing, dict) and "App 999999999 not found" in str(missing.get("error")), missing
+        assert isinstance(missing, dict) and "No app with id 999999999 is installed" in str(missing.get("error")), missing
 
     @test("native_apps")
     def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
-        # Deleting a trigger's device leaves RM's compiled rule broken; health reports it from RM's own flag.
+        # Deleting a trigger's device leaves the rule broken while its compiled flag still reads false until its
+        # page renders. Nothing renders it here: hub_get_rule and the hub_set_rule update ask the rule's own
+        # broken() check, and name each row Rule Machine's label methods mark by its native id from the device
+        # settings. The two-trigger rule's page joins its triggers with an OR line, which must not shift the ids.
+        # A deleted condition device is marked without making the rule broken, so its rule stays editable.
         device_id, dni, _ = self._rm_disposable_switch("RHBrokenDev")
-        app_id, _ = self._rm_rule("RHBroken", [self._rm_switch_trigger(device_id), native_log("dangling trigger")])
+        second_id, second_dni, _ = self._rm_disposable_switch("RHBrokenDev2")
+        app_id, _ = self._rm_rule("RHBroken", [self._rm_switch_trigger(device_id), self._rm_switch_trigger(second_id),
+                                               native_log("dangling trigger")])
+        edit_id = None
+        cond_id = None
         try:
+            edit_id, edit_doc = self._rm_rule("RHBrokenEdit", [self._rm_switch_trigger(device_id), native_log("dangling edit")])
+            assert sorted(edit_doc.get("triggers") or {}) == ["1"], edit_doc
+            # A condition-gated action on the first device, a spare condition on the second whose Conditional Trigger
+            # box is unticked (the hub keeps its condTrig value), and a condition on the second that only a ticked
+            # Conditional Trigger (on a switch that stays) binds.
+            cond_id, _ = self._rm_rule("RHBrokenCond", [self._rm_switch_condition(device_id), self._rm_switch_condition(second_id),
+                                                        self._rm_switch_condition(second_id)])
+            cond_rows = self._native_rule_document(cond_id).get("conditions") or {}
+            gone, spare, bound = sorted(cond_rows, key=int)
+            gated_action = self._rm_ids(self._rm_update(cond_id, [native_log("gated by a deleted device", condition=gone)]))[0]
+            bound_trigger = self._rm_ids(self._rm_update(cond_id, [native_change("trigger", capability="Switch", fields=[
+                *self._rm_switch_fields(self._ensure_perm_fixture("switch_a"), trigger=True),
+                native_field("isCondTrig.#", "bool", True), native_field("condTrig.#", "enum", bound)])]))[0]
+            unticked = self._rm_ids(self._rm_update(cond_id, [native_change("trigger", capability="Switch", fields=[
+                *self._rm_switch_fields(self._ensure_perm_fixture("switch_a"), trigger=True),
+                native_field("isCondTrig.#", "bool", True), native_field("condTrig.#", "enum", spare)])]))[0]
+            self._rm_update(cond_id, [native_change("trigger", id=unticked, capability="Switch", fields=[
+                *self._rm_switch_fields(self._ensure_perm_fixture("switch_a"), trigger=True), native_field("isCondTrig.#", "bool", False)])])
+            assert str(self._rm_values(cond_id).get("condTrig." + unticked)) == spare, "the hub dropped an unticked condTrig"
             assert self._rm_health(app_id).get("broken") is False
+            assert self._rm_health(cond_id).get("broken") is False
             self._rm_delete_device(dni)
-            self._rm_open(app_id, "mainPage")
+            self._rm_delete_device(second_dni)
+            # Rule Machine does not call a rule broken for a condition whose device was deleted: broken() stays false.
+            # Its label methods mark the row; the gated condition is in its own list of conditions in use, and the
+            # ticked Conditional Trigger's condition counts too, but not the spare one the unticked box still names.
+            cond_health = self._rm_health(cond_id)
+            assert cond_health.get("broken") is False and cond_health.get("ok") is False, cond_health
+            marked_rows = cond_health.get("brokenRows") or []
+            assert sorted((row.get("kind"), str(row.get("id")), row.get("setting")) for row in marked_rows
+                          if row.get("kind") == "condition" and row.get("id") is not None) == \
+                sorted([("condition", str(gone), f"rDev_{gone}"), ("condition", str(bound), f"rDev_{bound}")]), (spare, cond_health)
+            # The spare condition is marked too but nothing uses it, so it is listed by its label line, without an id.
+            assert len([row for row in marked_rows if row.get("kind") == "condition" and row.get("id") is None]) == 1, (spare, cond_health)
+            # The action gated on the marked condition has no device of its own, so it is listed without an id.
+            assert all(row.get("id") is None for row in marked_rows if row.get("kind") == "action"), cond_health
+            assert any("does not call the rule broken" in str(issue) for issue in cond_health.get("issues") or []), cond_health
+            # The Hubitat UI edits such a rule, so the update goes ahead and reports the rows already marked.
+            edited = self._rm_update(cond_id, [native_log("written beside marked rows")])
+            assert edited.get("broken") is False, edited
+            assert sorted((row.get("kind"), str(row.get("id"))) for row in edited.get("brokenRowsBefore") or []) == \
+                sorted((row.get("kind"), str(row.get("id"))) for row in marked_rows), (marked_rows, edited)
+            # Gating one more action on the marked condition adds a row Rule Machine marks, so that write fails.
+            before_gate = self._native_rule_document(cond_id).get("actions")
+            gated = self._rm_call({"operation": "update", "ruleId": int(cond_id),
+                                   "args": {"changes": [native_log("newly gated", condition=gone)]}, "confirm": True})
+            gate_error = self._rm_refused(gated)
+            if "Rule Machine marks this action broken" in gate_error:
+                # Refused at the action itself, which is rolled back.
+                assert gated.get("partial") is False, gated
+                assert self._native_rule_document(cond_id).get("actions") == before_gate, "a newly marked action was left behind"
+            else:
+                assert "The write adds rows Rule Machine marks broken: action" in gate_error, gated
+            # Moving the gated action to a condition on a live switch is written, and its label is no longer marked.
+            # (Editing it while it keeps the marked condition would make broken() call the rule broken, so this comes
+            # while broken() still calls it healthy.)
+            healthy = self._rm_ids(self._rm_update(cond_id, [self._rm_switch_condition(self._ensure_perm_fixture("switch_a"))]))[0]
+            moved = self._rm_update(cond_id, [native_log("moved to a live switch", id=gated_action, condition=healthy)])
+            assert moved.get("broken") is False, moved
+            moved_health = self._rm_health(cond_id)
+            assert not any(row.get("kind") == "action" for row in moved_health.get("brokenRows") or []), moved_health
+            # Rule Machine's inUseConds leaves out a condition only a Conditional Trigger uses, but a ticked box still
+            # uses it: the bound condition is refused, and the spare one only the unticked box names deletes.
+            bound_error = self._rm_refuse(cond_id, [native_delete("condition", bound)])
+            assert "Referenced trigger conditions must be detached before deletion" in bound_error, bound_error
+            freed = self._rm_update(cond_id, [native_delete("condition", spare)])
+            assert str(spare) not in ((freed.get("document") or {}).get("conditions") or {}), freed
+            assert str(bound) in (self._native_rule_document(cond_id).get("conditions") or {}), "the refused delete removed the bound condition"
+            # Unticking the bound trigger's box and deleting its condition can share one batch.
+            released = self._rm_update(cond_id, [native_change("trigger", id=bound_trigger, capability="Switch", fields=[
+                *self._rm_switch_fields(self._ensure_perm_fixture("switch_a"), trigger=True), native_field("isCondTrig.#", "bool", False)]),
+                native_delete("condition", bound)])
+            assert str(bound) not in ((released.get("document") or {}).get("conditions") or {}), released
             health = self._rm_health(app_id)
             assert health.get("broken") is True and health.get("ok") is False and health.get("ruleFormat") == "rm", health
+            rows = health.get("brokenRows") or []
+            assert [(row.get("kind"), row.get("id"), row.get("setting")) for row in rows] == \
+                [("trigger", "1", "tDev1"), ("trigger", "2", "tDev2")], health
+            assert all(str(row.get("text") or "").endswith("turns on") for row in rows), health
+            # The read wrote nothing: the rule's actions are as created.
+            read = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": ["actions", "triggers"]})
+            assert sorted(read.get("triggers") or {}) == ["1", "2"], read
+            # The update asks the same check before any backup or write, and names the row by kind and id.
+            backups_before = self._rm_backup_keys(edit_id)
+            refused = self._rm_call({"operation": "update", "ruleId": int(edit_id),
+                                     "args": {"changes": [native_log("not written")]}, "confirm": True})
+            error = self._rm_refused(refused)
+            assert "already broken: trigger 1 (" in error and refused.get("partial") is False, refused
+            assert [(row.get("kind"), row.get("id")) for row in refused.get("brokenRows") or []] == [("trigger", "1")], refused
+            assert "operation:'form'" in str(refused.get("note")), refused
+            assert self._rm_backup_keys(edit_id) == backups_before, "a refused update took a backup"
+            after = self._native_rule_document(edit_id)
+            assert after.get("actions") == edit_doc.get("actions"), (edit_doc.get("actions"), after.get("actions"))
+            assert after.get("health", {}).get("broken") is True, after
         finally:
             self._delete_native(app_id)
+            for extra_id in (edit_id, cond_id):
+                if extra_id is not None:
+                    self._delete_native(extra_id)
 
     @test("native_apps")
     def test_rule_health_ui_shaped_else_endif_rows(self) -> None:
@@ -7870,8 +8200,8 @@ def updated() {}
             assert imported.get("success") is True and copy_id, imported
             try:
                 health = self._rm_health(copy_id)
+                # The stray row 99 is not one of the rule's actions, so it is not walked.
                 assert health.get("ok") is True and health.get("structuralIssues") == [] and not health.get("checkErrors"), health
-                assert any("action 99" in str(row) and "getIfThen" in str(row) for row in health.get("orphanedActionRows", [])), health
                 copied = self._rm_values(copy_id)
                 endif = next(k.split(".", 1)[1] for k, v in copied.items() if k.startswith("actSubType.") and v == "getEndIf")
                 self._rm_refuse_all(copy_id, [[native_delete("action", endif)]])
@@ -7930,7 +8260,7 @@ def updated() {}
             daily = next(row for row in form["fields"] if row["name"].startswith("startingDC") and row["type"] == "time")
             form = self._rm_submit(app_id, form, fields={frequency["name"]: "Hourly"})
             assert daily["name"] not in {row["name"] for row in form["fields"]}, form
-            stale = self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+            stale = self._rm_call({"operation": "form", "ruleId": app_id, "confirm": True, "args": {
                 "steps": [self._rm_step(form, fields={daily["name"]: "2026-01-01T08:00:00.000-0500"})]}})
             assert daily["name"] in self._rm_refused(stale) and not stale.get("partial"), stale
             form = self._rm_submit(app_id, form, fields={frequency["name"]: "Cron String"})
@@ -7988,18 +8318,18 @@ def updated() {}
                     native_change("action", type="dimmerActs", subtype="getSetLevel", missingLevel=True, fields=[]),
                     native_change("variable", operation="set", name="MissingCreateVariable", value=1)):
             result = self._rm_call({"operation": "create", "confirm": True, "args": {
-                "parent_id": self._native_rule_parent_id(), "name": f"{PREFIX}CreateRefused_{_run_artifact_suffix()}",
+                "parentId": self._native_rule_parent_id(), "name": f"{PREFIX}CreateRefused_{_run_artifact_suffix()}",
                 "changes": [native_log("first"), bad]}})
-            if result.get("rule_id"):
-                self.created_native_app_ids.append(str(result["rule_id"]))
+            if result.get("ruleId"):
+                self.created_native_app_ids.append(str(result["ruleId"]))
             self._rm_refused(result)
         assert rule_ids() == before, "a refused create left a child rule"
         result = self._rm_call({"operation": "create", "confirm": True, "args": {
-            "parent_id": self._native_rule_parent_id(), "name": f"{PREFIX}CreateStop_{_run_artifact_suffix()}",
+            "parentId": self._native_rule_parent_id(), "name": f"{PREFIX}CreateStop_{_run_artifact_suffix()}",
             "changes": [self._rm_switch_trigger(switch), self._rm_switch_trigger(switch, "purple"),
                         self._rm_switch_condition(switch), native_change("required", tokens=["3"]),
                         native_log("skipped action")]}})
-        app_id = result.get("rule_id")
+        app_id = result.get("ruleId")
         if app_id:
             self.created_native_app_ids.append(str(app_id))
         try:
@@ -8071,7 +8401,7 @@ def updated() {}
             action_id = str(original["id"])
             form = self._rm_open(app_id, "selectActions")
             edit = [row for row in form["controls"] if row.get("kind") == "button"
-                    and row.get("name", "").split(".")[0] == action_id and row.get("control_id", "").endswith("||doAct")]
+                    and row.get("name", "").split(".")[0] == action_id and row.get("controlId", "").endswith("||doAct")]
             assert len(edit) == 1, form
             form = self._rm_submit(app_id, form, control=edit[0])
             form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="href", page="doActPage"))
@@ -8088,12 +8418,16 @@ def updated() {}
                 if not any(row.get("name") == name for row in form["controls"]):
                     form = self._rm_open(app_id, "doActPage")
                 form = self._rm_submit(app_id, form, control=self._rm_control(form, name=name))
-            # The native editor compiles the added event on a following doActPage render.
+            # Both reads come while the added event is still an open, uncompiled edit: they must not render the
+            # rule's page, whose code would drop it. The native editor compiles it on a following doActPage render.
+            pending = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})
+            assert str(pending.get("ruleId")) == str(app_id) and isinstance(pending.get("health"), dict), pending
+            self._native_rule_document(app_id)
             for _ in range(3):
+                self._rm_open(app_id, "doActPage")
                 doc = self._native_rule_document(app_id)
                 if len(self._rm_wait_slots(doc)[1]) == 2:
                     break
-                self._rm_open(app_id, "doActPage")
             self._rm_open(app_id, "selectActions")
             doc = self._native_rule_document(app_id)
             wait, slots = self._rm_wait_slots(doc)
@@ -8102,7 +8436,7 @@ def updated() {}
             settings = self._rm_settings(app_id)
             assert settings["tCapab" + slot]["value"] == "Mode" and settings["modesX" + slot]["value"] in ([day], [int(day)], f'["{day}"]'), settings
             assert "tstate" + slot not in settings and settings["tstate" + original_slots[0]]["value"] == "on", settings
-            assert doc["nativeHealth"]["broken"] is False and doc["validation"]["structuralIssues"] == [], doc
+            assert doc["health"]["broken"] is False and doc["health"]["structuralIssues"] == [], doc
         finally:
             self._delete_native(app_id)
 
@@ -8181,7 +8515,7 @@ def updated() {}
             settings = self._rm_settings(app_id)
             assert not any(prefix + replacement in settings for prefix in ("tCapab", "tDev", "tstate")), settings
             states = [row["value"] for name, row in settings.items() if re.fullmatch(r"tstate\d+", name)]
-            stopped = self._rm_call({"operation": "update", "rule_id": app_id, "confirm": True, "args": {
+            stopped = self._rm_call({"operation": "update", "ruleId": app_id, "confirm": True, "args": {
                 "changes": [self._rm_switch_trigger(switch, "off"), self._rm_switch_trigger(switch, "purple"),
                             self._rm_switch_trigger(switch), native_log("trigger-stop-skipped")]}})
             assert "tstate" in self._rm_refused(stopped) and stopped.get("partial") is True, stopped
@@ -8200,7 +8534,7 @@ def updated() {}
 
     def _rm_stop(self, app_id: Any, changes: list[dict], kept: list[str], absent: list[str]) -> str:
         """A batch stopped at a failed change: the prefix landed, the rest did not run."""
-        result = self._rm_call({"operation": "update", "rule_id": int(app_id), "confirm": True,
+        result = self._rm_call({"operation": "update", "ruleId": int(app_id), "confirm": True,
                                                         "args": {"changes": changes}})
         error = self._rm_refused(result)
         rows = result.get("results", [])
@@ -8263,13 +8597,13 @@ def updated() {}
     def test_set_rule_walkstep_drive(self) -> None:
         # The native editor, driven step by step: a new action committed with actionDone, invalid
         # field names, controls and option values refused without a change, and an open Repeat block
-        # reported until its END-REPEAT is added.
+        # reported until its END-REP is added, and clean once it is.
         switch, switch2 = self._ensure_perm_fixture("switch_a"), self._ensure_perm_fixture("switch_b")
         app_id, _ = self._rm_rule("FormDrive")
         try:
             form, index = self._rm_new_action_editor(app_id)
             page = form["page"]["name"]
-            result = self._rm_form(app_id, *[{"kind": "submit", "expect_page": page, "fields": {name + index: value}}
+            result = self._rm_form(app_id, *[{"kind": "submit", "expectPage": page, "fields": {name + index: value}}
                                              for name, value in (("actType.", "messageActs"), ("actSubType.", "getLogMsg"),
                                                                  ("logmsg.", "drive-complete"))])
             assert len(result["completed"]) == 3, result
@@ -8281,7 +8615,7 @@ def updated() {}
             for step in (self._rm_step(form, fields={"tCapab999999": "Switch"}),
                          {**self._rm_step(form, fields={}), "activate": "noSuchButtonE2E"},
                          self._rm_step(form, fields={"tstate" + slot: "E2E Not A State"})):
-                self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id,
+                self._rm_refused(self._rm_call({"operation": "form", "ruleId": app_id,
                                                                         "confirm": True, "args": {"steps": [step]}}))
             assert self._rm_settings(app_id) == before, "a refused form step changed the rule"
             form = self._rm_open(app_id, "selectTriggers")
@@ -8292,7 +8626,7 @@ def updated() {}
             assert values["logmsg." + index] == "drive-complete" and values["tDev" + slot] == [str(switch2)], values
             form, repeat = self._rm_new_action_editor(app_id)
             page = form["page"]["name"]
-            repeated = self._rm_form(app_id, *[{"kind": "submit", "expect_page": page, "fields": {name + repeat: value}}
+            repeated = self._rm_form(app_id, *[{"kind": "submit", "expectPage": page, "fields": {name + repeat: value}}
                                                for name, value in (("actType.", "repeatActs"), ("actSubType.", "getRepeat"),
                                                                    ("repeatMinute.", 5))])
             self._rm_submit(app_id, repeated, control=self._rm_control(repeated, name="actionDone"))
@@ -8300,6 +8634,8 @@ def updated() {}
             assert any("repeat" in str(issue).lower() for issue in health.get("structuralIssues", [])), health
             # The write succeeds only once the block is balanced and the rule compiles.
             self._rm_update(app_id, [native_change("terminator", subtype="endRep")])
+            health = self._rm_health(app_id)
+            assert not health.get("structuralIssues"), health
             # Preflight refuses, before any write, an END-REP ordered ahead of its REPEAT and an order
             # that follows a new action in the same batch.
             before = self._rm_snapshot(app_id)
@@ -8442,7 +8778,7 @@ def updated() {}
             after = self._rm_settings(app_id)
             changed = {n for n in set(before) | set(after) if before.get(n) != after.get(n)}
             assert all(n.endswith("." + str(row_id)) for n in changed), changed
-            self._rm_assert_stored({n: r.get("device_ids") if str(r.get("type", "")).startswith("capability") else r.get("value")
+            self._rm_assert_stored({n: r.get("deviceIds") if str(r.get("type", "")).startswith("capability") else r.get("value")
                                     for n, r in after.items()}, row_id, expected)
             return result
 
@@ -8481,12 +8817,8 @@ def updated() {}
             edit(target_b, bulb, "dimmerActs", "getSetColor", [("color", "enum", "Custom RGB color"), ("colorH", "text", "#00ff00")],
                  {"color": "Custom RGB color", "colorH": "#00ff00"})
             self._rm_refuse_all(target_b, [[action("dimmerActs", "getSetColor", [("colorLevel", "number", 40)], id=bulb)]])
-            paused = self.client.call_tool_result("hub_set_rule_paused", {"ruleId": [target_a, target_b], "paused": True})
-            if paused.get("success") is False:
-                # The hub's load limiter may refuse a batch outright; it then pauses neither rule.
-                assert "excessive hub load" in str(paused.get("error", "")), paused
-                return
-            assert sorted(map(str, paused.get("ruleIds", []))) == sorted(map(str, (target_a, target_b))), paused
+            paused = self.client.call_tool("hub_call_rule", {"ruleId": [target_a, target_b], "action": "pause"})
+            assert paused.get("success") is True and sorted(map(str, paused.get("ruleIds", []))) == sorted(map(str, (target_a, target_b))), paused
             self._rm_wait(lambda: all(self._rm_health(r).get("paused") is True for r in (target_a, target_b)), what="both rules paused")
         finally:
             for app_id in (caller, target_a, target_b):
@@ -8685,16 +9017,150 @@ def updated() {}
 
     @test("native_apps")
     def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
+        # Running the rule's actions sets its local variable, which hub_get_rule reads back at once.
+        # Every refusal below (an action outside the enum, the Rule Machine parent app, an id with
+        # no app, a batch holding one) runs nothing, so the variable keeps its value until the run.
+        # Twelve 10 KB string locals, too large for one response, read through hub_get_rule's paging.
         # Deleting a local variable an action still uses is applied (RM allows it) but reported as
-        # leaving the rule broken, and the editor shows it broken.
+        # leaving the rule broken, as the editor shows.
         app_id, _ = self._rm_rule("RefLocal", [
             native_change("variable", operation="create", name="refLocal", type="integer", value=0),
             self._rm_variable_action("refLocal", "number", [native_field("valNumber.#", "number", 9)])])
+
+        def local_value() -> Any:
+            listed = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id), "sections": ["actions"]}})
+            return next((row.get("value") for row in listed.get("localVariables", []) if row.get("name") == "refLocal"), None)
+
+        def refused(tool: str, args: dict) -> dict:
+            try:
+                return self.client.call_tool(tool, args)
+            except McpToolError as exc:
+                return _tool_error_payload(exc)
+
         try:
+            listed = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id)})
+            assert len(listed.get("localVariables") or []) == 1 and listed["localVariables"][0]["type"] == "integer", listed
+            assert local_value() == 0
+            # 'rule' is no longer an action, so it is refused.
+            gone_action = refused("hub_call_rule", {"ruleId": app_id, "action": "rule"})
+            assert "Invalid action 'rule'" in str(gone_action.get("error")), gone_action
+            # action has no default: leaving it out, or sending an empty or false one, runs nothing.
+            no_action = refused("hub_call_rule", {"ruleId": app_id})
+            assert "action is required" in str(no_action.get("error")) or "Missing required parameter for hub_call_rule: action" in str(no_action.get("error")), no_action
+            for blank in ("", False, 0):
+                blank_action = refused("hub_call_rule", {"ruleId": app_id, "action": blank})
+                assert "Invalid action" in str(blank_action.get("error")) and "Nothing was dispatched" in str(blank_action.get("error")), (blank, blank_action)
+            assert local_value() == 0, "a call without a valid action ran the rule's actions"
+            # The Rule Machine parent app is not a rule: running its actions is refused, and reading it returns
+            # its health with no local variables.
+            parent_id = self._native_rule_parent_id()
+            parent_run = refused("hub_call_rule", {"ruleId": parent_id, "action": "actions"})
+            # The refusal says which apps the tool takes and where each kind of rule id is listed.
+            assert f"App {parent_id} is a Rule Machine app; hub_call_rule acts only on Rule Machine rules, Button Rules and Visual Rules" \
+                in str(parent_run.get("error")) and "hub_list_rules (Rule Machine), hub_list_apps(nameFilter:'Button Rule') (Button Rules) or hub_get_visual_rule (Visual Rules)" in str(parent_run.get("error")) \
+                and "Nothing was dispatched" in str(parent_run.get("error")), parent_run
+            parent_read = self.client.call_tool("hub_get_rule", {"ruleId": int(parent_id)})
+            assert parent_read.get("localVariables") is None and "actions" not in parent_read \
+                and "hub_get_app_config(includeStatus: true)" in str(parent_read.get("note")), parent_read
+            # An id with no app is refused rather than read as a rule with no locals.
+            missing = refused("hub_get_rule", {"ruleId": 999999999})
+            assert "No app with id 999999999 is installed" in str(missing.get("error")) \
+                and "hub_list_rules (Rule Machine), hub_list_apps (Button Rules and Basic Rules) or hub_get_visual_rule (Visual Rules)" in str(missing.get("error")), missing
+            # hub_set_rule words both refusals as hub_get_rule does.
+            set_missing = self._rm_call({"operation": "read", "ruleId": 999999999})
+            assert "No app with id 999999999 is installed" in str(set_missing.get("error")), set_missing
+            set_parent = self._rm_call({"operation": "read", "ruleId": int(parent_id)})
+            assert f"App {parent_id} is a Rule Machine app; only Rule Machine 5.1 rules and Button Rules can be edited here" \
+                in str(set_parent.get("error")), set_parent
+            # The runtime tools refuse an id with no app, alone or in a batch with a real rule, before
+            # anything is dispatched: the batch's real rule does not run either.
+            for tool, args in (("hub_call_rule", {"ruleId": 999999999, "action": "actions"}),
+                               ("hub_call_rule", {"ruleId": [int(app_id), 999999999], "action": "actions"}),
+                               ("hub_set_rule_private_boolean", {"ruleId": 999999999, "value": True}),
+                               ("hub_set_rule_private_boolean", {"ruleId": [int(app_id), 999999999], "value": False})):
+                gone = refused(tool, args)
+                assert "No app with id 999999999 is installed" in str(gone.get("error")) \
+                    and "Nothing was dispatched" in str(gone.get("error")), (tool, gone)
+            # An id past the int range is refused, not wrapped onto another rule: 2**32 + app_id would
+            # otherwise narrow to app_id and run this rule's actions.
+            wrapped = (1 << 32) + int(app_id)
+            for tool, args in (("hub_call_rule", {"ruleId": wrapped, "action": "actions"}),
+                               ("hub_set_rule_private_boolean", {"ruleId": [wrapped], "value": False}),
+                               ("hub_call_rule", {"ruleId": 0, "action": "actions"})):
+                overflow = refused(tool, args)
+                assert "is not a valid rule id" in str(overflow.get("error")), (tool, overflow)
+            # The reads share the check: a wrapped id is refused before any lookup, and a numeric string names the rule.
+            for tool, args, text in (("hub_get_rule", {"ruleId": wrapped}, "within the hub's id range"),
+                                     ("hub_set_rule", {"operation": "read", "ruleId": wrapped}, "A positive native application ID is required")):
+                overflow = refused(tool, args)
+                assert text in str(overflow.get("error")), (tool, overflow)
+            # A number past the long range is described, not echoed as the wrapped value a parser can make of it.
+            huge = refused("hub_get_rule", {"ruleId": 99999999999999999999})
+            assert "got: a number outside the hub's id range." in str(huge.get("error")) \
+                and "7766279631452241919" not in str(huge.get("error")), huge
+            # A bad sections value is named beside the valid names and the guide section.
+            for sections, text in ((["bogus"], 'Unknown section ["bogus"]'), (["health"], 'Unknown section ["health"]'),
+                                   ("health", 'sections must be a list of names, not "health"')):
+                bad = refused("hub_get_rule", {"ruleId": int(app_id), "sections": sections})
+                assert text in str(bad.get("error")) and "hub_get_rule sections are actions, conditions, triggers, expressions, settings, localVariables." \
+                    in str(bad.get("error")) and "hub_get_tool_guide(section='builtin_app_tools_rules')" in str(bad.get("error")), (sections, bad)
+            # hub_set_rule's read names its own sections and its own guide section.
+            set_bad = refused("hub_set_rule", {"operation": "read", "ruleId": int(app_id), "args": {"sections": ["bogus"]}})
+            assert 'Invalid args.sections: "bogus" is not one of actions, conditions, triggers, expressions, variables, settings' \
+                in str(set_bad.get("error")) and "set_rule_reference" in str(set_bad.get("error")), set_bad
+            # A paged read names the sections it was sent and the bad cursor or limit, with the guide section.
+            for args, text in (({"sections": ["actions", "triggers"], "limit": 5}, 'Paged reads require exactly one section, got ["actions","triggers"].'),
+                               ({"sections": ["actions"], "limit": 500}, 'got cursor "" and limit 500.')):
+                paged = refused("hub_get_rule", {"ruleId": int(app_id), **args})
+                assert text in str(paged.get("error")) and "hub_get_tool_guide(section='builtin_app_tools_rules')" in str(paged.get("error")), (args, paged)
+            # An empty id list is a full sentence pointing at the tools that list the ids hub_call_rule takes.
+            empty = refused("hub_call_rule", {"ruleId": [], "action": "actions"})
+            assert "ruleId array must not be empty: name one rule id or more. Find rule ids with hub_list_rules (Rule Machine), " \
+                "hub_list_apps(nameFilter:'Button Rule') (Button Rules) or hub_get_visual_rule (Visual Rules)." in str(empty.get("error")), empty
+            # hub_set_rule_private_boolean takes no Visual Rules, so its sentence names only the other two sources.
+            empty_pb = refused("hub_set_rule_private_boolean", {"ruleId": [], "value": True})
+            assert "ruleId array must not be empty: name one rule id or more. Find rule ids with hub_list_rules (Rule Machine) or " \
+                "hub_list_apps(nameFilter:'Button Rule') (Button Rules)." in str(empty_pb.get("error")), empty_pb
+            by_string = self.client.call_tool("hub_get_rule", {"ruleId": str(app_id), "sections": []})
+            assert str(by_string.get("ruleId")) == str(app_id) and len(by_string.get("localVariables") or []) == 1, by_string
+            set_by_string = self._rm_call({"operation": "read", "ruleId": str(app_id), "args": {"sections": []}})
+            assert str(set_by_string.get("ruleId")) == str(app_id) and set_by_string.get("health", {}).get("ruleFormat") == "rm", set_by_string
+            # Through a gateway a renamed key (rule_id for ruleId) is named as unknown, not reported as a missing ruleId.
+            stale = refused("hub_read_rules", {"tool": "hub_get_rule", "args": {"rule_id": int(app_id)}})
+            assert "Unknown hub_get_rule argument: rule_id" in str(stale.get("error")) \
+                and "Missing required parameter" not in str(stale.get("error")), stale
+            # The delete tool shares the check: the wrapped id must not back up and delete this rule.
+            kept = refused("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app",
+                "args": {"appId": wrapped, "force": True, "confirm": True}})
+            assert "within the hub's id range" in str(kept.get("error")), kept
+            assert self._rm_health(app_id).get("ruleFormat") == "rm", "a refused delete removed the rule"
+            assert local_value() == 0, "a refused call changed the rule's local variable"
+            assert self._rm_health(app_id).get("privateBoolean") is True, "a refused batch set the rule's private boolean"
+            # A rule whose string locals are too large for one response still reads on its own: health comes first,
+            # the locals page with the cursor convention, and the pages together hold every local once.
+            names = [f"bigLocal{n:02d}" for n in range(1, 13)]
+            for batch in range(0, len(names), 3):
+                self._rm_update(app_id, [native_change("variable", operation="create", name=name, type="string", value="x" * 10000)
+                                         for name in names[batch:batch + 3]])
+            pages = [self.client.call_tool("hub_get_rule", {"ruleId": int(app_id)})]
+            first = pages[0]
+            assert first.get("pagedSection") == "localVariables" and first.get("nextCursor"), \
+                {key: first.get(key) for key in ("pagedSection", "omittedSections", "page", "nextCursor", "note")}
+            assert "sections:[]" not in str(first.get("note")), first.get("note")
+            while pages[-1].get("nextCursor"):
+                pages.append(self.client.call_tool("hub_get_rule", {"ruleId": int(app_id), "sections": ["localVariables"],
+                                                                    "cursor": pages[-1]["nextCursor"]}))
+            assert all(next(iter(page)) == "health" and page["health"].get("ruleFormat") == "rm" for page in pages), \
+                [list(page)[:2] for page in pages]
+            rows = [row for page in pages for row in page.get("localVariables") or []]
+            assert sorted(row["name"] for row in rows) == sorted([*names, "refLocal"]), [row["name"] for row in rows]
+            assert all(len(str(row.get("value"))) == 10000 for row in rows if row["name"] in names), "a paged local was cut short"
+            self._rm_update(app_id, [native_change("variable", operation="delete", name=name) for name in names])
             ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "actions"})
-            assert ran.get("success") is not False, ran
-            self._rm_wait(lambda: self._native_rule_document(app_id)["variables"]["refLocal"]["value"] == 9, what="refLocal=9")
-            result = self._rm_call({"operation": "update", "rule_id": app_id, "confirm": True, "args": {
+            assert ran.get("success") is True and ran.get("rmAction") == "runAction button", ran
+            self._rm_wait(lambda: local_value() == 9, what="refLocal=9 after the rule's actions ran")
+            assert self._native_rule_document(app_id)["variables"]["refLocal"]["value"] == 9
+            result = self._rm_call({"operation": "update", "ruleId": app_id, "confirm": True, "args": {
                 "changes": [native_change("variable", operation="delete", name="refLocal")]}})
             assert result.get("success") is False and result.get("partial") is True and "broken" in str(result).lower(), result
             assert "refLocal" not in self._native_rule_document(app_id)["variables"]
@@ -8713,6 +9179,12 @@ def updated() {}
             self._rm_update(app_id, [native_change("required", tokens=[on])])
             replaced = self._rm_update(app_id, [native_change("required", tokens=[off])])
             assert replaced["document"]["expressions"]["0"] == [off], replaced["document"]["expressions"]
+            # Expression 0 is the Required Expression: an expression change there would leave the conditions Rule Machine
+            # binds to it behind, so it is refused before anything is written, pointing at a required change.
+            before_zero = self._rm_snapshot(app_id)
+            zero_error = self._rm_refuse(app_id, [native_change("expression", id=0, tokens=[on])])
+            assert "Expression 0 is the Required Expression" in zero_error and "part:'required'" in zero_error, zero_error
+            assert self._rm_snapshot(app_id) == before_zero, "a refused expression 0 change changed the rule"
             assert "is off" in self._rm_page(app_id).lower()
             self._rm_refuse_all(app_id, [
                 [self._rm_switch_condition(switch, "definitely_not_a_valid_state", id=off)],
@@ -8812,6 +9284,7 @@ def updated() {}
     @test("native_apps")
     def test_set_rule_required_expression_multi_condition(self) -> None:
         # Flat AND and grouped (A OR B) AND C Required Expressions over three conditions render as RM renders them.
+        # A condition only the Required Expression uses refuses its delete, alone or after a trigger delete in the batch.
         temp_a, temp_b = self.get_test_temperature_ids()
         rows = [native_change("condition", capability="Temperature", fields=self._rm_temperature_fields(device, op, value))
                 for device, op, value in ((temp_a, ">", 70), (temp_b, "<", 80), (temp_a, ">=", 65))]
@@ -8822,6 +9295,20 @@ def updated() {}
                 tokens = ["(", ids[0], "OR", ids[1], ")", "AND", ids[2]] if grouped else [ids[0], "AND", ids[1], "AND", ids[2]]
                 result = self._rm_update(app_id, [native_change("required", tokens=tokens)])
                 assert result["document"]["expressions"]["0"] == tokens, result["document"]["expressions"]
+                if not grouped:
+                    # A condition only the Required Expression uses is in use: its delete is refused before anything
+                    # is written, and the condition stays.
+                    error = self._rm_refuse(app_id, [native_delete("condition", ids[2])])
+                    assert "Referenced native conditions must be detached before deletion" in error, error
+                    assert ids[2] in (self._native_rule_document(app_id).get("conditions") or {}), "a refused delete removed the condition"
+                    # Deleting a trigger first frees nothing the Required Expression uses: the batch is refused at the
+                    # condition before its backup or any write, so the trigger stays too.
+                    trigger = self._rm_ids(self._rm_update(app_id, [self._rm_switch_trigger(self._ensure_perm_fixture("switch_a"))]))[0]
+                    backups = self._rm_backup_keys(app_id)
+                    error = self._rm_refuse(app_id, [native_delete("trigger", trigger), native_delete("condition", ids[2])])
+                    assert "changes[1]: Referenced native conditions must be detached before deletion" in error, error
+                    assert trigger in (self._native_rule_document(app_id).get("triggers") or {}), "the refused batch deleted the trigger"
+                    assert self._rm_backup_keys(app_id) == backups, "a refused batch took a backup"
                 page = self._rm_page(app_id)
                 assert page.lower().count("temperature of") >= 3 and ("OR" if grouped else "AND") in page and "< 80" in page, page[:800]
             finally:
@@ -8859,18 +9346,53 @@ def updated() {}
             after = self._rm_update(app_id, [native_delete("condition", unused)])["document"]
             for section in ("conditions", "actions", "expressions"):
                 assert after[section] == before[section], section
-            # Once a conditional action's device is deleted its condition renders "**Broken Condition**"; an edit
-            # of that action is refused and leaves the rule as it was.
+            # Once a conditional action's device is deleted its condition renders "**Broken Condition**", which
+            # Rule Machine does not call broken: the rule stays editable, until an edit of the gated action itself.
             gone_id, gone_dni, _ = self._rm_disposable_switch("CondGone")
             gone = self._rm_ids(self._rm_update(app_id, [self._rm_switch_condition(gone_id)]))[0]
             gated = self._rm_ids(self._rm_update(app_id, [native_log("gated by a deleted device", condition=gone)]))[0]
             self._rm_delete_device(gone_dni)
+            # Read before anything renders the page: broken() stays false, and the label methods mark the condition.
+            health = self._rm_health(app_id)
+            assert health.get("broken") is False and health.get("ok") is False, health
+            assert ("condition", str(gone), f"rDev_{gone}") in \
+                [(row.get("kind"), str(row.get("id")), row.get("setting")) for row in health.get("brokenRows") or []], health
             assert "Broken Condition" in self._rm_page(app_id), "deleting the device did not break its condition"
-            self._rm_refuse_all(app_id, [[native_log("gated edit", id=gated, condition=gone)]])
-            # An unrelated edit does not report success while that conditional action is broken.
-            unrelated = self._rm_call({"operation": "update", "rule_id": int(app_id),
-                                       "args": {"changes": [native_log("unrelated")]}, "confirm": True})
-            assert unrelated.get("success") is False and f"Native action {gated} is broken" in str(unrelated.get("error")), unrelated
+            # An unrelated edit is written, and reports the rows already marked before it.
+            unrelated = self._rm_update(app_id, [native_log("unrelated")])
+            assert any(str(row.get("id")) == str(gone) for row in unrelated.get("brokenRowsBefore") or []), unrelated
+            assert "unrelated" in self._rm_values(app_id).values(), "the unrelated edit was not written"
+            # A Required Expression naming the condition whose device is gone would get it marked after the write, so
+            # it is refused before the backup and any write.
+            before_gone = self._rm_snapshot(app_id)
+            backups_gone = self._rm_backup_keys(app_id)
+            gone_required = self._rm_call({"operation": "update", "ruleId": int(app_id), "confirm": True,
+                                           "args": {"changes": [native_change("required", tokens=[gone])]}})
+            gone_error = self._rm_refused(gone_required)
+            assert f"Expression names condition {gone}, whose device is gone" in gone_error and gone_required.get("partial") is False, gone_required
+            assert self._rm_snapshot(app_id) == before_gone, "the refused Required Expression changed the rule"
+            assert self._rm_backup_keys(app_id) == backups_gone, "the refused Required Expression took a backup"
+            # Editing the gated action while it stays on the marked condition would turn Rule Machine's own broken()
+            # true, so the edit is rolled back at the action: the rule is unchanged, not partial, and still editable.
+            before_kept = self._native_rule_document(app_id).get("actions")
+            kept = self._rm_call({"operation": "update", "ruleId": int(app_id), "confirm": True,
+                                  "args": {"changes": [native_log("gated edit", id=gated, condition=gone)]}})
+            kept_error = self._rm_refused(kept)
+            assert "Rule Machine marks this action broken" in kept_error and "move it to another condition" in kept_error \
+                and kept.get("partial") is False, kept
+            # rolledBack is the action's own outcome, in its results entry.
+            assert [(row.get("part"), (row.get("result") or {}).get("rolledBack")) for row in kept.get("results") or []] == [("action", True)], kept
+            assert self._native_rule_document(app_id).get("actions") == before_kept, "the refused gated edit changed the actions"
+            assert self._rm_health(app_id).get("broken") is False
+            later = self._rm_update(app_id, [native_log("after the refused edit")])
+            assert later.get("broken") is False, later
+            # One batch that gives the condition a device again may then name it in the Required Expression: the
+            # repair runs first, so the expression no longer names a condition whose device is gone.
+            repaired = self._rm_update(app_id, [self._rm_switch_condition(switch, id=gone), native_change("required", tokens=[gone])])
+            assert repaired.get("broken") is False and repaired["document"]["expressions"]["0"] == [str(gone)], repaired
+            repaired_health = self._rm_health(app_id)
+            assert repaired_health.get("broken") is False, repaired_health
+            assert not any(str(row.get("id")) == str(gone) for row in repaired_health.get("brokenRows") or []), repaired_health
         finally:
             self._delete_native(app_id)
 
@@ -8900,6 +9422,11 @@ def updated() {}
             assert "SUPPRESSED" in str(edited.get("subscriptionSettle", "")).upper(), edited
             assert not edited["eventSubscriptions"] and not edited["scheduledJobs"], edited
             assert edited["document"]["expressions"]["0"] == [condition]
+            # Rule Machine adds "(Required Expression false)" to the rule's label; health reports the rule's name, as
+            # hub_list_rules does.
+            label = self._rm_health(app_id).get("label")
+            listed = self._rm_listed(app_id)
+            assert "(Required Expression false)" not in str(label) and label == (listed.get("name") or listed.get("label")), (label, listed)
         finally:
             self._delete_native(app_id)
 
@@ -8946,12 +9473,12 @@ def updated() {}
             # This test runs with pre-edit backups on: the backup's own config read must not reset the
             # form's page (#543), so a key must come back and the page must survive.
             assert (form.get("backup") or {}).get("backupKey"), f"the form took no pre-edit backup: {form}"
-            form = self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(form, kind="href", page="prefPkgInstall")))
-            form = self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(form, kind="href", page="prefPkgInstallUrl")))
+            form = self._native_app_form(app_id, self._native_app_step(form, control=self._rm_control(form, kind="href", page="prefPkgInstall")))
+            form = self._native_app_form(app_id, self._native_app_step(form, control=self._rm_control(form, kind="href", page="prefPkgInstallUrl")))
             assert form["page"]["name"] == "prefPkgInstallUrl", f"the href did not open prefPkgInstallUrl: {form['page']}"
             self._rm_control(form, name="_action_next")
             url = "https://example.invalid/e2e-manifest.json"
-            form = self._native_app_form(app_id, self._rm_step(form, fields={"pkgInstall": url}))
+            form = self._native_app_form(app_id, self._native_app_step(form, fields={"pkgInstall": url}))
             assert form["page"]["name"] == "prefPkgInstallUrl", f"writing pkgInstall left the page: {form['page']}"
             stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
                 "appId": app_id, "pageName": "prefPkgInstallUrl", "includeSettings": True}})
@@ -9029,7 +9556,7 @@ def updated() {}
             return self._native_app("update", step, app_id)
         form = self._native_app_form(app_id, {"kind": "open"})
         match = {"control_id": f"{step['press']}||{step['state']}"} if step.get("state") else {}
-        return self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(
+        return self._native_app_form(app_id, self._native_app_step(form, control=self._rm_control(
             form, name=step["press"], kind="button", **match)))
 
     def _ensure_builtin_app_fixture(self, rows: list[dict], key: str, configure: list[dict],
@@ -9276,7 +9803,7 @@ def updated() {}
             assert str(values.get("useST", "false")).lower() != "true", values.get("useST")
             pickers = [v for k, v in values.items() if k.startswith("onOffSwitch.")]
             assert pickers == [[str(switch)]], pickers
-            assert doc["nativeHealth"]["broken"] is False
+            assert doc["health"]["broken"] is False
         finally:
             self._delete_native(app_id)
 
@@ -9384,7 +9911,7 @@ def updated() {}
             doc = self._native_rule_document(copy_id)
             assert len(doc["triggers"]) == 1 and [r["value"]["method"] for r in doc["actions"]] == ["getLogMsg"], doc
             assert self._rm_values(copy_id)["logmsg." + str(doc["actions"][0]["id"])] == "deleted-rule marker"
-            assert doc["nativeHealth"]["broken"] is False, doc
+            assert doc["health"]["broken"] is False, doc
         finally:
             if copy_id:
                 self._delete_native(copy_id)
@@ -9532,7 +10059,7 @@ def updated() {}
             keys = self._rm_backup_keys(app_id)
             self._native_rule_document(app_id)
             self._rm_call({})
-            self._rm_call({"operation": "update", "rule_id": app_id})
+            self._rm_call({"operation": "update", "ruleId": app_id})
             self._rule_edit_backups(False)
             try:
                 skipped = self._rm_update(app_id, [native_log("unprotected edit")])
@@ -9559,7 +10086,7 @@ def updated() {}
             assert blank_times <= {name for name, row in self._rm_settings(app_id).items()
                                    if row["type"] == "time" and row.get("value") == ""}
             assert self._rm_values(app_id).get("comments") in (None, "")
-            self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+            self._rm_refused(self._rm_call({"operation": "form", "ruleId": app_id, "confirm": True, "args": {
                 "steps": [self._rm_step(page, fields={"comments": "stale edit must not apply"})]}}))
             assert self._rm_values(app_id).get("comments") in (None, "")
         finally:
@@ -9567,14 +10094,14 @@ def updated() {}
                 self._delete_native(app_id)
 
     def _native_form_control(self, app_id: Any, page: str, name: str) -> dict:
-        opened = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
+        opened = self.client.call_tool("hub_set_rule", {"operation": "form", "ruleId": int(app_id),
             "args": {"steps": [{"kind": "open", "page": page}]}, "confirm": True})
         assert opened.get("success") is True, opened
         controls = [row for row in opened["controls"] if row.get("name") == name]
         assert len(controls) == 1, opened
-        result = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
-            "args": {"steps": [{"kind": "submit", "expect_page": opened["page"]["name"],
-                                  "activate": controls[0]["control_id"]}]}, "confirm": True})
+        result = self.client.call_tool("hub_set_rule", {"operation": "form", "ruleId": int(app_id),
+            "args": {"steps": [{"kind": "submit", "expectPage": opened["page"]["name"],
+                                  "activate": controls[0]["controlId"]}]}, "confirm": True})
         assert result.get("success") is True, result
         return result
 
@@ -9597,7 +10124,7 @@ def updated() {}
         self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
         label = (f"{PREFIX}{suffix}_{_run_artifact_suffix()}_"
                  f"{self._native_rule_fixture_seq}{name_suffix}")
-        args = {"operation": "create", "args": {"parent_id": self._native_rule_parent_id(),
+        args = {"operation": "create", "args": {"parentId": self._native_rule_parent_id(),
                 "name": label, "changes": changes or []}, "confirm": True}
         if best_practice_key is not None:
             args["bestPracticeKey"] = best_practice_key
@@ -9606,7 +10133,7 @@ def updated() {}
             created = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule", "args": args,
             })
-            app_id = created.get("rule_id")
+            app_id = created.get("ruleId")
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
                 raise
@@ -9646,7 +10173,7 @@ def updated() {}
         # on the fresh-create path (created stays None on the 504 adopt-by-label path, which has no envelope).
         if created is not None:
             assert created.get("success") is True and not created.get("partial"), created
-            assert str(created.get("rule_id")) == str(app_id), created
+            assert str(created.get("ruleId")) == str(app_id), created
         self.created_native_app_ids.append(str(app_id))
 
         if return_result:
@@ -9725,7 +10252,7 @@ def updated() {}
     def _set_rule(self, app_id: Any, changes: list[dict], strict: bool = False) -> Any:
         """Apply native document changes once; a lost write response requires verification."""
         result = self.client.call_tool("hub_set_rule", {
-            "operation": "update", "rule_id": int(app_id),
+            "operation": "update", "ruleId": int(app_id),
             "args": {"changes": changes}, "confirm": True})
         assert result.get("success") is True and not result.get("partial"), result
         self._last_write_health = None
@@ -9757,25 +10284,13 @@ def updated() {}
             return True, payload
 
 
-    def _assert_rule_renders(self, app_id: Any) -> None:
-        """Lenient health check for relay-504 soft paths: a dropped response may have committed
-        a block OPENER (IF/Repeat), leaving the rule structurally unbalanced -- which the health
-        tool itself documents as EXPECTED mid-build. Broken markers, page errors, and flag poison
-        still fail; structural imbalance alone does not (the caller's reset/closer handles it)."""
-        h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
-        assert not h.get("configPageError") and not h.get("brokenMarkers") and not h.get("multipleFlagPoison"), \
-            f"rule is genuinely broken after the dropped response (not just mid-build imbalance): {h}"
-        if h.get("ok") is False:
-            print(f"    rule {app_id} renders with structural imbalance after the dropped response "
-                  "(expected mid-build state; a reset/closer follows)")
-
     def _cache_write_health(self, app_id: Any, result: Any) -> None:
         """Stash the health object a hub_set_rule write already returned (the SAME _rmCheckRuleHealth a
-        standalone hub_get_rule_health re-derives), keyed by app, so a following _assert_rule_healthy
+        standalone hub_get_rule re-derives), keyed by app, so a following _assert_rule_healthy
         skips the extra round-trip. Cleared on a relay-dropped/soft envelope (no health) -> live fetch.
         Also cleared when the returned probe carries no verdict -- skipped:true (shed under the time
-        budget), unreadable:true (probe fetch failed), or a non-empty checkErrors (only ONE source
-        read; the verdict is half-checked): caching those would let _assert_rule_healthy pass a
+        budget), unreadable:true (probe fetch failed), or a non-empty checkErrors (a read failed;
+        the verdict is half-checked): caching those would let _assert_rule_healthy pass a
         genuinely broken rule without ever probing live."""
         health = result.get("health") if isinstance(result, dict) else None
         if (isinstance(health, dict)
@@ -9794,8 +10309,13 @@ def updated() {}
             assert cached[1].get("ok") is not False, \
                 f"rule health (from the write response) reports broken: {cached[1]}"
             return
-        h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
-        assert h.get("ok") is not False, f"hub_get_rule_health reports the rule broken: {h}"
+        # sections=[] reads the health alone: a long rule's whole document can exceed the response cap.
+        result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule", "args": {"ruleId": int(app_id), "sections": []}})
+        assert result.get("success") is not False and isinstance(result.get("health"), dict), result
+        h = result["health"]
+        # A failed read leaves ok false without being evidence of breakage; name it as such.
+        assert not h.get("checkErrors"), f"hub_get_rule could not finish its reads: {h}"
+        assert h.get("ok") is not False, f"hub_get_rule reports the rule broken: {h}"
 
 
     def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine", *, inline: bool = False) -> None:
@@ -9854,6 +10374,17 @@ def updated() {}
             # bind TARGET -- the assertions are about the controller's form, never the device's state.
             device_id = self._ensure_perm_fixture("button")
 
+            # A create without its button device is refused before anything is installed: no Button Controllers
+            # parent appears where there was none, and no controller is left.
+            apps_before = {str(r.get("id")) for r in self._installed_app_rows()}
+            try:
+                bare = self._native_app("create", {"app_type": "button_controller"})
+            except McpToolError as exc:
+                assert "requires fields.buttonDev" in exc.content_text and "Nothing was created" in exc.content_text, exc.content_text
+            else:
+                raise AssertionError(f"a button_controller create without buttonDev was not refused: {bare}")
+            assert {str(r.get("id")) for r in self._installed_app_rows()} == apps_before, "a refused create installed an app"
+
             # An unbound controller comes from the Button Controllers page's own create control: a
             # create through hub_set_native_app presses the first page's Done, which needs the device.
             parent = next((r for r in self._installed_app_rows() if r.get("type") == "Button Controllers"), None)
@@ -9865,7 +10396,7 @@ def updated() {}
                 self._delete_native(first["app_id"], gateway="hub_manage_native_rules_and_apps")
                 parent = next(r for r in self._installed_app_rows() if r.get("type") == "Button Controllers")
             page = self._native_app_form(parent["id"], {"kind": "open"})
-            made = self._native_app_form(parent["id"], self._rm_step(page, control=self._rm_control(
+            made = self._native_app_form(parent["id"], self._native_app_step(page, control=self._rm_control(
                 page, kind="create_child", value="Button Controller-5.1")))
             controller_id = made.get("created_app_id")
             assert controller_id, f"the Button Controllers page did not create a controller: {made}"
@@ -9873,7 +10404,7 @@ def updated() {}
 
             form = self._native_app_form(controller_id, {"kind": "open"})
             picker = self._native_app_field(form, "buttonDev")
-            form = self._native_app_form(controller_id, self._rm_step(
+            form = self._native_app_form(controller_id, self._native_app_step(
                 form, fields={"buttonDev": [str(device_id)] if picker["multiple"] else str(device_id)}))
             bound = self._native_app_field(form, "buttonDev").get("value")
             assert str(device_id) in ([str(v) for v in bound] if isinstance(bound, list) else [str(bound)]), \
@@ -9891,7 +10422,7 @@ def updated() {}
         changes, messages = lane_mrtr_changes("MRTR regular E2E proof", str(self.get_test_temperature_ids()[0]))
         app_id = self._create_native_rule("MrtrContinuation")
         try:
-            args = {"operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}
+            args = {"operation": "update", "ruleId": int(app_id), "args": {"changes": changes}, "confirm": True}
             gateway = "hub_manage_rule_machine"
             result = self.client.call_tool(gateway, {"tool": "hub_set_rule", "args": args})
             request_state = self.client._last_request_state
@@ -9937,19 +10468,25 @@ def updated() {}
             assert replay_value == result, "Terminal replay changed the public mutation result"
             info = self.client.call_tool("hub_get_info", {})
             recent = [row for row in info.get("recentWrites", []) if row.get("tool") == "hub_set_rule"
-                      and str(row.get("rule_id")) == str(app_id)]
+                      and str(row.get("ruleId")) == str(app_id)]
             assert recent and recent[0].get("status") == "finished" and recent[0].get("success") is True, recent
             config = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeSettings": True})
 
             async def fetch_section(section: str, cursor: str, limit: int) -> dict:
-                page = self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id),
+                page = self.client.call_tool("hub_set_rule", {"operation": "read", "ruleId": int(app_id),
                     "args": {"sections": [section], "cursor": cursor, "limit": limit}})
-                assert str(page.get("rule_id")) == str(app_id), page
+                assert str(page.get("ruleId")) == str(app_id), page
                 return page
 
             document = asyncio.run(read_native_document_sections(fetch_section))
             assert_exact_native_conditions(config, document, changes)
             assert_exact_native_actions(config, document, changes, messages)
+            # Unpaged, a long rule's document can pass the response cap; the guard's hint then names the health-only read.
+            whole = self.client.call_tool("hub_get_rule", {"ruleId": int(app_id)})
+            if whole.get("response_too_large"):
+                assert "sections:[]" in str(whole.get("suggestion")), whole
+            else:
+                assert isinstance(whole.get("health"), dict) and len(whole.get("actions") or []) == len(document["actions"]), whole
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
@@ -10121,7 +10658,7 @@ def updated() {}
                         "appId": app_id, "paused": paused, "confirm": True}})
                 assert repeated.get("success") is True and repeated.get("rulePaused") is paused, repeated
                 health = self.client.call_tool("hub_read_rules", {
-                    "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+                    "tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})["health"]
                 assert health.get("paused") is paused and health.get("label") == expected_name, \
                     f"health disagrees with the Visual Rule's own state/name: {health}"
 
@@ -10223,18 +10760,54 @@ def updated() {}
                 assert still_classic.get("thenNodes"), \
                     f"the refused classic edit must have left the actions in place: {still_classic}"
 
-            # HEALTH on a Visual Rule (issue #254): hub_get_rule_health must NOT reject a VRB
+            # HEALTH on a Visual Rule (issue #254): hub_get_rule must NOT reject a VRB
             # rule -- it reports the engine-native verdict. ruleFormat identifies which engine
             # answered (vrb-graph reports broken from validationErrors; vrb-classic has none).
             vh = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+                "tool": "hub_get_rule", "args": {"ruleId": int(app_id)}})["health"]
             assert vh.get("ruleFormat") in ("vrb-graph", "vrb-classic"), \
-                f"hub_get_rule_health did not recognize VRB rule {app_id} (ruleFormat={vh.get('ruleFormat')!r}): {vh}"
+                f"hub_get_rule did not recognize VRB rule {app_id} (ruleFormat={vh.get('ruleFormat')!r}): {vh}"
             if vh.get("ruleFormat") == "vrb-graph":
                 # Freshly created + healthy, so the validationErrors-derived boolean must be False
                 # (isinstance(bool) accepted either verdict and wouldn't catch an always-true regression).
                 assert vh.get("broken") is False, \
                     f"a freshly-created healthy graph VRB rule should report broken:false: {vh}"
+
+            # hub_call_rule on a Visual Rule. It has no stop, so stop and start are refused before anything
+            # runs; pause and resume go through the builder's pause endpoint after reading the paused state,
+            # so a rule already there is left alone.
+            for action in ("stop", "start"):
+                try:
+                    no_stop = self.client.call_tool("hub_call_rule", {"ruleId": int(app_id), "action": action})
+                except McpToolError as exc:
+                    no_stop = _tool_error_payload(exc)
+                assert "Visual Rules have no stop or start" in str(no_stop.get("error")) \
+                    and "Nothing was dispatched" in str(no_stop.get("error")), (action, no_stop)
+            assert self._get_visual_rule(app_id).get("rulePaused") is False
+            for action, paused in (("resume", False), ("pause", True), ("pause", True), ("resume", False)):
+                before = self._get_visual_rule(app_id).get("rulePaused")
+                toggled = self.client.call_tool("hub_call_rule", {"ruleId": int(app_id), "action": action})
+                expected = "noop" if before is paused else f"ruleBuilderPause -> {str(paused).lower()}"
+                assert toggled.get("success") is True and toggled.get("rmAction") == expected, (action, toggled)
+                assert self._get_visual_rule(app_id).get("rulePaused") is paused, f"hub_call_rule {action} did not land"
+            # A Visual Rule Builder 2.0 rule's actions run through the builder's run endpoint. Its action turns the
+            # switch off, so the switch is turned on first: a run that did nothing would leave it on.
+            if fmt == "graph":
+                self.client.call_tool("hub_call_device_command", {"deviceId": str(switch_id), "command": "on"})
+                lit = self._wait_attribute(switch_id, "switch", "on", timeoutMs=4000)
+                assert lit.get("converged") is True, f"the test switch did not turn on before the run: {lit}"
+                ran = self.client.call_tool_result("hub_call_rule", {"ruleId": int(app_id), "action": "actions"})
+                assert ran.get("success") is True and ran.get("rmAction") == "ruleBuilderRun", ran
+                dark = self._wait_attribute(switch_id, "switch", "off", timeoutMs=8000)
+                assert dark.get("converged") is True, f"the Visual Rule's actions did not turn the switch off: {dark}"
+            else:
+                # The classic builder has no run button, so the run is refused before anything is sent.
+                try:
+                    ran = self.client.call_tool("hub_call_rule", {"ruleId": int(app_id), "action": "actions"})
+                except McpToolError as exc:
+                    ran = _tool_error_payload(exc)
+                assert "Visual Rule Builder 1.0 rules have no run button" in str(ran.get("error")) \
+                    and "Nothing was dispatched" in str(ran.get("error")), ran
 
             # LIST: no-args mode must include the new rule.
             listed = self._get_visual_rule()
@@ -10591,8 +11164,8 @@ def updated() {}
             # The RM rule must have survived the refused delete: health still reads
             # it (a deleted rule fetch fails -> ok:false, label:null).
             health = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": rm_id},
-            })
+                "tool": "hub_get_rule", "args": {"ruleId": int(rm_id)},
+            })["health"]
             assert f"{PREFIX}VrbTypeGate" in str(health.get("label") or ""), \
                 f"RM rule {rm_id} did not survive the type-gated delete: {health}"
             assert health.get("ok") is not False, \
@@ -11965,6 +12538,17 @@ def updated() {}
                 "redactAccessTokens on: endpoint URLs missing or not marked as redacted"
             assert not any(t in hidden for t in tokens), \
                 "redactAccessTokens on: the access token is still in the page read"
+            # The app's state holds the same token as an accessToken row, which includeStatus returns as
+            # {name, value}; the central pass keys on map keys, so the row is masked on its own.
+            status = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": str(self.client.app_id), "summary": True, "includeStatus": True}})
+            assert not any(t in json.dumps(status) for t in tokens), \
+                "redactAccessTokens on: the access token is still in the includeStatus read"
+            rows = [r for r in (status.get("appState") or []) if isinstance(r, dict) and r.get("name") == "accessToken"]
+            assert len(rows) == 1, "includeStatus read lists no accessToken state row for the server app"
+            if not status.get("statusTruncated"):
+                assert rows[0].get("value") == marker, "redactAccessTokens on: the accessToken state row is not marked as redacted"
         finally:
             unwinding = sys.exc_info()[0] is not None
             try:
@@ -15079,6 +15663,8 @@ def updated() {}
         self._expect_tool_refusal("hub_delete_bundle", {"bundleId": "4", "id": "4", "confirm": True},
                                   "Unknown hub_delete_bundle argument: id")
         self._expect_tool_refusal("hub_delete_bundle", {"id": "4", "confirm": True},
+                                  "Unknown hub_delete_bundle argument: id")
+        self._expect_tool_refusal("hub_delete_bundle", {"confirm": True},
                                   "Missing required parameter for hub_delete_bundle: bundleId")
         self._expect_tool_refusal("hub_delete_bundle", {"bundleId": "4", "deleteCode": "true", "confirm": True},
                                   "deleteCode must be true or false")
@@ -15433,7 +16019,7 @@ def updated() {}
                     "tool": leaf,
                     "args": ({"operation": "update", "app_id": int(app_id), "args": {"fields": {"mcpLogLevel": original_level}},
                               "confirm": True}
-                             if leaf == "hub_set_native_app" else {"operation": "form", "rule_id": int(app_id),
+                             if leaf == "hub_set_native_app" else {"operation": "form", "ruleId": int(app_id),
                                  "args": {"steps": [{"kind": "open"}]}, "confirm": True})})
             except (McpError, McpToolError) as exc:
                 message = str(exc)
@@ -15443,7 +16029,7 @@ def updated() {}
                 assert "protected" in message.lower() and app_id in message, \
                     f"expected protected-app refusal, got: {message}"
             else:
-                assert "rule_id must identify native Rule-5.1, Button Rule-5.1 or Rule Machine" in message, \
+                assert f"App {app_id} is a" in message and "only Rule Machine 5.1 rules and Button Rules can be edited here" in message, \
                     f"RM form must refuse the non-RM MCP app before accessing its editor: {message}"
             assert read_settings() == before, "refused generic edit changed persisted settings"
 
@@ -15518,6 +16104,25 @@ def updated() {}
                 assert "operation" in reference and "create" in reference, f"the read-only guide lacks hub_set_native_app's reference: {reference[:300]}"
             finally:
                 manage({"action": "revoke", "clientId": readonly["clientId"]})
+            # A client token always reads credentials and access tokens redacted, so includeStatus says so
+            # instead of pointing it at the MCP app's settings.
+            other = next((r for r in self._installed_app_rows() if str(r.get("id")) != str(self.client.app_id)), None)
+            if other is None:
+                print("    per-client includeStatus: no other installed app to read; statusRedactionNote leg skipped")
+            else:
+                reader = manage({"action": "create", "label": label + "_st", "access": {"tools": ["hub_get_app_config"]}})
+                assert reader.get("success") is True, reader.get("error")
+                _ephemeral_literals.add(reader["token"])
+                try:
+                    st = HubitatMcpClient(self.client.hub_url, self.client.app_id, reader["token"])
+                    st.session.trust_env = False
+                    cfg = st.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+                                                              "args": {"appId": int(other["id"]), "includeStatus": True}})
+                    note = cfg.get("statusRedactionNote") or ""
+                    assert "always reads credential-named appState values, URL secrets inside appState strings and access tokens as redacted" in note, \
+                        {k: cfg.get(k) for k in ("statusRedactionNote", "statusNote")}
+                finally:
+                    manage({"action": "revoke", "clientId": reader["clientId"]})
             try:
                 client.call_tool("hub_get_info", {})
                 raise AssertionError("a client token without hub_get_info was allowed to call it")
@@ -17379,7 +17984,7 @@ def updated() {}
         try:
             key = self._section_key_after_refusals(
                 "hub_manage_rule_machine", "hub_set_rule", "set_rule_reference",
-                {"operation": "create", "args": {"parent_id": self._native_rule_parent_id(), "name": f"{PREFIX}BPS_SetRule_Refused", "changes": []}, "confirm": True})
+                {"operation": "create", "args": {"parentId": self._native_rule_parent_id(), "name": f"{PREFIX}BPS_SetRule_Refused", "changes": []}, "confirm": True})
             app_id = self._create_native_rule("BPS_SetRule", best_practice_key=key)
         finally:
             self._bps_fixture_cleanup(app_id)
@@ -17482,7 +18087,7 @@ def updated() {}
         parent_len = len(parent.get("content", ""))
         sub_content = sub.get("content", "")
         # A focused rule-diagnostics slice excludes the separate native lifecycle reference.
-        assert "hub_get_rule_health" in sub_content, f"rule diagnostics reference missing: {sub_content[:200]!r}"
+        assert "### hub_get_rule" in sub_content, f"rule diagnostics reference missing: {sub_content[:200]!r}"
         assert "### Safety model for native CRUD" not in sub_content, "sub-section leaked the native CRUD reference"
         assert len(sub_content) < parent_len / 2, (
             f"sub-section is {len(sub_content)} chars against a "
@@ -18254,7 +18859,7 @@ def updated() {}
         try:
             # The legacy era gets the same isError envelope over the success:false document failure.
             try:
-                result = legacy.call_tool("hub_set_rule", {"operation": "update", "rule_id": int(app_id),
+                result = legacy.call_tool("hub_set_rule", {"operation": "update", "ruleId": int(app_id),
                     "args": {"changes": [native_log(kept), native_change("action", type="messageActs", subtype="getLogMsg", fields=[
                         native_field("logmsg.#", "textarea", "partial marker"),
                         native_field("noSuchField.#", "number", 1)]),

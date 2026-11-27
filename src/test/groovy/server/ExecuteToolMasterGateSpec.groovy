@@ -95,7 +95,7 @@ class ExecuteToolMasterGateSpec extends ToolSpecBase {
 
         when:
         script.executeTool("hub_set_rule",
-            [operation: 'update', rule_id: 42, confirm: true, args: [guide: true, changes: [[part: "variable", value: [operation: "set", name: "Counter", value: 1]]]]])
+            [operation: 'update', ruleId: 42, confirm: true, args: [guide: true, changes: [[part: "variable", value: [operation: "set", name: "Counter", value: 1]]]]])
 
         then:
         def e = thrown(IllegalArgumentException)

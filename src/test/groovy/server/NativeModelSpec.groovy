@@ -32,6 +32,11 @@ class NativeModelSpec extends ToolSpecBase {
         nativeRule.checkTokens = { Object id -> '' }
         nativeRule.thisActionLabel = { Object actionId -> 'Native action ' + actionId }
         nativeRule.actionLabelText = { -> '' }
+        // Rule Machine's own label methods, which mark rows and build state.inUseConds, as the hub reads them.
+        nativeRule.triggerLabel = { -> '' }
+        nativeRule.conditionLabel = { -> '' }
+        nativeRule.actionLabel = { -> '' }
+        nativeRule.getState = { -> nativeState }
         nativeRule.broken = { -> nativeState.broken = false; false }
         nativeRule.selectActions = { Map params -> nativeState.broken = false; nativeForm([]) }
         nativeRule.getLocalVar = { String name -> locals.get(name) }
@@ -566,6 +571,162 @@ class NativeModelSpec extends ToolSpecBase {
         true    | false
     }
 
+    // An action left gated on a marked condition turns broken() true (C-7), so any marked or empty label is rolled back.
+    def 'an action whose label comes back marked or empty is refused and rolled back, even when it was marked before (#label)'() {
+        given: "condition 2's device was deleted: Rule Machine marks it, lists it in use, and an action naming it draws the marker"
+        if (editing) {
+            nativeState.actions = ['1': prior]
+            nativeState.actionList = ['1']
+            nativeState.eval = ['0': ['1'], '3': ['NOT', '2'], '4': ['1']]
+        }
+        nativeState.inUseConds = ['2']
+        settings.put('rDev_2', [type: 'capability.switch', value: null, deviceList: null])
+        nativeRule.conditionLabel = { -> "<span class='text-hubitat-danger'>**Broken Condition**</span>" }
+        nativeRule.thisActionLabel = { Object actionId -> brokenAfter == 'empty' ? '' : (brokenAfter ? "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'" : "Log: 'edited'") }
+        nativeRule.removeSetting = { String name -> settings.remove(name) }
+        List buttons = []
+        nativeRule.doActPage = { ->
+            if (editing) nativeState.hasCondition = true
+            List inputs = [
+                [name: 'actType.1', type: 'enum', options: ['condActs', 'messageActs'], submitOnChange: true],
+                [name: 'actSubType.1', type: 'enum', options: ['getCondAct', 'getLogMsg'], submitOnChange: true]
+            ]
+            if (settings.'actSubType.1'?.value == 'getCondAct') {
+                inputs << [name: 'useCond.1', type: 'bool', submitOnChange: true]
+                if (settings.'useCond.1'?.value == true) inputs << [name: 'useCondNdx.1', type: 'enum', options: ['1', '2'], submitOnChange: true]
+            } else if (nativeState.hasCondition) inputs << [name: 'logmsg.1', type: 'text']
+            nativeForm(inputs)
+        }
+        nativeRule.appButtonHandler = { String name ->
+            buttons << name
+            if (name == 'hasAll') nativeState.hasCondition = true
+            if (name == 'actionDone') {
+                nativeState.actions = ['1': (prior ?: [:]) + [method: 'getLogMsg', cond: editing ? nativeState.doActN.tokenize('.')[1] : settings.'useCondNdx.1'.value]]
+                nativeState.actionList = ['1']
+            }
+        }
+        when:
+        def row = [type: 'messageActs', subtype: 'getLogMsg', fields: [[name: 'logmsg.#', type: 'text', value: 'edited']]]
+        if (condition != null) row.condition = condition
+        if (editing) row.id = '1'
+        def result = script._nmUpsertAction(42L, row)
+        then:
+        result.success == allowed
+        allowed || result.error == 'Rule Machine marks this action broken or draws no label for it, so the change was rolled back. If it is gated on a condition Rule Machine marks, move it to another condition, or repair or delete that condition first'
+        allowed || buttons.contains('actionCancel')
+        allowed || result.rolledBack == true
+        where:
+        label                                                           | editing | prior                             | condition | brokenAfter | allowed
+        'an edit kept on the marked condition'                          | true    | [method: 'getLogMsg', cond: '2']  | '2'       | true        | false
+        'an edit moved to a healthy condition with a clean label'       | true    | [method: 'getLogMsg', cond: '2']  | '1'       | false       | true
+        'an edit moved to a healthy condition, its label still broken'  | true    | [method: 'getLogMsg', cond: '2']  | '1'       | true        | false
+        'an edit of an action whose expression names it'                | true    | [method: 'getLogMsg', rule: '3']  | null      | true        | false
+        'a new action gated on the marked one'                          | false   | null                              | '2'       | true        | false
+        'an edit of an action that named no marked condition'           | true    | [method: 'getLogMsg', cond: '1']  | '2'       | true        | false
+        'an edit of an action whose expression names no marked one'     | true    | [method: 'getLogMsg', rule: '4']  | null      | true        | false
+        'an edit kept on the marked condition whose label draws nothing' | true   | [method: 'getLogMsg', cond: '2']  | '2'       | 'empty'     | false
+    }
+
+    def 'a marked action label says the change was rolled back only when the rollback verified (rolledBack=#verified)'() {
+        given: "action 1 stays gated on condition 2, whose device was deleted"
+        nativeState.actions = ['1': [method: 'getLogMsg', cond: '2']]
+        nativeState.actionList = ['1']
+        nativeState.inUseConds = ['2']
+        settings.put('rDev_2', [type: 'capability.switch', value: null, deviceList: null])
+        nativeRule.thisActionLabel = { Object actionId -> "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'" }
+        nativeRule.doActPage = { ->
+            nativeState.hasCondition = true
+            nativeForm([[name: 'actType.1', type: 'enum', options: ['messageActs'], submitOnChange: true],
+                        [name: 'actSubType.1', type: 'enum', options: ['getLogMsg'], submitOnChange: true],
+                        [name: 'logmsg.1', type: 'text']])
+        }
+        nativeRule.appButtonHandler = { String name ->
+            if (name == 'actionDone') nativeState.actions = ['1': [method: 'getLogMsg', cond: nativeState.doActN.tokenize('.')[1]]]
+        }
+        // The rollback removes the settings the edit added; a removal that runs but leaves the setting in place leaves
+        // the rollback unverified.
+        nativeRule.removeSetting = { String name -> if (verified) settings.remove(name) }
+        when:
+        def result = script._nmUpsertAction(42L, [id: '1', type: 'messageActs', subtype: 'getLogMsg', condition: '2', fields: [[name: 'logmsg.#', type: 'text', value: 'edited']]])
+        then:
+        result.success == false
+        result.rolledBack == verified
+        result.partial == !verified
+        result.error == (verified ?
+            'Rule Machine marks this action broken or draws no label for it, so the change was rolled back. If it is gated on a condition Rule Machine marks, move it to another condition, or repair or delete that condition first' :
+            'Rule Machine marks this action broken or draws no label for it, and the rollback did not verify: read the rule and repair it, or restore the pre-edit backup if one was returned')
+        where:
+        verified << [true, false]
+    }
+
+    // The row step alone is covered above; this runs it through the whole update, as the review asked: preflight, the
+    // health check's marked rows, the row step's rollback and the result the caller sees.
+    def 'a whole update that edits an action kept on the marked condition is rolled back: the rule is unchanged and not partial'() {
+        given: "condition 2's device was deleted; action 1 is gated on it, and its label stays marked after the edit"
+        settingsMap.backupBeforeRuleEdits = false
+        stateMap.lastBackupTimestamp = 1234567890000L
+        nativeState.actions = ['1': [method: 'getLogMsg', cond: '2']]
+        nativeState.actionList = ['1']
+        nativeState.inUseConds = ['2']
+        settings.put('actType.1', [type: 'enum', value: 'messageActs'])
+        settings.put('actSubType.1', [type: 'enum', value: 'getLogMsg'])
+        settings.put('logmsg.1', [type: 'text', value: 'gated'])
+        settings.put('rDev_2', [type: 'capability.switch', value: null, deviceList: null])
+        nativeRule.removeSetting = { String name -> settings.remove(name) }
+        nativeRule.thisActionLabel = { Object actionId -> "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'" }
+        nativeRule.doActPage = { ->
+            nativeState.hasCondition = true
+            nativeForm([[name: 'actType.1', type: 'enum', options: ['messageActs'], submitOnChange: true],
+                        [name: 'actSubType.1', type: 'enum', options: ['getLogMsg'], submitOnChange: true],
+                        [name: 'logmsg.1', type: 'text']])
+        }
+        List buttons = []
+        nativeRule.appButtonHandler = { String name ->
+            buttons << name
+            if (name == 'actionDone') nativeState.actions = ['1': [method: 'getLogMsg', cond: nativeState.doActN.tokenize('.')[1]]]
+        }
+        // The health check's own path is covered by ToolRuleHealthSpec: here it reports the rule healthy with condition 2 marked.
+        script.metaClass._rmCheckRuleHealth = { Integer id, Map marked ->
+            marked.putAll([rows: [[kind: 'condition', id: '2', setting: 'rDev_2']], marks: [trigger: 0, condition: 1, action: 1], inUse: ['2'], emptied: ['2']])
+            [broken: false, disabledActions: [], brokenRows: marked.rows, checkErrors: []]
+        }
+        List posts = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean retry = false -> posts << path; [status: 200] }
+        Map stateBefore = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(nativeState.subMap(['actions', 'actionList', 'eval', 'capabsfalse'])))
+        Map settingsBefore = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(settings))
+
+        when:
+        def result = script.toolUpdateRuleDocument([ruleId: 42, confirm: true, changes: [[part: 'action', value: [id: '1', type: 'messageActs', subtype: 'getLogMsg', condition: '2',
+            fields: [[name: 'logmsg.#', type: 'text', value: 'edited']]]]]])
+
+        then: 'refused at the action, rolled back, and never finished with Done'
+        result.success == false
+        result.partial == false
+        result.error.startsWith('Rule Machine marks this action broken or draws no label for it, so the change was rolled back.')
+        result.results*.result*.rolledBack == [true]
+        result.note.startsWith('No change was written.')
+        result.brokenRowsBefore == [[kind: 'condition', id: '2', setting: 'rDev_2']]
+        buttons.contains('actionCancel')
+        posts.isEmpty()
+
+        and: 'the rule is as it was'
+        nativeState.subMap(['actions', 'actionList', 'eval', 'capabsfalse']) == stateBefore
+        settings == settingsBefore
+
+        when: 'the same edit through hub_set_rule'
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', ruleId: 42, confirm: true, args: [changes: [[part: 'action', value: [id: '1', type: 'messageActs', subtype: 'getLogMsg', condition: '2',
+            fields: [[name: 'logmsg.#', type: 'text', value: 'edited']]]]]]])
+        def inner = mcpDriver.parseInner(response)
+
+        then: "rolledBack is the action's own outcome, in its results entry, not a top-level key"
+        response.result.isError == true
+        inner.partial == false
+        !inner.containsKey('rolledBack')
+        inner.results == [[part: 'action', result: inner.results[0].result]]
+        inner.results[0].result.success == false
+        inner.results[0].result.rolledBack == true
+    }
+
     def 'unknown simple action condition refuses before native editor or settings mutation'() {
         when:
         script._nmUpsertAction(42L, [type: 'messageActs', subtype: 'getLogMsg', condition: '999', fields: []])
@@ -788,8 +949,9 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.eval == ['0': ['1']]
     }
 
-    def 'a condition only an orphan eval entry names deletes while a live IF expression still holds it'() {
-        given:
+    def 'a condition deletes unless Rule Machine lists it in state.inUseConds: an orphan eval entry does not hold it, a live IF does'() {
+        given: 'Rule Machine lists a condition a live IF uses (as numbers here), not one only an orphan eval entry names'
+        nativeState.inUseConds = liveIf ? [2] : []
         nativeState.eval = ['0': ['1'], '3': ['2']]
         nativeState.actionList = ['5']
         nativeState.actions = ['5': [method: liveIf ? 'getIfThen' : 'getLogMsg', rule: liveIf ? 3 : null]]
@@ -948,6 +1110,32 @@ class NativeModelSpec extends ToolSpecBase {
         damage << ['none', 'addition', 'value', 'type', 'row', 'reference']
     }
 
+    // Live (C-7): Rule Machine's own condition delete removes the condition from predCapabs, and nothing else changes.
+    def 'a condition delete verifies when Rule Machine drops only that condition from predCapabs (#label)'() {
+        given:
+        nativeState.predCapabs = [1, 2]
+        settings.put('rCapab_2', [type: 'enum', value: 'Switch'])
+        nativeRule.selectConditions = { Map params ->
+            nativeState.capabsfalse.remove('2')
+            settings.remove('rCapab_2')
+            nativeState.remove('deleteCon')
+            nativeState.predCapabs = after
+        }
+        when:
+        def result = script._nmDeleteRow(42L, 'condition', '2')
+        then:
+        result.deleted
+        result.referencesPreserved == verified
+        result.success == verified
+        result.partial == !verified
+        where:
+        label                                  | after  | verified
+        'only the deleted condition dropped'   | [1]    | true
+        'left as it was'                       | [1, 2] | true
+        'another condition dropped too'        | []     | false
+        'another condition dropped instead'    | [2]    | false
+    }
+
     def 'condition deletion cannot succeed over removed settings while native condition remains'() {
         given:
         settings.put('rCapab_2', [type: 'enum', value: 'Switch'])
@@ -960,8 +1148,9 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.capabsfalse.containsKey('2')
     }
 
-    def 'referenced conditions and missing rows refuse before any native write'() {
+    def 'a condition Rule Machine lists as in use, and missing rows, refuse before any native write'() {
         given:
+        nativeState.inUseConds = ['1']
         nativeRule.deleteCapab = { Object deletedId, Object trigger, Object action -> writes << 'unexpected' }
         when:
         script._nmDeleteRow(42L, part, id)
@@ -974,6 +1163,66 @@ class NativeModelSpec extends ToolSpecBase {
         'condition' | '99'
         'action'    | '99'
         'trigger'   | '0'
+    }
+
+    def 'a condition only the Required Expression names is refused for deletion, even when the labels rebuild inUseConds without it (#label)'() {
+        given: "conditions 1 and 2, the Required Expression on and naming 1 (live: inUseConds ['1'], yet the delete was let through)"
+        nativeState.eval = ['0': ['1']]
+        nativeState.inUseConds = listed ? ['1'] : []
+        settings.put('useST', [type: 'bool', value: true])
+        settings.put('rCapab_1', [type: 'enum', value: 'Switch'])
+        // The labels rebuild the list in memory without the Required Expression's conditions.
+        nativeRule.conditionLabel = { -> nativeState.inUseConds = []; '' }
+        nativeRule.selectConditions = { Map params -> nativeState.capabsfalse.remove('1'); settings.remove('rCapab_1'); nativeState.remove('deleteCon') }
+        when:
+        script._nmDeleteRow(42L, 'condition', '1')
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'Referenced native conditions must be detached before deletion'
+        writes.empty
+        nativeState.capabsfalse.containsKey('1')
+        where:
+        label                                    | listed
+        'Rule Machine lists it'                  | true
+        'Rule Machine leaves it out'             | false
+    }
+
+    def 'a condition the labels drop from a stale inUseConds deletes: the list is read after they rebuild it'() {
+        given: "an earlier change in the batch moved the only action off condition 1; the stored list still names it until the labels run"
+        nativeState.inUseConds = ['1', '2']
+        nativeState.actions = ['1': [method: 'getLogMsg', cond: '2']]
+        nativeState.actionList = ['1']
+        settings.put('rCapab_1', [type: 'enum', value: 'Switch'])
+        nativeRule.conditionLabel = { -> nativeState.inUseConds = ['2']; '' }
+        nativeRule.selectConditions = { Map params -> nativeState.capabsfalse.remove('1'); settings.remove('rCapab_1'); nativeState.remove('deleteCon') }
+        when:
+        def result = script._nmDeleteRow(42L, 'condition', '1')
+        then:
+        result.success
+        !nativeState.capabsfalse.containsKey('1')
+    }
+
+    def 'a condition only an unticked Conditional Trigger names deletes, while a ticked one holds it (ticked=#ticked)'() {
+        given: "the hub keeps condTrig's value after its box is unticked, and inUseConds never lists a condition only a Conditional Trigger uses"
+        nativeState.capabstrue = ['3': 'Switch C on']
+        nativeState.inUseConds = ['1']
+        settings.put('isCondTrig.3', [type: 'bool', value: ticked])
+        settings.put('condTrig.3', [type: 'enum', value: '2'])
+        settings.put('rCapab_2', [type: 'enum', value: 'Switch'])
+        nativeRule.selectConditions = { Map params ->
+            nativeState.capabsfalse.remove('2')
+            settings.remove('rCapab_2')
+            nativeState.remove('deleteCon')
+        }
+        when:
+        def result = null
+        Exception failure = null
+        try { result = script._nmDeleteRow(42L, 'condition', '2') } catch (IllegalArgumentException e) { failure = e }
+        then:
+        ticked ? failure?.message == 'Referenced trigger conditions must be detached before deletion' && writes.empty : failure == null && result.success
+        nativeState.capabsfalse.containsKey('2') == ticked
+        where:
+        ticked << [false, true]
     }
 
     def 'action order requires exact permutation before state writes'() {

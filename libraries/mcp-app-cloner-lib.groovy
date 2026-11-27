@@ -1173,15 +1173,6 @@ private void _rmNativeRestoreFlags(Long id, Map savedState) {
     if ((live.paused == true) != (savedState.paused == true)) _nrHandle(id).appButtonHandler('pausRule')
 }
 
-// RM's fixAppLabel derives the label from origLabel plus HTML status spans ((Stopped), (Paused),
-// *BROKEN*, ...), sometimes well after the state changes; the user only ever sets origLabel. A
-// snapshot may hold those spans, HTML-stripped to plain text. Compare and restore the name only:
-// the lifecycle state the spans display is verified on its own. Only trailing status spans go, styled or classed;
-// a span the user put in the name stays.
-private String _rmLabelName(label) {
-    (label?.toString() ?: '').replaceAll(/(?:\s*<span\b[^>]*>\s*(?:\*BROKEN\*|\((?:Not Installed|Stopped|Paused|Required Expression false|Repeating)\))\s*<\/span>)+\s*$/, '')
-}
-
 // The live label is the restored name itself, or that name followed only by RM's status spans; the name is the
 // boundary, so a span the user put at the end of the name (even one reading "(Stopped)") is never taken for status.
 private boolean _rmLabelCarriesName(label, String name) {
@@ -1189,6 +1180,8 @@ private boolean _rmLabelCarriesName(label, String name) {
     live == name || (live.startsWith(name) && _rmLabelName(live.substring(name.length())).trim().isEmpty())
 }
 
+// A snapshot may hold RM's status spans (_rmLabelName), HTML-stripped to plain text. Compare and restore the name
+// only: the lifecycle state the spans display is verified on its own.
 private String _rmRestoredRuleName(List plan, Map identity) {
     def name = plan.find { it.name == 'origLabel' }?.value
     if (name != null) return name.toString()
@@ -1311,7 +1304,7 @@ private Map _rmLegacyNativeRecovery(Map snapshot) {
     def status = snapshot.statusJson
     def app = config instanceof Map ? config.app : null
     if (!(app instanceof Map) || !(app.appType instanceof Map) ||
-        !(app.appType.name in ['Rule-5.1', 'Button Rule-5.1'])) return null
+        !_rmIsEditableRuleType(app.appType.namespace, app.appType.name)) return null
     if (!(status instanceof Map) || !status.containsKey('appState') || !status.containsKey('appSettings') ||
         !(status.containsKey('eventSubscriptions') || status.containsKey('appSubscriptions'))) return null
     Long id = _ndId(snapshot.ruleId)
@@ -1545,7 +1538,9 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     } catch (Exception e) {
         mcpLog("error", "rm-native", "restore of rule ${ruleId} from ${fileName} failed during ${step}: ${e.message}")
         // Rule Machine rules take their form through hub_set_rule; every other app through hub_set_native_app.
-        String formCall = savedAppType in ['rule_machine', 'button_rule'] ? "hub_set_rule(operation:\"form\", rule_id:${ruleId}" : "hub_set_native_app(operation:\"form\", app_id:${ruleId}"
+        boolean ruleForm = savedAppType in ['rule_machine', 'button_rule']
+        String formCall = ruleForm ? "hub_set_rule(operation:\"form\", ruleId:${ruleId}" : "hub_set_native_app(operation:\"form\", app_id:${ruleId}"
+        String expectKey = ruleForm ? 'expectPage' : 'expect_page'
         return [
             success: false,
             type: "rm-rule",
@@ -1557,7 +1552,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             error: "Restore applied partially; failed during ${step}: ${e.message}",
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
-                : "The settings were replayed but the app's Done did not run, so its subscriptions may still reflect the pre-restore state: press Done in the app, or run ${formCall}, args:{steps:[{kind:\"open\"},{kind:\"submit\",expect_page:\"<returned page>\",activate:\"_action_update|Done|\"}]}, confirm:true).").toString()
+                : "The settings were replayed but the app's Done did not run, so its subscriptions may still reflect the pre-restore state: press Done in the app, or run ${formCall}, args:{steps:[{kind:\"open\"},{kind:\"submit\",${expectKey}:\"<returned page>\",activate:\"_action_update|Done|\"}]}, confirm:true).").toString()
         ]
     }
 

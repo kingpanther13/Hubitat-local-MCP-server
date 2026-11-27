@@ -1185,7 +1185,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posted.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[origLabel]") }
         result.error?.contains("failed during the closing Done")
         result.note?.contains("press Done")
-        result.note?.contains('hub_set_rule(operation:"form", rule_id:361, args:{steps:[{kind:"open"},{kind:"submit",expect_page:"<returned page>",activate:"_action_update|Done|"}]}, confirm:true)')
+        result.note?.contains('hub_set_rule(operation:"form", ruleId:361, args:{steps:[{kind:"open"},{kind:"submit",expectPage:"<returned page>",activate:"_action_update|Done|"}]}, confirm:true)')
         !posted.any { it.path == "/installedapp/btn" }
         !result.note?.contains("button=")
     }
@@ -1573,167 +1573,26 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         cIdx == 7
     }
 
-    def "_rmSendActionErrorNote steers a load-failed pause AND resume to the single pausRule toggle button"() {
-        // Pause and resume share ONE toggle page button, pausRule, whose title flips with the rule's run
-        // state (like stopRule) -- clicking pausRule on a paused rule resumes it. There is no resRule button,
-        // so BOTH the pause and resume notes must steer to pausRule and neither may mention resRule. A
-        // non-load failure keeps the plain note.
-        expect: "a load-failed resume steers to the pausRule toggle and never resRule"
-        def resumeNote = script._rmSendActionErrorNote("resumeRule", [100], "App 100 generates excessive hub load")
-        resumeNote.contains("pausRule")
-        resumeNote.contains("hub_set_rule(operation:'form', rule_id:100, args:{steps:[{kind:'open'}]}, confirm:true)")
-        resumeNote.contains("load limiter")
-        !resumeNote.contains("resRule")
-        !resumeNote.contains("reboot")
+    def "_rmSendActionErrorNote says a load-limiter refusal changed nothing and a reset then a retry clears it"() {
+        expect: "a limiter refusal is not blamed on the ids, and names the reset"
+        def limited = script._rmSendActionErrorNote([100], "App 100 generates excessive hub load")
+        limited.contains("load limiter refused the dispatch, so nothing was changed")
+        limited.contains("hub_delete_logs(mode='appRuntimeStats', confirm=true)")
+        !limited.contains("Verify the ruleId")
 
-        and: "a load-failed pause steers to the same pausRule toggle and never resRule"
-        def pauseNote = script._rmSendActionErrorNote("pauseRule", [100], "App 100 generates excessive hub load")
-        pauseNote.contains("pausRule")
-        !pauseNote.contains("resRule")
+        and: "the refusal ran nothing, so a LIST dispatch carries no partial-dispatch warning"
+        def multi = script._rmSendActionErrorNote([100, 101], "App 100 generates excessive hub load")
+        multi == limited
 
-        and: "a load-failed MULTI-id pause steers to a per-rule pausRule drive naming every id"
-        def multiNote = script._rmSendActionErrorNote("pauseRule", [100, 101], "App 100 generates excessive hub load")
-        multiNote.contains("pausRule")
-        multiNote.contains("per rule")
-        multiNote.contains("100, 101")
-        multiNote.contains("CHECK EACH RULE'S CURRENT STATE FIRST")
-        !multiNote.contains("resRule")
+        and: "a LIST dispatch that failed otherwise may have set part of the set"
+        def partial = script._rmSendActionErrorNote([100, 101], "timeout")
+        partial.contains("100, 101")
+        partial.contains("part of the set may already have been set")
 
-        and: "a non-pause/resume load failure names the limiter with no page button"
-        def genNote = script._rmSendActionErrorNote("runRuleAct", [100], "App 100 generates excessive hub load")
-        genNote.contains("load limiter")
-        !genNote.contains("pausRule")
-        !genNote.contains("sticky")
-
-        and: "an unrelated (non-load) failure keeps the plain note -- the marker gate is closed"
-        def plain = script._rmSendActionErrorNote("resumeRule", [100], "some other error")
-        !plain.contains("pausRule")
+        and: "any other failure points at the id and Rule Machine"
+        def plain = script._rmSendActionErrorNote([100], "some other error")
+        plain.contains("Verify the ruleId")
         !plain.contains("load limiter")
-    }
-
-    def "hub_get_rule_health surfaces ok=true with no broken markers on a clean rule"() {
-        given:
-        enableReadOnly()
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Healthy Rule", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then:
-        result.ok == true
-        result.label == "Healthy Rule"
-        result.brokenMarkers == [] || result.brokenMarkers?.isEmpty()
-        result.multipleFlagPoison == [] || result.multipleFlagPoison?.isEmpty()
-    }
-
-    def "hub_get_rule_health reads stopped from the config-page label decoration"() {
-        given: "the runtime decoration arrives as markup a user-typed name cannot contain"
-        enableReadOnly()
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, 'Porch Light <span style="color:green">(Stopped)</span>', [])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-
-        when:
-        def result = script.toolCheckRuleHealth([appId: 100])
-
-        then:
-        result.stopped == true
-
-        and: "the decoration is stripped so the label stays the rule's real name"
-        result.label == "Porch Light"
-    }
-
-    def "hub_get_rule_health reports stopped=false on an undecorated label"() {
-        given:
-        enableReadOnly()
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Porch Light", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-
-        when:
-        def result = script.toolCheckRuleHealth([appId: 100])
-
-        then:
-        result.stopped == false
-        result.label == "Porch Light"
-    }
-
-    def "a rule literally NAMED ending in (Stopped) is not reported as stopped"() {
-        given: "a plain unmarked suffix with no runtime stopped flag behind it"
-        enableReadOnly()
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Alert When Stopped (Stopped)", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-
-        when:
-        def result = script.toolCheckRuleHealth([appId: 100])
-
-        then: "the name is left alone -- stripping it would rename the rule in every report"
-        result.stopped == false
-        result.label == "Alert When Stopped (Stopped)"
-    }
-
-    def "a stopped rule can also have a literal (Stopped) name suffix"() {
-        given:
-        enableReadOnly()
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Porch Light (Stopped)", []) }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [],
-                               scheduledJobs: [], appState: [[name: "stopped", value: true]]])
-        }
-
-        when:
-        def result = script.toolCheckRuleHealth([appId: 100])
-
-        then:
-        result.stopped == true
-        result.label == "Porch Light (Stopped)"
-    }
-
-    def "hub_get_rule_health reports 0 live counts when statusJson has no subscriptions section"() {
-        given: "a schedule-only rule carries no eventSubscriptions list at all"
-        enableReadOnly()
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Timer Rule", []) }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], appState: [:]])
-        }
-
-        when:
-        def result = script.toolCheckRuleHealth([appId: 100])
-
-        then: "0, not null -- null is reserved for the fetch itself failing"
-        result.eventSubscriptionCount == 0
-        result.scheduledJobCount == 0
-        !result.checkErrors.any { it.toString().startsWith("statusJson:") }
-    }
-
-    def "an unreadable statusJson yields null counts AND a checkErrors entry"() {
-        given: "the config page reads fine but the runtime status does not"
-        enableReadOnly()
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Porch Light", []) }
-
-        when:
-        def result = script.toolCheckRuleHealth([appId: 100])
-
-        then: "null counts alone would read as 'this rule has none' -- record the reason"
-        result.eventSubscriptionCount == null
-        result.scheduledJobCount == null
-        result.checkErrors.any { it.toString().startsWith("statusJson:") }
-    }
-
-    def "hub_get_rule_health flags BROKEN marker in label as ok=false"() {
-        given:
-        enableReadOnly()
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Some Rule *BROKEN*", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then:
-        result.ok == false
-        result.issues != null
-        result.issues.any { it.toString().toLowerCase().contains("broken") }
     }
 
     private List ifStructureSettings(List<Map> rows) {
@@ -1749,307 +1608,57 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         out
     }
 
-    def "hub_get_rule_health flags structural imbalance when an IF has no closing END-IF (issue #178)"() {
-        given:
-        enableReadOnly()
-        // Three IFs + two END-IFs — reproduces the live state observed on the test hub
-        // after removeAction(<inner-END-IF>) false-failed but committed post-response.
-        def settings = ifStructureSettings([
-            [idx: 9,  actType: "condActs", actSubType: "getIfThen"],
-            [idx: 10, actType: "condActs", actSubType: "getIfThen"],
-            [idx: 11, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 13, actType: "condActs", actSubType: "getIfThen"],
-            [idx: 14, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 15, actType: "condActs", actSubType: "getEndIf"],
-            [idx: 16, actType: "condActs", actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Unbalanced Rule", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+    // Rule health reads structure from the compiled state; this settings walk is what action deletes
+    // and the restore reconciler still use.
+    private List walk(List<Map> rows, List ordered) {
+        def byName = ifStructureSettings(rows).collectEntries { [(it.name): it] }
+        script._rmStructuralIssuesFromSequence(script._rmStructuralSequenceFromSettings(byName, [] as Set, ordered))
+    }
 
+    // A row with an actType, and a UI-built row that carries actSubType alone.
+    private static Map a(int idx, String type, String sub) { [idx: idx, actType: type, actSubType: sub] }
+    private static Map u(int idx, String sub) { [idx: idx, actSubType: sub] }
+
+    def "the settings walk reports block imbalance: #desc"() {
         when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+        def issues = walk(rows, ordered)
 
         then:
-        result.ok == false
-        result.structuralIssues instanceof List
-        result.structuralIssues.size() == 1
-        result.structuralIssues[0].toString().contains("action 9")
-        result.structuralIssues[0].toString().contains("never closed")
-        result.issues.any { it.toString().contains("structural imbalance") }
-    }
+        issues.size() == expected.size()
+        expected.every { needle -> issues.any { it.toString().contains(needle) } }
 
-    def "hub_get_rule_health flags an orphaned END-IF (more END-IFs than IFs)"() {
-        given:
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
-            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 3, actType: "condActs", actSubType: "getEndIf"],
-            [idx: 4, actType: "condActs", actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Extra EndIf", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then:
-        result.ok == false
-        result.structuralIssues.any { it.toString().contains("orphaned closer") }
-        result.structuralIssues.any { it.toString().contains("action 4") }
-    }
-
-    def "hub_get_rule_health flags an orphaned End-Repeat closing nothing"() {
-        given:
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 2, actType: "repeatActs", actSubType: "getStopRepeat"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Orphan Stop", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then:
-        result.ok == false
-        result.structuralIssues.any { it.toString().contains("End Repeat") }
-        result.structuralIssues.any { it.toString().contains("orphaned closer") }
-    }
-
-    def "hub_get_rule_health flags ELSE-IF outside any IF block"() {
-        given:
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "condActs", actSubType: "getElseIf"],
-            [idx: 2, actType: "lockActs", actSubType: "getLULock"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Stray ElseIf", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then:
-        result.ok == false
-        result.structuralIssues.any { it.toString().contains("ELSE-IF") }
-        result.structuralIssues.any { it.toString().contains("outside any IF block") }
-    }
-
-    def "hub_get_rule_health flags END-IF closing a Repeat block (mismatched closer)"() {
-        given:
-        enableReadOnly()
-        // Repeat opens at action 1, but the closer at action 3 is END-IF (wrong kind).
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
-            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 3, actType: "condActs", actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Mismatched", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then:
-        result.ok == false
-        result.structuralIssues.any { it.toString().contains("END-IF") && it.toString().contains("closes a Repeat block") }
-    }
-
-    def "hub_get_rule_health reports ok on a balanced nested IF / IF / END-IF / IF / END-IF / END-IF"() {
-        given:
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
-            [idx: 2, actType: "condActs", actSubType: "getIfThen"],
-            [idx: 3, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 4, actType: "condActs", actSubType: "getEndIf"],
-            [idx: 5, actType: "condActs", actSubType: "getIfThen"],
-            [idx: 6, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 7, actType: "condActs", actSubType: "getEndIf"],
-            [idx: 8, actType: "condActs", actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Balanced Nested", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then:
-        result.ok == true
-        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
-    }
-
-    def "hub_get_rule_health reports ok on IF / ELSE-IF / ELSE / END-IF sequence"() {
-        given:
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
-            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 3, actType: "condActs", actSubType: "getElseIf"],
-            [idx: 4, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 5, actType: "condActs", actSubType: "getElse"],
-            [idx: 6, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 7, actType: "condActs", actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "If Else Chain", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then:
-        result.ok == true
-        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
-    }
-
-    def "hub_get_rule_health reports ok on Repeat / End-Repeat sequence"() {
-        given:
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
-            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 3, actType: "repeatActs", actSubType: "getStopRepeat"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Repeat", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then:
-        result.ok == true
-        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
-    }
-
-    def "hub_get_rule_health reports ok on a UI-built nested IF ELSE IF ELSE END-IF END-IF with no actType on the closers"() {
-        given:
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 2,  actType: "condActs",   actSubType: "getIfThen"],
-            [idx: 3,  actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 4,                         actSubType: "getElse"],
-            [idx: 7,  actType: "condActs",   actSubType: "getIfThen"],
-            [idx: 8,  actType: "switchActs", actSubType: "getOnOffSwitch"],
-            // Both halves present but empty — a real shape on live rules; empty
-            // must read as absent, not as a partial commit or a phantom block.
-            [idx: 10, actType: "",           actSubType: ""],
-            [idx: 11, actType: "modeActs",   actSubType: "getSetVariable"],
-            [idx: 12,                        actSubType: "getElse"],
-            [idx: 13, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 14, actType: "modeActs",   actSubType: "getSetVariable"],
-            [idx: 15,                        actSubType: "getEndIf"],
-            [idx: 16,                        actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Built Nested", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-        // actionList present, so the walk is scoped to the rule's own actions.
-        hubGet.register('/app/ruleBuilderJson/100') { params ->
-            JsonOutput.toJson([broken: false,
-                               actionList: ["2", "3", "4", "7", "8", "11", "12", "13", "14", "15", "16"]])
-        }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then:
-        result.ok == true
-        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
-    }
-
-    def "hub_get_rule_health reports ok on a UI-built IF ELSE-IF ELSE END-IF with no actType on any branch row"() {
-        given: "the ELSE-IF row is actSubType-only too -- the one branch keyword the other fixtures never exercise"
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
-            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 3,                        actSubType: "getElseIf"],
-            [idx: 4, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 5,                        actSubType: "getElse"],
-            [idx: 6, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 7,                        actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI ElseIf", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-        hubGet.register('/app/ruleBuilderJson/100') { params ->
-            JsonOutput.toJson([broken: false, actionList: ["1", "2", "3", "4", "5", "6", "7"]])
-        }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then:
-        result.ok == true
-        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
-    }
-
-    def "hub_get_rule_health reports ok on a UI-built REPEAT ... END-REP with no actType on the closer"() {
-        given: "the repeat family: the walker must infer repeatActs, not condActs, for these rows"
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1,                        actSubType: "getRepeat"],
-            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 3,                        actSubType: "getStopRepeat"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Repeat", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-        hubGet.register('/app/ruleBuilderJson/100') { params ->
-            JsonOutput.toJson([broken: false, actionList: ["1", "2", "3"]])
-        }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then:
-        result.ok == true
-        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
-    }
-
-    def "hub_get_rule_health still catches a REPEAT closed by an END-IF when neither row carries an actType"() {
-        given: "the discriminating negative: a helper that mapped every subtype to condActs would pass the two tests above and miss this"
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1,                        actSubType: "getRepeat"],
-            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 3,                        actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Mismatch", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-        hubGet.register('/app/ruleBuilderJson/100') { params ->
-            JsonOutput.toJson([broken: false, actionList: ["1", "2", "3"]])
-        }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then: "a mismatched closer is a structural issue even with the actType inferred"
-        !(result.structuralIssues == null || result.structuralIssues.isEmpty())
-        result.structuralIssues.any { it.toString().toLowerCase().contains("mismatched") }
-    }
-
-    def "hub_get_rule_health honours an EMPTY actionList: leftover rows are orphans, not an unclosed block"() {
-        given: "every action was removed but its actType/actSubType rows survived in settings"
-        // The compiled list is [] -- the rule genuinely has no actions. Treating empty as unknown
-        // sent the health walk back down the settings scan, where the stale IF read as an
-        // opened-never-closed block: #393 in its zero-action form.
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 7, actType: "condActs", actSubType: "getIfThen"],
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Emptied", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-        hubGet.register('/app/ruleBuilderJson/100') { params ->
-            JsonOutput.toJson([broken: false, actionList: []])
-        }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then: "no structural issue, and the leftover is named as an orphan"
-        result.ok == true
-        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
-        result.orphanedActionRows.any { it.toString().contains("action 7") && it.toString().contains("getIfThen") }
+        where:
+        desc | rows | ordered | expected
+        'IF never closed (three IFs, two END-IFs)' | [a(9, 'condActs', 'getIfThen'), a(10, 'condActs', 'getIfThen'), a(11, 'lockActs', 'getLULock'), a(13, 'condActs', 'getIfThen'), a(14, 'lockActs', 'getLULock'), a(15, 'condActs', 'getEndIf'), a(16, 'condActs', 'getEndIf')] | null | ['action 9 (IF) opened a block that was never closed']
+        'orphaned END-IF' | [a(1, 'condActs', 'getIfThen'), a(2, 'lockActs', 'getLULock'), a(3, 'condActs', 'getEndIf'), a(4, 'condActs', 'getEndIf')] | null | ['action 4 (END-IF) has no matching IF']
+        'orphaned END-REP' | [a(1, 'lockActs', 'getLULock'), a(2, 'repeatActs', 'getEndRepeat')] | null | ['action 2 (END-REP) has no matching Repeat']
+        'ELSE-IF outside an IF' | [a(1, 'condActs', 'getElseIf'), a(2, 'lockActs', 'getLULock')] | null | ['action 1 (ELSE-IF) is outside any IF block']
+        'END-IF closing a Repeat' | [a(1, 'repeatActs', 'getRepeat'), a(2, 'lockActs', 'getLULock'), a(3, 'condActs', 'getEndIf')] | null | ['action 3 (END-IF) closes a Repeat block opened at action 1']
+        'balanced nested IFs' | [a(1, 'condActs', 'getIfThen'), a(2, 'condActs', 'getIfThen'), a(3, 'lockActs', 'getLULock'), a(4, 'condActs', 'getEndIf'), a(5, 'condActs', 'getIfThen'), a(6, 'lockActs', 'getLULock'), a(7, 'condActs', 'getEndIf'), a(8, 'condActs', 'getEndIf')] | null | []
+        'IF / ELSE-IF / ELSE / END-IF' | [a(1, 'condActs', 'getIfThen'), a(2, 'lockActs', 'getLULock'), a(3, 'condActs', 'getElseIf'), a(4, 'lockActs', 'getLULock'), a(5, 'condActs', 'getElse'), a(6, 'lockActs', 'getLULock'), a(7, 'condActs', 'getEndIf')] | null | []
+        'Repeat / END-REP' | [a(1, 'repeatActs', 'getRepeat'), a(2, 'lockActs', 'getLULock'), a(3, 'repeatActs', 'getEndRepeat')] | null | []
+        'UI-built nested IF with blank rows and closers without actType' | [a(2, 'condActs', 'getIfThen'), a(3, 'switchActs', 'getOnOffSwitch'), u(4, 'getElse'), a(7, 'condActs', 'getIfThen'), a(8, 'switchActs', 'getOnOffSwitch'), a(10, '', ''), a(11, 'modeActs', 'getSetVariable'), u(12, 'getElse'), a(13, 'switchActs', 'getOnOffSwitch'), a(14, 'modeActs', 'getSetVariable'), u(15, 'getEndIf'), u(16, 'getEndIf')] | [2, 3, 4, 7, 8, 11, 12, 13, 14, 15, 16] | []
+        'UI-built IF / ELSE-IF / ELSE / END-IF' | [a(1, 'condActs', 'getIfThen'), a(2, 'switchActs', 'getOnOffSwitch'), u(3, 'getElseIf'), a(4, 'switchActs', 'getOnOffSwitch'), u(5, 'getElse'), a(6, 'switchActs', 'getOnOffSwitch'), u(7, 'getEndIf')] | [1, 2, 3, 4, 5, 6, 7] | []
+        'UI-built REPEAT / END-REP' | [u(1, 'getRepeat'), a(2, 'switchActs', 'getOnOffSwitch'), u(3, 'getEndRepeat')] | [1, 2, 3] | []
+        'UI-built REPEAT closed by END-IF' | [u(1, 'getRepeat'), a(2, 'switchActs', 'getOnOffSwitch'), u(3, 'getEndIf')] | [1, 2, 3] | ['mismatched block closer']
+        'empty action list with a leftover IF row' | [a(7, 'condActs', 'getIfThen')] | [] | []
+        'Repeat-While closed by END-REP' | [a(1, 'repeatActs', 'getWhile'), a(2, 'logActs', 'getLogMsg'), u(3, 'getEndRepeat')] | [1, 2, 3] | []
+        'Repeat-Until closed by END-REP' | [a(1, 'repeatActs', 'getUntil'), a(2, 'logActs', 'getLogMsg'), u(3, 'getEndRepeat')] | [1, 2, 3] | []
+        'Repeat (While) closed by END-REP' | [a(1, 'repeatActs', 'getRepeatWhile'), a(2, 'logActs', 'getLogMsg'), u(3, 'getEndRepeat')] | [1, 2, 3] | []
+        'Repeat-Until never closed' | [a(1, 'repeatActs', 'getUntil'), a(2, 'logActs', 'getLogMsg')] | [1, 2] | ['action 1 (Repeat) opened a block that was never closed']
+        'live IF / While / END-REP / ELSE / Stop Repeating / END-IF' | [a(1, 'condActs', 'getIfThen'), a(2, 'repeatActs', 'getWhile'), a(3, 'notificationActs', 'getMsg'), u(4, 'getEndRepeat'), u(5, 'getElse'), a(6, 'repeatActs', 'getStopRepeat'), a(7, 'notificationActs', 'getMsg'), u(8, 'getEndIf')] | [1, 2, 3, 4, 5, 6, 7, 8] | []
+        'IF / Repeat / END-REP / ELSE / END-IF' | [a(1, 'condActs', 'getIfThen'), a(2, 'repeatActs', 'getRepeat'), a(3, 'logActs', 'getLogMsg'), u(4, 'getEndRepeat'), u(5, 'getElse'), a(6, 'logActs', 'getLogMsg'), u(7, 'getEndIf')] | [1, 2, 3, 4, 5, 6, 7] | []
+        'Repeat never closed despite a Stop Repeating' | [a(1, 'repeatActs', 'getRepeat'), a(2, 'logActs', 'getLogMsg'), a(3, 'repeatActs', 'getStopRepeat')] | [1, 2, 3] | ['action 1 (Repeat) opened a block that was never closed — rule is missing an END-REP']
+        'END-REP without Repeat and without actType' | [a(1, 'logActs', 'getLogMsg'), u(2, 'getEndRepeat')] | [1, 2] | ['action 2 (END-REP) has no matching Repeat']
+        'UI-built flat IF / ELSE / END-IF' | [a(1, 'condActs', 'getIfThen'), a(2, 'switchActs', 'getOnOffSwitch'), u(3, 'getElse'), a(4, 'switchActs', 'getOnOffSwitch'), u(5, 'getEndIf')] | [1, 2, 3, 4, 5] | []
+        'UI-built rule missing its outer END-IF' | [a(2, 'condActs', 'getIfThen'), a(3, 'switchActs', 'getOnOffSwitch'), u(4, 'getElse'), a(7, 'condActs', 'getIfThen'), a(8, 'switchActs', 'getOnOffSwitch'), u(12, 'getElse'), a(13, 'switchActs', 'getOnOffSwitch'), u(15, 'getEndIf')] | null | ['action 2 (IF) opened a block that was never closed']
+        'UI-built orphaned END-IF' | [a(1, 'switchActs', 'getOnOffSwitch'), u(2, 'getEndIf')] | null | ['action 2 (END-IF) has no matching IF']
+        'stale IF outside the action list is not walked' | [a(1, 'switchActs', 'getOnOffSwitch'), u(3, ''), a(6, 'condActs', 'getIfThen'), a(8, 'modeActs', 'getSetVariable'), a(12, 'condActs', 'getIfThen'), a(13, 'switchActs', 'getOnOffSwitch'), u(14, 'getElse'), a(15, 'switchActs', 'getOnOffSwitch'), u(16, 'getEndIf')] | [1, 8, 12, 13, 14, 15, 16] | []
+        'stale IF is walked when the action list is unknown' | [a(1, 'switchActs', 'getOnOffSwitch'), a(6, 'condActs', 'getIfThen'), a(12, 'condActs', 'getIfThen'), a(13, 'switchActs', 'getOnOffSwitch'), u(16, 'getEndIf')] | null | ['action 6 (IF) opened a block that was never closed']
+        'missing END-IF inside the action list' | [a(1, 'condActs', 'getIfThen'), a(2, 'switchActs', 'getOnOffSwitch'), u(3, 'getElse'), a(4, 'switchActs', 'getOnOffSwitch')] | [1, 2, 3, 4] | ['action 1 (IF) opened a block that was never closed']
+        'half-committed row in the rule' | [a(1, 'switchActs', 'getOnOffSwitch'), a(2, 'condActs', '')] | [1, 2] | ['action 2 is in a partial-commit state']
+        'half-committed row outside the rule' | [a(1, 'switchActs', 'getOnOffSwitch'), a(2, 'condActs', '')] | [1] | []
+        'half-committed row, action list unknown' | [a(1, 'switchActs', 'getOnOffSwitch'), a(2, 'condActs', '')] | null | ['action 2 is in a partial-commit state']
     }
 
     def "_rmActTypeForStructuralSubType infers the family for every structural subtype (#subType)"() {
@@ -2064,235 +1673,93 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         'getEndIf'      | 'condActs'
         'getRepeat'     | 'repeatActs'
         'getWhile'      | 'repeatActs'
-        'getStopRepeat' | 'repeatActs'
+        'getUntil'      | 'repeatActs'
+        'getRepeatWhile' | 'repeatActs'
+        'getEndRepeat'  | 'repeatActs'
+        'getStopRepeat' | null
         'getLogMsg'     | null
     }
 
-    def "hub_get_rule_health reports ok on a UI-built flat IF ELSE END-IF with no actType on the closers"() {
-        given:
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
-            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 3,                        actSubType: "getElse"],
-            [idx: 4, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 5,                        actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Built Flat", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+    private void deletePreflight(List<Map> rows, List<Integer> ordered, List clicks) {
+        def removedIdx = null
         hubGet.register('/app/ruleBuilderJson/100') { params ->
-            JsonOutput.toJson([broken: false, actionList: ["1", "2", "3", "4", "5"]])
+            JsonOutput.toJson([broken: false, actionList: ordered.collect { it.toString() }])
         }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, ifStructureSettings(rows.findAll { it.idx != removedIdx }))
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btn, String attr = null, String page = null, Map cache = null ->
+            clicks << btn; removedIdx = btn as Integer; [status: 200]
+        }
+    }
+
+    def "removing a needed END-REP is refused before any click"() {
+        given:
+        def clicks = []
+        deletePreflight([
+            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 2, actType: "logActs",    actSubType: "getLogMsg"],
+            [idx: 3,                        actSubType: "getEndRepeat"]
+        ], [1, 2, 3], clicks)
 
         when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+        script._rmDeleteAction(100, 3)
 
         then:
-        result.ok == true
-        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("structural END-REP")
+        e.message.contains("never closed")
+        clicks.isEmpty()
     }
 
-    def "hub_get_rule_health still flags the outer IF when a UI-built rule is genuinely missing its last END-IF"() {
+    // _ndBlockIssues already treats these as repeat openers; the delete's own walk must too.
+    def "removing the END-REP of a #opener block alone is refused before any click"() {
         given:
-        enableReadOnly()
-        // The nested UI-built rule above with the outermost END-IF row gone.
-        def settings = ifStructureSettings([
-            [idx: 2,  actType: "condActs",   actSubType: "getIfThen"],
-            [idx: 3,  actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 4,                         actSubType: "getElse"],
-            [idx: 7,  actType: "condActs",   actSubType: "getIfThen"],
-            [idx: 8,  actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 11, actType: "modeActs",   actSubType: "getSetVariable"],
-            [idx: 12,                        actSubType: "getElse"],
-            [idx: 13, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 14, actType: "modeActs",   actSubType: "getSetVariable"],
-            [idx: 15,                        actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Built Unclosed", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        def clicks = []
+        deletePreflight([
+            [idx: 1, actType: "repeatActs", actSubType: opener],
+            [idx: 2, actType: "logActs",    actSubType: "getLogMsg"],
+            [idx: 3,                        actSubType: "getEndRepeat"]
+        ], [1, 2, 3], clicks)
 
         when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then: "exactly one issue, naming the OUTER IF — the inner IF is closed by the surviving END-IF"
-        result.ok == false
-        result.structuralIssues.size() == 1
-        result.structuralIssues[0].toString().contains("action 2")
-        result.structuralIssues[0].toString().contains("never closed")
-    }
-
-    def "hub_get_rule_health flags a UI-built orphaned END-IF that has no actType"() {
-        given:
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 2,                        actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Built Orphan", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+        script._rmDeleteAction(100, 3)
 
         then:
-        result.ok == false
-        result.structuralIssues.any { it.toString().contains("orphaned closer") }
-        result.structuralIssues.any { it.toString().contains("action 2") }
-    }
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("structural END-REP")
+        clicks.isEmpty()
 
-    private String ruleBuilderJsonWithActionList(List actionList) {
-        JsonOutput.toJson([broken: false, actionList: actionList])
-    }
-
-    def "hub_get_rule_health ignores a stale settings row that is not one of the rule's actions"() {
-        given: "a balanced rule whose settings also carry a stale IF and three blanked rows"
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1,  actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 3,                         actSubType: ""],
-            [idx: 6,  actType: "condActs",   actSubType: "getIfThen"],
-            [idx: 8,  actType: "modeActs",   actSubType: "getSetVariable"],
-            [idx: 10, actType: "",           actSubType: ""],
-            [idx: 12, actType: "condActs",   actSubType: "getIfThen"],
-            [idx: 13, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 14,                        actSubType: "getElse"],
-            [idx: 15, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 16,                        actSubType: "getEndIf"],
-            [idx: 17, actType: "",           actSubType: ""]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Stale Row", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-        // 3, 6, 10 and 17 are in settings but NOT in the rule.
-        hubGet.register('/app/ruleBuilderJson/100') { params ->
-            ruleBuilderJsonWithActionList(["1", "8", "12", "13", "14", "15", "16"])
-        }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then: "the stale IF at 6 is not walked, so the rule reads balanced"
-        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
-        !result.issues.any { it.toString().contains("action 6") }
-        result.ok == true
-
-        and: "it is still surfaced — as a leftover row, not as an imbalance"
-        result.orphanedActionRows.any { it.toString().contains("action 6") }
-        result.orphanedActionRows.any { it.toString().contains("getIfThen") }
-
-        and: "rows blank on both keys are vestigial, not leftovers"
-        !result.orphanedActionRows.any { it.toString().contains("action 10") }
-        !result.orphanedActionRows.any { it.toString().contains("action 17") }
-    }
-
-    def "hub_get_rule_health walks a stale row when the rule's action list cannot be read"() {
-        given: "the same settings, but no compiled action list to scope membership"
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1,  actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 6,  actType: "condActs",   actSubType: "getIfThen"],
-            [idx: 12, actType: "condActs",   actSubType: "getIfThen"],
-            [idx: 13, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 16,                        actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "No Action List", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then: "the fallback cannot tell a leftover from a live row, so it walks it"
-        result.structuralIssues.any { it.toString().contains("action 6") }
-
-        and: "and it reports no leftovers, because membership is unknown"
-        result.orphanedActionRows == [] || result.orphanedActionRows?.isEmpty()
-    }
-
-    def "hub_get_rule_health still flags a genuine missing END-IF when the action list is present"() {
-        given: "an unclosed IF that IS one of the rule's actions"
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
-            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 3,                        actSubType: "getElse"],
-            [idx: 4, actType: "switchActs", actSubType: "getOnOffSwitch"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Unclosed In Rule", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-        hubGet.register('/app/ruleBuilderJson/100') { params ->
-            ruleBuilderJsonWithActionList(["1", "2", "3", "4"])
-        }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then: "membership scoping does not blind the walker to real damage"
-        result.ok == false
-        result.structuralIssues.size() == 1
-        result.structuralIssues[0].toString().contains("action 1")
-        result.structuralIssues[0].toString().contains("never closed")
-    }
-
-    def "hub_get_rule_health keeps the half-commit diagnostic for a row the rule does contain"() {
-        given: "actType committed, actSubType empty, on an index the rule lists"
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 2, actType: "condActs",   actSubType: ""]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "In Rule Half", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-        hubGet.register('/app/ruleBuilderJson/100') { params -> ruleBuilderJsonWithActionList(["1", "2"]) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then: "a half-written row INSIDE the rule is still an opaque block boundary"
-        result.structuralIssues.size() == 1
-        result.structuralIssues[0].toString().contains("partial-commit state")
-        result.orphanedActionRows == [] || result.orphanedActionRows?.isEmpty()
-    }
-
-    def "hub_get_rule_health reports a half-written row outside the rule as a leftover, not an imbalance"() {
-        given: "the same half-written shape on an index the rule does NOT list"
-        enableReadOnly()
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 2, actType: "condActs",   actSubType: ""]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Out Of Rule Half", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-        hubGet.register('/app/ruleBuilderJson/100') { params -> ruleBuilderJsonWithActionList(["1"]) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
-
-        then: "the detection survives, moved to the non-gating field"
-        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
-        result.orphanedActionRows.any { it.toString().contains("action 2") }
-        result.orphanedActionRows.any { it.toString().contains("condActs") }
-        result.ok == true
-    }
-
-    def "hub_get_rule_health still reports a half-committed action whose actType landed without its actSubType"() {
-        given:
-        enableReadOnly()
-        // The reverse half-pair of the UI shape: actType committed, actSubType
-        // left empty by an interrupted wizard write. Still a partial commit.
-        def settings = ifStructureSettings([
-            [idx: 1, actType: "switchActs", actSubType: "getOnOffSwitch"],
-            [idx: 2, actType: "condActs",   actSubType: ""]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Half Committed", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
-
-        when:
-        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+        when: 'the opener alone'
+        script._rmDeleteAction(100, 1)
 
         then:
-        result.ok == false
-        result.structuralIssues.size() == 1
-        result.structuralIssues[0].toString().contains("action 2")
-        result.structuralIssues[0].toString().contains("partial-commit state")
+        def opened = thrown(IllegalArgumentException)
+        opened.message.contains("structural ${kind}")
+        clicks.isEmpty()
+
+        where:
+        opener           | kind
+        'getUntil'       | 'Repeat-Until'
+        'getRepeatWhile' | 'Repeat-While'
+    }
+
+    def "removing a Stop Repeating leaf inside a Repeat block is allowed"() {
+        given:
+        def clicks = []
+        deletePreflight([
+            [idx: 1, actType: "repeatActs", actSubType: "getRepeat"],
+            [idx: 2, actType: "repeatActs", actSubType: "getStopRepeat"],
+            [idx: 3,                        actSubType: "getEndRepeat"]
+        ], [1, 2, 3], clicks)
+
+        when:
+        def out = script._rmDeleteAction(100, 2)
+
+        then:
+        out.success == true
+        out.removedIndex == 2
+        clicks == ["2"]
     }
 
     private String parentConfigJson(int parentId, List<Map> children) {
@@ -3580,10 +3047,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [operation: 'create', args: [parent_id: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'create', args: [parentId: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
         response.result.isError != true
-        mcpDriver.parseInner(response).confirm_required == true
+        mcpDriver.parseInner(response).confirmRequired == true
         where:
         useGateways << [true, false]
     }
@@ -3619,7 +3086,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [operation: 'create', confirm: true, args: [parent_id: 21, changes: [[part:'required', value:[tokens:['1']]]]]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'create', confirm: true, args: [parentId: 21, changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('Missing required args property')
@@ -3632,14 +3099,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         Map received
-        script.metaClass.toolCreateRuleDocument = { Map args -> received = args; [success: true, created: true, rule_id: 974] }
-        def args = [operation: 'create', args: [parent_id: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]], confirm:true]
+        script.metaClass.toolCreateRuleDocument = { Map args -> received = args; [success: true, created: true, ruleId: 974] }
+        def args = [operation: 'create', args: [parentId: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]], confirm:true]
         when:
         def response = mcpDriver.callTool('hub_set_rule', args)
         then:
         response.error == null
         !response.result.isError
-        mcpDriver.parseInner(response).rule_id == 974
+        mcpDriver.parseInner(response).ruleId == 974
         received == args.args + [confirm: true]
         where:
         useGateways << [true, false]
@@ -3650,10 +3117,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', rule_id: 100, args: [changes: [[part:'required', value:[tokens:['1']]]]]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', ruleId: 100, args: [changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
         response.result.isError != true
-        mcpDriver.parseInner(response).confirm_required == true
+        mcpDriver.parseInner(response).confirmRequired == true
         where:
         useGateways << [true, false]
     }
@@ -3663,15 +3130,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.toolUpdateRuleDocument = { Map args -> [success: false, partial: true, rule_id: args.rule_id, error: 'Native typed readback rejected'] }
+        script.metaClass.toolUpdateRuleDocument = { Map args -> [success: false, partial: true, ruleId: args.ruleId, error: 'Native typed readback rejected'] }
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', rule_id: 100, confirm: true, args: [changes: [[part:'required', value:[tokens:['1']]]]]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', ruleId: 100, confirm: true, args: [changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
         response.error == null
         def inner = mcpDriver.parseInner(response)
         !inner.success
         inner.partial
-        inner.rule_id == 100
+        inner.ruleId == 100
         inner.error.contains('readback rejected')
         where:
         useGateways << [true, false]
@@ -3886,202 +3353,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_rule_health via dispatch surfaces ok=true on a clean rule (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableReadOnly()
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Healthy Rule", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-
-        when:
-        def response = mcpDriver.callTool('hub_get_rule_health', [appId: 100])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.ok == true
-        inner.label == "Healthy Rule"
-        inner.brokenMarkers == [] || inner.brokenMarkers?.isEmpty()
-        inner.multipleFlagPoison == [] || inner.multipleFlagPoison?.isEmpty()
-        inner.eventSubscriptionCount == 1
-        inner.scheduledJobCount == 0
-
-        where:
-        useGateways << [true, false]
-    }
-
-    @spock.lang.Unroll
-    def "hub_get_rule_health via dispatch flags BROKEN marker in label as ok=false (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableReadOnly()
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Some Rule *BROKEN*", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-
-        when:
-        def response = mcpDriver.callTool('hub_get_rule_health', [appId: 100])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.ok == false
-        inner.issues != null
-        inner.issues.any { it.toString().toLowerCase().contains("broken") }
-
-        where:
-        useGateways << [true, false]
-    }
-
-    private String statusJsonWithLocals(int ruleId, Map locals, int subs = 1) {
-        JsonOutput.toJson([
-            installedApp: [id: ruleId],
-            appSettings: [],
-            eventSubscriptions: (1..subs).collect { [name: "evt${it}"] },
-            scheduledJobs: [],
-            appState: [[name: "allLocalVars", value: locals]],
-            state: [:]
-        ])
-    }
-
-    def "_rmReadLocalVarsMap: a non-empty Map-shaped appState surfaces a read failure (not a false empty)"() {
-        // REGRESSION GUARD for the appState-shape assumption: every local-var read goes
-        // through _rmReadLocalVarsMap, which assumes appState is a List of {name,value} entries.
-        // A NON-EMPTY non-List shape (an unexpected contract shift) carries data we cannot
-        // interpret -- returning ok:true would MASK a read failure as a genuinely-empty rule.
-        // The helper must return ok:false so hub_list_rule_local_variables raises a read error
-        // (distinguishable from total:0). Goes RED if the non-List guard reverts to ok:true
-        // (the tool would then return a clean total:0 instead of throwing).
-        given:
-        enableReadOnly()
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            JsonOutput.toJson([
-                installedApp: [id: 100], appSettings: [],
-                eventSubscriptions: [[name: "evt1"]], scheduledJobs: [],
-                // appState as a non-empty MAP -- the contract-shift shape the guard catches.
-                appState: [allLocalVars: [doomed: [type: "integer", value: 1]]], state: [:]
-            ])
-        }
-
-        when:
-        script.toolListRuleLocalVariables([appId: 100])
-
-        then: "the unexpected non-empty shape surfaces as a read failure, not a false total:0"
-        def ex = thrown(IllegalStateException)
-        ex.message.contains("could not read")
-    }
-
-    def "_rmReadLocalVarsMap: an EMPTY Map-shaped appState still reads as zero locals (no data to lose)"() {
-        // Companion to the non-empty shape-guard: an EMPTY non-List appState (e.g. [:]) carries
-        // no data, so it stays a clean no-locals read (ok:true, total:0) rather than a read
-        // failure. Pins the empty-vs-non-empty boundary so the read-failure branch does not
-        // over-fire on a genuinely empty rule.
-        given:
-        enableReadOnly()
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            JsonOutput.toJson([
-                installedApp: [id: 100], appSettings: [],
-                eventSubscriptions: [[name: "evt1"]], scheduledJobs: [],
-                appState: [:], state: [:]
-            ])
-        }
-
-        when:
-        def result = script.toolListRuleLocalVariables([appId: 100])
-
-        then: "an empty non-List shape reads as zero locals, not an error"
-        result.total == 0
-        result.localVariables == []
-    }
-
-    def "hub_list_rule_local_variables returns sorted name/type/value from appState.allLocalVars"() {
-        given:
-        enableReadOnly()
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            statusJsonWithLocals(100, [zeta: [type: "string", value: "z"], alpha: [type: "integer", value: 5]])
-        }
-
-        when:
-        def result = script.toolListRuleLocalVariables([appId: 100])
-
-        then: "every local surfaces, sorted by name, with type + value"
-        result.appId == 100
-        result.total == 2
-        result.localVariables*.name == ["alpha", "zeta"]
-        result.localVariables[0].type == "integer"
-        result.localVariables[0].value == 5
-        result.localVariables[1].type == "string"
-    }
-
-    @Unroll
-    def "hub_list_rule_local_variables reads live #localName and preserves fallback values"() {
-        given:
-        enableReadOnly()
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
-                appState: [
-                    [name: "lv_${localName}", value: [name: localName, type: "integer", value: 99], type: "HashMap"],
-                    [name: "allLocalVars", value: [(localName): [type: "integer", value: 1], zzS: [type: "string", value: "a"]], type: "HashMap"]
-                ], state: [:]])
-        }
-
-        when:
-        def result = script.toolListRuleLocalVariables([appId: 100])
-
-        then: "the named local reads live 99; zzS falls back to allLocalVars"
-        result.localVariables == [[name: localName, type: "integer", value: 99], [name: "zzS", type: "string", value: "a"]]
-
-        where:
-        localName << ["zzN", "fields", "class", "metaClass"]
-    }
-
-    def "hub_list_rule_local_variables returns empty list when the rule has no locals"() {
-        given:
-        enableReadOnly()
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-
-        when:
-        def result = script.toolListRuleLocalVariables([appId: 100])
-
-        then: "no locals -> empty list, total 0 (not an error)"
-        result.total == 0
-        result.localVariables == []
-    }
-
-    def "hub_list_rule_local_variables dispatches through executeTool via hub_read_rules"() {
-        given:
-        enableReadOnly()
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [k: [type: "integer", value: 1]]) }
-
-        when:
-        def result = script.executeTool("hub_list_rule_local_variables", [appId: 100])
-
-        then: "the dispatch case routes to the implementation"
-        result.total == 1
-        result.localVariables[0].name == "k"
-    }
-
-    def "hub_list_rule_local_variables re-raises a transient status-read failure (not a false empty list)"() {
-        // REGRESSION GUARD for the read-failure re-raise: when the status read itself fails
-        // (channel down, NOT a shape contract shift), _rmReadLocalVarsMap returns ok:false and
-        // the pure-read tool must RE-RAISE that as an error rather than silently returning an
-        // empty list that an LLM would read as "this rule has no locals". Goes RED if the
-        // ok:false re-raise at the tool boundary is dropped.
-        given:
-        enableReadOnly()
-        hubGet.register('/installedapp/statusJson/100') { params -> throw new RuntimeException("simulated status-read channel failure") }
-
-        when:
-        script.toolListRuleLocalVariables([appId: 100])
-
-        then: "the transient read failure surfaces as an error, not a clean total:0"
-        def ex = thrown(IllegalStateException)
-        ex.message.contains("could not read")
-        ex.message.contains("100")
-    }
-
-    @spock.lang.Unroll
     def "hub_clone_native_app via dispatch returns isError validation result when source config fetch returns empty (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
@@ -4122,12 +3393,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         Map received
-        script.metaClass.toolCreateRuleDocument = { Map args -> received = args; [success:true, rule_id: 974] }
-        def args = [operation: 'create', args: [parent_id:21, name:'BAT-gw-rule', changes:[[part:'required', value:[tokens:['1']]]]], confirm:true]
+        script.metaClass.toolCreateRuleDocument = { Map args -> received = args; [success:true, ruleId: 974] }
+        def args = [operation: 'create', args: [parentId:21, name:'BAT-gw-rule', changes:[[part:'required', value:[tokens:['1']]]]], confirm:true]
         when:
         def result = script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', args)
         then:
-        result.rule_id == 974
+        result.ruleId == 974
         received == args.args + [confirm: true]
     }
 

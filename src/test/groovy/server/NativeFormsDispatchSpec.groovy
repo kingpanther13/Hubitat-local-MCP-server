@@ -8,7 +8,7 @@ class NativeFormsDispatchSpec extends ToolSpecBase {
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 7L, label: 'MCP')
 
     void setupSpec() { appExecutor.getApp() >> sharedAppStub }
-    private static Map openArgs() { [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true] }
+    private static Map openArgs() { [operation: 'form', ruleId: 42, args: [steps: [[kind: 'open']]], confirm: true] }
 
     void setup() {
         settingsMap.enableMandatoryBPS = false
@@ -35,20 +35,20 @@ class NativeFormsDispatchSpec extends ToolSpecBase {
     def 'flat and gateway forms calls dispatch the same closed arguments'() {
         given:
         List calls = []
-        script.metaClass.toolCallAppForm = { Map args -> calls << args; [success: true, app_id: args.app_id] }
+        script.metaClass.toolCallAppForm = { Map args, String toolName -> calls << args; [success: true, ruleId: args.ruleId] }
         when:
         def direct = script.executeTool('hub_set_rule', openArgs())
         def gateway = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_rule', openArgs())
         then:
         direct.success
         gateway.success
-        calls == [[app_id: 42, steps: [[kind: 'open']], confirm: true], [app_id: 42, steps: [[kind: 'open']], confirm: true]]
+        calls == [[ruleId: 42, steps: [[kind: 'open']], confirm: true], [ruleId: 42, steps: [[kind: 'open']], confirm: true]]
     }
 
     def 'write master and guide acknowledgment block open before native dispatch'() {
         given:
         int calls = 0
-        script.metaClass.toolCallAppForm = { Map args -> calls++; [success: true] }
+        script.metaClass.toolCallAppForm = { Map args, String toolName -> calls++; [success: true] }
         settingsMap.enableWrite = false
         when:
         script.executeTool('hub_set_rule', openArgs())
@@ -75,7 +75,7 @@ class NativeFormsDispatchSpec extends ToolSpecBase {
         def probe = script.executeTool('hub_set_rule', openArgs() + [confirm: false])
         then:
         probe.operation == 'form'
-        probe.confirm_required
+        probe.confirmRequired
         when:
         stateMap.remove('lastBackupTimestamp')
         script.executeTool('hub_set_rule', openArgs())
@@ -83,7 +83,7 @@ class NativeFormsDispatchSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
-    def 'client grant and self target checks include rule_id before dispatch'() {
+    def 'client grant and self target checks include ruleId before dispatch'() {
         given:
         stateMap.clientTokens = ['1': [label: 'Scoped', token: 'client']]
         script.callerClient = [id: '1', label: 'Scoped']
@@ -94,6 +94,6 @@ class NativeFormsDispatchSpec extends ToolSpecBase {
         settingsMap.clientTools_1 = ['hub_set_rule']
         then:
         !script._clientToolDenial('hub_set_rule', openArgs())
-        script._clientToolDenial('hub_set_rule', openArgs() + [rule_id: 7]).contains('cannot target the MCP Rule Server app itself')
+        script._clientToolDenial('hub_set_rule', openArgs() + [ruleId: 7]).contains('cannot target the MCP Rule Server app itself')
     }
 }
