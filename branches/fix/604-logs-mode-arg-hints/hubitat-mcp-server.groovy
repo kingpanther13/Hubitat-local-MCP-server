@@ -6736,6 +6736,9 @@ private Map _logsPatterns(Map args) {
     def compile = { String label, p ->
         if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
         if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
+        if ((p =~ /\\(?:[1-9]|k<)/).find()) {
+            throw new IllegalArgumentException("${label} must not hold a backslash followed by 1-9 or k< (a backreference): matching one can take unbounded time")
+        }
         if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars); split an alternation's alternatives across patterns (patternMode 'any'); otherwise shorten it")
         try {
             return java.util.regex.Pattern.compile(p, java.util.regex.Pattern.CASE_INSENSITIVE)
@@ -8691,7 +8694,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp."],
                     deviceId: [type: "string", description: "Numeric device id to scope past logs, stats or jobs to."],
                     appId: [type: "string", description: "Numeric app id, the same way."],
-                    pattern: [type: "string", maxLength: 100, description: "Case-insensitive regex over the row's name, and its message, methodName, descriptionText or value where it has one; mcp: component and message."],
+                    pattern: [type: "string", maxLength: 100, description: "Case-insensitive regex over the row's name, and its message, methodName, descriptionText or value where it has one; mcp: component and message. No backreferences."],
                     patterns: [type: "array", items: [type: "string", maxLength: 100], description: "More regexes, combined by patternMode."],
                     patternMode: [type: "string", enum: ["any", "all"], description: "Default any."],
                     since: [type: ["string", "integer"], description: "past and events: rows after this time, so a returned time never repeats. '30m', '2h', '7d', a time as rows show it (no zone = hub time), ISO-8601 with a zone, or epoch ms."],
@@ -26975,7 +26978,8 @@ private boolean _isWholeNumberIn(value, long min, long max) {
 }
 String stripHtmlTags(String s) {
     if (s == null || !s.contains("<")) return s
-    return s.replaceAll(/(?is)<(style|script)\b[^>]*>.*?<\/\1\s*>/, "").replaceAll(/<\/?[A-Za-z!][^>]*>/, "")
+    return s.replaceAll(/(?is)<(style|script)\b[^>]*>.*?<\/\1\s*>/, "")
+        .replaceAll(/<(?:\/?[A-Za-z][A-Za-z0-9:_-]*(?:\s[^<>]*)?\/?|![^<>]*)>/, "")
 }
 def formatTimestamp(timestamp) {
     if (!timestamp) return "Never"
