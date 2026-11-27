@@ -766,7 +766,7 @@ def toolGetHubLogs(args) {
         // In a list, pageSize sets every tab's row count: the MCP log takes it as its limit, status ignores it.
         List takes = modeArgs[m] + (listed && m in ["mcp", "status"] ? ["pageSize"] : [])
         def supplied = (allModeArgs - takes).findAll(this.&_argPresent.curry(args))
-        if (supplied) throw new IllegalArgumentException(_logsArgRefusal(m, takes, supplied, modeArgs, listed))
+        if (supplied) throw new IllegalArgumentException(_logsArgRefusal(m, supplied, modeArgs, listed))
     }
     if (args.mode instanceof List) {
         if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
@@ -888,7 +888,8 @@ def toolGetHubLogs(args) {
 }
 
 // Names what the mode takes and which modes each refused argument belongs to, so one retry is enough.
-private String _logsArgRefusal(String mode, List takes, List supplied, Map modeArgs, boolean listed) {
+private String _logsArgRefusal(String mode, List supplied, Map modeArgs, boolean listed) {
+    List takes = modeArgs[mode]
     String where = supplied.collect { String p ->
         "${p} applies to ${modeArgs.findAll { it.value.contains(p) }.keySet().join(', ')}"
     }.join("; ")
