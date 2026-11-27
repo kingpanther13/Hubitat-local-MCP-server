@@ -6736,8 +6736,8 @@ private Map _logsPatterns(Map args) {
     def compile = { String label, p ->
         if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
         if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
-        if ((p =~ /(?<!\\)(?:\\\\)*\\(?:[1-9]|k<)/).find()) {
-            throw new IllegalArgumentException("${label} must not use a backreference (\\1, \\k<name>): matching one can take unbounded time")
+        if ((p =~ /\\(?:[1-9]|k<)/).find()) {
+            throw new IllegalArgumentException("${label} must not hold a backslash followed by 1-9 or k< (a backreference): matching one can take unbounded time")
         }
         if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars); split an alternation's alternatives across patterns (patternMode 'any'); otherwise shorten it")
         try {
