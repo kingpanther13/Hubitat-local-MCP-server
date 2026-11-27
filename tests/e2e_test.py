@@ -11651,7 +11651,7 @@ def updated() {}
         # carries the disabled-action checks (three actions, index 2 removed, so the rows
         # are indices 1 and 3 and disable<N> is pinned to the index, not the row). RM does not escape
         # action text, so the first row's raw '<' and brace text also guard the summary's HTML strip (#603).
-        first = 'disabled-mark one < 2 {"k": 1} a<b'
+        first = 'disabled-mark one < 2 {"k": 1} a<b c>d'
         app_id = self._create_native_rule("CfgSummary", [native_log(first), native_log("disabled-mark two"), native_log("disabled-mark three")])
         try:
             result = self.client.call_tool("hub_read_apps_code", {
@@ -14333,6 +14333,8 @@ def updated() {}
         # Past logs are not this tool's to delete: the refusal names hub_reboot instead of rebooting.
         self._expect_tool_refusal("hub_manage_logs", {"tool": "hub_delete_logs", "args": {"mode": "past", "confirm": True}},
                                   "hub_reboot(confirm=true, purgeLogs=true)")
+        # Read the baseline last: each refusal above logged a line the clear must remove too.
+        before = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "limit": 0}})
         last = max(e.get("timestamp") or 0 for e in before["entries"])
         cleared = self.client.call_tool("hub_manage_logs", {"tool": "hub_delete_logs", "args": {"mode": "mcp"}})
         assert cleared.get("success") is True and "clearedCount" in cleared, f"clear: {cleared}"

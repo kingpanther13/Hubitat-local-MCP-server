@@ -2763,6 +2763,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         "<div>Log: 'a<b'\n</div><div>Log: 'x<y and z'\n</div>"                || "Log: 'a<b'\nLog: 'x<y and z'"
         "Log: 'a<b'\nLog: 'c>d'"                                              || "Log: 'a<b'\nLog: 'c>d'"
         "IF a<b</div>"                                                        || 'IF a<b'
+        "Log: 'x<y and z'\nLog: 'c>d'"                                        || "Log: 'x<y and z'\nLog: 'c>d'"
+        "<div>Log: 'a<b c>d'\n</div>"                                         || "Log: 'a<b c>d'"
+        "<option value='1' selected>one</option><input type=checkbox checked/>" || 'one'
+        "<font color=red>r</font><a href=/x/y>l</a><span data-x='1' >s</span>"  || 'rls'
+        "<i style='font-size:1.25rem' class='material-icons' style:'vertical-align:middle'>x</i>" || 'x'
+        "<option selected>one</option><td nowrap class='a'>two</td>"           || 'onetwo'
         "<div class='x'>t</div><br/><BR><input type='hidden' name='n'><!-- c -->" || 't'
         "<td\n class='a'>cell</td><my-el data-x='1'>e</my-el>"                 || 'celle'
     }

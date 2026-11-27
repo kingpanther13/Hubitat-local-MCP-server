@@ -514,8 +514,8 @@ class ToolManageLogsSpec extends ToolSpecBase {
         args                                                              || says
         [mode: ['locationEvents', 'scheduledJobs'], deviceId: '5']        || "do not apply to log mode 'locationEvents'"
         [mode: ['apps', 'hubEvents'], sortBy: 'pct']                      || 'sortBy applies to devices, apps. A list of modes takes only arguments every listed mode accepts'
-        [mode: ['mcp', 'status'], pattern: 'x']                           || "Parameters pattern do not apply to log mode 'status', which takes no arguments."
-        [mode: ['mcp', 'status'], pageSize: 5, since: '1h']               || "Parameters since do not apply to log mode 'mcp', which takes level, component, ruleId, pattern, patterns, patternMode, limit, cursor."
+        [mode: ['mcp', 'status'], pattern: 'x']                           || "Parameters pattern do not apply to log mode 'status', which takes pageSize."
+        [mode: ['mcp', 'status'], pageSize: 5, since: '1h']               || "Parameters since do not apply to log mode 'mcp', which takes level, component, ruleId, pattern, patterns, patternMode, limit, cursor, pageSize."
         [mode: ['hubEvents', 'locationEvents'], cursor: '']               || 'cursor pages one mode'
         [mode: ['hubEvents', 'nope']]                                     || 'Invalid log mode: nope'
         [mode: []]                                                        || 'at least one tab'

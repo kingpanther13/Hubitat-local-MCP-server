@@ -452,12 +452,13 @@ private boolean _isWholeNumberIn(value, long min, long max) {
 }
 
 // Drops <style>/<script> elements with their bodies, then tags (a brace-matching strip was quadratic, #603).
-// A tag is a name followed by whitespace, `/` or `>`, with no `<` inside: RM prints comparators and
-// user text as a raw `<` (#508), which must neither open a tag nor be swallowed by one (`a<b'...</div>`).
+// A tag is a name, then nothing or attributes that start with name= (or a bare boolean one), with no `<`
+// or `>` inside. RM prints comparators and user text as a raw `<` (#508), which must neither open a tag nor
+// be swallowed by one (`a<b'...</div>`, `x<y and z' ... c>d`); its own attributes are not always well formed.
 String stripHtmlTags(String s) {
     if (s == null || !s.contains("<")) return s
     return s.replaceAll(/(?is)<(style|script)\b[^>]*>.*?<\/\1\s*>/, "")
-        .replaceAll(/<(?:\/?[A-Za-z][A-Za-z0-9:_-]*(?:\s[^<>]*)?\/?|![^<>]*)>/, "")
+        .replaceAll(/<(?:\/?[A-Za-z][A-Za-z0-9:_-]*(?:\s+(?:[A-Za-z_:@][\w:.-]*\s*=|(?i:checked|selected|disabled|readonly|multiple|required|hidden|open|nowrap)(?![\w:.=-]))[^<>]*)?\s*\/?|![^<>]*)>/, "")
 }
 
 def formatTimestamp(timestamp) {

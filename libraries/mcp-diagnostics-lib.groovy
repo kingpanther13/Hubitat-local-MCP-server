@@ -629,7 +629,8 @@ private Map _logsPatterns(Map args) {
     def compile = { String label, p ->
         if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
         if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
-        // The hub's regex engine bounds nested repeats, but not once the pattern holds a backreference.
+        // A backreference turns off the regex engine's memoizing of greedy group loops. Other slow forms
+        // (reluctant group repeats, long chains of repeats) are still accepted.
         // Any backslash before 1-9 or k< is refused, whatever precedes it: \c\ and \Q..\E change how escapes pair up.
         if ((p =~ /\\(?:[1-9]|k<)/).find()) {
             throw new IllegalArgumentException("${label} must not hold a backslash followed by 1-9 or k< (a backreference): matching one can take unbounded time")
@@ -771,7 +772,7 @@ def toolGetHubLogs(args) {
         // In a list, pageSize sets every tab's row count: the MCP log takes it as its limit, status ignores it.
         List takes = modeArgs[m] + (listed && m in ["mcp", "status"] ? ["pageSize"] : [])
         def supplied = (allModeArgs - takes).findAll(this.&_argPresent.curry(args))
-        if (supplied) throw new IllegalArgumentException(_logsArgRefusal(m, supplied, modeArgs, listed))
+        if (supplied) throw new IllegalArgumentException(_logsArgRefusal(m, takes, supplied, modeArgs, listed))
     }
     if (args.mode instanceof List) {
         if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
@@ -893,8 +894,7 @@ def toolGetHubLogs(args) {
 }
 
 // Names what the mode takes and which modes each refused argument belongs to, so one retry is enough.
-private String _logsArgRefusal(String mode, List supplied, Map modeArgs, boolean listed) {
-    List takes = modeArgs[mode]
+private String _logsArgRefusal(String mode, List takes, List supplied, Map modeArgs, boolean listed) {
     String where = supplied.collect { String p ->
         "${p} applies to ${modeArgs.findAll { it.value.contains(p) }.keySet().join(', ')}"
     }.join("; ")
