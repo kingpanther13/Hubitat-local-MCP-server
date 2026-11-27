@@ -385,15 +385,12 @@ def toolGetItemSource(String type, String idParam, args) {
 String stripAppConfigHtml(value) {
     if (value == null) return null
     def s = value.toString()
-    // Strip HTML tags, then any leftover CSS-rule / inline-script bodies that
-    // Hubitat embeds via <style>/<script>: the tags strip above but the
-    // "selector{...}" / "fn(){...}" bodies remain mashed into the text (e.g. the
-    // Local Variables `lvTable` page). Only blocks containing ; or : inside the
-    // braces are removed, so prose like "{x}" is preserved. A `<` opens a tag only when a
-    // tag name, `/` or `!` follows: RM renders its less-than comparators as a raw `<`
-    // ("is < 100<span ...>"), which a bare `<[^>]+>` would swallow up to the next tag.
+    // Drop the CSS/JS Hubitat embeds in <style>/<script> elements (e.g. the Local Variables
+    // `lvTable` page) with their bodies, then the tags. Matching on braces instead was quadratic and
+    // erased user text before any "{...:...}" (#603). A `<` opens a tag only when a tag name, `/`
+    // or `!` follows: RM renders less-than comparators and user text as a raw `<` (#508).
     if (s.contains("<")) {
-        s = s.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").replaceAll(/[^{}]*\{[^{}]*[;:][^{}]*\}/, "")
+        s = s.replaceAll(/(?is)<(style|script)\b[^>]*>.*?<\/\1\s*>/, "").replaceAll(/<\/?[A-Za-z!][^>]*>/, "")
     }
     // Decode the common HTML entities Hubitat escapes user-typed names with: a
     // rule the user named "Heat On <67" is stored (and listed) as "Heat On &lt;67".

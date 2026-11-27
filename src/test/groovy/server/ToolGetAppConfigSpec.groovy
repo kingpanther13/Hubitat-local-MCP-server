@@ -2698,6 +2698,43 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         cmp << ['<', '<=']
     }
 
+    def "a long Rule Machine action summary holding a raw '<' and brace text comes back whole, in linear time"() {
+        given:
+        settingsMap.enableRead = true
+        // RM joins every action row into the action link's summary without escaping user text (#603): one
+        // '<' turned on a brace strip that was quadratic (~40 s here at this size) and erased every row
+        // before a '{...:...}'.
+        def rows = ["Log: 'Battery < 20%'", "Log: 'payload {\"mode\": \"away\"}'"] +
+            (1..30).collect { "Log: '${it} ${'abcdefghij' * 350}'".toString() }
+        def summary = rows.join('\n')
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null,
+                sections: [[title: '', input: [], body: [
+                    [element: 'href', page: 'selectActions', title: 'Select Actions to Run', description: summary]]]]]])
+        }
+
+        when:
+        long started = System.currentTimeMillis()
+        def hrefs = script.toolGetAppConfig([appId: 35]).page.hrefs
+        long elapsed = System.currentTimeMillis() - started
+
+        then:
+        hrefs[0].description == summary
+        elapsed < 5000
+    }
+
+    def "embedded <style> and <script> elements are dropped with their bodies; brace text outside them stays"() {
+        expect:
+        script.stripAppConfigHtml(html) == expected
+
+        where:
+        html                                                                                                                    || expected
+        "<style>.mdl-data-table tbody tr:hover{background-color:inherit} .tstat-col td {font-size:12px }</style><b>Local Variables</b>" || 'Local Variables'
+        "Pick <script>{ \$(\"[name*=x]\").click(); }</script>actions"                                                           || 'Pick actions'
+        "<SCRIPT type='text/javascript'>\nvar a = {b: 1};\n</SCRIPT>Log: 'x < y {k: v}'"                                        || "Log: 'x < y {k: v}'"
+        "Log: 'a < b' then <script>"                                                                                             || "Log: 'a < b' then"
+    }
+
     def "a non-RM app's red italic span is ordinary emphasis, not a disabled flag"() {
         given:
         settingsMap.enableRead = true

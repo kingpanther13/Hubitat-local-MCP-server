@@ -11649,8 +11649,10 @@ def updated() {}
         # page -- the cheap existence/identity probe for installed apps. Pin it on a
         # throwaway RM rule so the identity fields are deterministic. The same rule then
         # carries the disabled-action checks (three actions, index 2 removed, so the rows
-        # are indices 1 and 3 and disable<N> is pinned to the index, not the row).
-        app_id = self._create_native_rule("CfgSummary", [native_log("disabled-mark one"), native_log("disabled-mark two"), native_log("disabled-mark three")])
+        # are indices 1 and 3 and disable<N> is pinned to the index, not the row). RM does not escape
+        # action text, so the first row's raw '<' and brace text also guard the summary's HTML strip (#603).
+        first = 'disabled-mark one < 2 {"k": 1}'
+        app_id = self._create_native_rule("CfgSummary", [native_log(first), native_log("disabled-mark two"), native_log("disabled-mark three")])
         try:
             result = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config",
@@ -11742,6 +11744,9 @@ def updated() {}
             # index (1 and 3), not the row position, and each carries a control_id.
             main = read()
             assert not disabled_rows(main), f"live rule paragraph lists disabled rows: {paragraphs_of(main)}"
+            summary = next((h.get("description") for h in hrefs_of(main) if h.get("page") == "selectActions"), None)
+            assert summary == f"Log: '{first}'\nLog: 'disabled-mark three'", \
+                f"the main page's action summary should list both rows verbatim: {summary!r}"
             rows = read("selectActions")
             assert not disabled_rows(rows), f"live selectActions paragraph lists disabled rows: {paragraphs_of(rows)}"
             buttons = buttons_of(rows)
