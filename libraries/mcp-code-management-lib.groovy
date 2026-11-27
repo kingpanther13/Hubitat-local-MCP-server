@@ -384,17 +384,7 @@ def toolGetItemSource(String type, String idParam, args) {
 // resolves owner calls through the metaClass, which does not expose private methods.
 String stripAppConfigHtml(value) {
     if (value == null) return null
-    def s = value.toString()
-    // Strip HTML tags, then any leftover CSS-rule / inline-script bodies that
-    // Hubitat embeds via <style>/<script>: the tags strip above but the
-    // "selector{...}" / "fn(){...}" bodies remain mashed into the text (e.g. the
-    // Local Variables `lvTable` page). Only blocks containing ; or : inside the
-    // braces are removed, so prose like "{x}" is preserved. A `<` opens a tag only when a
-    // tag name, `/` or `!` follows: RM renders its less-than comparators as a raw `<`
-    // ("is < 100<span ...>"), which a bare `<[^>]+>` would swallow up to the next tag.
-    if (s.contains("<")) {
-        s = s.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").replaceAll(/[^{}]*\{[^{}]*[;:][^{}]*\}/, "")
-    }
+    def s = stripHtmlTags(value.toString())
     // Decode the common HTML entities Hubitat escapes user-typed names with: a
     // rule the user named "Heat On <67" is stored (and listed) as "Heat On &lt;67".
     // Decode &amp; LAST so a double-encoded entity doesn't collapse (e.g. "&amp;lt;"
@@ -1148,9 +1138,7 @@ private String _codeCreateUnknownOutcomeNote(String type) {
 
 private String _hubMessageText(msg) {
     // The hub marks up the line number in a compile error (boom on line <span id='errorLine'>1</span>).
-    String text = msg?.toString()
-    if (text == null) return null
-    return text.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").trim()
+    return stripHtmlTags(msg?.toString())?.trim()
 }
 
 private Map _createCodeItem(String type, args) {

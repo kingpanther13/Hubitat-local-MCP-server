@@ -451,6 +451,16 @@ private boolean _isWholeNumberIn(value, long min, long max) {
     return (value instanceof Integer || value instanceof Long) && (value as Long) >= min && (value as Long) <= max
 }
 
+// Drops <style>/<script> elements with their bodies, then tags (a brace-matching strip was quadratic, #603).
+// A tag is a name, then nothing or attributes that start with name= (or a bare boolean one), with no `<`
+// or `>` inside. RM prints comparators and user text as a raw `<` (#508), which must neither open a tag nor
+// be swallowed by one (`a<b'...</div>`, `x<y and z' ... c>d`); its own attributes are not always well formed.
+String stripHtmlTags(String s) {
+    if (s == null || !s.contains("<")) return s
+    return s.replaceAll(/(?is)<(style|script)\b[^>]*>.*?<\/\1\s*>/, "")
+        .replaceAll(/<(?:\/?[A-Za-z][A-Za-z0-9:_-]*(?:\s+(?:[A-Za-z_:@][\w:.-]*\s*=|(?i:checked|selected|disabled|readonly|multiple|required|hidden|open|nowrap)(?![\w:.=-]))[^<>]*)?\s*\/?|![^<>]*)>/, "")
+}
+
 def formatTimestamp(timestamp) {
     if (!timestamp) return "Never"
     try {
@@ -5823,7 +5833,7 @@ def getGatewayConfig() {
             description: "The hub's Logs page and MCP log settings: log history, device/app runtime stats, cloud calls, location and hub events, scheduled and running jobs, hub actions, the MCP log, deleting a scheduled job, and the MCP log level. (Device and app event history: use hub_list_device_events.)",
             tools: ["hub_get_logs", "hub_delete_logs", "hub_set_log_level"],
             summaries: [
-                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy (devices/apps only), limit, cursor, pageSize (50 per tab when several are listed); each mode takes its own subset",
                 hub_delete_logs: "Clear the MCP log, delete one scheduled job like the Logs page's Delete button, or reset the hub's app runtime statistics (the per-app load limiter's busy counter); past logs have no delete, only the reboot's log purge: hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs|appRuntimeStats), jobId, confirm",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
@@ -5895,7 +5905,7 @@ def getGatewayConfig() {
             description: "Read-only hub health, logs, and diagnostics: the Logs page (log history, runtime stats, cloud calls, location and hub events, jobs, hub actions), the MCP log, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear the MCP log, delete a scheduled job, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
             tools: ["hub_get_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
             summaries: [
-                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy (devices/apps only), limit, cursor, pageSize (50 per tab when several are listed); each mode takes its own subset",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
                 hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, tracerouteHost, speedtest, identifyHub",

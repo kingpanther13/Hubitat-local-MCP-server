@@ -2698,6 +2698,81 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         cmp << ['<', '<=']
     }
 
+    def "a long Rule Machine action summary holding a raw '<' and brace text comes back whole, in linear time"() {
+        given:
+        settingsMap.enableRead = true
+        // RM joins every action row into the action link's summary without escaping user text (#603): one
+        // '<' turned on a brace strip that was quadratic (~40 s here at this size) and erased every row
+        // before a '{...:...}'.
+        def rows = ["Log: 'Battery < 20%'", "Log: 'payload {\"mode\": \"away\"}'"] +
+            (1..30).collect { "Log: '${it} ${'abcdefghij' * 350}'".toString() }
+        def summary = rows.join('\n')
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null,
+                sections: [[title: '', input: [], body: [
+                    [element: 'href', page: 'selectActions', title: 'Select Actions to Run', description: summary]]]]]])
+        }
+
+        when:
+        long started = System.currentTimeMillis()
+        def hrefs = script.toolGetAppConfig([appId: 35]).page.hrefs
+        long elapsed = System.currentTimeMillis() - started
+
+        then:
+        hrefs[0].description == summary
+        elapsed < 5000
+    }
+
+    def "the Local Variables table button's title carries no CSS (fw 2.5.3 rule page)"() {
+        given:
+        settingsMap.enableRead = true
+        def table = "<b>Local Variables</b> (Manage on Actions Page)\n<div class='form-group'><input type='hidden' name='lvTable.type' value='button'></div>" +
+            "<div><div class='submitOnChange app-button-link text-color' onclick='buttonClick(this); return false;' data-stateAttribute='lvTable' style='cursor:pointer;font-size:15px' title=''>" +
+            "<style>.mdl-data-table tbody tr:hover{background-color:inherit} .tstat-col td {font-size:15px }</style>" +
+            "<div style='overflow-x:auto'><table class='mdl-data-table tstat-col'><thead><tr><th>Name</th><th>Type</th><th>Value</th></tr></thead>" +
+            "<tr><td><i>count</i></td><td>Number</td><td>5</td></tr></table></div></div></div><input type='hidden' name='settings[lvTable]' value=''>"
+        hubGet.register('/installedapp/configure/json/35') { params -> rmActionsPageJson(table) }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        def button = result.controls.find { it.name == 'lvTable' }
+        button.title == 'NameTypeValuecountNumber5'
+        !result.page.sections[0].paragraphs[0].contains('{')
+    }
+
+    def "embedded <style> and <script> elements are dropped with their bodies; brace text outside them stays"() {
+        expect:
+        script.stripAppConfigHtml(html) == expected
+
+        where:
+        html                                                                                                                    || expected
+        "<style>.mdl-data-table tbody tr:hover{background-color:inherit} .tstat-col td {font-size:12px }</style><b>Local Variables</b>" || 'Local Variables'
+        "Pick <script>{ \$(\"[name*=x]\").click(); }</script>actions"                                                           || 'Pick actions'
+        "<SCRIPT type='text/javascript'>\nvar a = {b: 1};\n</SCRIPT>Log: 'x < y {k: v}'"                                        || "Log: 'x < y {k: v}'"
+        "Log: 'a < b' then <script>"                                                                                             || "Log: 'a < b' then"
+    }
+
+    def "a raw '<' that starts no tag is kept, and no tag match runs across one"() {
+        expect:
+        script.stripAppConfigHtml(html) == expected
+
+        where:
+        html                                                                  || expected
+        "<div>Log: 'a<b'\n</div><div>Log: 'x<y and z'\n</div>"                || "Log: 'a<b'\nLog: 'x<y and z'"
+        "Log: 'a<b'\nLog: 'c>d'"                                              || "Log: 'a<b'\nLog: 'c>d'"
+        "IF a<b</div>"                                                        || 'IF a<b'
+        "Log: 'x<y and z'\nLog: 'c>d'"                                        || "Log: 'x<y and z'\nLog: 'c>d'"
+        "<div>Log: 'a<b c>d'\n</div>"                                         || "Log: 'a<b c>d'"
+        "<option value='1' selected>one</option><input type=checkbox checked/>" || 'one'
+        "<font color=red>r</font><a href=/x/y>l</a><span data-x='1' >s</span>"  || 'rls'
+        "<i style='font-size:1.25rem' class='material-icons' style:'vertical-align:middle'>x</i>" || 'x'
+        "<option selected>one</option><td nowrap class='a'>two</td>"           || 'onetwo'
+        "<div class='x'>t</div><br/><BR><input type='hidden' name='n'><!-- c -->" || 't'
+        "<td\n class='a'>cell</td><my-el data-x='1'>e</my-el>"                 || 'celle'
+    }
+
     def "a non-RM app's red italic span is ordinary emphasis, not a disabled flag"() {
         given:
         settingsMap.enableRead = true

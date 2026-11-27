@@ -11649,8 +11649,10 @@ def updated() {}
         # page -- the cheap existence/identity probe for installed apps. Pin it on a
         # throwaway RM rule so the identity fields are deterministic. The same rule then
         # carries the disabled-action checks (three actions, index 2 removed, so the rows
-        # are indices 1 and 3 and disable<N> is pinned to the index, not the row).
-        app_id = self._create_native_rule("CfgSummary", [native_log("disabled-mark one"), native_log("disabled-mark two"), native_log("disabled-mark three")])
+        # are indices 1 and 3 and disable<N> is pinned to the index, not the row). RM does not escape
+        # action text, so the first row's raw '<' and brace text also guard the summary's HTML strip (#603).
+        first = 'disabled-mark one < 2 {"k": 1} a<b c>d'
+        app_id = self._create_native_rule("CfgSummary", [native_log(first), native_log("disabled-mark two"), native_log("disabled-mark three")])
         try:
             result = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config",
@@ -11742,8 +11744,14 @@ def updated() {}
             # index (1 and 3), not the row position, and each carries a control_id.
             main = read()
             assert not disabled_rows(main), f"live rule paragraph lists disabled rows: {paragraphs_of(main)}"
+            summary = next((h.get("description") for h in hrefs_of(main) if h.get("page") == "selectActions"), None)
+            assert summary == f"Log: '{first}'\nLog: 'disabled-mark three'", \
+                f"the main page's action summary should list both rows verbatim: {summary!r}"
             rows = read("selectActions")
             assert not disabled_rows(rows), f"live selectActions paragraph lists disabled rows: {paragraphs_of(rows)}"
+            # The row's closing markup follows its text: a raw '<' before a letter must not be read as a tag.
+            assert any(f"Log: '{first}'" in p for p in paragraphs_of(rows)), \
+                f"the actions page should show the first row's text whole: {paragraphs_of(rows)}"
             buttons = buttons_of(rows)
             assert buttons.get("disable1", {}).get("title") == "Disable Action", f"disable1 missing/wrong: {buttons}"
             assert buttons.get("disable3", {}).get("title") == "Disable Action", f"disable3 missing/wrong: {buttons}"
@@ -14306,9 +14314,27 @@ def updated() {}
                                   "Unknown hub_get_logs argument: source")
         before = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "limit": 0}})
         assert before.get("entries"), f"MCP log before the clear must hold the refusal's line: {before}"
+        # The MCP log takes the Logs page tabs' regex filter, over component and message.
+        hit = self.client.call_tool("hub_read_diagnostics", {
+            "tool": "hub_get_logs", "args": {"mode": "mcp", "pattern": "ARGUMENT: source", "limit": 0}})
+        assert hit.get("entries") and all("argument: source" in (e.get("message") or "") for e in hit["entries"]),             f"pattern must return only the refusal's lines: {hit}"
+        miss = self.client.call_tool("hub_read_diagnostics", {
+            "tool": "hub_get_logs", "args": {"mode": "mcp", "pattern": "BAT_E2E_no_such_line", "limit": 0}})
+        assert miss.get("entries") == [], f"a pattern nothing matches must return no entries: {miss}"
+        # An argument a mode does not take is refused with what that mode takes and where the argument applies.
+        self._expect_tool_refusal("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "hubEvents", "sortBy": "name"}},
+                                  "which takes pattern, patterns, patternMode, limit, cursor, pageSize, since, until. sortBy applies to devices, apps.")
+        self._expect_tool_refusal("hub_read_diagnostics", {
+            "tool": "hub_get_logs", "args": {"mode": ["apps", "hubEvents"], "sortBy": "pct"}},
+            "A list of modes takes only arguments every listed mode accepts")
+        # A backreference is the one regex form whose matching time the hub does not bound.
+        self._expect_tool_refusal("hub_read_diagnostics", {
+            "tool": "hub_get_logs", "args": {"mode": "mcp", "pattern": "(a+)+\\1"}}, "(a backreference)")
         # Past logs are not this tool's to delete: the refusal names hub_reboot instead of rebooting.
         self._expect_tool_refusal("hub_manage_logs", {"tool": "hub_delete_logs", "args": {"mode": "past", "confirm": True}},
                                   "hub_reboot(confirm=true, purgeLogs=true)")
+        # Read the baseline last: each refusal above logged a line the clear must remove too.
+        before = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "limit": 0}})
         last = max(e.get("timestamp") or 0 for e in before["entries"])
         cleared = self.client.call_tool("hub_manage_logs", {"tool": "hub_delete_logs", "args": {"mode": "mcp"}})
         assert cleared.get("success") is True and "clearedCount" in cleared, f"clear: {cleared}"

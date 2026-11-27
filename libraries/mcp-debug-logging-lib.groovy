@@ -15,6 +15,7 @@ def toolGetDebugLogs(args) {
     def level = args.level?.toString()?.toLowerCase() ?: "all"
     def component = args.component
     def ruleId = args.ruleId
+    Map patterns = _logsPatterns(args)
 
     def history = getDebugLogReadResult(args)
     if (history.status == "in_progress") return history + [tool: "hub_get_logs"]
@@ -31,6 +32,10 @@ def toolGetDebugLogs(args) {
     }
     if (ruleId) {
         logs = logs.findAll { it.ruleId == ruleId }
+    }
+    if (patterns.single != null || patterns.list) {
+        List fields = _logsSearchFields("mcp")
+        logs = logs.findAll { _logsRowMatches(it as Map, fields, patterns) }
     }
 
     // Get most recent entries

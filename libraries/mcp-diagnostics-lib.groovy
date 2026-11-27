@@ -590,7 +590,7 @@ private Map _logsModeArgs() {
         scheduledJobs: shared + ["deviceId", "appId"],
         runningJobs: shared + ["deviceId", "appId"],
         hubActions: shared + ["deviceId", "appId"],
-        mcp: ["level", "component", "ruleId", "limit", "cursor"],
+        mcp: ["level", "component", "ruleId", "pattern", "patterns", "patternMode", "limit", "cursor"],
         status: []
     ]
 }
@@ -601,6 +601,7 @@ private List _logsSearchFields(String mode) {
         case "past": return ["name", "message"]
         case "scheduledJobs": case "runningJobs": return ["name", "methodName"]
         case "locationEvents": case "hubEvents": return ["name", "descriptionText", "value"]
+        case "mcp": return ["component", "message"]
         default: return ["name"]
     }
 }
@@ -628,6 +629,12 @@ private Map _logsPatterns(Map args) {
     def compile = { String label, p ->
         if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
         if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
+        // A backreference turns off the regex engine's memoizing of greedy group loops. Other slow forms
+        // (reluctant group repeats, long chains of repeats) are still accepted.
+        // Any backslash before 1-9 or k< is refused, whatever precedes it: \c\ and \Q..\E change how escapes pair up.
+        if ((p =~ /\\(?:[1-9]|k<)/).find()) {
+            throw new IllegalArgumentException("${label} must not hold a backslash followed by 1-9 or k< (a backreference): matching one can take unbounded time")
+        }
         if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars); split an alternation's alternatives across patterns (patternMode 'any'); otherwise shorten it")
         try {
             return java.util.regex.Pattern.compile(p, java.util.regex.Pattern.CASE_INSENSITIVE)
@@ -761,10 +768,11 @@ def toolGetHubLogs(args) {
         if (!modeArgs.containsKey(m)) {
             throw new IllegalArgumentException("Invalid log mode: ${m}. Valid modes: ${modeArgs.keySet().join(', ')}")
         }
-        def supplied = (allModeArgs - modeArgs[m]).findAll(this.&_argPresent.curry(args))
+        boolean listed = args.mode instanceof List
         // In a list, pageSize sets every tab's row count: the MCP log takes it as its limit, status ignores it.
-        if (args.mode instanceof List && m in ["mcp", "status"]) supplied -= ["pageSize"]
-        if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${m}'")
+        List takes = modeArgs[m] + (listed && m in ["mcp", "status"] ? ["pageSize"] : [])
+        def supplied = (allModeArgs - takes).findAll(this.&_argPresent.curry(args))
+        if (supplied) throw new IllegalArgumentException(_logsArgRefusal(m, takes, supplied, modeArgs, listed))
     }
     if (args.mode instanceof List) {
         if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
@@ -883,6 +891,15 @@ def toolGetHubLogs(args) {
         }
     }
     return result + _logsPage(mode, rows, query)
+}
+
+// Names what the mode takes and which modes each refused argument belongs to, so one retry is enough.
+private String _logsArgRefusal(String mode, List takes, List supplied, Map modeArgs, boolean listed) {
+    String where = supplied.collect { String p ->
+        "${p} applies to ${modeArgs.findAll { it.value.contains(p) }.keySet().join(', ')}"
+    }.join("; ")
+    String fix = listed ? " A list of modes takes only arguments every listed mode accepts: drop ${supplied.join(', ')}, or read those modes in a separate call." : ""
+    return "Parameters ${supplied.join(', ')} do not apply to log mode '${mode}', which takes ${takes ? takes.join(', ') : 'no arguments'}. ${where}.${fix}"
 }
 
 // Method references over small, fixed-size lists only; see the note above _snapshotFetchedAt.
@@ -2949,16 +2966,16 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [anyOf: [[type: "string", enum: _logsModeArgs().keySet() as List], [type: "array", items: [type: "string", enum: _logsModeArgs().keySet() as List]]], default: "past", description: "A Logs page tab, or a list of them. past = log history; devices/apps = runtime stats; locationEvents = mode, HSM and variable changes; hubEvents = reboots and low memory; mcp = this app's own log; status = its level."],
+                    mode: [anyOf: [[type: "string", enum: _logsModeArgs().keySet() as List], [type: "array", items: [type: "string", enum: _logsModeArgs().keySet() as List]]], default: "past", description: "A Logs page tab, or a list of them. past = log history; devices/apps = runtime stats; locationEvents = mode, HSM and variable changes; hubEvents = reboots and low memory; mcp = this app's own log; status = its level. A list takes only arguments every listed tab accepts."],
                     level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp."],
                     deviceId: [type: "string", description: "Numeric device id to scope past logs, stats or jobs to."],
                     appId: [type: "string", description: "Numeric app id, the same way."],
-                    pattern: [type: "string", maxLength: 100, description: "Case-insensitive regex over the row's name, and its message, methodName, descriptionText or value where it has one."],
+                    pattern: [type: "string", maxLength: 100, description: "Case-insensitive regex over the row's name, and its message, methodName, descriptionText or value where it has one; mcp: component and message. No backreferences."],
                     patterns: [type: "array", items: [type: "string", maxLength: 100], description: "More regexes, combined by patternMode."],
                     patternMode: [type: "string", enum: ["any", "all"], description: "Default any."],
                     since: [type: ["string", "integer"], description: "past and events: rows after this time, so a returned time never repeats. '30m', '2h', '7d', a time as rows show it (no zone = hub time), ISO-8601 with a zone, or epoch ms."],
                     until: [type: ["string", "integer"], description: "Rows at or before this time."],
-                    sortBy: [type: "string", enum: ["pct", "count", "total", "stateSize", "name"], description: "devices and apps; default pct (% busy)."],
+                    sortBy: [type: "string", enum: ["pct", "count", "total", "stateSize", "name"], description: "devices and apps only: row order, default pct (% busy)."],
                     limit: [type: "integer", description: "Max rows; 0 = all."],
                     component: [type: "string", description: "mcp: component substring."],
                     ruleId: [type: "string", description: "mcp: custom rule id."],
