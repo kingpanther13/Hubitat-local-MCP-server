@@ -5497,6 +5497,7 @@ def toolGetDebugLogs(args) {
     def level = args.level?.toString()?.toLowerCase() ?: "all"
     def component = args.component
     def ruleId = args.ruleId
+    Map patterns = _logsPatterns(args)
     def history = getDebugLogReadResult(args)
     if (history.status == "in_progress") return history + [tool: "hub_get_logs"]
     if (history.error) throw new IllegalStateException(history.error)
@@ -5510,6 +5511,10 @@ def toolGetDebugLogs(args) {
     }
     if (ruleId) {
         logs = logs.findAll { it.ruleId == ruleId }
+    }
+    if (patterns.single != null || patterns.list) {
+        List fields = _logsSearchFields("mcp")
+        logs = logs.findAll { _logsRowMatches(it as Map, fields, patterns) }
     }
     def count = Math.min(limit, logs.size())
     logs = logs.drop(Math.max(0, logs.size() - count))
@@ -6699,7 +6704,7 @@ private Map _logsModeArgs() {
         scheduledJobs: shared + ["deviceId", "appId"],
         runningJobs: shared + ["deviceId", "appId"],
         hubActions: shared + ["deviceId", "appId"],
-        mcp: ["level", "component", "ruleId", "limit", "cursor"],
+        mcp: ["level", "component", "ruleId", "pattern", "patterns", "patternMode", "limit", "cursor"],
         status: []
     ]
 }
@@ -6708,6 +6713,7 @@ private List _logsSearchFields(String mode) {
         case "past": return ["name", "message"]
         case "scheduledJobs": case "runningJobs": return ["name", "methodName"]
         case "locationEvents": case "hubEvents": return ["name", "descriptionText", "value"]
+        case "mcp": return ["component", "message"]
         default: return ["name"]
     }
 }
@@ -6730,6 +6736,9 @@ private Map _logsPatterns(Map args) {
     def compile = { String label, p ->
         if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
         if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
+        if ((p =~ /\\(?:[1-9]|k<)/).find()) {
+            throw new IllegalArgumentException("${label} must not hold a backslash followed by 1-9 or k< (a backreference): matching one can take unbounded time")
+        }
         if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars); split an alternation's alternatives across patterns (patternMode 'any'); otherwise shorten it")
         try {
             return java.util.regex.Pattern.compile(p, java.util.regex.Pattern.CASE_INSENSITIVE)
@@ -6844,9 +6853,10 @@ def toolGetHubLogs(args) {
         if (!modeArgs.containsKey(m)) {
             throw new IllegalArgumentException("Invalid log mode: ${m}. Valid modes: ${modeArgs.keySet().join(', ')}")
         }
-        def supplied = (allModeArgs - modeArgs[m]).findAll(this.&_argPresent.curry(args))
-        if (args.mode instanceof List && m in ["mcp", "status"]) supplied -= ["pageSize"]
-        if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${m}'")
+        boolean listed = args.mode instanceof List
+        List takes = modeArgs[m] + (listed && m in ["mcp", "status"] ? ["pageSize"] : [])
+        def supplied = (allModeArgs - takes).findAll(this.&_argPresent.curry(args))
+        if (supplied) throw new IllegalArgumentException(_logsArgRefusal(m, takes, supplied, modeArgs, listed))
     }
     if (args.mode instanceof List) {
         if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
@@ -6955,6 +6965,13 @@ def toolGetHubLogs(args) {
         }
     }
     return result + _logsPage(mode, rows, query)
+}
+private String _logsArgRefusal(String mode, List takes, List supplied, Map modeArgs, boolean listed) {
+    String where = supplied.collect { String p ->
+        "${p} applies to ${modeArgs.findAll { it.value.contains(p) }.keySet().join(', ')}"
+    }.join("; ")
+    String fix = listed ? " A list of modes takes only arguments every listed mode accepts: drop ${supplied.join(', ')}, or read those modes in a separate call." : ""
+    return "Parameters ${supplied.join(', ')} do not apply to log mode '${mode}', which takes ${takes ? takes.join(', ') : 'no arguments'}. ${where}.${fix}"
 }
 private boolean _argPresent(Map args, key) {
     return args[key] != null
@@ -8672,16 +8689,16 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [anyOf: [[type: "string", enum: _logsModeArgs().keySet() as List], [type: "array", items: [type: "string", enum: _logsModeArgs().keySet() as List]]], default: "past", description: "A Logs page tab, or a list of them. past = log history; devices/apps = runtime stats; locationEvents = mode, HSM and variable changes; hubEvents = reboots and low memory; mcp = this app's own log; status = its level."],
+                    mode: [anyOf: [[type: "string", enum: _logsModeArgs().keySet() as List], [type: "array", items: [type: "string", enum: _logsModeArgs().keySet() as List]]], default: "past", description: "A Logs page tab, or a list of them. past = log history; devices/apps = runtime stats; locationEvents = mode, HSM and variable changes; hubEvents = reboots and low memory; mcp = this app's own log; status = its level. A list takes only arguments every listed tab accepts."],
                     level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp."],
                     deviceId: [type: "string", description: "Numeric device id to scope past logs, stats or jobs to."],
                     appId: [type: "string", description: "Numeric app id, the same way."],
-                    pattern: [type: "string", maxLength: 100, description: "Case-insensitive regex over the row's name, and its message, methodName, descriptionText or value where it has one."],
+                    pattern: [type: "string", maxLength: 100, description: "Case-insensitive regex over the row's name, and its message, methodName, descriptionText or value where it has one; mcp: component and message. No backreferences."],
                     patterns: [type: "array", items: [type: "string", maxLength: 100], description: "More regexes, combined by patternMode."],
                     patternMode: [type: "string", enum: ["any", "all"], description: "Default any."],
                     since: [type: ["string", "integer"], description: "past and events: rows after this time, so a returned time never repeats. '30m', '2h', '7d', a time as rows show it (no zone = hub time), ISO-8601 with a zone, or epoch ms."],
                     until: [type: ["string", "integer"], description: "Rows at or before this time."],
-                    sortBy: [type: "string", enum: ["pct", "count", "total", "stateSize", "name"], description: "devices and apps; default pct (% busy)."],
+                    sortBy: [type: "string", enum: ["pct", "count", "total", "stateSize", "name"], description: "devices and apps only: row order, default pct (% busy)."],
                     limit: [type: "integer", description: "Max rows; 0 = all."],
                     component: [type: "string", description: "mcp: component substring."],
                     ruleId: [type: "string", description: "mcp: custom rule id."],
@@ -16754,10 +16771,7 @@ def toolGetItemSource(String type, String idParam, args) {
 }
 String stripAppConfigHtml(value) {
     if (value == null) return null
-    def s = value.toString()
-    if (s.contains("<")) {
-        s = s.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").replaceAll(/[^{}]*\{[^{}]*[;:][^{}]*\}/, "")
-    }
+    def s = stripHtmlTags(value.toString())
     if (s.contains("&")) {
         s = s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
              .replace("&#39;", "'").replace("&apos;", "'").replace("&nbsp;", " ")
@@ -17370,9 +17384,7 @@ private String _codeCreateUnknownOutcomeNote(String type) {
     return "Whether the ${type} was saved is unknown. Check ${_codeListCall(type)} before retrying: a retry can create a duplicate at a new id.".toString()
 }
 private String _hubMessageText(msg) {
-    String text = msg?.toString()
-    if (text == null) return null
-    return text.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").trim()
+    return stripHtmlTags(msg?.toString())?.trim()
 }
 private Map _createCodeItem(String type, args) {
     Map resolved = _resolveCodeSource(args)
@@ -23699,8 +23711,8 @@ private Map _rmTokSetExpression(Integer appId, List target) {
 private Map _rmConditionTexts(Map state) {
     def out = [:]
     if (state?.get("capabsfalse") instanceof Map) (state.get("capabsfalse") as Map).each { id, txt ->
-        out.put(id?.toString(), txt?.toString()?.replaceAll(/\(\s*<[A-Za-z][^>]*>[^()]*<\/[A-Za-z]+>\s*\)/, "")
-            ?.replaceAll(/<\/?[A-Za-z!][^>]*>/, "")?.replaceAll(/\s+/, " ")?.trim())
+        out.put(id?.toString(), stripHtmlTags(txt?.toString()?.replaceAll(/\(\s*<[A-Za-z][^>]*>[^()]*<\/[A-Za-z]+>\s*\)/, ""))
+            ?.replaceAll(/\s+/, " ")?.trim())
     }
     return out
 }
@@ -26270,7 +26282,7 @@ The context expires after five minutes or an app reload and keeps no field value
 private String _nfEncode(Object value) { java.net.URLEncoder.encode(value == null ? '' : value.toString(), 'UTF-8') }
 private String _nfBody(Map values) { values.collect { key, value -> "${_nfEncode(key)}=${_nfEncode(value)}" }.join('&') }
 private boolean _nfTrue(Object value) { value == true || value == 'true' }
-private String _nfText(Object value) { _nfEntities(value?.toString()?.replaceAll(/(?s)<\/?[A-Za-z!][^>]*>/, '') ?: '') }
+private String _nfText(Object value) { _nfEntities(stripHtmlTags(value?.toString()) ?: '') }
 private String _nfEntities(String value) {
     value.replace('&quot;', '"').replace('&#39;', "'").replace('&apos;', "'").replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ').replace('&amp;', '&')
 }
@@ -26962,6 +26974,11 @@ private Long _snapshotFetchedAt(part) {
 }
 private boolean _isWholeNumberIn(value, long min, long max) {
     return (value instanceof Integer || value instanceof Long) && (value as Long) >= min && (value as Long) <= max
+}
+String stripHtmlTags(String s) {
+    if (s == null || !s.contains("<")) return s
+    return s.replaceAll(/(?is)<(style|script)\b[^>]*>.*?<\/\1\s*>/, "")
+        .replaceAll(/<(?:\/?[A-Za-z][A-Za-z0-9:_-]*(?:\s+(?:[A-Za-z_:@][\w:.-]*\s*=|(?i:checked|selected|disabled|readonly|multiple|required|hidden|open|nowrap)(?![\w:.=-]))[^<>]*)?\s*\/?|![^<>]*)>/, "")
 }
 def formatTimestamp(timestamp) {
     if (!timestamp) return "Never"
@@ -30996,7 +31013,7 @@ def getGatewayConfig() {
             description: "The hub's Logs page and MCP log settings: log history, device/app runtime stats, cloud calls, location and hub events, scheduled and running jobs, hub actions, the MCP log, deleting a scheduled job, and the MCP log level. (Device and app event history: use hub_list_device_events.)",
             tools: ["hub_get_logs", "hub_delete_logs", "hub_set_log_level"],
             summaries: [
-                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy (devices/apps only), limit, cursor, pageSize (50 per tab when several are listed); each mode takes its own subset",
                 hub_delete_logs: "Clear the MCP log, delete one scheduled job like the Logs page's Delete button, or reset the hub's app runtime statistics (the per-app load limiter's busy counter); past logs have no delete, only the reboot's log purge: hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs|appRuntimeStats), jobId, confirm",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
@@ -31068,7 +31085,7 @@ def getGatewayConfig() {
             description: "Read-only hub health, logs, and diagnostics: the Logs page (log history, runtime stats, cloud calls, location and hub events, jobs, hub actions), the MCP log, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear the MCP log, delete a scheduled job, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
             tools: ["hub_get_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
             summaries: [
-                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy (devices/apps only), limit, cursor, pageSize (50 per tab when several are listed); each mode takes its own subset",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
                 hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, tracerouteHost, speedtest, identifyHub",
