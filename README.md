@@ -1673,6 +1673,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v5.2.2** - ci: start ephemeral hub jobs after fast checks pass; ci: make the ephemeral fast-CI gate wait instead of deferring; ci: resume deferred hub runs from workflow_run and gate the physical e2e on fast CI; fix: hub_get_app_config hang on a raw '<'; hub_get_logs refusals name each mode's arguments. PRs: [#598](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/598), [#600](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/600), [#602](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/602), [#606](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/606)
 - **v5.2.1** - docs: change the watchdog only when CI or repair needs it; feat: rebuild the File Manager tools on the hub's own listing. PRs: [#597](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/597), [#586](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/586)
 - **v5.2.0** - feat: five dashboard tools instead of six (copy via hub_create_dashboard). PRs: [#581](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/581)
 - **v5.1.13** - feat: fold hub_get_device_attribute into hub_get_device and hub_list_devices (waitFor, deviceIds). PRs: [#592](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/592)
