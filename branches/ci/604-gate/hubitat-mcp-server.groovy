@@ -23709,8 +23709,8 @@ private Map _rmTokSetExpression(Integer appId, List target) {
 private Map _rmConditionTexts(Map state) {
     def out = [:]
     if (state?.get("capabsfalse") instanceof Map) (state.get("capabsfalse") as Map).each { id, txt ->
-        out.put(id?.toString(), txt?.toString()?.replaceAll(/\(\s*<[A-Za-z][^>]*>[^()]*<\/[A-Za-z]+>\s*\)/, "")
-            ?.replaceAll(/<\/?[A-Za-z!][^>]*>/, "")?.replaceAll(/\s+/, " ")?.trim())
+        out.put(id?.toString(), stripHtmlTags(txt?.toString()?.replaceAll(/\(\s*<[A-Za-z][^>]*>[^()]*<\/[A-Za-z]+>\s*\)/, ""))
+            ?.replaceAll(/\s+/, " ")?.trim())
     }
     return out
 }
