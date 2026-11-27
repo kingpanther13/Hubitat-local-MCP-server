@@ -16754,10 +16754,7 @@ def toolGetItemSource(String type, String idParam, args) {
 }
 String stripAppConfigHtml(value) {
     if (value == null) return null
-    def s = value.toString()
-    if (s.contains("<")) {
-        s = s.replaceAll(/(?is)<(style|script)\b[^>]*>.*?<\/\1\s*>/, "").replaceAll(/<\/?[A-Za-z!][^>]*>/, "")
-    }
+    def s = stripHtmlTags(value.toString())
     if (s.contains("&")) {
         s = s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
              .replace("&#39;", "'").replace("&apos;", "'").replace("&nbsp;", " ")
@@ -17370,9 +17367,7 @@ private String _codeCreateUnknownOutcomeNote(String type) {
     return "Whether the ${type} was saved is unknown. Check ${_codeListCall(type)} before retrying: a retry can create a duplicate at a new id.".toString()
 }
 private String _hubMessageText(msg) {
-    String text = msg?.toString()
-    if (text == null) return null
-    return text.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").trim()
+    return stripHtmlTags(msg?.toString())?.trim()
 }
 private Map _createCodeItem(String type, args) {
     Map resolved = _resolveCodeSource(args)
@@ -26270,7 +26265,7 @@ The context expires after five minutes or an app reload and keeps no field value
 private String _nfEncode(Object value) { java.net.URLEncoder.encode(value == null ? '' : value.toString(), 'UTF-8') }
 private String _nfBody(Map values) { values.collect { key, value -> "${_nfEncode(key)}=${_nfEncode(value)}" }.join('&') }
 private boolean _nfTrue(Object value) { value == true || value == 'true' }
-private String _nfText(Object value) { _nfEntities(value?.toString()?.replaceAll(/(?s)<\/?[A-Za-z!][^>]*>/, '') ?: '') }
+private String _nfText(Object value) { _nfEntities(stripHtmlTags(value?.toString()) ?: '') }
 private String _nfEntities(String value) {
     value.replace('&quot;', '"').replace('&#39;', "'").replace('&apos;', "'").replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ').replace('&amp;', '&')
 }
@@ -26962,6 +26957,10 @@ private Long _snapshotFetchedAt(part) {
 }
 private boolean _isWholeNumberIn(value, long min, long max) {
     return (value instanceof Integer || value instanceof Long) && (value as Long) >= min && (value as Long) <= max
+}
+String stripHtmlTags(String s) {
+    if (s == null || !s.contains("<")) return s
+    return s.replaceAll(/(?is)<(style|script)\b[^>]*>.*?<\/\1\s*>/, "").replaceAll(/<\/?[A-Za-z!][^>]*>/, "")
 }
 def formatTimestamp(timestamp) {
     if (!timestamp) return "Never"
