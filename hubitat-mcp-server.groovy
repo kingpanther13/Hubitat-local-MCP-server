@@ -451,6 +451,13 @@ private boolean _isWholeNumberIn(value, long min, long max) {
     return (value instanceof Integer || value instanceof Long) && (value as Long) >= min && (value as Long) <= max
 }
 
+// Drops <style>/<script> elements with their bodies, then tags (a brace-matching strip was quadratic, #603).
+// A tag needs a name, `/` or `!` after the `<`: RM prints comparators and user text as a raw `<` (#508).
+String stripHtmlTags(String s) {
+    if (s == null || !s.contains("<")) return s
+    return s.replaceAll(/(?is)<(style|script)\b[^>]*>.*?<\/\1\s*>/, "").replaceAll(/<\/?[A-Za-z!][^>]*>/, "")
+}
+
 def formatTimestamp(timestamp) {
     if (!timestamp) return "Never"
     try {

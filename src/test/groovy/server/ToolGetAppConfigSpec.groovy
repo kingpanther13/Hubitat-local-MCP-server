@@ -2723,6 +2723,25 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         elapsed < 5000
     }
 
+    def "the Local Variables table button's title carries no CSS (fw 2.5.3 rule page)"() {
+        given:
+        settingsMap.enableRead = true
+        def table = "<b>Local Variables</b> (Manage on Actions Page)\n<div class='form-group'><input type='hidden' name='lvTable.type' value='button'></div>" +
+            "<div><div class='submitOnChange app-button-link text-color' onclick='buttonClick(this); return false;' data-stateAttribute='lvTable' style='cursor:pointer;font-size:15px' title=''>" +
+            "<style>.mdl-data-table tbody tr:hover{background-color:inherit} .tstat-col td {font-size:15px }</style>" +
+            "<div style='overflow-x:auto'><table class='mdl-data-table tstat-col'><thead><tr><th>Name</th><th>Type</th><th>Value</th></tr></thead>" +
+            "<tr><td><i>count</i></td><td>Number</td><td>5</td></tr></table></div></div></div><input type='hidden' name='settings[lvTable]' value=''>"
+        hubGet.register('/installedapp/configure/json/35') { params -> rmActionsPageJson(table) }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        def button = result.controls.find { it.name == 'lvTable' }
+        button.title == 'NameTypeValuecountNumber5'
+        !result.page.sections[0].paragraphs[0].contains('{')
+    }
+
     def "embedded <style> and <script> elements are dropped with their bodies; brace text outside them stays"() {
         expect:
         script.stripAppConfigHtml(html) == expected

@@ -384,14 +384,7 @@ def toolGetItemSource(String type, String idParam, args) {
 // resolves owner calls through the metaClass, which does not expose private methods.
 String stripAppConfigHtml(value) {
     if (value == null) return null
-    def s = value.toString()
-    // Drop the CSS/JS Hubitat embeds in <style>/<script> elements (e.g. the Local Variables
-    // `lvTable` page) with their bodies, then the tags. Matching on braces instead was quadratic and
-    // erased user text before any "{...:...}" (#603). A `<` opens a tag only when a tag name, `/`
-    // or `!` follows: RM renders less-than comparators and user text as a raw `<` (#508).
-    if (s.contains("<")) {
-        s = s.replaceAll(/(?is)<(style|script)\b[^>]*>.*?<\/\1\s*>/, "").replaceAll(/<\/?[A-Za-z!][^>]*>/, "")
-    }
+    def s = stripHtmlTags(value.toString())
     // Decode the common HTML entities Hubitat escapes user-typed names with: a
     // rule the user named "Heat On <67" is stored (and listed) as "Heat On &lt;67".
     // Decode &amp; LAST so a double-encoded entity doesn't collapse (e.g. "&amp;lt;"
@@ -1145,9 +1138,7 @@ private String _codeCreateUnknownOutcomeNote(String type) {
 
 private String _hubMessageText(msg) {
     // The hub marks up the line number in a compile error (boom on line <span id='errorLine'>1</span>).
-    String text = msg?.toString()
-    if (text == null) return null
-    return text.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").trim()
+    return stripHtmlTags(msg?.toString())?.trim()
 }
 
 private Map _createCodeItem(String type, args) {
