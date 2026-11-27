@@ -692,8 +692,10 @@ class ToolManageLogsSpec extends ToolSpecBase {
         'hubEvents'      | [sortBy: 'name']                || "Parameters sortBy do not apply to log mode 'hubEvents', which takes pattern, patterns, patternMode, limit, cursor, pageSize, since, until. sortBy applies to devices, apps."
         'status'         | [limit: 5, sortBy: 'pct']       || "Parameters limit, sortBy do not apply to log mode 'status', which takes no arguments. limit applies to past, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp; sortBy applies to devices, apps."
         'mcp'            | [pattern: '(']                  || 'Invalid regex pattern'
-        'mcp'            | [pattern: '(a+)+\\1']            || 'pattern must not use a backreference'
-        'past'           | [patterns: ['ok', '(?<x>a)\\k<x>']] || 'patterns[1] must not use a backreference'
+        'mcp'            | [pattern: '(a+)+\\1']            || 'pattern must not hold a backslash followed by 1-9 or k< (a backreference)'
+        'past'           | [patterns: ['ok', '(?<x>a)\\k<x>']] || 'patterns[1] must not hold a backslash followed by 1-9 or k<'
+        'mcp'            | [pattern: '(a+)+\\c\\\\1']        || 'pattern must not hold a backslash followed by 1-9 or k<'
+        'past'           | [pattern: 'a\\\\1']                || 'pattern must not hold a backslash followed by 1-9 or k<'
         'devices'        | [sortBy: 'totalMs']             || 'sortBy must be one of'
         'past'           | [since: '31d']                  || '30d cap'
         'past'           | [since: '43201m']               || '30d cap'
@@ -2757,7 +2759,6 @@ class ToolManageLogsSpec extends ToolSpecBase {
         [patterns: ['server', 'saved'], patternMode: 'all']        || ['settings saved']
         [pattern: 'hub_', level: 'warn']                           || ['hub_set_variable started']
         [pattern: 'no such line']                                  || []
-        [pattern: 'hub_\\\\1']                                    || []
         [pattern: 'error in\\x20hub_|\\07']                       || ['Validation error in hub_get_logs']
     }
 

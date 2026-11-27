@@ -630,8 +630,9 @@ private Map _logsPatterns(Map args) {
         if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
         if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
         // The hub's regex engine bounds nested repeats, but not once the pattern holds a backreference.
-        if ((p =~ /(?<!\\)(?:\\\\)*\\(?:[1-9]|k<)/).find()) {
-            throw new IllegalArgumentException("${label} must not use a backreference (\\1, \\k<name>): matching one can take unbounded time")
+        // Any backslash before 1-9 or k< is refused, whatever precedes it: \c\ and \Q..\E change how escapes pair up.
+        if ((p =~ /\\(?:[1-9]|k<)/).find()) {
+            throw new IllegalArgumentException("${label} must not hold a backslash followed by 1-9 or k< (a backreference): matching one can take unbounded time")
         }
         if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars); split an alternation's alternatives across patterns (patternMode 'any'); otherwise shorten it")
         try {

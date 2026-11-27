@@ -14329,7 +14329,7 @@ def updated() {}
             "A list of modes takes only arguments every listed mode accepts")
         # A backreference is the one regex form whose matching time the hub does not bound.
         self._expect_tool_refusal("hub_read_diagnostics", {
-            "tool": "hub_get_logs", "args": {"mode": "mcp", "pattern": "(a+)+\\1"}}, "must not use a backreference")
+            "tool": "hub_get_logs", "args": {"mode": "mcp", "pattern": "(a+)+\\1"}}, "(a backreference)")
         # Past logs are not this tool's to delete: the refusal names hub_reboot instead of rebooting.
         self._expect_tool_refusal("hub_manage_logs", {"tool": "hub_delete_logs", "args": {"mode": "past", "confirm": True}},
                                   "hub_reboot(confirm=true, purgeLogs=true)")
