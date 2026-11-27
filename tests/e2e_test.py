@@ -11651,7 +11651,7 @@ def updated() {}
         # carries the disabled-action checks (three actions, index 2 removed, so the rows
         # are indices 1 and 3 and disable<N> is pinned to the index, not the row). RM does not escape
         # action text, so the first row's raw '<' and brace text also guard the summary's HTML strip (#603).
-        first = 'disabled-mark one < 2 {"k": 1}'
+        first = 'disabled-mark one < 2 {"k": 1} a<b'
         app_id = self._create_native_rule("CfgSummary", [native_log(first), native_log("disabled-mark two"), native_log("disabled-mark three")])
         try:
             result = self.client.call_tool("hub_read_apps_code", {
@@ -11749,6 +11749,9 @@ def updated() {}
                 f"the main page's action summary should list both rows verbatim: {summary!r}"
             rows = read("selectActions")
             assert not disabled_rows(rows), f"live selectActions paragraph lists disabled rows: {paragraphs_of(rows)}"
+            # The row's closing markup follows its text: a raw '<' before a letter must not be read as a tag.
+            assert any(f"Log: '{first}'" in p for p in paragraphs_of(rows)), \
+                f"the actions page should show the first row's text whole: {paragraphs_of(rows)}"
             buttons = buttons_of(rows)
             assert buttons.get("disable1", {}).get("title") == "Disable Action", f"disable1 missing/wrong: {buttons}"
             assert buttons.get("disable3", {}).get("title") == "Disable Action", f"disable3 missing/wrong: {buttons}"
@@ -14324,6 +14327,9 @@ def updated() {}
         self._expect_tool_refusal("hub_read_diagnostics", {
             "tool": "hub_get_logs", "args": {"mode": ["apps", "hubEvents"], "sortBy": "pct"}},
             "A list of modes takes only arguments every listed mode accepts")
+        # A backreference is the one regex form whose matching time the hub does not bound.
+        self._expect_tool_refusal("hub_read_diagnostics", {
+            "tool": "hub_get_logs", "args": {"mode": "mcp", "pattern": "(a+)+\\1"}}, "must not use a backreference")
         # Past logs are not this tool's to delete: the refusal names hub_reboot instead of rebooting.
         self._expect_tool_refusal("hub_manage_logs", {"tool": "hub_delete_logs", "args": {"mode": "past", "confirm": True}},
                                   "hub_reboot(confirm=true, purgeLogs=true)")

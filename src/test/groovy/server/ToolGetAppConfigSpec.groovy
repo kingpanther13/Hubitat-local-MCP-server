@@ -2754,6 +2754,19 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         "Log: 'a < b' then <script>"                                                                                             || "Log: 'a < b' then"
     }
 
+    def "a raw '<' that starts no tag is kept, and no tag match runs across one"() {
+        expect:
+        script.stripAppConfigHtml(html) == expected
+
+        where:
+        html                                                                  || expected
+        "<div>Log: 'a<b'\n</div><div>Log: 'x<y and z'\n</div>"                || "Log: 'a<b'\nLog: 'x<y and z'"
+        "Log: 'a<b'\nLog: 'c>d'"                                              || "Log: 'a<b'\nLog: 'c>d'"
+        "IF a<b</div>"                                                        || 'IF a<b'
+        "<div class='x'>t</div><br/><BR><input type='hidden' name='n'><!-- c -->" || 't'
+        "<td\n class='a'>cell</td><my-el data-x='1'>e</my-el>"                 || 'celle'
+    }
+
     def "a non-RM app's red italic span is ordinary emphasis, not a disabled flag"() {
         given:
         settingsMap.enableRead = true
